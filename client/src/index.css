@@ -11,76 +11,292 @@
   --color-text-sub: #94a3b8;
   --accent: #6366f1;
   --accent-hover: #4f46e5;
+  --accent-active: #4338ca;
+  --accent-light: #818cf8;
   --accent-soft: rgba(99, 102, 241, 0.15);
-  --accent-border: rgba(99, 102, 241, 0.35);
+  --accent-border: rgba(99, 102, 241, 0.4);
 }
 
-[data-theme="pure_black"] {
-  --color-bg-base: #000000;
-  --color-bg-surface: #0a0a0c;
-  --color-bg-elevated: #141416;
-  --color-border: #222228;
-  --color-text-main: #f8fafc;
-  --color-text-sub: #8e8e93;
-}
-
-[data-theme="light"] {
-  --color-bg-base: #f1f5f9;
-  --color-bg-surface: #ffffff;
-  --color-bg-elevated: #f8fafc;
-  --color-border: #cbd5e1;
-  --color-text-main: #0f172a;
-  --color-text-sub: #64748b;
-}
-
-/* アクセントカラー定義 */
+/* ==========================================
+   🎨 アクセントカラー定義 (6色)
+   ========================================== */
 [data-accent="indigo"] {
   --accent: #6366f1;
   --accent-hover: #4f46e5;
+  --accent-active: #4338ca;
+  --accent-light: #818cf8;
   --accent-soft: rgba(99, 102, 241, 0.15);
-  --accent-border: rgba(99, 102, 241, 0.35);
+  --accent-border: rgba(99, 102, 241, 0.4);
 }
 
 [data-accent="cyan"] {
   --accent: #06b6d4;
   --accent-hover: #0891b2;
+  --accent-active: #0e7490;
+  --accent-light: #22d3ee;
   --accent-soft: rgba(6, 182, 212, 0.15);
-  --accent-border: rgba(6, 182, 212, 0.35);
+  --accent-border: rgba(6, 182, 212, 0.4);
 }
 
 [data-accent="emerald"] {
   --accent: #10b981;
   --accent-hover: #059669;
+  --accent-active: #047857;
+  --accent-light: #34d399;
   --accent-soft: rgba(16, 185, 129, 0.15);
-  --accent-border: rgba(16, 185, 129, 0.35);
+  --accent-border: rgba(16, 185, 129, 0.4);
 }
 
 [data-accent="purple"] {
   --accent: #a855f7;
   --accent-hover: #9333ea;
+  --accent-active: #7e22ce;
+  --accent-light: #c084fc;
   --accent-soft: rgba(168, 85, 247, 0.15);
-  --accent-border: rgba(168, 85, 247, 0.35);
+  --accent-border: rgba(168, 85, 247, 0.4);
 }
 
 [data-accent="rose"] {
   --accent: #f43f5e;
   --accent-hover: #e11d48;
+  --accent-active: #be123c;
+  --accent-light: #fb7185;
   --accent-soft: rgba(244, 63, 94, 0.15);
-  --accent-border: rgba(244, 63, 94, 0.35);
+  --accent-border: rgba(244, 63, 94, 0.4);
 }
 
 [data-accent="amber"] {
   --accent: #f59e0b;
   --accent-hover: #d97706;
+  --accent-active: #b45309;
+  --accent-light: #fbbf24;
   --accent-soft: rgba(245, 158, 11, 0.15);
-  --accent-border: rgba(245, 158, 11, 0.35);
+  --accent-border: rgba(245, 158, 11, 0.4);
 }
 
+/* ==========================================
+   🎨 アクセントカラーの動的反映 (Indigoユーティリティへの上書き)
+   ========================================== */
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-600,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-500 {
+  background-color: var(--accent) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .hover\:bg-indigo-500:hover,
+[data-accent]:not([data-accent="indigo"]) .hover\:bg-indigo-600:hover,
+[data-accent]:not([data-accent="indigo"]) .hover\:bg-indigo-700:hover {
+  background-color: var(--accent-hover) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .active\:bg-indigo-700:active {
+  background-color: var(--accent-active) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .text-indigo-400,
+[data-accent]:not([data-accent="indigo"]) .text-indigo-500 {
+  color: var(--accent) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .text-indigo-300 {
+  color: var(--accent-light) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .border-indigo-500,
+[data-accent]:not([data-accent="indigo"]) .border-indigo-600 {
+  border-color: var(--accent) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .border-indigo-500\/50,
+[data-accent]:not([data-accent="indigo"]) .border-indigo-500\/40,
+[data-accent]:not([data-accent="indigo"]) .border-indigo-500\/30,
+[data-accent]:not([data-accent="indigo"]) .border-indigo-500\/20,
+[data-accent]:not([data-accent="indigo"]) .border-indigo-600\/30 {
+  border-color: var(--accent-border) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-600\/20,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-600\/30,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-500\/20,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-500\/10,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-950,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-950\/80,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-950\/60,
+[data-accent]:not([data-accent="indigo"]) .bg-indigo-950\/40 {
+  background-color: var(--accent-soft) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .ring-indigo-500,
+[data-accent]:not([data-accent="indigo"]) .ring-indigo-500\/30 {
+  --tw-ring-color: var(--accent) !important;
+}
+
+[data-accent]:not([data-accent="indigo"]) .focus\:border-indigo-500:focus {
+  border-color: var(--accent) !important;
+}
+
+/* ==========================================
+   🖤 OLED 漆黒モード (#000000 完全ブラック)
+   ========================================== */
+[data-theme="pure_black"],
+[data-theme="pure_black"] body {
+  background-color: #000000 !important;
+  color: #f8fafc !important;
+}
+
+[data-theme="pure_black"] .min-h-screen,
+[data-theme="pure_black"] .bg-slate-950,
+[data-theme="pure_black"] .bg-slate-950\/95,
+[data-theme="pure_black"] .bg-slate-950\/90,
+[data-theme="pure_black"] .bg-slate-950\/80,
+[data-theme="pure_black"] .bg-slate-950\/75,
+[data-theme="pure_black"] .bg-slate-950\/70,
+[data-theme="pure_black"] .bg-slate-950\/60,
+[data-theme="pure_black"] .bg-slate-950\/50,
+[data-theme="pure_black"] .bg-slate-950\/40 {
+  background-color: #000000 !important;
+}
+
+[data-theme="pure_black"] .bg-slate-900,
+[data-theme="pure_black"] .bg-slate-900\/95,
+[data-theme="pure_black"] .bg-slate-900\/90,
+[data-theme="pure_black"] .bg-slate-900\/80,
+[data-theme="pure_black"] .bg-slate-900\/70,
+[data-theme="pure_black"] .bg-slate-900\/60,
+[data-theme="pure_black"] .bg-slate-900\/50,
+[data-theme="pure_black"] .bg-slate-900\/40,
+[data-theme="pure_black"] .bg-slate-850 {
+  background-color: #08080a !important;
+}
+
+[data-theme="pure_black"] .bg-slate-800,
+[data-theme="pure_black"] .bg-slate-800\/90,
+[data-theme="pure_black"] .bg-slate-800\/80,
+[data-theme="pure_black"] .bg-slate-800\/70,
+[data-theme="pure_black"] .bg-slate-800\/60,
+[data-theme="pure_black"] .bg-slate-800\/50,
+[data-theme="pure_black"] .bg-slate-800\/40 {
+  background-color: #121216 !important;
+}
+
+[data-theme="pure_black"] .border-slate-800,
+[data-theme="pure_black"] .border-slate-800\/80,
+[data-theme="pure_black"] .border-slate-800\/60,
+[data-theme="pure_black"] .border-slate-700,
+[data-theme="pure_black"] .border-slate-700\/80,
+[data-theme="pure_black"] .border-slate-700\/60,
+[data-theme="pure_black"] .border-slate-700\/50,
+[data-theme="pure_black"] .border-slate-700\/40 {
+  border-color: #1f1f26 !important;
+}
+
+/* ==========================================
+   ☀️ ソーラー・ライトモード (清潔感のある高視認性白基調)
+   ========================================== */
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+[data-theme="light"],
+[data-theme="light"] body {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .min-h-screen,
+[data-theme="light"] .bg-slate-950,
+[data-theme="light"] .bg-slate-950\/95,
+[data-theme="light"] .bg-slate-950\/90,
+[data-theme="light"] .bg-slate-950\/80,
+[data-theme="light"] .bg-slate-950\/75,
+[data-theme="light"] .bg-slate-950\/70,
+[data-theme="light"] .bg-slate-950\/60,
+[data-theme="light"] .bg-slate-950\/50,
+[data-theme="light"] .bg-slate-950\/40 {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .bg-slate-900,
+[data-theme="light"] .bg-slate-900\/95,
+[data-theme="light"] .bg-slate-900\/90,
+[data-theme="light"] .bg-slate-900\/80,
+[data-theme="light"] .bg-slate-900\/70,
+[data-theme="light"] .bg-slate-900\/60,
+[data-theme="light"] .bg-slate-900\/50,
+[data-theme="light"] .bg-slate-900\/40,
+[data-theme="light"] .bg-slate-850 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .bg-slate-800,
+[data-theme="light"] .bg-slate-800\/90,
+[data-theme="light"] .bg-slate-800\/80,
+[data-theme="light"] .bg-slate-800\/70,
+[data-theme="light"] .bg-slate-800\/60,
+[data-theme="light"] .bg-slate-800\/50,
+[data-theme="light"] .bg-slate-800\/40 {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .hover\:bg-slate-800:hover,
+[data-theme="light"] .hover\:bg-slate-800\/80:hover,
+[data-theme="light"] .hover\:bg-slate-800\/60:hover,
+[data-theme="light"] .hover\:bg-slate-850:hover,
+[data-theme="light"] .hover\:bg-slate-900:hover,
+[data-theme="light"] .hover\:bg-slate-900\/80:hover,
+[data-theme="light"] .hover\:bg-slate-900\/60:hover {
+  background-color: #e2e8f0 !important;
+}
+
+[data-theme="light"] .border-slate-800,
+[data-theme="light"] .border-slate-800\/80,
+[data-theme="light"] .border-slate-800\/60,
+[data-theme="light"] .border-slate-700,
+[data-theme="light"] .border-slate-700\/80,
+[data-theme="light"] .border-slate-700\/60,
+[data-theme="light"] .border-slate-700\/50,
+[data-theme="light"] .border-slate-700\/40 {
+  border-color: #cbd5e1 !important;
+}
+
+[data-theme="light"] .text-slate-100,
+[data-theme="light"] .text-slate-200 {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .text-slate-300 {
+  color: #334155 !important;
+}
+
+[data-theme="light"] .text-slate-400 {
+  color: #64748b !important;
+}
+
+[data-theme="light"] .text-slate-500 {
+  color: #94a3b8 !important;
+}
+
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Base Body settings */
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background-color: var(--color-bg-base);
-  color: var(--color-text-main);
+  background-color: #020617;
+  color: #f1f5f9;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
@@ -112,17 +328,17 @@ body {
   margin-bottom: 0;
 }
 .prose-post a {
-  color: #818cf8; /* indigo-400 */
+  color: #818cf8;
   text-decoration: none;
   word-break: break-all;
   transition: color 0.15s ease;
 }
 .prose-post a:hover {
-  color: #a5b4fc; /* indigo-300 */
+  color: #a5b4fc;
   text-decoration: underline;
 }
 .prose-post a.hashtag {
-  color: #38bdf8; /* sky-400 */
+  color: #38bdf8;
 }
 .prose-post a.hashtag:hover {
   color: #7dd3fc;

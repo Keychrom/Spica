@@ -10801,19 +10801,26 @@ export default function App() {
                           </button>
 
                           {/* 📢 チャンネル宛て選択 */}
-                          <select
-                            value={postTargetChannelId || ''}
-                            onChange={(e) => setPostTargetChannelId(e.target.value || null)}
-                            className="bg-slate-850 border border-slate-700/60 rounded-lg px-2 py-1.5 text-xs text-slate-300 font-bold focus:outline-none focus:border-indigo-500 cursor-pointer"
-                            title="投稿先チャンネルを選択"
-                          >
-                            <option value="">📢 全体公開</option>
-                            {channels.map((ch) => (
-                              <option key={ch.id} value={ch.id}>
-                                📢 {ch.name}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="relative inline-flex items-center">
+                            <select
+                              value={postTargetChannelId || ''}
+                              onChange={(e) => setPostTargetChannelId(e.target.value || null)}
+                              className={`appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer focus:outline-none ${
+                                postTargetChannelId
+                                  ? 'bg-indigo-950/80 border-indigo-500/60 text-indigo-300'
+                                  : 'bg-slate-900 border-slate-700/60 text-slate-300 hover:text-white hover:border-slate-600'
+                              }`}
+                              title="投稿先チャンネルを選択"
+                            >
+                              <option value="" className="bg-slate-900 text-slate-200">📢 全体公開</option>
+                              {channels.map((ch) => (
+                                <option key={ch.id} value={ch.id} className="bg-slate-900 text-slate-200">
+                                  📢 {ch.name}
+                                </option>
+                              ))}
+                            </select>
+                            <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400" />
+                          </div>
                         </div>
 
                         <button
