@@ -1,0 +1,752 @@
+import { config } from './config.js';
+import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked } from './db.js';
+import { signHeaders } from './crypto.js';
+import { getInstanceActorKeyPair } from './instanceActor.js';
+import crypto from 'node:crypto';
+
+export const ACTIVITYSTREAMS_CONTEXT = [
+  'https://www.w3.org/ns/activitystreams',
+  'https://w3id.org/security/v1',
+];
+
+export const ACTIVITY_CONTENT_TYPE = 'application/activity+json';
+
+/**
+ * ローカルユーザーの Actor (Person) JSON-LD を構築
+ */
+export function buildPerson(user: UserRow) {
+  const actorUrl = `${config.origin}/users/${user.id}`;
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: actorUrl,
+    type: 'Person',
+    following: `${actorUrl}/following`,
+    followers: `${actorUrl}/followers`,
+    inbox: `${actorUrl}/inbox`,
+    outbox: `${actorUrl}/outbox`,
+    preferredUsername: user.id,
+    name: user.name,
+    summary: user.summary || '',
+    icon: user.icon_url ? {
+      type: 'Image',
+      mediaType: 'image/png',
+      url: user.icon_url,
+    } : undefined,
+    image: user.banner_url ? {
+      type: 'Image',
+      mediaType: 'image/png',
+      url: user.banner_url,
+    } : undefined,
+    url: actorUrl,
+    endpoints: {
+      sharedInbox: `${config.origin}/inbox`,
+    },
+    publicKey: {
+      id: `${actorUrl}#main-key`,
+      owner: actorUrl,
+      publicKeyPem: user.public_key_pem,
+    },
+  };
+}
+
+export interface NoteAttachment {
+  url: string;
+  mediaType?: string;
+  name?: string;
+}
+
+export interface NotePoll {
+  choices: string[];
+  multiple?: boolean;
+  expiresAt?: string | null;
+}
+
+/**
+ * 投稿 Note / Question オブジェクトを構築
+ */
+export function buildNote(params: {
+  id: string;
+  authorUrl: string;
+  content: string;
+  publishedAt: string;
+  inReplyTo?: string | null;
+  quoteUrl?: string | null;
+  attachments?: NoteAttachment[];
+  summary?: string | null;
+  sensitive?: boolean;
+  poll?: NotePoll | null;
+  tags?: any[];
+}) {
+  const attachmentList = (params.attachments || []).map((att) => ({
+    type: 'Document',
+    mediaType: att.mediaType || 'image/jpeg',
+    url: att.url,
+    name: att.name || undefined,
+  }));
+
+  const hasSummary = Boolean(params.summary && params.summary.trim());
+  const isSensitive = Boolean(params.sensitive || hasSummary);
+
+  // アンケート（ActivityPub Question 仕様: oneOf / anyOf / endTime）
+  const isQuestion = Boolean(params.poll && params.poll.choices && params.poll.choices.length > 0);
+  let pollProps: any = {};
+  if (isQuestion && params.poll) {
+    const choiceObjects = params.poll.choices.map((choiceText) => ({
+      type: 'Note',
+      name: choiceText,
+      replies: {
+        type: 'Collection',
+        totalItems: 0,
+      },
+      _misskey_votes: 0,
+    }));
+
+    if (params.poll.multiple) {
+      pollProps.anyOf = choiceObjects;
+    } else {
+      pollProps.oneOf = choiceObjects;
+    }
+
+    pollProps.votersCount = 0;
+
+    if (params.poll.expiresAt) {
+      pollProps.endTime = params.poll.expiresAt;
+      if (new Date(params.poll.expiresAt) <= new Date()) {
+        pollProps.closed = params.poll.expiresAt;
+      }
+    }
+  }
+
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: params.id,
+    type: isQuestion ? 'Question' : 'Note',
+    attributedTo: params.authorUrl,
+    summary: hasSummary ? params.summary!.trim() : undefined,
+    content: params.content,
+    url: params.id,
+    published: params.publishedAt,
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${params.authorUrl}/followers`],
+    inReplyTo: params.inReplyTo || null,
+    sensitive: isSensitive,
+    _misskey_quote: params.quoteUrl || undefined,
+    quoteUrl: params.quoteUrl || undefined,
+    attachment: attachmentList.length > 0 ? attachmentList : undefined,
+    tag: params.tags && params.tags.length > 0 ? params.tags : undefined,
+    ...pollProps,
+  };
+}
+
+/**
+ * Create(Note) Activity を構築
+ */
+export function buildCreateActivity(params: {
+  note: ReturnType<typeof buildNote>;
+  actorUrl: string;
+}) {
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${params.note.id}/activity`,
+    type: 'Create',
+    actor: params.actorUrl,
+    published: params.note.published,
+    to: params.note.to,
+    cc: params.note.cc,
+    object: params.note,
+  };
+}
+
+/**
+ * Follow Activity を構築
+ */
+export function buildFollowActivity(params: {
+  actorUrl: string;
+  targetActorUrl: string;
+}) {
+  const uuid = crypto.randomUUID();
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${config.origin}/activities/follow/${uuid}`,
+    type: 'Follow',
+    actor: params.actorUrl,
+    object: params.targetActorUrl,
+  };
+}
+
+/**
+ * Accept Activity を構築 (Misskey/Mastodon 互換)
+ */
+export function buildAcceptActivity(params: {
+  actorUrl: string;
+  followActivity: any;
+}) {
+  const uuid = crypto.randomUUID();
+  const recipient = typeof params.followActivity.actor === 'string'
+    ? params.followActivity.actor
+    : params.followActivity.actor?.id;
+
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${config.origin}/activities/accept/${uuid}`,
+    type: 'Accept',
+    actor: params.actorUrl,
+    to: recipient ? [recipient] : undefined,
+    object: params.followActivity,
+  };
+}
+
+/**
+ * Undo(Follow) Activity を構築 (アンフォロー / リレー購読解除用)
+ */
+export function buildUndoFollowActivity(params: {
+  actorUrl: string;
+  followActivityId: string;
+  targetActorUrl: string;
+}) {
+  const uuid = crypto.randomUUID();
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${config.origin}/activities/undo/${uuid}`,
+    type: 'Undo',
+    actor: params.actorUrl,
+    object: {
+      id: params.followActivityId,
+      type: 'Follow',
+      actor: params.actorUrl,
+      object: params.targetActorUrl,
+    },
+  };
+}
+
+/**
+ * Misskey向け EmojiReact Activity を構築
+ */
+export function buildEmojiReactActivity(params: {
+  id?: string;
+  actorUrl: string;
+  targetPostUrl: string;
+  reaction: string;
+  targetActorUrl?: string;
+}) {
+  const uuid = params.id || `${config.origin}/activities/react/${crypto.randomUUID()}`;
+  return {
+    '@context': [
+      ...ACTIVITYSTREAMS_CONTEXT,
+      {
+        '_misskey_reaction': 'https://misskey-hub.net/ns#_misskey_reaction',
+      },
+    ],
+    id: uuid,
+    type: 'EmojiReact',
+    actor: params.actorUrl,
+    object: params.targetPostUrl,
+    content: params.reaction,
+    _misskey_reaction: params.reaction,
+    to: ['https://www.w3.org/ns/activitystreams#Public', ...(params.targetActorUrl ? [params.targetActorUrl] : [])],
+  };
+}
+
+/**
+ * Mastodon向け Like Activity を構築 (content / _misskey_reaction も付与してハイブリッド互換)
+ */
+export function buildLikeActivity(params: {
+  id?: string;
+  actorUrl: string;
+  targetPostUrl: string;
+  reaction?: string;
+  targetActorUrl?: string;
+}) {
+  const uuid = params.id || `${config.origin}/activities/like/${crypto.randomUUID()}`;
+  return {
+    '@context': [
+      ...ACTIVITYSTREAMS_CONTEXT,
+      {
+        '_misskey_reaction': 'https://misskey-hub.net/ns#_misskey_reaction',
+      },
+    ],
+    id: uuid,
+    type: 'Like',
+    actor: params.actorUrl,
+    object: params.targetPostUrl,
+    content: params.reaction || '⭐',
+    _misskey_reaction: params.reaction || '⭐',
+    to: ['https://www.w3.org/ns/activitystreams#Public', ...(params.targetActorUrl ? [params.targetActorUrl] : [])],
+  };
+}
+
+/**
+ * RT (Announce / ブースト) Activity を構築
+ */
+export function buildAnnounceActivity(params: {
+  id?: string;
+  actorUrl: string;
+  targetPostUrl: string;
+  targetActorUrl?: string;
+}) {
+  const uuid = params.id || `${config.origin}/activities/announce/${crypto.randomUUID()}`;
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: uuid,
+    type: 'Announce',
+    actor: params.actorUrl,
+    published: new Date().toISOString(),
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [
+      `${params.actorUrl}/followers`,
+      ...(params.targetActorUrl ? [params.targetActorUrl] : []),
+    ],
+    object: params.targetPostUrl,
+  };
+}
+
+/**
+ * 汎用 Undo Activity を構築 (Reaction / Like / Announce 解除用)
+ */
+export function buildUndoActivity(params: {
+  actorUrl: string;
+  activityToUndo: any;
+  targetActorUrl?: string;
+}) {
+  const uuid = `${config.origin}/activities/undo/${crypto.randomUUID()}`;
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: uuid,
+    type: 'Undo',
+    actor: params.actorUrl,
+    to: ['https://www.w3.org/ns/activitystreams#Public', ...(params.targetActorUrl ? [params.targetActorUrl] : [])],
+    object: params.activityToUndo,
+  };
+}
+
+/**
+ * 投稿削除用 Delete(Tombstone) Activity を構築
+ */
+export function buildDeleteActivity(params: {
+  actorUrl: string;
+  targetPostUrl: string;
+}) {
+  const uuid = `${params.targetPostUrl}#delete`;
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: uuid,
+    type: 'Delete',
+    actor: params.actorUrl,
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${params.actorUrl}/followers`],
+    object: {
+      id: params.targetPostUrl,
+      type: 'Tombstone',
+    },
+  };
+}
+
+/**
+ * アクター（アカウント）削除用 Delete(Actor) Activity を構築
+ * W3C ActivityPub / Mastodon / Misskey 準拠
+ */
+export function buildDeleteActorActivity(params: {
+  actorUrl: string;
+}) {
+  const uuid = `${params.actorUrl}#delete`;
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: uuid,
+    type: 'Delete',
+    actor: params.actorUrl,
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${params.actorUrl}/followers`],
+    object: params.actorUrl,
+  };
+}
+
+/**
+ * WebFinger でアカウントから Actor URL を解決
+ * 例: "alice@localhost:3000" または "@bob@example.com"
+ */
+export async function resolveWebFinger(handle: string): Promise<string> {
+  const cleanHandle = handle.startsWith('@') ? handle.slice(1) : handle;
+  const parts = cleanHandle.split('@');
+  if (parts.length !== 2) {
+    throw new Error(`無効なユーザーハンドル形式です: ${handle}`);
+  }
+
+  const [username, domain] = parts;
+  if (isDomainBlocked(domain)) {
+    throw new Error(`ドメイン "${domain}" はサーバーポリシーによりブロックされています。`);
+  }
+
+  const protocol = domain.startsWith('localhost') || domain.startsWith('127.0.0.1') ? 'http' : 'https';
+  const url = `${protocol}://${domain}/.well-known/webfinger?resource=acct:${username}@${domain}`;
+
+  console.log(`[WebFinger] Querying: ${url}`);
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/jrd+json, application/json',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`WebFinger解決失敗 (HTTP ${res.status}): ${url}`);
+  }
+
+  const data = (await res.json()) as any;
+  const link = data.links?.find(
+    (l: any) => l.rel === 'self' && (l.type === 'application/activity+json' || l.type?.includes('activity'))
+  );
+
+  if (!link || !link.href) {
+    throw new Error(`WebFingerの応答に Actor URL が見つかりませんでした: ${url}`);
+  }
+
+  return link.href;
+}
+
+/**
+ * ActivityStreams の icon / image プロパティから画像 URL を抽出
+ */
+export function extractImageUrl(mediaObj: any): string {
+  if (!mediaObj) return '';
+  if (typeof mediaObj === 'string') return mediaObj;
+  if (typeof mediaObj.url === 'string') return mediaObj.url;
+  if (Array.isArray(mediaObj.url) && mediaObj.url.length > 0) {
+    const first = mediaObj.url[0];
+    return typeof first === 'string' ? first : (first?.href || '');
+  }
+  return '';
+}
+
+/**
+ * リモートの Actor (Person) を取得してローカルキャッシュDBに保存
+ */
+export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): Promise<RemoteActorRow> {
+  if (isDomainBlocked(actorUrl)) {
+    throw new Error(`ブロックされたドメインのアクターは取得できません: ${actorUrl}`);
+  }
+
+  // すでにキャッシュにあるか確認（forceRefresh でない場合）
+  if (!forceRefresh) {
+    const existing = db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(actorUrl) as unknown as RemoteActorRow | undefined;
+    if (existing) {
+      return existing;
+    }
+  }
+
+  console.log(`[Actor] Fetching remote actor: ${actorUrl}`);
+  const res = await fetch(actorUrl, {
+    headers: {
+      Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+      'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Actor取得失敗 (HTTP ${res.status}): ${actorUrl}`);
+  }
+
+  const data = (await res.json()) as any;
+  const parsedUrl = new URL(actorUrl);
+  const domain = parsedUrl.host;
+  const username = data.preferredUsername || data.name || parsedUrl.pathname.split('/').pop() || 'unknown';
+  const inboxUrl = data.inbox;
+  const sharedInboxUrl = data.endpoints?.sharedInbox || null;
+  const publicKeyId = data.publicKey?.id || `${actorUrl}#main-key`;
+  const publicKeyPem = data.publicKey?.publicKeyPem;
+
+  const iconUrl = extractImageUrl(data.icon);
+  const bannerUrl = extractImageUrl(data.image);
+
+  if (!inboxUrl || !publicKeyPem) {
+    throw new Error(`Actor JSONに必要な情報（inboxまたはpublicKey）が含まれていません: ${actorUrl}`);
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      username = excluded.username,
+      domain = excluded.domain,
+      name = excluded.name,
+      summary = excluded.summary,
+      icon_url = excluded.icon_url,
+      banner_url = excluded.banner_url,
+      inbox_url = excluded.inbox_url,
+      shared_inbox_url = excluded.shared_inbox_url,
+      public_key_id = excluded.public_key_id,
+      public_key_pem = excluded.public_key_pem,
+      updated_at = excluded.updated_at
+  `).run(
+    actorUrl,
+    username,
+    domain,
+    data.name || username,
+    data.summary || '',
+    iconUrl,
+    bannerUrl,
+    inboxUrl,
+    sharedInboxUrl,
+    publicKeyId,
+    publicKeyPem,
+    now
+  );
+
+  return {
+    id: actorUrl,
+    username,
+    domain,
+    name: data.name || username,
+    summary: data.summary || '',
+    icon_url: iconUrl,
+    banner_url: bannerUrl,
+    inbox_url: inboxUrl,
+    shared_inbox_url: sharedInboxUrl,
+    public_key_id: publicKeyId,
+    public_key_pem: publicKeyPem,
+    updated_at: now,
+  };
+}
+
+/**
+ * リモートの Inbox に署名付きで Activity を送信（配送）
+ */
+export async function deliverActivity(params: {
+  inboxUrl: string;
+  activity: any;
+  senderUser?: UserRow;
+  useInstanceActor?: boolean;
+}) {
+  if (isDomainBlocked(params.inboxUrl)) {
+    console.log(`[Delivery Skipped] 🚫 Skipping delivery to blocked domain inbox: ${params.inboxUrl}`);
+    return false;
+  }
+
+  const body = JSON.stringify(params.activity);
+  let keyId: string;
+  let privateKeyPem: string;
+
+  if (params.useInstanceActor || !params.senderUser) {
+    const pair = getInstanceActorKeyPair();
+    keyId = `${config.origin}/actor#main-key`;
+    privateKeyPem = pair.privateKeyPem;
+  } else {
+    keyId = `${config.origin}/users/${params.senderUser.id}#main-key`;
+    privateKeyPem = params.senderUser.private_key_pem;
+  }
+
+  const headers = signHeaders({
+    method: 'POST',
+    url: params.inboxUrl,
+    body,
+    keyId,
+    privateKeyPem,
+  });
+
+  headers['User-Agent'] = `Spica/1.0.0 (+${config.origin})`;
+
+  console.log(`[Delivery] Sending activity (${params.activity.type}) to ${params.inboxUrl}`);
+
+  try {
+    const res = await fetch(params.inboxUrl, {
+      method: 'POST',
+      headers,
+      body,
+    });
+
+    console.log(`[Delivery] Result from ${params.inboxUrl}: HTTP ${res.status}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[Delivery Warning] ${params.inboxUrl} responded ${res.status}: ${errText.slice(0, 200)}`);
+    }
+    return res.ok;
+  } catch (err) {
+    console.error(`[Delivery Error] Failed to deliver to ${params.inboxUrl}:`, err);
+    return false;
+  }
+}
+
+export interface CustomEmoji {
+  name: string; // 例: ":ohayo:"
+  url: string;  // 例: "https://example.com/files/ohayo.png"
+}
+
+/**
+ * ActivityPub Note オブジェクトからカスタム絵文字 (Emoji) を抽出
+ */
+export function extractCustomEmojis(note: any): CustomEmoji[] {
+  if (!note || !Array.isArray(note.tag)) return [];
+
+  const emojis: CustomEmoji[] = [];
+  for (const t of note.tag) {
+    if (!t) continue;
+    const isEmoji = t.type === 'Emoji' || t.type === 'http://joinmastodon.org/ns#Emoji';
+    if (isEmoji && t.name) {
+      let name = String(t.name);
+      if (!name.startsWith(':')) name = `:${name}`;
+      if (!name.endsWith(':')) name = `${name}:`;
+
+      const url = typeof t.icon === 'string' ? t.icon : t.icon?.url;
+      if (url && typeof url === 'string') {
+        emojis.push({ name, url });
+      }
+    }
+  }
+  return emojis;
+}
+
+/**
+ * 本文中の :emoji_name: を HTML <img> タグに置換してレンダリング可能にする
+ */
+export function replaceCustomEmojis(content: string, emojis: CustomEmoji[]): string {
+  if (!content || emojis.length === 0) return content;
+
+  let replaced = content;
+  for (const emoji of emojis) {
+    const rawShortcode = emoji.name;
+    const cleanName = emoji.name.replace(/^:|:$/g, '');
+    const escapedName = rawShortcode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // タグの属性値内（="...:shortcode:..."）を誤置換しないよう、タグ外のみにマッチ
+    const regex = new RegExp(`${escapedName}(?![^<]*>)`, 'g');
+    const imgTag = `<img src="${emoji.url}" alt="${cleanName}" title="${rawShortcode}" class="custom-emoji inline-block h-6 w-auto align-middle" loading="lazy" />`;
+    replaced = replaced.replace(regex, imgTag);
+  }
+  return replaced;
+}
+
+/**
+ * 📊 アンケート更新 (Update Question) Activity を構築
+ * Misskey (_misskey_votes) & Mastodon (replies.totalItems, votersCount) 両対応
+ */
+export function buildUpdateQuestionActivity(params: {
+  post: PostRow;
+  poll: {
+    id: string;
+    multiple: boolean;
+    expires_at: string | null;
+    choices: { choice_index: number; text: string; votes_count: number }[];
+  };
+  authorUser: UserRow;
+}) {
+  const authorUrl = `${config.origin}/users/${params.authorUser.id}`;
+  const totalVotes = params.poll.choices.reduce((sum, c) => sum + (c.votes_count || 0), 0);
+
+  const choiceObjects = params.poll.choices.map((c) => ({
+    name: c.text,
+    type: 'Note',
+    replies: {
+      type: 'Collection',
+      totalItems: c.votes_count,
+    },
+    _misskey_votes: c.votes_count,
+  }));
+
+  const questionObject: any = {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: params.post.id,
+    type: 'Question',
+    attributedTo: authorUrl,
+    content: params.post.content,
+    url: params.post.id,
+    published: params.post.published_at,
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: [`${authorUrl}/followers`],
+    inReplyTo: params.post.in_reply_to || null,
+    votersCount: totalVotes,
+  };
+
+  if (params.poll.multiple) {
+    questionObject.anyOf = choiceObjects;
+  } else {
+    questionObject.oneOf = choiceObjects;
+  }
+
+  if (params.poll.expires_at) {
+    questionObject.endTime = params.poll.expires_at;
+    if (new Date(params.poll.expires_at) <= new Date()) {
+      questionObject.closed = params.poll.expires_at;
+    }
+  }
+
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${params.post.id}#updates/${Date.now()}`,
+    type: 'Update',
+    actor: authorUrl,
+    to: questionObject.to,
+    cc: questionObject.cc,
+    object: questionObject,
+  };
+}
+
+/**
+ * 📡 アンケートの最新得票結果をリモートノード（Misskey / Mastodon）へ Update Activity として配信
+ */
+export async function federatePollUpdate(params: {
+  postId: string;
+  senderVoterActorUrl?: string;
+}) {
+  try {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(params.postId) as PostRow | undefined;
+    if (!post || post.is_local !== 1) return;
+
+    const poll = db.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
+    if (!poll) return;
+
+    const choices = db.prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(poll.id) as any[];
+    const authorUser = db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
+    if (!authorUser) return;
+
+    const updateActivity = buildUpdateQuestionActivity({
+      post,
+      poll: {
+        id: poll.id,
+        multiple: Boolean(poll.multiple),
+        expires_at: poll.expires_at,
+        choices,
+      },
+      authorUser,
+    });
+
+    // 配信先 Inbox の収集 (フォロワー + リレー + 投票者リモートサーバー)
+    const authorUrl = `${config.origin}/users/${authorUser.id}`;
+    const followerInboxes = (db.prepare(`
+      SELECT DISTINCT inbox_url FROM follows
+      WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
+    `).all(authorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
+
+    const relayInboxes = (db.prepare(`
+      SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+    `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+
+    const directInboxes: string[] = [];
+    if (params.senderVoterActorUrl) {
+      try {
+        const voterActor = await fetchRemoteActor(params.senderVoterActorUrl);
+        if (voterActor?.inbox_url) directInboxes.push(voterActor.inbox_url);
+      } catch {}
+    }
+
+    const allInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes, ...directInboxes]));
+    if (allInboxes.length === 0) return;
+
+    console.log(`[Poll Federation] 📡 Broadcasting Update(Question) for post ${post.id} to ${allInboxes.length} inboxes...`);
+
+    // 非同期で配信
+    Promise.allSettled(
+      allInboxes.map((inboxUrl) =>
+        deliverActivity({
+          inboxUrl,
+          activity: updateActivity,
+          senderUser: authorUser,
+        })
+      )
+    ).then((results) => {
+      const succeeded = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+      console.log(`[Poll Federation] Sent update to ${succeeded}/${allInboxes.length} inboxes.`);
+    }).catch((err) => {
+      console.error('[Poll Federation Error] Broadcast failed:', err);
+    });
+  } catch (err: any) {
+    console.error('[Poll Federation Error]:', err.message);
+  }
+}

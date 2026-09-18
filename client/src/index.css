@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: #0b0f19;
+  color: #f1f5f9;
+}
+
+/* Fediverse (Mastodon / Misskey) 投稿 HTML の整形スタイル */
+.prose-post p {
+  margin-bottom: 0.5rem;
+}
+.prose-post p:last-child {
+  margin-bottom: 0;
+}
+.prose-post a {
+  color: #818cf8; /* indigo-400 */
+  text-decoration: none;
+  word-break: break-all;
+  transition: color 0.15s ease;
+}
+.prose-post a:hover {
+  color: #a5b4fc; /* indigo-300 */
+  text-decoration: underline;
+}
+.prose-post a.hashtag {
+  color: #38bdf8; /* sky-400 */
+}
+.prose-post a.hashtag:hover {
+  color: #7dd3fc;
+}
+.prose-post .invisible {
+  display: none !important;
+}
+.prose-post .ellipsis::after {
+  content: '…';
+}
+.prose-post blockquote {
+  border-left: 3px solid #4f46e5;
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: #94a3b8;
+}
+.prose-post code {
+  background-color: #1e293b;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.375rem;
+  font-family: monospace;
+  font-size: 0.85em;
+}
+.prose-post pre {
+  background-color: #0f172a;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  border: 1px solid #1e293b;
+}
+
+/* カスタム絵文字 (Misskey / Mastodon) */
+.prose-post .custom-emoji {
+  height: 1.5em;
+  width: auto;
+  display: inline-block;
+  vertical-align: -0.25em;
+  margin: 0 0.15em;
+  object-fit: contain;
+}
+
+/* 投稿内の通常画像 (添付画像など) */
+.prose-post img:not(.custom-emoji) {
+  max-height: 380px;
+  max-width: 100%;
+  border-radius: 0.75rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  object-fit: cover;
+}
+
+/* 返信プレビュー内のコンパクト化 */
+.compact-preview .prose-post img:not(.custom-emoji) {
+  max-height: 52px;
+  max-width: 80px;
+  border-radius: 0.5rem;
+  display: inline-block;
+  margin: 0.25rem 0.25rem 0 0;
+  object-fit: cover;
+}
+
+.compact-preview .prose-post {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}

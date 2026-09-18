@@ -1,0 +1,2998 @@
+import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'node:crypto';
+import multer from 'multer';
+import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow } from '../db.js';
+import { config } from '../config.js';
+import { generateKeyPair } from '../crypto.js';
+import { uploadMediaFile } from '../storage.js';
+import {
+  generateMasterKey,
+  hashMasterKey,
+  createSession,
+  destroySession,
+  requireAuth,
+  getUserFromToken,
+} from '../auth.js';
+import { deleteUserAccount } from '../accountService.js';
+import { exportUserData, streamUserExportZip } from '../exportService.js';
+import {
+  getVapidPublicKey,
+  savePushSubscription,
+  removePushSubscription,
+  isUserSubscribed,
+  sendPushToUser,
+} from '../pushService.js';
+import {
+  addStreamClient,
+  removeStreamClient,
+  broadcastNote,
+  broadcastReaction,
+  broadcastAnnounce,
+  broadcastPoll,
+  broadcastDeletePost,
+} from '../streaming.js';
+import {
+  buildNote,
+  buildCreateActivity,
+  buildFollowActivity,
+  buildEmojiReactActivity,
+  buildLikeActivity,
+  buildAnnounceActivity,
+  buildUndoActivity,
+  buildDeleteActivity,
+  deliverActivity,
+  resolveWebFinger,
+  fetchRemoteActor,
+  federatePollUpdate,
+} from '../activitypub.js';
+
+export const apiRouter = Router();
+
+// 画像アップロード用 multer 設定 (メモリバッファ保存, 最大15MB, 画像形式のみ)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+  },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('対応していないファイル形式です。画像ファイル（JPEG, PNG, GIF, WebP, SVGなど）を選択してください。'));
+    }
+  },
+});
+
+// ==========================================
+// 認証 (Auth) エンドポイント - マスターキー方式
+// ==========================================
+
+// アカウント新規登録 (マスターキー発行)
+apiRouter.post('/auth/register', (req: Request, res: Response) => {
+  const { id, name, summary, inviteCode, agreedToRules } = req.body;
+  if (!id || !name) {
+    return res.status(400).json({ error: 'ユーザーID (英数字) と表示名は必須です。' });
+  }
+
+  const cleanId = id.trim().toLowerCase();
+  if (!/^[a-z0-9_-]{2,30}$/.test(cleanId)) {
+    return res.status(400).json({ error: 'ユーザーIDは2〜30文字の英数字、ハイフン、アンダースコアのみ使用できます。' });
+  }
+
+  const existing = db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
+  if (existing) {
+    return res.status(409).json({ error: 'このユーザーIDは既に使用されています。' });
+  }
+
+  // ユーザー数の確認 (最初のユーザーは自動的に管理者)
+  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const role = userCount === 0 ? 'admin' : 'user';
+
+  // 招待コード検証および利用規約・ルール同意検証（最初の管理者以外の登録時）
+  let verifiedInviteCode: string | null = null;
+  if (userCount > 0) {
+    const instanceInfo = getInstanceInfo();
+
+    // 1. 新規登録停止モードの場合
+    if (instanceInfo.registration_mode === 'closed') {
+      return res.status(403).json({ error: '現在このサーバーは新規アカウント登録を一時停止しています。' });
+    }
+
+    // 2. サーバールール・規約同意検証
+    if (instanceInfo.require_rules_agreement && !agreedToRules) {
+      if (instanceInfo.server_rules.length > 0 || instanceInfo.tos_url || instanceInfo.privacy_policy_url) {
+        return res.status(400).json({ error: 'サーバーの利用規約およびルールへの同意が必要です。' });
+      }
+    }
+
+    // 3. 招待制モード、または招待コードが入力された場合
+    const codeStr = typeof inviteCode === 'string' ? inviteCode.trim() : '';
+    if (instanceInfo.registration_mode === 'invite') {
+      if (!codeStr) {
+        return res.status(400).json({ error: 'このサーバーは招待制です。有効な招待コードを入力してください。' });
+      }
+    }
+
+    if (codeStr) {
+      const inv = db.prepare('SELECT * FROM invitation_codes WHERE code = ?').get(codeStr) as InvitationCodeRow | undefined;
+      if (!inv) {
+        return res.status(400).json({ error: '入力された招待コードは存在しません。' });
+      }
+      if (inv.expires_at && new Date(inv.expires_at) < new Date()) {
+        return res.status(400).json({ error: 'この招待コードは有効期限が切れています。' });
+      }
+      if (inv.max_uses > 0 && inv.used_count >= inv.max_uses) {
+        return res.status(400).json({ error: 'この招待コードは使用上限回数に達しています。' });
+      }
+      verifiedInviteCode = inv.code;
+    }
+  }
+
+  console.log(`[Spica Register] Creating account @${cleanId} (Role: ${role}, Invite: ${verifiedInviteCode || 'none'})...`);
+
+  // 1. 暗号学的マスターキーを生成
+  const masterKey = generateMasterKey();
+  const masterKeyHash = hashMasterKey(masterKey);
+
+  // 2. ActivityPub 用 RSA 2048-bit 鍵ペア生成
+  const keyPair = generateKeyPair();
+  const now = new Date().toISOString();
+
+  // 3. DB にユーザー保存
+  db.prepare(`
+    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+  `).run(
+    cleanId,
+    name.trim(),
+    summary?.trim() || '',
+    masterKeyHash,
+    role,
+    keyPair.publicKeyPem,
+    keyPair.privateKeyPem,
+    now
+  );
+
+  // 4. 招待コードの使用回数をインクリメント
+  if (verifiedInviteCode) {
+    try {
+      db.prepare('UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?').run(verifiedInviteCode);
+    } catch (e) {
+      console.error('[Spica Register] Failed to increment invite code usage:', e);
+    }
+  }
+
+  // 4. 初回セッションを発行
+  const session = createSession(cleanId);
+
+  const actorUrl = `${config.origin}/users/${cleanId}`;
+  const handle = `@${cleanId}@${config.domain}`;
+
+  console.log(`[Spica Register] Account created successfully for ${handle}`);
+
+  // マスターキーは平文で返却（ユーザーに保存してもらうため二度と取得できない）
+  res.status(201).json({
+    user: {
+      id: cleanId,
+      name: name.trim(),
+      summary: summary?.trim() || '',
+      handle,
+      actorUrl,
+      role,
+      createdAt: now,
+    },
+    masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
+    sessionToken: session.token,
+    sessionExpiresAt: session.expiresAt,
+  });
+});
+
+// ログイン (マスターキー検証)
+apiRouter.post('/auth/login', (req: Request, res: Response) => {
+  const { id, masterKey } = req.body;
+  if (!id || !masterKey) {
+    return res.status(400).json({ error: 'ユーザーIDとマスターキーを入力してください。' });
+  }
+
+  const cleanId = id.trim().toLowerCase();
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(cleanId) as unknown as UserRow | undefined;
+
+  if (!user) {
+    return res.status(401).json({ error: 'ユーザーIDまたはマスターキーが一致しません。' });
+  }
+
+  if (user.is_frozen === 1) {
+    return res.status(403).json({ error: 'このアカウントは凍結されています。管理者にお問い合わせください。' });
+  }
+
+  const inputHash = hashMasterKey(masterKey.trim());
+  if (inputHash !== user.master_key_hash) {
+    return res.status(401).json({ error: 'ユーザーIDまたはマスターキーが一致しません。' });
+  }
+
+  const session = createSession(user.id);
+  const handle = `@${user.id}@${config.domain}`;
+
+  res.json({
+    user: {
+      id: user.id,
+      name: user.name,
+      summary: user.summary,
+      handle,
+      actorUrl: `${config.origin}/users/${user.id}`,
+      role: user.role,
+      createdAt: user.created_at,
+    },
+    sessionToken: session.token,
+    sessionExpiresAt: session.expiresAt,
+  });
+});
+
+// ログアウト
+apiRouter.post('/auth/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    destroySession(token);
+  }
+  res.json({ success: true });
+});
+
+// 現在のログインユーザー情報
+apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
+  const user = req.user!;
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+  const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ?').get(myActorUrl) as any).c;
+  const followingCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ?').get(myActorUrl) as any).c;
+  const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+
+  res.json({
+    ...user,
+    handle: `@${user.id}@${config.domain}`,
+    actorUrl: myActorUrl,
+    followerCount,
+    followingCount,
+    postCount,
+  });
+});
+
+// ==========================================
+// 📡 リアルタイムストリーミング (SSE) エンドポイント
+// ==========================================
+apiRouter.get('/streaming', (req: Request, res: Response) => {
+  let user = req.user;
+  if (!user && req.query.token && typeof req.query.token === 'string') {
+    user = getUserFromToken(req.query.token) || undefined;
+  }
+  const clientId = addStreamClient(res, user?.id);
+  req.on('close', () => {
+    removeStreamClient(clientId);
+  });
+});
+
+/**
+ * 単一投稿用のアンケート情報を取得するヘルパー
+ */
+export function getPollDataForPost(postId: string, currentUserId?: string | null) {
+  try {
+    const poll = db.prepare('SELECT id, post_id, multiple, expires_at, created_at FROM polls WHERE post_id = ?').get(postId) as any;
+    if (!poll) return null;
+
+    const choices = db.prepare(`
+      SELECT choice_index, text, votes_count
+      FROM poll_choices
+      WHERE poll_id = ?
+      ORDER BY choice_index ASC
+    `).all(poll.id) as { choice_index: number; text: string; votes_count: number }[];
+
+    let myVotedIndices = new Set<number>();
+    if (currentUserId) {
+      const myVotes = db.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(poll.id, currentUserId) as { choice_index: number }[];
+      myVotedIndices = new Set(myVotes.map((v) => v.choice_index));
+    }
+
+    const now = new Date().toISOString();
+    const isExpired = poll.expires_at ? poll.expires_at < now : false;
+    const totalVotes = choices.reduce((sum, c) => sum + (c.votes_count || 0), 0);
+
+    return {
+      id: poll.id,
+      multiple: Boolean(poll.multiple),
+      expires_at: poll.expires_at,
+      is_expired: isExpired,
+      total_votes: totalVotes,
+      my_voted: myVotedIndices.size > 0,
+      choices: choices.map((c) => ({
+        choice_index: c.choice_index,
+        text: c.text,
+        votes_count: c.votes_count,
+        me: myVotedIndices.has(c.choice_index),
+      })),
+    };
+  } catch (err) {
+    console.error('[getPollDataForPost] Error:', err);
+    return null;
+  }
+}
+
+// ==========================================
+// タイムライン・投稿・フォロー
+// ==========================================
+
+// 投稿リストにリアクション・RT・返信情報を付与し、ブロック済みドメインを除外する共通ヘルパー
+function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, currentUserId?: string | null) {
+  if (rows.length === 0) return [];
+
+  const postIds = Array.from(new Set(rows.map((r) => r.post_id || r.id)));
+  const placeholders = postIds.map(() => '?').join(',');
+
+  const allReactions = db.prepare(`
+    SELECT post_id, reaction, count(*) as count,
+      max(case when user_id = ? then 1 else 0 end) as me
+    FROM reactions
+    WHERE post_id IN (${placeholders})
+    GROUP BY post_id, reaction
+  `).all(currentActorUrl || '', ...postIds) as { post_id: string; reaction: string; count: number; me: number }[];
+
+  const allAnnounces = db.prepare(`
+    SELECT post_id, count(*) as count,
+      max(case when user_id = ? then 1 else 0 end) as me
+    FROM announces
+    WHERE post_id IN (${placeholders})
+    GROUP BY post_id
+  `).all(currentActorUrl || '', ...postIds) as { post_id: string; count: number; me: number }[];
+
+  const allReplies = db.prepare(`
+    SELECT in_reply_to as post_id, count(*) as count
+    FROM posts
+    WHERE in_reply_to IN (${placeholders})
+    GROUP BY in_reply_to
+  `).all(...postIds) as { post_id: string; count: number }[];
+
+  // 📊 アンケート情報の取得
+  const pollsMap = new Map<string, any>();
+  try {
+    const pollRows = db.prepare(`
+      SELECT id, post_id, multiple, expires_at, created_at
+      FROM polls
+      WHERE post_id IN (${placeholders})
+    `).all(...postIds) as any[];
+
+    if (pollRows.length > 0) {
+      const pollIds = pollRows.map((p) => p.id);
+      const pollPlaceholders = pollIds.map(() => '?').join(',');
+
+      const choiceRows = db.prepare(`
+        SELECT id, poll_id, choice_index, text, votes_count
+        FROM poll_choices
+        WHERE poll_id IN (${pollPlaceholders})
+        ORDER BY choice_index ASC
+      `).all(...pollIds) as any[];
+
+      let userVotesMap = new Map<string, Set<number>>();
+      if (currentUserId) {
+        const voteRows = db.prepare(`
+          SELECT poll_id, choice_index
+          FROM poll_votes
+          WHERE poll_id IN (${pollPlaceholders}) AND user_id = ?
+        `).all(...pollIds, currentUserId) as any[];
+        for (const v of voteRows) {
+          if (!userVotesMap.has(v.poll_id)) userVotesMap.set(v.poll_id, new Set());
+          userVotesMap.get(v.poll_id)!.add(v.choice_index);
+        }
+      }
+
+      const choicesByPoll = new Map<string, any[]>();
+      for (const c of choiceRows) {
+        if (!choicesByPoll.has(c.poll_id)) choicesByPoll.set(c.poll_id, []);
+        const myVotes = userVotesMap.get(c.poll_id);
+        choicesByPoll.get(c.poll_id)!.push({
+          choice_index: c.choice_index,
+          text: c.text,
+          votes_count: c.votes_count,
+          me: myVotes ? myVotes.has(c.choice_index) : false,
+        });
+      }
+
+      const now = new Date().toISOString();
+      for (const p of pollRows) {
+        const choices = choicesByPoll.get(p.id) || [];
+        const totalVotes = choices.reduce((sum, c) => sum + (c.votes_count || 0), 0);
+        const myVotes = userVotesMap.get(p.id);
+        const isExpired = p.expires_at ? p.expires_at < now : false;
+
+        pollsMap.set(p.post_id, {
+          id: p.id,
+          multiple: Boolean(p.multiple),
+          expires_at: p.expires_at,
+          is_expired: isExpired,
+          total_votes: totalVotes,
+          my_voted: Boolean(myVotes && myVotes.size > 0),
+          choices,
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[enrichAndFilterPosts] Error fetching polls:', e);
+  }
+
+  // 🔖 ブックマーク状態判定
+  let bookmarkedSet = new Set<string>();
+  if (currentUserId) {
+    try {
+      const bookmarkedRows = db.prepare(`
+        SELECT post_id FROM bookmarks
+        WHERE user_id = ? AND post_id IN (${placeholders})
+      `).all(currentUserId, ...postIds) as { post_id: string }[];
+      bookmarkedSet = new Set(bookmarkedRows.map((b) => b.post_id));
+    } catch {}
+  }
+
+  // 📌 ピン留め状態判定（該当ユーザーがピン留めしているか）
+  let pinnedSet = new Set<string>();
+  if (currentUserId) {
+    try {
+      const pinnedRows = db.prepare(`
+        SELECT post_id FROM pinned_posts
+        WHERE user_id = ? AND post_id IN (${placeholders})
+      `).all(currentUserId, ...postIds) as { post_id: string }[];
+      pinnedSet = new Set(pinnedRows.map((b) => b.post_id));
+    } catch {}
+  }
+
+  // 🚫 個人ブロック & ミュート対象ユーザーの取得
+  const blockedOrMutedUserIds = new Set<string>();
+  if (currentUserId) {
+    try {
+      const blockedRows = db.prepare(`
+        SELECT target_user_id FROM user_blocks WHERE user_id = ?
+      `).all(currentUserId) as { target_user_id: string }[];
+      const mutedRows = db.prepare(`
+        SELECT target_user_id FROM user_mutes WHERE user_id = ?
+      `).all(currentUserId) as { target_user_id: string }[];
+      for (const r of blockedRows) if (r.target_user_id) blockedOrMutedUserIds.add(r.target_user_id.toLowerCase());
+      for (const r of mutedRows) if (r.target_user_id) blockedOrMutedUserIds.add(r.target_user_id.toLowerCase());
+    } catch {}
+  }
+
+  const reactionsMap = new Map<string, { reaction: string; count: number; me: boolean }[]>();
+  for (const r of allReactions) {
+    if (!reactionsMap.has(r.post_id)) reactionsMap.set(r.post_id, []);
+    reactionsMap.get(r.post_id)!.push({ reaction: r.reaction, count: r.count, me: Boolean(r.me) });
+  }
+
+  const announcesMap = new Map<string, { count: number; me: boolean }>();
+  for (const a of allAnnounces) {
+    announcesMap.set(a.post_id, { count: a.count, me: Boolean(a.me) });
+  }
+
+  const repliesMap = new Map<string, number>();
+  for (const rp of allReplies) {
+    repliesMap.set(rp.post_id, rp.count);
+  }
+
+  // 💬 引用ノート (Quote) 情報の一括取得
+  const quotesMap = new Map<string, any>();
+  const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter(Boolean)));
+  if (quoteIds.length > 0) {
+    try {
+      const qPlaceholders = quoteIds.map(() => '?').join(',');
+      const quoteRows = db.prepare(`
+        SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at
+        FROM posts
+        WHERE id IN (${qPlaceholders})
+      `).all(...quoteIds) as any[];
+
+      for (const q of quoteRows) {
+        quotesMap.set(q.id, {
+          id: q.id,
+          user_id: q.user_id,
+          author_name: q.author_name,
+          author_url: q.author_url,
+          author_handle: q.author_handle,
+          author_icon: q.author_icon,
+          content: q.content,
+          cw: q.cw || null,
+          emojis: q.emojis,
+          is_sensitive: Boolean(q.is_sensitive),
+          media_attachments: (() => {
+            try {
+              return typeof q.media_attachments === 'string' ? JSON.parse(q.media_attachments || '[]') : (q.media_attachments || []);
+            } catch {
+              return [];
+            }
+          })(),
+          published_at: q.published_at,
+        });
+      }
+    } catch (e) {
+      console.error('[enrichAndFilterPosts] Error fetching quotes:', e);
+    }
+  }
+
+  const enrichedItems = rows.map((r) => {
+    const pid = r.post_id || r.id;
+    return {
+      id: pid,
+      feed_id: r.announce_id ? `rn_${r.announce_id}` : pid,
+      user_id: r.user_id,
+      author_name: r.author_name,
+      author_url: r.author_url,
+      author_handle: r.author_handle,
+      author_icon: r.author_icon,
+      content: r.content,
+      cw: r.cw || null,
+      quote_id: r.quote_id || null,
+      quote: r.quote_id ? (quotesMap.get(r.quote_id) || null) : null,
+      is_sensitive: Boolean(r.is_sensitive),
+      poll: pollsMap.get(pid) || null,
+      is_pinned: pinnedSet.has(pid),
+      is_local: r.is_local,
+      visibility: r.visibility,
+      emojis: r.emojis,
+      in_reply_to: r.in_reply_to,
+      media_attachments: (() => {
+        try {
+          return typeof r.media_attachments === 'string' ? JSON.parse(r.media_attachments || '[]') : (r.media_attachments || []);
+        } catch {
+          return [];
+        }
+      })(),
+      published_at: r.published_at,
+      timeline_at: r.timeline_at || r.published_at,
+      renote: r.announce_id ? {
+        id: r.announce_id,
+        name: r.renoted_by_name || '誰か',
+        handle: r.renoted_by_handle || '',
+        icon: r.renoted_by_icon || '',
+        url: r.renoted_by_url || '',
+        at: r.timeline_at,
+      } : null,
+      reactions: reactionsMap.get(pid) || [],
+      announce_count: announcesMap.get(pid)?.count || 0,
+      my_announced: announcesMap.get(pid)?.me || false,
+      reply_count: repliesMap.get(pid) || 0,
+      bookmarked: bookmarkedSet.has(pid),
+    };
+  });
+
+  // ブロック対象ドメインおよび個人ブロック・ミュート対象ユーザーの投稿を除外
+  return enrichedItems.filter((item) => {
+    if (blockedOrMutedUserIds.size > 0) {
+      if (item.user_id && blockedOrMutedUserIds.has(item.user_id.toLowerCase())) return false;
+      if (item.author_url && blockedOrMutedUserIds.has(item.author_url.toLowerCase())) return false;
+      if (item.author_handle && blockedOrMutedUserIds.has(item.author_handle.toLowerCase())) return false;
+      if (item.renote) {
+        if (item.renote.url && blockedOrMutedUserIds.has(item.renote.url.toLowerCase())) return false;
+        if (item.renote.handle && blockedOrMutedUserIds.has(item.renote.handle.toLowerCase())) return false;
+      }
+    }
+    if (item.is_local === 1) return true;
+    if (isDomainBlocked(item.author_url) || isDomainBlocked(item.author_handle)) return false;
+    if (item.renote && (isDomainBlocked(item.renote.url) || isDomainBlocked(item.renote.handle))) return false;
+    return true;
+  });
+}
+
+// タイムライン取得（ローカル / ホーム / 連合 / タグ別）- リノート（RT）・リアクション・返信集計付き
+apiRouter.get('/timeline', (req: Request, res: Response) => {
+  const mode = req.query.mode as string; // 'local', 'home', 'all', 'tag'
+  const tag = (req.query.tag as string || '').trim().replace(/^#/, '');
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
+
+  let postWhere = '';
+  let announceWhere = '';
+  const params: any[] = [];
+  const announceParams: any[] = [];
+
+  if (mode === 'tag' && tag) {
+    postWhere = ' WHERE (p.content LIKE ? OR p.content LIKE ?)';
+    announceWhere = ' WHERE (p.content LIKE ? OR p.content LIKE ?)';
+    params.push(`%#${tag}%`, `%/tags/${tag}%`);
+    announceParams.push(`%#${tag}%`, `%/tags/${tag}%`);
+  } else if (mode === 'local') {
+    postWhere = ' WHERE p.is_local = 1';
+    announceWhere = ' WHERE a.is_local = 1';
+  } else if (mode === 'home') {
+    const myActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+    if (myActorUrl) {
+      postWhere = ` WHERE p.is_local = 1 OR p.author_url IN (SELECT following_url FROM follows WHERE follower_url = ?)`;
+      announceWhere = ` WHERE a.is_local = 1 OR a.user_id IN (SELECT following_url FROM follows WHERE follower_url = ?)`;
+      params.push(myActorUrl);
+      announceParams.push(myActorUrl);
+    } else {
+      postWhere = ' WHERE p.is_local = 1';
+      announceWhere = ' WHERE a.is_local = 1';
+    }
+  }
+
+  const query = `
+    SELECT 
+      p.id AS post_id,
+      p.user_id,
+      p.author_name,
+      p.author_url,
+      p.author_handle,
+      p.content,
+      p.cw,
+      p.is_local,
+      p.visibility,
+      p.emojis,
+      p.in_reply_to,
+      p.media_attachments,
+      p.published_at,
+      COALESCE(
+        NULLIF(p.author_icon, ''),
+        NULLIF(u.icon_url, ''),
+        NULLIF(ra.icon_url, ''),
+        ''
+      ) AS author_icon,
+      NULL AS announce_id,
+      NULL AS renoted_by_name,
+      NULL AS renoted_by_handle,
+      NULL AS renoted_by_icon,
+      NULL AS renoted_by_url,
+      p.published_at AS timeline_at
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    ${postWhere}
+
+    UNION ALL
+
+    SELECT 
+      p.id AS post_id,
+      p.user_id,
+      p.author_name,
+      p.author_url,
+      p.author_handle,
+      p.content,
+      p.cw,
+      p.is_local,
+      p.visibility,
+      p.emojis,
+      p.in_reply_to,
+      p.media_attachments,
+      p.published_at,
+      COALESCE(
+        NULLIF(p.author_icon, ''),
+        NULLIF(u.icon_url, ''),
+        NULLIF(ra.icon_url, ''),
+        ''
+      ) AS author_icon,
+      a.id AS announce_id,
+      a.user_name AS renoted_by_name,
+      a.user_handle AS renoted_by_handle,
+      COALESCE(NULLIF(a.user_icon, ''), NULLIF(ru.icon_url, ''), '') AS renoted_by_icon,
+      a.user_id AS renoted_by_url,
+      a.created_at AS timeline_at
+    FROM announces a
+    JOIN posts p ON a.post_id = p.id
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    LEFT JOIN users ru ON a.is_local = 1 AND a.user_id = ru.id
+    ${announceWhere}
+
+    ORDER BY timeline_at DESC
+    LIMIT ?
+  `;
+
+  const rows = db.prepare(query).all(...params, ...announceParams, limit) as any[];
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  const enriched = enrichAndFilterPosts(rows, currentActorUrl, req.user?.id);
+
+  res.json(enriched);
+});
+
+// 人気・トレンドハッシュタグ一覧
+apiRouter.get('/tags/popular', (_req: Request, res: Response) => {
+  try {
+    const recentPosts = db.prepare('SELECT content FROM posts ORDER BY published_at DESC LIMIT 200').all() as { content: string }[];
+    const tagCountMap = new Map<string, number>();
+
+    const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
+    for (const post of recentPosts) {
+      const cleanContent = post.content.replace(/<[^>]*>/g, ' ');
+      const matches = cleanContent.matchAll(tagRegex);
+      const seenInPost = new Set<string>();
+      for (const match of matches) {
+        const tag = match[1].toLowerCase();
+        if (tag.length >= 2 && !seenInPost.has(tag)) {
+          seenInPost.add(tag);
+          tagCountMap.set(tag, (tagCountMap.get(tag) || 0) + 1);
+        }
+      }
+    }
+
+    const popularTags = Array.from(tagCountMap.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15);
+
+    res.json(popularTags);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 統合検索 API (ユーザー、投稿、Fediverse外部アドレス即時解決)
+apiRouter.get('/search', async (req: Request, res: Response) => {
+  const q = (req.query.q as string || '').trim();
+  if (!q) {
+    return res.json({ remoteUser: null, users: [], posts: [] });
+  }
+
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  let remoteUser: any = null;
+
+  // 1. Fediverse アドレス直接解決 (@user@domain または URL)
+  const isAddressOrUrl = q.includes('@') || q.startsWith('http://') || q.startsWith('https://');
+  if (isAddressOrUrl) {
+    try {
+      let actorUrl = '';
+      if (q.startsWith('http://') || q.startsWith('https://')) {
+        actorUrl = q;
+      } else {
+        actorUrl = await resolveWebFinger(q);
+      }
+
+      if (actorUrl) {
+        const actor = await fetchRemoteActor(actorUrl, false);
+        let isFollowing = false;
+        if (currentActorUrl) {
+          const follow = db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, actor.id);
+          isFollowing = Boolean(follow);
+        }
+
+        remoteUser = {
+          id: actor.id,
+          username: actor.username,
+          domain: actor.domain,
+          name: actor.name || actor.username,
+          summary: actor.summary || '',
+          icon_url: actor.icon_url || '',
+          banner_url: actor.banner_url || '',
+          is_following: isFollowing,
+        };
+      }
+    } catch (err: any) {
+      console.log(`[Search WebFinger Info] Could not resolve "${q}":`, err.message);
+    }
+  }
+
+  // 2. ユーザー検索 (ローカルユーザー + キャッシュ済みリモートユーザー)
+  const searchPattern = `%${q.replace(/^@/, '')}%`;
+  const localUsers = db.prepare(`
+    SELECT id, name, summary, icon_url, 1 as is_local, NULL as domain, ('@' || id) as handle
+    FROM users
+    WHERE id LIKE ? OR name LIKE ?
+    LIMIT 10
+  `).all(searchPattern, searchPattern) as any[];
+
+  const remoteActors = db.prepare(`
+    SELECT id, username, domain, name, summary, icon_url, 0 as is_local, ('@' || username || '@' || domain) as handle
+    FROM remote_actors
+    WHERE username LIKE ? OR name LIKE ? OR domain LIKE ?
+    LIMIT 10
+  `).all(searchPattern, searchPattern, searchPattern) as any[];
+
+  const combinedUsers = [...localUsers, ...remoteActors].map((u) => {
+    let isFollowing = false;
+    const targetUrl = u.is_local ? `${config.origin}/users/${u.id}` : u.id;
+    if (currentActorUrl) {
+      const follow = db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, targetUrl);
+      isFollowing = Boolean(follow);
+    }
+    return {
+      ...u,
+      is_following: isFollowing,
+    };
+  });
+
+  // 3. 投稿本文検索 (SQLite FTS5 / trigram 超高速・高精度検索 ＆ 短語・フェイルセーフ対応)
+  let postRows: any[] = [];
+  const terms = q.split(/\s+/).filter(Boolean);
+  const hasLongTerm = terms.some((t) => t.length >= 3);
+
+  if (hasLongTerm) {
+    try {
+      // 3文字以上の単語を安全にフレーズエスケープして FTS5 MATCH クエリ作成
+      const ftsQuery = terms.filter((t) => t.length >= 3).map((t) => `"${t.replace(/"/g, '""')}"`).join(' ');
+      if (ftsQuery) {
+        postRows = db.prepare(`
+          SELECT 
+            p.id AS post_id,
+            p.user_id,
+            p.author_name,
+            p.author_url,
+            p.author_handle,
+            p.content,
+            p.cw,
+            p.is_local,
+            p.visibility,
+            p.emojis,
+            p.in_reply_to,
+            p.media_attachments,
+            p.published_at,
+            COALESCE(
+              NULLIF(p.author_icon, ''),
+              NULLIF(u.icon_url, ''),
+              NULLIF(ra.icon_url, ''),
+              ''
+            ) AS author_icon,
+            NULL AS announce_id,
+            NULL AS renoted_by_name,
+            NULL AS renoted_by_handle,
+            NULL AS renoted_by_icon,
+            NULL AS renoted_by_url,
+            p.published_at AS timeline_at
+          FROM posts_fts f
+          JOIN posts p ON f.post_id = p.id
+          LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+          LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+          WHERE posts_fts MATCH ?
+          ORDER BY bm25(posts_fts), p.published_at DESC
+          LIMIT 40
+        `).all(ftsQuery) as any[];
+      }
+    } catch (ftsErr: any) {
+      console.warn('[FTS5 Search Fallback]:', ftsErr.message);
+    }
+  }
+
+  // 短い単語（1〜2文字）の場合、または FTS5 で未ヒット時の LIKE 補完
+  if (postRows.length === 0 && terms.length > 0) {
+    const postPattern = `%${q}%`;
+    postRows = db.prepare(`
+      SELECT 
+        p.id AS post_id,
+        p.user_id,
+        p.author_name,
+        p.author_url,
+        p.author_handle,
+        p.content,
+        p.cw,
+        p.is_local,
+        p.visibility,
+        p.emojis,
+        p.in_reply_to,
+        p.media_attachments,
+        p.published_at,
+        COALESCE(
+          NULLIF(p.author_icon, ''),
+          NULLIF(u.icon_url, ''),
+          NULLIF(ra.icon_url, ''),
+          ''
+        ) AS author_icon,
+        NULL AS announce_id,
+        NULL AS renoted_by_name,
+        NULL AS renoted_by_handle,
+        NULL AS renoted_by_icon,
+        NULL AS renoted_by_url,
+        p.published_at AS timeline_at
+      FROM posts p
+      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+      WHERE p.content LIKE ?
+      ORDER BY p.published_at DESC
+      LIMIT 30
+    `).all(postPattern) as any[];
+  }
+
+  const posts = enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);
+
+  res.json({
+    remoteUser,
+    users: combinedUsers,
+    posts,
+  });
+});
+
+// ==========================================
+// メディアアップロード (S3 / Cloudflare R2 / ローカル)
+// ==========================================
+
+// 画像アップロード (最大4枚, 任意のフィールド名 'file' / 'files' に対応)
+apiRouter.post(
+  '/media/upload',
+  requireAuth,
+  (req: Request, res: Response, next: NextFunction) => {
+    upload.any()(req, res, (err: any) => {
+      if (err) {
+        if (err instanceof multer.MulterError) {
+          if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'ファイルサイズが大きすぎます (最大15MBまで)。' });
+          }
+          return res.status(400).json({ error: `アップロードエラー: ${err.message}` });
+        }
+        return res.status(400).json({ error: err.message || 'アップロード処理中にエラーが発生しました。' });
+      }
+      next();
+    });
+  },
+  async (req: Request, res: Response) => {
+    const user = req.rawUser!;
+    const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'アップロードする画像ファイルを選択してください。' });
+    }
+
+    if (files.length > 4) {
+      return res.status(400).json({ error: '一度にアップロードできる画像は最大4枚までです。' });
+    }
+
+    try {
+      const uploaded = await Promise.all(
+        files.map((file) =>
+          uploadMediaFile({
+            buffer: file.buffer,
+            originalname: file.originalname,
+            mimetype: file.mimetype,
+            size: file.size,
+            userId: user.id,
+          })
+        )
+      );
+
+      res.json({
+        success: true,
+        media: uploaded,
+        attachment: uploaded[0], // 1ファイルアップロード時の互換性
+      });
+    } catch (err: any) {
+      console.error('[Media Upload Error]:', err);
+      res.status(500).json({ error: err.message || 'メディアのアップロードに失敗しました。' });
+    }
+  }
+);
+
+// 新規投稿作成（認証必須・公開範囲選択・返信・画像添付・アンケート・引用・センシティブ対応）
+apiRouter.post('/posts', requireAuth, async (req: Request, res: Response) => {
+  const { content, in_reply_to, attachments, cw, poll, quote_id, is_sensitive } = req.body;
+  const visibility: 'public' | 'local' = req.body.visibility === 'local' ? 'local' : 'public';
+  const parsedAttachments = Array.isArray(attachments) ? attachments : [];
+
+  const postText = content ? content.trim() : '';
+  const inReplyTo = typeof in_reply_to === 'string' && in_reply_to.trim() ? in_reply_to.trim() : null;
+  const quoteId = typeof quote_id === 'string' && quote_id.trim() ? quote_id.trim() : null;
+  const isSensitive = Boolean(is_sensitive);
+  const cwText = typeof cw === 'string' && cw.trim() ? cw.trim() : null;
+  const user = req.rawUser!;
+  const actorUrl = `${config.origin}/users/${user.id}`;
+  const postId = `${actorUrl}/posts/${Date.now()}`;
+  const now = new Date().toISOString();
+  const authorHandle = `@${user.id}@${config.domain}`;
+  const authorIcon = user.icon_url || '';
+  const attachmentsJson = JSON.stringify(parsedAttachments);
+
+  // アンケート選択肢の抽出・バリデーション
+  const validChoices = (poll && Array.isArray(poll.choices))
+    ? poll.choices.map((c: any) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean)
+    : [];
+
+  if (!postText && parsedAttachments.length === 0 && validChoices.length === 0 && !quoteId) {
+    return res.status(400).json({ error: '投稿内容、画像、引用、またはアンケートを入力してください。' });
+  }
+
+  // 投稿本文内のカスタム絵文字ショートコード (:name:) を検出
+  const emojiMatches: string[] = Array.from(new Set(postText.match(/:([a-zA-Z0-9_]{2,30}):/g) || []));
+  let postEmojis: { name: string; url: string }[] = [];
+  let apEmojiTags: any[] = [];
+
+  if (emojiMatches.length > 0) {
+    const emojiNames = emojiMatches.map((m: string) => m.slice(1, -1).toLowerCase());
+    const placeholders = emojiNames.map(() => '?').join(',');
+    const foundEmojis = db.prepare(`
+      SELECT name, url FROM custom_emojis WHERE name IN (${placeholders})
+    `).all(...emojiNames) as unknown as { name: string; url: string }[];
+
+    if (foundEmojis.length > 0) {
+      postEmojis = foundEmojis.map((e) => ({
+        name: `:${e.name}:`,
+        url: e.url,
+      }));
+      apEmojiTags = foundEmojis.map((e) => ({
+        type: 'Emoji',
+        name: `:${e.name}:`,
+        icon: {
+          type: 'Image',
+          mediaType: 'image/png',
+          url: e.url,
+        },
+      }));
+    }
+  }
+  const emojisJson = postEmojis.length > 0 ? JSON.stringify(postEmojis) : '[]';
+
+  // 1. ローカルDBに投稿保存
+  db.prepare(`
+    INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now);
+
+  // 引用元投稿の解決（あれば）
+  let quotePostData: any = null;
+  if (quoteId) {
+    const qRow = db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
+    if (qRow) {
+      quotePostData = {
+        ...qRow,
+        is_sensitive: Boolean(qRow.is_sensitive),
+        media_attachments: (() => {
+          try { return typeof qRow.media_attachments === 'string' ? JSON.parse(qRow.media_attachments || '[]') : (qRow.media_attachments || []); }
+          catch { return []; }
+        })(),
+      };
+    }
+  }
+
+  // 2. アンケートがある場合は polls / poll_choices テーブルに保存
+  let pollDataForAp = null;
+  let createdPoll: any = null;
+
+  if (validChoices.length >= 2) {
+    const pollId = crypto.randomUUID();
+    const multiple = poll.multiple ? 1 : 0;
+    let expiresAt: string | null = null;
+    if (typeof poll.expires_in === 'number' && poll.expires_in > 0) {
+      expiresAt = new Date(Date.now() + poll.expires_in * 1000).toISOString();
+    }
+
+    db.prepare(`
+      INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(pollId, postId, multiple, expiresAt, now);
+
+    const insertChoice = db.prepare(`
+      INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
+      VALUES (?, ?, ?, ?, 0)
+    `);
+    validChoices.forEach((choiceText: string, idx: number) => {
+      insertChoice.run(crypto.randomUUID(), pollId, idx, choiceText);
+    });
+
+    pollDataForAp = {
+      choices: validChoices,
+      multiple: Boolean(poll.multiple),
+      expiresAt,
+    };
+
+    createdPoll = {
+      id: pollId,
+      multiple: Boolean(multiple),
+      expires_at: expiresAt,
+      is_expired: false,
+      total_votes: 0,
+      my_voted: false,
+      choices: validChoices.map((text: string, idx: number) => ({
+        choice_index: idx,
+        text,
+        votes_count: 0,
+        me: false,
+      })),
+    };
+  }
+
+  console.log(`[Post] Note created by ${authorHandle} (visibility: ${visibility}, quote: ${quoteId || 'none'}, sensitive: ${isSensitive}, emojis: ${postEmojis.length}): "${postText.slice(0, 40)}"`);
+
+  // クライアント向け投稿オブジェクトの構築
+  const responsePostData = {
+    id: postId,
+    feed_id: postId,
+    user_id: user.id,
+    author_name: user.name,
+    author_url: actorUrl,
+    author_handle: authorHandle,
+    author_icon: authorIcon,
+    content: postText,
+    cw: cwText,
+    quote_id: quoteId,
+    quote: quotePostData,
+    is_sensitive: isSensitive,
+    poll: createdPoll,
+    is_pinned: false,
+    is_local: 1,
+    visibility,
+    emojis: emojisJson !== '[]' ? emojisJson : null,
+    in_reply_to: inReplyTo,
+    media_attachments: parsedAttachments,
+    published_at: now,
+    timeline_at: now,
+    renote: null,
+    reactions: [],
+    announce_count: 0,
+    my_announced: false,
+    reply_count: 0,
+    bookmarked: false,
+  };
+
+  // 📡 全SSE接続クライアントに新着ノートをプッシュ
+  broadcastNote(responsePostData);
+
+  // ローカル限定投稿の場合は外部配信（連合・リレー）を行わず即返却
+  if (visibility === 'local') {
+    return res.status(201).json({
+      ...responsePostData,
+      federatedTo: 0,
+    });
+  }
+
+  // 3. ActivityPub オブジェクトの構築（グローバル配信）
+  const note = buildNote({
+    id: postId,
+    authorUrl: actorUrl,
+    content: postText,
+    publishedAt: now,
+    inReplyTo,
+    quoteUrl: quoteId,
+    attachments: parsedAttachments,
+    summary: cwText,
+    sensitive: isSensitive,
+    poll: pollDataForAp,
+    tags: apEmojiTags.length > 0 ? apEmojiTags : undefined,
+  });
+
+  const createActivity = buildCreateActivity({
+    note,
+    actorUrl,
+  });
+
+  // 4. 配信先 Inbox の収集: フォロワー + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
+  const followerInboxes = (db.prepare(`
+    SELECT DISTINCT inbox_url FROM follows
+    WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
+  `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
+
+  const relayInboxes = (db.prepare(`
+    SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+  `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+
+  const directInboxes: string[] = [];
+  if (inReplyTo) {
+    const parentPost = db.prepare('SELECT author_url FROM posts WHERE id = ?').get(inReplyTo) as { author_url: string } | undefined;
+    if (parentPost && !parentPost.author_url.startsWith(config.origin)) {
+      try {
+        const remoteActor = await fetchRemoteActor(parentPost.author_url);
+        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
+      } catch {}
+    }
+  }
+  if (quoteId) {
+    const quotedPost = db.prepare('SELECT author_url FROM posts WHERE id = ?').get(quoteId) as { author_url: string } | undefined;
+    if (quotedPost && !quotedPost.author_url.startsWith(config.origin)) {
+      try {
+        const remoteActor = await fetchRemoteActor(quotedPost.author_url);
+        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
+      } catch {}
+    }
+  }
+
+  const allTargetInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes, ...directInboxes]));
+
+  console.log(`[Delivery] Delivering global note to ${allTargetInboxes.length} inboxes...`);
+
+  // 非同期でフォロワー及びリレーへ配送
+  Promise.allSettled(
+    allTargetInboxes.map((inboxUrl) =>
+      deliverActivity({
+        inboxUrl,
+        activity: createActivity,
+        senderUser: user,
+      })
+    )
+  ).then((results) => {
+    const succeeded = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+    console.log(`[Delivery] Federation sent: ${succeeded}/${allTargetInboxes.length} inboxes`);
+  });
+
+  // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
+  if (inReplyTo) {
+    try {
+      const parentPost = db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
+      if (parentPost && parentPost.is_local === 1) {
+        createNotification({
+          userId: parentPost.user_id,
+          type: 'reply',
+          actorId: user.id,
+          actorName: user.name,
+          actorHandle: authorHandle,
+          actorIcon: authorIcon,
+          postId,
+          postContent: parentPost.content,
+          content: content.trim(),
+        });
+      }
+    } catch (e) {
+      console.error('[Notification Error] Reply notification failed:', e);
+    }
+  }
+
+  res.status(201).json({
+    ...responsePostData,
+    federatedTo: allTargetInboxes.length,
+  });
+});
+
+// 投稿の削除 (作成者本人または管理者)
+apiRouter.delete('/posts/:id', requireAuth, async (req: Request, res: Response) => {
+  const rawPostId = String(req.params.id);
+  const postId = decodeURIComponent(rawPostId);
+  const user = (req.rawUser || req.user)!;
+
+  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined;
+  if (!post) {
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+
+  // 権限チェック: 自ノードの作成者本人のみ削除可能 (他人の投稿・連合投稿は削除不可)
+  if (post.is_local !== 1 || post.user_id !== user.id) {
+    return res.status(403).json({ error: '自分の投稿のみ削除できます。他人の投稿や連合投稿は削除できません。' });
+  }
+
+  // DBから削除 (カスケード的にreactions / announces / polls もクリーンアップ)
+  db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
+  db.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
+  db.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
+  try {
+    db.prepare('DELETE FROM polls WHERE post_id = ?').run(postId);
+  } catch {}
+
+  console.log(`[Post Delete] Post ${postId} deleted by @${user.id}`);
+
+  // 📡 全クライアントに投稿削除をブロードキャスト
+  broadcastDeletePost(postId);
+
+  // グローバル公開されていた場合、ActivityPub Delete をフォロワー & リレーへ配信
+  if (post.visibility !== 'local' && post.is_local === 1) {
+    const authorUser = db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
+    if (authorUser) {
+      const actorUrl = `${config.origin}/users/${authorUser.id}`;
+      const deleteActivity = buildDeleteActivity({
+        actorUrl,
+        targetPostUrl: postId,
+      });
+
+      const followerInboxes = (db.prepare(`
+        SELECT DISTINCT inbox_url FROM follows
+        WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
+      `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
+
+      const relayInboxes = (db.prepare(`
+        SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+      `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+
+      const targetInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes]));
+      for (const inbox of targetInboxes) {
+        deliverActivity({ inboxUrl: inbox, activity: deleteActivity, senderUser: authorUser }).catch(() => {});
+      }
+    }
+  }
+
+  res.json({ success: true, message: '投稿を削除しました。' });
+});
+
+// 📊 アンケートへの投票 (認証必須)
+apiRouter.post('/posts/:id/poll/vote', requireAuth, async (req: Request, res: Response) => {
+  const rawPostId = String(req.params.id);
+  const postId = decodeURIComponent(rawPostId);
+  const user = (req.rawUser || req.user)!;
+  const { choices } = req.body;
+
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return res.status(400).json({ error: '投票する選択肢を1つ以上選択してください。' });
+  }
+
+  const poll = db.prepare('SELECT * FROM polls WHERE post_id = ?').get(postId) as any;
+  if (!poll) {
+    return res.status(404).json({ error: 'この投稿にはアンケートがありません。' });
+  }
+
+  // 期限切れ判定
+  if (poll.expires_at && poll.expires_at < new Date().toISOString()) {
+    return res.status(400).json({ error: 'このアンケートの投票受付は終了しました。' });
+  }
+
+  // 単一回答制限
+  if (!poll.multiple && choices.length > 1) {
+    return res.status(400).json({ error: 'このアンケートは1つのみ選択可能です。' });
+  }
+
+  // 投票済み判定
+  const existingVoteCount = (db.prepare('SELECT COUNT(*) as c FROM poll_votes WHERE poll_id = ? AND user_id = ?').get(poll.id, user.id) as any).c;
+  if (existingVoteCount > 0) {
+    return res.status(400).json({ error: '既にこのアンケートには投票済みです。' });
+  }
+
+  // 選択肢の存在検証
+  const pollChoices = db.prepare('SELECT choice_index FROM poll_choices WHERE poll_id = ?').all(poll.id) as { choice_index: number }[];
+  const validIndices = new Set(pollChoices.map((c) => c.choice_index));
+  for (const c of choices) {
+    if (typeof c !== 'number' || !validIndices.has(c)) {
+      return res.status(400).json({ error: '無効な選択肢が含まれています。' });
+    }
+  }
+
+  const now = new Date().toISOString();
+  const insertVote = db.prepare('INSERT INTO poll_votes (id, poll_id, choice_index, user_id, created_at) VALUES (?, ?, ?, ?, ?)');
+  const updateCount = db.prepare('UPDATE poll_choices SET votes_count = votes_count + 1 WHERE poll_id = ? AND choice_index = ?');
+
+  try {
+    db.exec('BEGIN');
+    for (const choiceIdx of choices) {
+      insertVote.run(crypto.randomUUID(), poll.id, choiceIdx, user.id, now);
+      updateCount.run(poll.id, choiceIdx);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {}
+    throw err;
+  }
+
+  console.log(`[Poll Vote] User @${user.id} voted for choices [${choices.join(', ')}] on post ${postId}`);
+
+  // 最新のアンケート情報を取得
+  const updatedPoll = getPollDataForPost(postId, user.id);
+
+  // 📡 全クライアントにアンケート更新をブロードキャスト
+  if (updatedPoll) {
+    broadcastPoll({
+      postId,
+      poll: updatedPoll,
+    });
+  }
+
+  // 🌐 リモート連合（Misskey / Mastodon）へ Update(Question) を非同期配信
+  federatePollUpdate({ postId });
+
+  res.json({ success: true, poll: updatedPoll });
+});
+
+// 絵文字リアクションの付与 / 解除 (Misskey & Mastodon 相互互換)
+apiRouter.post('/posts/:id/react', requireAuth, async (req: Request, res: Response) => {
+  const rawPostId = String(req.params.id);
+  const postId = decodeURIComponent(rawPostId);
+  const reaction = String(req.body.reaction || '👍').trim();
+
+  if (!reaction) {
+    return res.status(400).json({ error: '絵文字を指定してください。' });
+  }
+
+  const user = req.rawUser!;
+  const actorUrl = `${config.origin}/users/${user.id}`;
+
+  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
+  if (!post) {
+    return res.status(404).json({ error: '対象の投稿が見つかりません。' });
+  }
+
+  // 既に同じリアクションが付与されているかチェック
+  const existing = db.prepare(`
+    SELECT * FROM reactions WHERE post_id = ? AND user_id = ? AND reaction = ?
+  `).get(postId, actorUrl, reaction) as ReactionRow | undefined;
+
+  let added = false;
+  if (existing) {
+    // 既存あり → 解除 (Undo)
+    db.prepare('DELETE FROM reactions WHERE id = ?').run(existing.id);
+    added = false;
+
+    // 外部投稿の場合、Undo Activity を配送
+    if (!post.is_local || post.visibility === 'public') {
+      try {
+        const undoActivity = buildUndoActivity({
+          actorUrl,
+          activityToUndo: {
+            id: existing.id,
+            type: 'Like',
+            actor: actorUrl,
+            object: postId,
+          },
+          targetActorUrl: post.author_url,
+        });
+
+        if (post.author_url && !post.author_url.startsWith(config.origin)) {
+          const remote = await fetchRemoteActor(post.author_url);
+          if (remote.inbox_url) {
+            deliverActivity({ inboxUrl: remote.inbox_url, activity: undoActivity, senderUser: user }).catch(() => {});
+          }
+        }
+      } catch {}
+    }
+  } else {
+    // 新規付与
+    const reactionId = `${config.origin}/activities/react/${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO reactions (id, post_id, user_id, user_name, user_icon, reaction, is_local, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(post_id, user_id, reaction) DO UPDATE SET
+        user_name = excluded.user_name,
+        user_icon = excluded.user_icon
+    `).run(reactionId, postId, actorUrl, user.name, user.icon_url || '', reaction, now);
+    added = true;
+
+    // ローカル投稿の場合、投稿者にリアクション通知を送信
+    if (post.is_local === 1) {
+      try {
+        createNotification({
+          userId: post.user_id,
+          type: 'reaction',
+          actorId: user.id,
+          actorName: user.name,
+          actorHandle: `@${user.id}@${config.domain}`,
+          actorIcon: user.icon_url || '',
+          postId: post.id,
+          postContent: post.content,
+          content: reaction,
+        });
+      } catch (e) {
+        console.error('[Notification Error] Reaction notification failed:', e);
+      }
+    }
+
+    // 外部投稿またはパブリック投稿の場合、ActivityPub で配送
+    // ⚡ Misskey には EmojiReact (絵文字表示)、Mastodon には Like (いいね数加算)
+    if (!post.author_url.startsWith(config.origin)) {
+      try {
+        const remote = await fetchRemoteActor(post.author_url);
+        if (remote.inbox_url) {
+          // デュアル対応: content と _misskey_reaction を含めた Like (Mastodon は Like として解釈、Misskey は _misskey_reaction で絵文字解釈)
+          const likeActivity = buildLikeActivity({
+            id: reactionId,
+            actorUrl,
+            targetPostUrl: postId,
+            reaction,
+            targetActorUrl: post.author_url,
+          });
+
+          // Misskey 向け EmojiReact も送信
+          const emojiReactActivity = buildEmojiReactActivity({
+            id: `${reactionId}-emoji`,
+            actorUrl,
+            targetPostUrl: postId,
+            reaction,
+            targetActorUrl: post.author_url,
+          });
+
+          // 相手Inboxへ配送
+          deliverActivity({ inboxUrl: remote.inbox_url, activity: likeActivity, senderUser: user }).catch(() => {});
+          deliverActivity({ inboxUrl: remote.inbox_url, activity: emojiReactActivity, senderUser: user }).catch(() => {});
+        }
+      } catch (err: any) {
+        console.warn('[React Delivery Warning]:', err.message);
+      }
+    }
+  }
+
+  // 最新のリアクション集計を返却
+  const updatedReactions = db.prepare(`
+    SELECT reaction, count(*) as count,
+      max(case when user_id = ? then 1 else 0 end) as me
+    FROM reactions
+    WHERE post_id = ?
+    GROUP BY reaction
+  `).all(actorUrl, postId) as { reaction: string; count: number; me: number }[];
+
+  const reactionsList = updatedReactions.map((r) => ({ reaction: r.reaction, count: r.count, me: Boolean(r.me) }));
+  const targetReaction = reactionsList.find((r) => r.reaction === reaction);
+
+  // 📡 全クライアントにリアクション変化をブロードキャスト
+  broadcastReaction({
+    postId,
+    reaction,
+    count: targetReaction ? targetReaction.count : 0,
+    user_id: user.id,
+    action: added ? 'add' : 'remove',
+  });
+
+  res.json({
+    postId,
+    added,
+    reactions: reactionsList,
+  });
+});
+
+// RT (ブースト / Announce) の付与 / 解除
+apiRouter.post('/posts/:id/announce', requireAuth, async (req: Request, res: Response) => {
+  const rawPostId = String(req.params.id);
+  const postId = decodeURIComponent(rawPostId);
+  const user = req.rawUser!;
+  const actorUrl = `${config.origin}/users/${user.id}`;
+
+  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
+  if (!post) {
+    return res.status(404).json({ error: '対象の投稿が見つかりません。' });
+  }
+
+  const existing = db.prepare(`
+    SELECT * FROM announces WHERE post_id = ? AND user_id = ?
+  `).get(postId, actorUrl) as AnnounceRow | undefined;
+
+  let announced = false;
+  if (existing) {
+    // 解除
+    db.prepare('DELETE FROM announces WHERE id = ?').run(existing.id);
+    announced = false;
+
+    // Undo(Announce) 配信
+    try {
+      const undoActivity = buildUndoActivity({
+        actorUrl,
+        activityToUndo: {
+          id: existing.id,
+          type: 'Announce',
+          actor: actorUrl,
+          object: postId,
+        },
+        targetActorUrl: post.author_url,
+      });
+
+      if (!post.author_url.startsWith(config.origin)) {
+        const remote = await fetchRemoteActor(post.author_url);
+        if (remote.inbox_url) {
+          deliverActivity({ inboxUrl: remote.inbox_url, activity: undoActivity, senderUser: user }).catch(() => {});
+        }
+      }
+    } catch {}
+  } else {
+    // 付与
+    const announceId = `${config.origin}/activities/announce/${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO announces (id, post_id, user_id, user_name, user_handle, user_icon, is_local, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      ON CONFLICT(post_id, user_id) DO UPDATE SET
+        user_name = excluded.user_name,
+        user_handle = excluded.user_handle,
+        user_icon = excluded.user_icon
+    `).run(announceId, postId, actorUrl, user.name, `@${user.id}@${config.domain}`, user.icon_url || '', now);
+    announced = true;
+
+    // ローカル投稿の場合、投稿者にリノート通知を送信
+    if (post.is_local === 1) {
+      try {
+        createNotification({
+          userId: post.user_id,
+          type: 'renote',
+          actorId: user.id,
+          actorName: user.name,
+          actorHandle: `@${user.id}@${config.domain}`,
+          actorIcon: user.icon_url || '',
+          postId: post.id,
+          postContent: post.content,
+        });
+      } catch (e) {
+        console.error('[Notification Error] Renote notification failed:', e);
+      }
+    }
+
+    // ActivityPub Announce をフォロワー & 相手著者 & リレーへ配信
+    const announceActivity = buildAnnounceActivity({
+      id: announceId,
+      actorUrl,
+      targetPostUrl: postId,
+      targetActorUrl: post.author_url,
+    });
+
+    const followerInboxes = (db.prepare(`
+      SELECT DISTINCT inbox_url FROM follows
+      WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
+    `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
+
+    const relayInboxes = (db.prepare(`
+      SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+    `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+
+    const targetInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes]));
+    if (!post.author_url.startsWith(config.origin)) {
+      try {
+        const remote = await fetchRemoteActor(post.author_url);
+        if (remote.inbox_url) targetInboxes.push(remote.inbox_url);
+      } catch {}
+    }
+
+    Promise.allSettled(
+      targetInboxes.map((inboxUrl) =>
+        deliverActivity({ inboxUrl, activity: announceActivity, senderUser: user })
+      )
+    ).catch(() => {});
+  }
+
+  const announceCount = (db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(postId) as any).c;
+
+  // 📡 全クライアントにリノート変化をブロードキャスト
+  broadcastAnnounce({
+    postId,
+    count: announceCount,
+    renote: announced ? {
+      id: postId,
+      name: user.name,
+      handle: `@${user.id}@${config.domain}`,
+      icon: user.icon_url || '',
+      url: actorUrl,
+      at: new Date().toISOString(),
+    } : null,
+  });
+
+  res.json({
+    postId,
+    announced,
+    announce_count: announceCount,
+  });
+});
+
+// 会話スレッド（親投稿・対象投稿・返信一覧）取得
+apiRouter.get('/posts/:id/thread', async (req: Request, res: Response) => {
+  const rawPostId = String(req.params.id);
+  const postId = decodeURIComponent(rawPostId);
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+
+  // 対象投稿
+  const post = db.prepare(`
+    SELECT 
+      p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
+      p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE p.id = ?
+  `).get(postId) as any;
+
+  if (!post) {
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+
+  // 親投稿（in_reply_to がある場合）
+  let parent = null;
+  if (post.in_reply_to) {
+    parent = db.prepare(`
+      SELECT 
+        p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
+        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+        COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+      FROM posts p
+      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+      WHERE p.id = ?
+    `).get(post.in_reply_to) as any;
+  }
+
+  // 子返信一覧
+  const replies = db.prepare(`
+    SELECT 
+      p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
+      p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE p.in_reply_to = ?
+    ORDER BY p.published_at ASC
+  `).all(postId) as any[];
+
+  const allRows: any[] = [];
+  if (post) allRows.push(post);
+  if (parent) allRows.push(parent);
+  allRows.push(...replies);
+
+  const enrichedList = enrichAndFilterPosts(allRows, currentActorUrl, req.user?.id);
+  const enrichedMap = new Map<string, any>(enrichedList.map((p) => [p.id, p]));
+
+  res.json({
+    post: enrichedMap.get(post.id) || null,
+    parent: parent ? (enrichedMap.get(parent.id) || null) : null,
+    replies: replies.map((r) => enrichedMap.get(r.id)).filter(Boolean),
+  });
+});
+
+// リモートまたはローカルユーザーのフォロー（認証必須）
+apiRouter.post('/follow', requireAuth, async (req: Request, res: Response) => {
+  const { targetHandle } = req.body;
+  if (!targetHandle) {
+    return res.status(400).json({ error: 'targetHandle が必要です。例: "@user@mastodon.social"' });
+  }
+
+  const user = req.rawUser!;
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  if (isDomainBlocked(targetHandle)) {
+    return res.status(400).json({ error: 'このサーバーはブロックされているためフォローできません。' });
+  }
+
+  try {
+    let targetActorUrl: string;
+    let isTargetLocal = false;
+    let localTargetUser: any = null;
+
+    if (targetHandle.startsWith('http://') || targetHandle.startsWith('https://')) {
+      targetActorUrl = targetHandle;
+      if (targetActorUrl.startsWith(config.origin)) {
+        isTargetLocal = true;
+        const uid = targetActorUrl.split('/').pop()!;
+        localTargetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
+      }
+    } else if (targetHandle.includes(`@${config.domain}`) || !targetHandle.includes('@')) {
+      const cleanId = targetHandle.replace(/^@/, '').replace(`@${config.domain}`, '');
+      localTargetUser = db.prepare('SELECT * FROM users WHERE id = ?').get(cleanId);
+      if (localTargetUser) {
+        isTargetLocal = true;
+        targetActorUrl = `${config.origin}/users/${localTargetUser.id}`;
+      } else {
+        targetActorUrl = await resolveWebFinger(targetHandle);
+      }
+    } else {
+      targetActorUrl = await resolveWebFinger(targetHandle);
+    }
+
+    if (targetActorUrl === myActorUrl) {
+      return res.status(400).json({ error: '自分自身をフォローすることはできません。' });
+    }
+
+    const followId = `${myActorUrl} -> ${targetActorUrl}`;
+    const now = new Date().toISOString();
+
+    if (isTargetLocal && localTargetUser) {
+      // ローカルユーザー同士のフォロー: 外部配送なしで即時承認
+      db.prepare(`
+        INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+        VALUES (?, ?, ?, ?, 1, 'accepted', ?)
+        ON CONFLICT(follower_url, following_url) DO UPDATE SET
+          status = 'accepted'
+      `).run(followId, myActorUrl, targetActorUrl, `${targetActorUrl}/inbox`, now);
+
+      try {
+        createNotification({
+          userId: localTargetUser.id,
+          type: 'follow',
+          actorId: user.id,
+          actorName: user.name,
+          actorHandle: `@${user.id}@${config.domain}`,
+          actorIcon: user.icon_url || '',
+        });
+      } catch (e) {
+        console.error('[Notification Error] Follow notification failed:', e);
+      }
+
+      return res.json({
+        status: 'Followed',
+        targetActor: targetActorUrl,
+        delivered: true,
+        target: {
+          username: localTargetUser.id,
+          name: localTargetUser.name,
+          domain: config.domain,
+        },
+      });
+    }
+
+    // 相手のリモート Actor 情報を取得
+    const remoteActor = await fetchRemoteActor(targetActorUrl);
+
+    // Follow Activity を構築
+    const followActivity = buildFollowActivity({
+      actorUrl: myActorUrl,
+      targetActorUrl,
+    });
+
+    // follows テーブルに登録
+    db.prepare(`
+      INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+      VALUES (?, ?, ?, ?, 1, 'pending', ?)
+      ON CONFLICT(follower_url, following_url) DO UPDATE SET
+        status = 'pending',
+        inbox_url = excluded.inbox_url
+    `).run(followId, myActorUrl, targetActorUrl, remoteActor.inbox_url, now);
+
+    // 相手の Inbox へ署名付き Follow Activity を配送
+    const delivered = await deliverActivity({
+      inboxUrl: remoteActor.inbox_url,
+      activity: followActivity,
+      senderUser: user,
+    });
+
+    res.json({
+      status: 'Follow request sent',
+      targetActor: targetActorUrl,
+      delivered,
+      target: {
+        username: remoteActor.username,
+        name: remoteActor.name,
+        domain: remoteActor.domain,
+      },
+    });
+  } catch (err: any) {
+    console.error('[Follow Error]:', err);
+    res.status(500).json({ error: err.message || 'フォローに失敗しました。' });
+  }
+});
+
+// フォロー解除
+apiRouter.post('/unfollow', requireAuth, async (req: Request, res: Response) => {
+  const { targetHandle, targetActorUrl: explicitTargetUrl } = req.body;
+  const user = req.rawUser!;
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  try {
+    let targetActorUrl = explicitTargetUrl;
+    if (!targetActorUrl && targetHandle) {
+      if (targetHandle.startsWith('http://') || targetHandle.startsWith('https://')) {
+        targetActorUrl = targetHandle;
+      } else if (targetHandle.includes(`@${config.domain}`) || !targetHandle.includes('@')) {
+        const cleanId = targetHandle.replace(/^@/, '').replace(`@${config.domain}`, '');
+        targetActorUrl = `${config.origin}/users/${cleanId}`;
+      } else {
+        targetActorUrl = await resolveWebFinger(targetHandle);
+      }
+    }
+
+    if (!targetActorUrl) {
+      return res.status(400).json({ error: '解除対象のユーザーが指定されていません。' });
+    }
+
+    const followRow = db.prepare('SELECT * FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl) as FollowRow | undefined;
+    if (!followRow) {
+      return res.status(400).json({ error: 'このユーザーをフォローしていません。' });
+    }
+
+    // follows テーブルから削除
+    db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(myActorUrl, targetActorUrl);
+
+    // リモートユーザーなら Undo(Follow) を配送
+    if (!targetActorUrl.startsWith(config.origin) && followRow.inbox_url) {
+      try {
+        const undoActivity = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: `${myActorUrl}/activities/undo-follow/${Date.now()}`,
+          type: 'Undo',
+          actor: myActorUrl,
+          object: {
+            id: followRow.id,
+            type: 'Follow',
+            actor: myActorUrl,
+            object: targetActorUrl,
+          },
+        };
+        await deliverActivity({
+          inboxUrl: followRow.inbox_url,
+          activity: undoActivity,
+          senderUser: user,
+        });
+      } catch (err: any) {
+        console.warn('[Unfollow Warning] Failed to deliver Undo activity:', err.message);
+      }
+    }
+
+    res.json({ success: true, targetActorUrl });
+  } catch (err: any) {
+    console.error('[Unfollow Error]:', err);
+    res.status(500).json({ error: err.message || 'フォロー解除に失敗しました。' });
+  }
+});
+
+// 自プロフィール更新 (名前, bio, アイコンURL, ヘッダーURL)
+apiRouter.put('/user/profile', requireAuth, (req: Request, res: Response) => {
+  const { name, summary, icon_url, banner_url } = req.body;
+  const user = req.rawUser!;
+
+  const newName = typeof name === 'string' && name.trim() ? name.trim() : user.name;
+  const newSummary = typeof summary === 'string' ? summary.trim() : (user.summary || '');
+  const newIconUrl = typeof icon_url === 'string' ? icon_url.trim() : (user.icon_url || '');
+  const newBannerUrl = typeof banner_url === 'string' ? banner_url.trim() : (user.banner_url || '');
+
+  db.prepare(`
+    UPDATE users SET
+      name = ?,
+      summary = ?,
+      icon_url = ?,
+      banner_url = ?
+    WHERE id = ?
+  `).run(newName, newSummary, newIconUrl, newBannerUrl, user.id);
+
+  // 自身の過去投稿の author_name / author_icon も更新
+  db.prepare(`UPDATE posts SET author_name = ?, author_icon = ? WHERE is_local = 1 AND user_id = ?`).run(newName, newIconUrl, user.id);
+
+  const updatedUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?').get(user.id) as any;
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+  const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
+  const followingCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
+  const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+
+  res.json({
+    ...updatedUser,
+    handle: `@${user.id}@${config.domain}`,
+    actorUrl: myActorUrl,
+    followerCount,
+    followingCount,
+    postCount,
+  });
+});
+
+// ユーザーデータのバックアップ・エクスポート (JSON / ZIP)
+apiRouter.get('/user/export', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const format = (req.query.format as string)?.toLowerCase();
+  const dateStr = new Date().toISOString().split('T')[0];
+
+  try {
+    if (format === 'zip') {
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="spica-export-${user.id}-${dateStr}.zip"`);
+      await streamUserExportZip(user.id, res);
+    } else {
+      const data = exportUserData(user.id);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="spica-export-${user.id}-${dateStr}.json"`);
+      res.send(JSON.stringify(data, null, 2));
+    }
+  } catch (err: any) {
+    console.error(`[Export Error] Failed to export data for @${user.id}:`, err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'データのエクスポートに失敗しました。' });
+    }
+  }
+});
+
+// ユーザー自身によるアカウント削除（退会・データ完全抹消）
+apiRouter.post('/user/delete-me', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const { confirmUserId, masterKey } = req.body;
+
+  // 1. 誤操作防止の確認用ユーザーID検証
+  if (!confirmUserId || String(confirmUserId).trim().toLowerCase() !== user.id.toLowerCase()) {
+    return res.status(400).json({
+      error: `確認用ユーザーIDが一致しません。「${user.id}」と正確に入力してください。`,
+    });
+  }
+
+  // 2. マスターキーが送信されている場合は照合
+  if (masterKey && String(masterKey).trim()) {
+    const keyHash = hashMasterKey(String(masterKey).trim());
+    if (keyHash !== user.master_key_hash) {
+      return res.status(401).json({
+        error: 'マスターキーが正しくありません。',
+      });
+    }
+  }
+
+  // 3. 最後の管理者を削除しない保護
+  if (user.role === 'admin') {
+    const adminCount = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+    if (adminCount <= 1) {
+      return res.status(400).json({
+        error: 'あなたはサーバーで唯一の管理者です。退会する前に別のユーザーを管理者に任命してください。',
+      });
+    }
+  }
+
+  // 4. アカウント完全消去
+  const result = await deleteUserAccount(user.id);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error || 'アカウントの削除に失敗しました。' });
+  }
+
+  res.json({
+    success: true,
+    message: 'アカウントと関連データを完全に削除しました。ご利用ありがとうございました。',
+  });
+});
+
+// ユーザー詳細プロフィール取得（ローカルまたはリモート）
+apiRouter.get('/users/:identifier', async (req: Request, res: Response) => {
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+  const myActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+
+  // 1. ローカルユーザーの照合 (@id, id, @id@domain 等)
+  let cleanId = rawIdentifier.replace(/^@/, '');
+  if (cleanId.includes(`@${config.domain}`)) {
+    cleanId = cleanId.replace(`@${config.domain}`, '');
+  }
+
+  const localUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?').get(cleanId) as any;
+  if (localUser) {
+    const actorUrl = `${config.origin}/users/${localUser.id}`;
+    const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
+    const followingCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
+    const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(localUser.id) as any).c;
+
+    let isFollowing = false;
+    let isBlocked = false;
+    let isMuted = false;
+    let isBlockingMe = false;
+    if (req.user && req.user.id !== localUser.id) {
+      if (myActorUrl) {
+        const f = db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, actorUrl);
+        isFollowing = !!f;
+      }
+      isBlocked = !!db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
+      isMuted = !!db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
+      isBlockingMe = !!db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(localUser.id, req.user.id);
+    }
+
+    // 📌 ピン留めノートの取得
+    const pinnedRows = db.prepare(`
+      SELECT 
+        p.*,
+        p.id AS post_id,
+        p.published_at AS timeline_at,
+        COALESCE(
+          NULLIF(p.author_icon, ''),
+          NULLIF(u.icon_url, ''),
+          ''
+        ) AS author_icon
+      FROM pinned_posts pp
+      JOIN posts p ON pp.post_id = p.id
+      LEFT JOIN users u ON p.user_id = u.id
+      WHERE pp.user_id = ?
+      ORDER BY pp.created_at DESC
+    `).all(localUser.id) as any[];
+    const pinnedPosts = enrichAndFilterPosts(pinnedRows, myActorUrl, req.user?.id);
+
+    return res.json({
+      id: localUser.id,
+      name: localUser.name,
+      summary: localUser.summary || '',
+      icon_url: localUser.icon_url || '',
+      banner_url: localUser.banner_url || '',
+      handle: `@${localUser.id}@${config.domain}`,
+      actor_url: actorUrl,
+      domain: config.domain,
+      is_local: true,
+      created_at: localUser.created_at,
+      follower_count: followerCount,
+      following_count: followingCount,
+      post_count: postCount,
+      is_following: isFollowing,
+      is_blocked: isBlocked,
+      is_muted: isMuted,
+      is_blocking_me: isBlockingMe,
+      pinned_posts: pinnedPosts,
+    });
+  }
+
+  // 2. リモートユーザーの照合
+  try {
+    let targetActorUrl = rawIdentifier;
+    if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
+      targetActorUrl = await resolveWebFinger(rawIdentifier);
+    }
+
+    // キャッシュを検索、未取得または画像未取得なら最新化
+    let remoteActor: RemoteActorRow;
+    const existing = db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(targetActorUrl) as RemoteActorRow | undefined;
+    if (existing && existing.icon_url) {
+      remoteActor = existing;
+    } else {
+      remoteActor = await fetchRemoteActor(targetActorUrl, true);
+    }
+
+    const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?)').get(targetActorUrl, targetActorUrl) as any).c;
+
+    let isFollowing = false;
+    let isBlocked = false;
+    let isMuted = false;
+    if (req.user) {
+      if (myActorUrl) {
+        const f = db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl);
+        isFollowing = !!f;
+      }
+      isBlocked = !!db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
+      isMuted = !!db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
+    }
+
+    return res.json({
+      id: remoteActor.id,
+      name: remoteActor.name || remoteActor.username,
+      summary: remoteActor.summary || '',
+      icon_url: remoteActor.icon_url || '',
+      banner_url: remoteActor.banner_url || '',
+      handle: `@${remoteActor.username}@${remoteActor.domain}`,
+      actor_url: remoteActor.id,
+      domain: remoteActor.domain,
+      is_local: false,
+      created_at: remoteActor.updated_at,
+      follower_count: 0,
+      following_count: 0,
+      post_count: postCount,
+      is_following: isFollowing,
+      is_blocked: isBlocked,
+      is_muted: isMuted,
+      is_blocking_me: false,
+      pinned_posts: [],
+    });
+  } catch (err: any) {
+    console.error(`[User Profile Error] Failed to resolve user ${rawIdentifier}:`, err.message);
+    return res.status(404).json({ error: 'ユーザーが見つかりませんでした。' });
+  }
+});
+
+// ユーザー投稿一覧取得
+apiRouter.get('/users/:identifier/posts', (req: Request, res: Response) => {
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
+
+  let cleanId = rawIdentifier.replace(/^@/, '');
+  if (cleanId.includes(`@${config.domain}`)) {
+    cleanId = cleanId.replace(`@${config.domain}`, '');
+  }
+
+  const localUser = db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
+  let posts: any[] = [];
+
+  const baseSelect = `
+    SELECT 
+      p.*,
+      p.id AS post_id,
+      p.published_at AS timeline_at,
+      COALESCE(
+        NULLIF(p.author_icon, ''),
+        NULLIF(u.icon_url, ''),
+        NULLIF(ra.icon_url, ''),
+        ''
+      ) AS author_icon
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+  `;
+
+  if (localUser) {
+    posts = db.prepare(`
+      ${baseSelect}
+      WHERE p.user_id = ?
+      ORDER BY p.published_at DESC
+      LIMIT ?
+    `).all(cleanId, limit);
+  } else {
+    posts = db.prepare(`
+      ${baseSelect}
+      WHERE p.author_url = ? OR p.user_id = ? OR p.author_handle = ?
+      ORDER BY p.published_at DESC
+      LIMIT ?
+    `).all(rawIdentifier, rawIdentifier, rawIdentifier.startsWith('@') ? rawIdentifier : `@${rawIdentifier}`, limit);
+  }
+
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  const enriched = enrichAndFilterPosts(posts, currentActorUrl, req.user?.id);
+  res.json(enriched);
+});
+
+// フォロー中リスト
+apiRouter.get('/following', (req: Request, res: Response) => {
+  const userId = (req.query.userId as string) || req.user?.id;
+  if (!userId) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+
+  const myActorUrl = `${config.origin}/users/${userId}`;
+  const following = db.prepare(`
+    SELECT f.*, r.name, r.username, r.domain
+    FROM follows f
+    LEFT JOIN remote_actors r ON f.following_url = r.id
+    WHERE f.follower_url = ?
+  `).all(myActorUrl);
+
+  res.json(following);
+});
+
+// フォロワーリスト
+apiRouter.get('/followers', (req: Request, res: Response) => {
+  const userId = (req.query.userId as string) || req.user?.id;
+  if (!userId) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+
+  const myActorUrl = `${config.origin}/users/${userId}`;
+  const followers = db.prepare(`
+    SELECT f.*, r.name, r.username, r.domain
+    FROM follows f
+    LEFT JOIN remote_actors r ON f.follower_url = r.id
+    WHERE f.following_url = ?
+  `).all(myActorUrl);
+
+  res.json(followers);
+});
+
+// サーバー公開情報
+apiRouter.get('/server-info', (req: Request, res: Response) => {
+  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
+  const federatedPostCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
+  const instanceInfo = getInstanceInfo();
+
+  res.json({
+    name: instanceInfo.name,
+    description: instanceInfo.description,
+    icon_url: instanceInfo.icon_url,
+    banner_url: instanceInfo.banner_url,
+    registration_mode: instanceInfo.registration_mode,
+    tos_url: instanceInfo.tos_url,
+    privacy_policy_url: instanceInfo.privacy_policy_url,
+    contact_url: instanceInfo.contact_url,
+    repository_url: instanceInfo.repository_url,
+    operator_url: instanceInfo.operator_url,
+    server_rules: instanceInfo.server_rules,
+    require_rules_agreement: instanceInfo.require_rules_agreement,
+    origin: config.origin,
+    domain: config.domain,
+    port: config.port,
+    stats: {
+      users: userCount,
+      totalPosts: postCount,
+      federatedPosts: federatedPostCount,
+    },
+  });
+});
+
+// 公開カスタム絵文字一覧（投稿・リアクションのピッカー用）
+apiRouter.get('/emojis', (req: Request, res: Response) => {
+  try {
+    const emojis = db.prepare(`
+      SELECT id, name, url, category, aliases FROM custom_emojis ORDER BY category ASC, name ASC
+    `).all() as unknown as CustomEmojiRow[];
+    res.json(emojis);
+  } catch (err: any) {
+    console.error('[API Emojis Error]:', err);
+    res.status(500).json({ error: 'カスタム絵文字の取得に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 通知 (Notifications) エンドポイント
+// ==========================================
+
+// 通知一覧の取得 (最新順、ブロック・ミュート除外)
+apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
+  const filter = req.query.filter as string | undefined;
+
+  let filterClause = '';
+  const params: any[] = [user.id];
+
+  if (filter === 'reply') {
+    filterClause = ` AND type = 'reply'`;
+  } else if (filter === 'reaction') {
+    filterClause = ` AND type IN ('reaction', 'announce', 'renote')`;
+  } else if (filter === 'follow') {
+    filterClause = ` AND type = 'follow'`;
+  }
+  params.push(limit);
+
+  try {
+    const notifications = db.prepare(`
+      SELECT * FROM notifications
+      WHERE user_id = ? ${filterClause}
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(...params) as unknown as NotificationRow[];
+
+    // ブロックまたはミュートしているユーザーを除外
+    const blockedRows = db.prepare('SELECT target_user_id FROM user_blocks WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
+    const mutedRows = db.prepare('SELECT target_user_id FROM user_mutes WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
+    const excludeIds = new Set<string>();
+    for (const r of blockedRows) if (r.target_user_id) excludeIds.add(r.target_user_id.toLowerCase());
+    for (const r of mutedRows) if (r.target_user_id) excludeIds.add(r.target_user_id.toLowerCase());
+
+    const filtered = notifications.filter((n) => {
+      if (n.actor_id && excludeIds.has(n.actor_id.toLowerCase())) return false;
+      if (n.actor_handle && excludeIds.has(n.actor_handle.toLowerCase())) return false;
+      return true;
+    });
+
+    res.json(filtered);
+  } catch (err: any) {
+    console.error('[API Notification Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 未読通知数の取得 (軽量)
+apiRouter.get('/notifications/unread-count', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) as c FROM notifications
+      WHERE user_id = ? AND is_read = 0
+    `).get(user.id) as { c: number } | undefined;
+
+    res.json({ unreadCount: row ? Number(row.c) : 0 });
+  } catch (err: any) {
+    console.error('[API Unread Count Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// すべての通知を既読にする
+apiRouter.post('/notifications/read-all', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    db.prepare(`
+      UPDATE notifications
+      SET is_read = 1
+      WHERE user_id = ? AND is_read = 0
+    `).run(user.id);
+
+    res.json({ success: true, message: 'すべての通知を既読にしました。' });
+  } catch (err: any) {
+    console.error('[API Read All Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 単一の通知を既読にする
+apiRouter.post('/notifications/:id/read', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const notificationId = req.params.id as string;
+
+  try {
+    db.prepare(`
+      UPDATE notifications
+      SET is_read = 1
+      WHERE id = ? AND user_id = ?
+    `).run(notificationId, user.id);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('[API Mark Read Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 🔖 ブックマーク (Bookmarks) エンドポイント
+// ==========================================
+
+// ブックマークトグルの共通ロジック
+function toggleBookmarkPost(userId: string, targetPostId: string) {
+  let cleanPostId = targetPostId.trim();
+
+  // posts テーブルから該当投稿を照合
+  let post = db.prepare('SELECT id FROM posts WHERE id = ?').get(cleanPostId) as { id: string } | undefined;
+  if (!post && cleanPostId.includes('%')) {
+    try {
+      const decoded = decodeURIComponent(cleanPostId);
+      post = db.prepare('SELECT id FROM posts WHERE id = ?').get(decoded) as { id: string } | undefined;
+      if (post) cleanPostId = decoded;
+    } catch {}
+  }
+
+  if (!post) {
+    return { success: false, notFound: true };
+  }
+
+  const existing = db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
+  if (existing) {
+    db.prepare('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
+    return { success: true, bookmarked: false, postId: cleanPostId };
+  } else {
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
+    return { success: true, bookmarked: true, postId: cleanPostId };
+  }
+}
+
+// 🔖 投稿のブックマーク追加 / 解除 (トグル - 推奨: Request Body)
+apiRouter.post('/bookmarks/toggle', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const postId = String(req.body?.postId || req.query?.postId || '').trim();
+
+  if (!postId) {
+    return res.status(400).json({ error: 'postId は必須です。' });
+  }
+
+  try {
+    const result = toggleBookmarkPost(user.id, postId);
+    if (result.notFound) {
+      return res.status(404).json({ error: '投稿が見つかりません。' });
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Bookmark Error]:', err);
+    res.status(500).json({ error: 'ブックマーク処理に失敗しました。' });
+  }
+});
+
+// 🔖 投稿のブックマーク追加 / 解除 (後方互換: パスパラメータ)
+apiRouter.post('/posts/:id/bookmark', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawPostId = req.params.id as string;
+  const postId = decodeURIComponent(rawPostId);
+
+  try {
+    const result = toggleBookmarkPost(user.id, postId);
+    if (result.notFound) {
+      return res.status(404).json({ error: '投稿が見つかりません。' });
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Bookmark Error]:', err);
+    res.status(500).json({ error: 'ブックマーク処理に失敗しました。' });
+  }
+});
+
+// ブックマーク一覧取得
+apiRouter.get('/bookmarks', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
+
+  try {
+    const query = `
+      SELECT
+        p.*,
+        p.id AS post_id,
+        COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
+        b.created_at AS timeline_at
+      FROM bookmarks b
+      JOIN posts p ON b.post_id = p.id
+      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+      WHERE b.user_id = ?
+      ORDER BY b.created_at DESC
+      LIMIT ?
+    `;
+
+    const rows = db.prepare(query).all(user.id, limit) as any[];
+    const currentActorUrl = `${config.origin}/users/${user.id}`;
+    const enriched = enrichAndFilterPosts(rows, currentActorUrl, user.id);
+    res.json(enriched);
+  } catch (err: any) {
+    console.error('[Get Bookmarks Error]:', err);
+    res.status(500).json({ error: 'ブックマーク一覧の取得に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 📌 プロフィールピン留め (Pinned Posts) エンドポイント
+// ==========================================
+
+// ピン留めトグルの共通ロジック (最大5件、本人の投稿のみ)
+function togglePinPost(userId: string, targetPostId: string) {
+  let cleanPostId = targetPostId.trim();
+
+  // posts テーブルから該当投稿を照合
+  let post = db.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(cleanPostId) as { id: string; user_id: string; is_local: number } | undefined;
+  if (!post && cleanPostId.includes('%')) {
+    try {
+      const decoded = decodeURIComponent(cleanPostId);
+      post = db.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(decoded) as { id: string; user_id: string; is_local: number } | undefined;
+      if (post) cleanPostId = decoded;
+    } catch {}
+  }
+
+  if (!post) {
+    return { success: false, notFound: true, error: '投稿が見つかりません。' };
+  }
+
+  // 自分の投稿のみピン留め可能
+  if (post.is_local !== 1 || post.user_id !== userId) {
+    return { success: false, notAllowed: true, error: '自分の投稿のみプロフィールにピン留めできます。' };
+  }
+
+  const existing = db.prepare('SELECT 1 FROM pinned_posts WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
+  if (existing) {
+    db.prepare('DELETE FROM pinned_posts WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
+    return { success: true, pinned: false, postId: cleanPostId };
+  } else {
+    // 上限5件チェック
+    const count = (db.prepare('SELECT COUNT(*) as c FROM pinned_posts WHERE user_id = ?').get(userId) as any).c;
+    if (count >= 5) {
+      return { success: false, limitReached: true, error: 'ピン留めできるノートは最大5件までです。' };
+    }
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
+    return { success: true, pinned: true, postId: cleanPostId };
+  }
+}
+
+// 📌 投稿のピン留め追加 / 解除 (トグル - 推奨: Request Body)
+apiRouter.post('/posts/pin/toggle', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const postId = String(req.body?.postId || req.query?.postId || '').trim();
+
+  if (!postId) {
+    return res.status(400).json({ error: 'postId は必須です。' });
+  }
+
+  try {
+    const result = togglePinPost(user.id, postId);
+    if (result.notFound) {
+      return res.status(404).json({ error: result.error });
+    }
+    if (result.notAllowed) {
+      return res.status(403).json({ error: result.error });
+    }
+    if (result.limitReached) {
+      return res.status(400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Pin Post Error]:', err);
+    res.status(500).json({ error: 'ピン留め処理に失敗しました。' });
+  }
+});
+
+// 📌 投稿のピン留め追加 / 解除 (後方互換: パスパラメータ)
+apiRouter.post('/posts/:id/pin', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawPostId = req.params.id as string;
+  const postId = decodeURIComponent(rawPostId);
+
+  try {
+    const result = togglePinPost(user.id, postId);
+    if (result.notFound) {
+      return res.status(404).json({ error: result.error });
+    }
+    if (result.notAllowed) {
+      return res.status(403).json({ error: result.error });
+    }
+    if (result.limitReached) {
+      return res.status(400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (err: any) {
+    console.error('[Pin Post Error]:', err);
+    res.status(500).json({ error: 'ピン留め処理に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 🚫 個人単位のミュート / ブロック エンドポイント
+// ==========================================
+
+// ユーザーブロック
+apiRouter.post('/users/:identifier/block', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  try {
+    let cleanId = rawIdentifier.replace(/^@/, '');
+    if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
+
+    const localUser = db.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
+    let targetUserId = cleanId;
+    let targetHandle = `@${cleanId}@${config.domain}`;
+    let targetName = localUser?.name || cleanId;
+    let isRemote = false;
+    let remoteActorInbox: string | null = null;
+
+    if (localUser) {
+      if (localUser.id === user.id) {
+        return res.status(400).json({ error: '自分自身をブロックすることはできません。' });
+      }
+      targetUserId = localUser.id;
+      targetName = localUser.name;
+    } else {
+      isRemote = true;
+      let targetActorUrl = rawIdentifier;
+      if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
+        targetActorUrl = await resolveWebFinger(rawIdentifier);
+      }
+      targetUserId = targetActorUrl;
+      const actor = await fetchRemoteActor(targetActorUrl, false);
+      targetHandle = `@${actor.username}@${actor.domain}`;
+      targetName = actor.name || actor.username;
+      remoteActorInbox = actor.inbox_url;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR REPLACE INTO user_blocks (user_id, target_user_id, target_handle, target_name, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(user.id, targetUserId, targetHandle, targetName, now);
+
+    // 相互フォローの解除
+    const targetActorUrl = isRemote ? targetUserId : `${config.origin}/users/${targetUserId}`;
+    db.prepare(`
+      DELETE FROM follows
+      WHERE (follower_url = ? AND following_url = ?)
+         OR (follower_url = ? AND following_url = ?)
+    `).run(myActorUrl, targetActorUrl, targetActorUrl, myActorUrl);
+
+    // リモートユーザーの場合、ActivityPub Block Activity を配送
+    if (isRemote && remoteActorInbox) {
+      try {
+        const blockActivity = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: `${myActorUrl}#blocks/${Date.now()}`,
+          type: 'Block',
+          actor: myActorUrl,
+          object: targetActorUrl,
+        };
+        deliverActivity({
+          inboxUrl: remoteActorInbox,
+          activity: blockActivity,
+          senderUser: user,
+        }).catch((e) => console.warn('[Deliver Block Warning]:', e));
+      } catch {}
+    }
+
+    res.json({ success: true, is_blocked: true });
+  } catch (err: any) {
+    console.error('[User Block Error]:', err);
+    res.status(500).json({ error: 'ユーザーのブロックに失敗しました。' });
+  }
+});
+
+// ユーザーブロック解除
+apiRouter.post('/users/:identifier/unblock', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  try {
+    let cleanId = rawIdentifier.replace(/^@/, '');
+    if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
+
+    const localUser = db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
+    let targetUserId = cleanId;
+    let isRemote = false;
+    let remoteActorInbox: string | null = null;
+
+    if (localUser) {
+      targetUserId = localUser.id;
+    } else {
+      isRemote = true;
+      let targetActorUrl = rawIdentifier;
+      if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
+        try {
+          targetActorUrl = await resolveWebFinger(rawIdentifier);
+        } catch {
+          targetActorUrl = rawIdentifier;
+        }
+      }
+      targetUserId = targetActorUrl;
+      try {
+        const actor = await fetchRemoteActor(targetActorUrl, false);
+        remoteActorInbox = actor.inbox_url;
+      } catch {}
+    }
+
+    db.prepare('DELETE FROM user_blocks WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+
+    // リモートユーザーの場合、Undo(Block) を配送
+    if (isRemote && remoteActorInbox) {
+      try {
+        const undoActivity = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          id: `${myActorUrl}#undo-blocks/${Date.now()}`,
+          type: 'Undo',
+          actor: myActorUrl,
+          object: {
+            id: `${myActorUrl}#blocks/${Date.now()}`,
+            type: 'Block',
+            actor: myActorUrl,
+            object: targetUserId,
+          },
+        };
+        deliverActivity({
+          inboxUrl: remoteActorInbox,
+          activity: undoActivity,
+          senderUser: user,
+        }).catch((e) => console.warn('[Deliver Undo Block Warning]:', e));
+      } catch {}
+    }
+
+    res.json({ success: true, is_blocked: false });
+  } catch (err: any) {
+    console.error('[User Unblock Error]:', err);
+    res.status(500).json({ error: 'ブロック解除に失敗しました。' });
+  }
+});
+
+// ユーザーミュート
+apiRouter.post('/users/:identifier/mute', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+
+  try {
+    let cleanId = rawIdentifier.replace(/^@/, '');
+    if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
+
+    const localUser = db.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
+    let targetUserId = cleanId;
+    let targetHandle = `@${cleanId}@${config.domain}`;
+    let targetName = localUser?.name || cleanId;
+
+    if (localUser) {
+      if (localUser.id === user.id) {
+        return res.status(400).json({ error: '自分自身をミュートすることはできません。' });
+      }
+      targetUserId = localUser.id;
+      targetName = localUser.name;
+    } else {
+      let targetActorUrl = rawIdentifier;
+      if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
+        targetActorUrl = await resolveWebFinger(rawIdentifier);
+      }
+      targetUserId = targetActorUrl;
+      const actor = await fetchRemoteActor(targetActorUrl, false);
+      targetHandle = `@${actor.username}@${actor.domain}`;
+      targetName = actor.name || actor.username;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR REPLACE INTO user_mutes (user_id, target_user_id, target_handle, target_name, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(user.id, targetUserId, targetHandle, targetName, now);
+
+    res.json({ success: true, is_muted: true });
+  } catch (err: any) {
+    console.error('[User Mute Error]:', err);
+    res.status(500).json({ error: 'ユーザーのミュートに失敗しました。' });
+  }
+});
+
+// ユーザーミュート解除
+apiRouter.post('/users/:identifier/unmute', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rawIdentifier = decodeURIComponent(req.params.identifier as string);
+
+  try {
+    let cleanId = rawIdentifier.replace(/^@/, '');
+    if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
+
+    let targetUserId = cleanId;
+    const localUser = db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
+    if (localUser) {
+      targetUserId = localUser.id;
+    } else {
+      let targetActorUrl = rawIdentifier;
+      if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
+        try {
+          targetActorUrl = await resolveWebFinger(rawIdentifier);
+        } catch {
+          targetActorUrl = rawIdentifier;
+        }
+      }
+      targetUserId = targetActorUrl;
+    }
+
+    db.prepare('DELETE FROM user_mutes WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+
+    res.json({ success: true, is_muted: false });
+  } catch (err: any) {
+    console.error('[User Unmute Error]:', err);
+    res.status(500).json({ error: 'ミュート解除に失敗しました。' });
+  }
+});
+
+// ブロック中ユーザー一覧取得
+apiRouter.get('/user/blocks', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const blocks = db.prepare(`
+      SELECT target_user_id as id, target_handle as handle, target_name as name, created_at
+      FROM user_blocks
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).all(user.id);
+    res.json(blocks);
+  } catch (err: any) {
+    console.error('[Get Blocks Error]:', err);
+    res.status(500).json({ error: 'ブロック一覧の取得に失敗しました。' });
+  }
+});
+
+// ミュート中ユーザー一覧取得
+apiRouter.get('/user/mutes', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const mutes = db.prepare(`
+      SELECT target_user_id as id, target_handle as handle, target_name as name, created_at
+      FROM user_mutes
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).all(user.id);
+    res.json(mutes);
+  } catch (err: any) {
+    console.error('[Get Mutes Error]:', err);
+    res.status(500).json({ error: 'ミュート一覧の取得に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 入力補完 (オートコンプリート: ユーザー & ハッシュタグ)
+// ==========================================
+
+// ユーザー入力補完 (@メンション用)
+apiRouter.get('/autocomplete/users', (req: Request, res: Response) => {
+  const q = ((req.query.q as string) || '').trim().replace(/^@/, '').toLowerCase();
+  const currentUserId = req.user?.id;
+  const currentActorUrl = currentUserId ? `${config.origin}/users/${currentUserId}` : null;
+
+  try {
+    const results: any[] = [];
+    const seen = new Set<string>();
+
+    // 1. ログインユーザーがフォロー中のユーザーから検索（優先度高）
+    if (currentActorUrl) {
+      const followRows = db.prepare(`
+        SELECT r.id, r.username, r.name, r.domain, r.icon_url
+        FROM follows f
+        JOIN remote_actors r ON f.following_url = r.id
+        WHERE f.follower_url = ? AND (LOWER(r.username) LIKE ? OR LOWER(r.name) LIKE ?)
+        LIMIT 6
+      `).all(currentActorUrl, `%${q}%`, `%${q}%`) as any[];
+
+      for (const r of followRows) {
+        const handle = `@${r.username}@${r.domain}`;
+        if (!seen.has(handle.toLowerCase())) {
+          seen.add(handle.toLowerCase());
+          results.push({
+            id: r.id,
+            username: r.username,
+            name: r.name || r.username,
+            handle,
+            icon_url: r.icon_url || '',
+            is_following: true,
+          });
+        }
+      }
+    }
+
+    // 2. ローカルユーザーから検索
+    const localUsers = db.prepare(`
+      SELECT id, name, icon_url
+      FROM users
+      WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ?
+      LIMIT 6
+    `).all(`%${q}%`, `%${q}%`) as any[];
+
+    for (const u of localUsers) {
+      const handle = `@${u.id}@${config.domain}`;
+      if (!seen.has(handle.toLowerCase())) {
+        seen.add(handle.toLowerCase());
+        results.push({
+          id: u.id,
+          username: u.id,
+          name: u.name,
+          handle,
+          icon_url: u.icon_url || '',
+          is_following: false,
+        });
+      }
+    }
+
+    // 3. その他リモートアクターから検索（件数枠が余っている場合）
+    if (results.length < 8) {
+      const remainingLimit = 8 - results.length;
+      const remoteUsers = db.prepare(`
+        SELECT id, username, name, domain, icon_url
+        FROM remote_actors
+        WHERE LOWER(username) LIKE ? OR LOWER(name) LIKE ?
+        LIMIT ?
+      `).all(`%${q}%`, `%${q}%`, remainingLimit) as any[];
+
+      for (const r of remoteUsers) {
+        const handle = `@${r.username}@${r.domain}`;
+        if (!seen.has(handle.toLowerCase())) {
+          seen.add(handle.toLowerCase());
+          results.push({
+            id: r.id,
+            username: r.username,
+            name: r.name || r.username,
+            handle,
+            icon_url: r.icon_url || '',
+            is_following: false,
+          });
+        }
+      }
+    }
+
+    res.json(results.slice(0, 8));
+  } catch (err: any) {
+    console.error('[Autocomplete Users Error]:', err);
+    res.status(500).json({ error: 'ユーザー補完に失敗しました。' });
+  }
+});
+
+// ハッシュタグ入力補完 (#タグ用)
+apiRouter.get('/autocomplete/tags', (req: Request, res: Response) => {
+  const rawQ = ((req.query.q as string) || '').trim().replace(/^#/, '').toLowerCase();
+
+  try {
+    const recentPosts = db.prepare('SELECT content FROM posts ORDER BY published_at DESC LIMIT 300').all() as { content: string }[];
+    const tagCountMap = new Map<string, number>();
+
+    const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
+    for (const post of recentPosts) {
+      const cleanContent = post.content.replace(/<[^>]*>/g, ' ');
+      const matches = cleanContent.matchAll(tagRegex);
+      const seenInPost = new Set<string>();
+      for (const match of matches) {
+        const tag = match[1];
+        const lower = tag.toLowerCase();
+        if ((!rawQ || lower.includes(rawQ)) && !seenInPost.has(lower)) {
+          seenInPost.add(lower);
+          tagCountMap.set(tag, (tagCountMap.get(tag) || 0) + 1);
+        }
+      }
+    }
+
+    const matchedTags = Array.from(tagCountMap.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+
+    res.json(matchedTags);
+  } catch (err: any) {
+    console.error('[Autocomplete Tags Error]:', err);
+    res.status(500).json({ error: 'ハッシュタグ補完に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 🔔 Web Push 通知 API (PWA / VAPID)
+// ==========================================
+
+// VAPID 公開鍵取得
+apiRouter.get('/push/vapid-public-key', (req: Request, res: Response) => {
+  try {
+    const publicKey = getVapidPublicKey();
+    res.json({ publicKey });
+  } catch (err: any) {
+    console.error('[WebPush Error] Failed to get VAPID public key:', err);
+    res.status(500).json({ error: 'VAPID 公開鍵の取得に失敗しました。' });
+  }
+});
+
+// 端末の PushSubscription 登録
+apiRouter.post('/push/subscribe', requireAuth, (req: Request, res: Response) => {
+  const { subscription } = req.body;
+  if (!subscription || !subscription.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
+    return res.status(400).json({ error: '無効な PushSubscription 形式です。' });
+  }
+
+  try {
+    savePushSubscription({
+      userId: req.user!.id,
+      endpoint: subscription.endpoint,
+      p256dh: subscription.keys.p256dh,
+      auth: subscription.keys.auth,
+    });
+
+    res.json({ success: true, message: 'Web Push 通知の受信端末を登録しました。' });
+  } catch (err: any) {
+    console.error('[WebPush Error] Subscribe failed:', err);
+    res.status(500).json({ error: 'プッシュ通知の購読登録に失敗しました。' });
+  }
+});
+
+// 端末の PushSubscription 解除
+apiRouter.post('/push/unsubscribe', requireAuth, (req: Request, res: Response) => {
+  const { endpoint } = req.body;
+  if (endpoint && typeof endpoint === 'string') {
+    removePushSubscription(endpoint);
+  }
+  res.json({ success: true, message: 'Web Push 通知の登録を解除しました。' });
+});
+
+// プッシュ通知登録状況の確認
+apiRouter.get('/push/status', requireAuth, (req: Request, res: Response) => {
+  const isSubscribed = isUserSubscribed(req.user!.id);
+  res.json({ isSubscribed });
+});
+
+// テスト用プッシュ通知送信
+apiRouter.post('/push/test', requireAuth, async (req: Request, res: Response) => {
+  try {
+    await sendPushToUser(req.user!.id, {
+      title: 'Spica テスト通知 ✦',
+      body: 'おめでとうございます！Web Push 通知が正常に接続されました。',
+      icon: '/logo.jpg',
+      url: '/?view=notifications',
+    });
+    res.json({ success: true, message: 'テスト通知を送信しました。端末をご確認ください。' });
+  } catch (err: any) {
+    console.error('[WebPush Test Error]:', err);
+    res.status(500).json({ error: 'テスト通知の送信に失敗しました。' });
+  }
+});
+
