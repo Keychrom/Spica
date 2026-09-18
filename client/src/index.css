@@ -2,11 +2,106 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-bg-base: #0b0f19;
+  --color-bg-surface: #111827;
+  --color-bg-elevated: #1f2937;
+  --color-border: #374151;
+  --color-text-main: #f1f5f9;
+  --color-text-sub: #94a3b8;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --accent-border: rgba(99, 102, 241, 0.35);
+}
+
+[data-theme="pure_black"] {
+  --color-bg-base: #000000;
+  --color-bg-surface: #0a0a0c;
+  --color-bg-elevated: #141416;
+  --color-border: #222228;
+  --color-text-main: #f8fafc;
+  --color-text-sub: #8e8e93;
+}
+
+[data-theme="light"] {
+  --color-bg-base: #f1f5f9;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #f8fafc;
+  --color-border: #cbd5e1;
+  --color-text-main: #0f172a;
+  --color-text-sub: #64748b;
+}
+
+/* アクセントカラー定義 */
+[data-accent="indigo"] {
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgba(99, 102, 241, 0.15);
+  --accent-border: rgba(99, 102, 241, 0.35);
+}
+
+[data-accent="cyan"] {
+  --accent: #06b6d4;
+  --accent-hover: #0891b2;
+  --accent-soft: rgba(6, 182, 212, 0.15);
+  --accent-border: rgba(6, 182, 212, 0.35);
+}
+
+[data-accent="emerald"] {
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --accent-soft: rgba(16, 185, 129, 0.15);
+  --accent-border: rgba(16, 185, 129, 0.35);
+}
+
+[data-accent="purple"] {
+  --accent: #a855f7;
+  --accent-hover: #9333ea;
+  --accent-soft: rgba(168, 85, 247, 0.15);
+  --accent-border: rgba(168, 85, 247, 0.35);
+}
+
+[data-accent="rose"] {
+  --accent: #f43f5e;
+  --accent-hover: #e11d48;
+  --accent-soft: rgba(244, 63, 94, 0.15);
+  --accent-border: rgba(244, 63, 94, 0.35);
+}
+
+[data-accent="amber"] {
+  --accent: #f59e0b;
+  --accent-hover: #d97706;
+  --accent-soft: rgba(245, 158, 11, 0.15);
+  --accent-border: rgba(245, 158, 11, 0.35);
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background-color: #0b0f19;
-  color: #f1f5f9;
+  background-color: var(--color-bg-base);
+  color: var(--color-text-main);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.theme-accent-btn {
+  background-color: var(--accent) !important;
+  color: #ffffff !important;
+}
+.theme-accent-btn:hover {
+  background-color: var(--accent-hover) !important;
+}
+
+.theme-accent-text {
+  color: var(--accent) !important;
+}
+
+.theme-accent-bg {
+  background-color: var(--accent-soft) !important;
+}
+
+.theme-accent-border {
+  border-color: var(--accent) !important;
 }
 
 /* Fediverse (Mastodon / Misskey) 投稿 HTML の整形スタイル */

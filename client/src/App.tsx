@@ -69,7 +69,14 @@ import {
   ChevronDown,
   ChevronUp,
   FolderArchive,
+  Clock,
+  Fingerprint,
+  Palette,
+  Sun,
+  Moon,
+  Layers,
 } from 'lucide-react';
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import { compressImage } from './utils/imageCompressor';
 
 // DOMPurify 設定: 安全な外部リンク処理
@@ -547,12 +554,43 @@ interface Post {
   is_sensitive?: boolean;
   is_pinned?: boolean;
   poll?: PollData | null;
+  channel_id?: string | null;
+  channel?: {
+    id: string;
+    name: string;
+    description?: string;
+    banner_url?: string;
+    color?: string;
+  } | null;
+}
+
+export interface Channel {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  banner_url: string;
+  color: string;
+  category: string;
+  is_archived: boolean;
+  posts_count: number;
+  followers_count: number;
+  is_following?: boolean;
+  created_at: string;
+}
+
+export interface WebAuthnCredential {
+  id: string;
+  device_name: string;
+  counter: number;
+  created_at: string;
+  last_used_at: string | null;
 }
 
 export interface AppNotification {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -561,6 +599,50 @@ export interface AppNotification {
   post_content: string;
   content: string;
   is_read: number;
+  created_at: string;
+}
+
+export interface Antenna {
+  id: string;
+  user_id: string;
+  name: string;
+  src: 'all' | 'home' | 'users';
+  user_list: string;
+  keywords: string;
+  exclude_keywords: string;
+  case_sensitive: boolean;
+  with_file: boolean;
+  notify: boolean;
+  created_at: string;
+}
+
+export interface Draft {
+  id: string;
+  user_id: string;
+  content: string;
+  cw: string;
+  visibility: 'public' | 'local';
+  media_attachments: MediaAttachment[];
+  poll: any;
+  in_reply_to: string;
+  quote_id: string;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface ScheduledPost {
+  id: string;
+  user_id: string;
+  content: string;
+  cw: string;
+  visibility: 'public' | 'local';
+  media_attachments: MediaAttachment[];
+  poll: any;
+  in_reply_to: string;
+  quote_id: string;
+  scheduled_at: string;
+  status: 'pending' | 'published' | 'failed';
+  error_message: string;
   created_at: string;
 }
 
@@ -936,9 +1018,803 @@ function PollInputEditor({
   );
 }
 
+// 📡 アンテナ作成・編集モーダル
+function AntennaEditModal({
+  initialData,
+  onSave,
+  onClose,
+}: {
+  initialData: Partial<Antenna> | null;
+  onSave: (data: Partial<Antenna>) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState<string>(initialData?.name || '');
+  const [src, setSrc] = useState<'all' | 'home' | 'users'>(initialData?.src || 'all');
+  const [userList, setUserList] = useState<string>(initialData?.user_list || '');
+  const [keywords, setKeywords] = useState<string>(initialData?.keywords || '');
+  const [excludeKeywords, setExcludeKeywords] = useState<string>(initialData?.exclude_keywords || '');
+  const [caseSensitive, setCaseSensitive] = useState<boolean>(Boolean(initialData?.case_sensitive));
+  const [withFile, setWithFile] = useState<boolean>(Boolean(initialData?.with_file));
+  const [notify, setNotify] = useState<boolean>(Boolean(initialData?.notify));
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      alert('アンテナ名を入力してください。');
+      return;
+    }
+    if (!keywords.trim() && src === 'all') {
+      alert('全ノートを対象にする場合は、キーワードを1つ以上入力してください。');
+      return;
+    }
+    onSave({
+      id: initialData?.id,
+      name: name.trim(),
+      src,
+      user_list: userList.trim(),
+      keywords: keywords.trim(),
+      exclude_keywords: excludeKeywords.trim(),
+      case_sensitive: caseSensitive,
+      with_file: withFile,
+      notify,
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-emerald-400">
+            <Radio className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">
+              {initialData?.id ? 'アンテナの編集' : 'アンテナの新規作成'}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+          {/* アンテナ名 */}
+          <div>
+            <label className="block font-bold text-slate-300 mb-1">
+              アンテナ名 <span className="text-rose-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例: イラスト, Spica, 猫画像"
+              maxLength={50}
+              required
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+            />
+          </div>
+
+          {/* 受信ソース */}
+          <div>
+            <label className="block font-bold text-slate-300 mb-1">受信ソース</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setSrc('all')}
+                className={`py-2 px-3 rounded-xl font-bold border transition text-center cursor-pointer ${
+                  src === 'all'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-sm'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                全ノート (連合含む)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSrc('home')}
+                className={`py-2 px-3 rounded-xl font-bold border transition text-center cursor-pointer ${
+                  src === 'home'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-sm'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                ホーム (フォロー中)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSrc('users')}
+                className={`py-2 px-3 rounded-xl font-bold border transition text-center cursor-pointer ${
+                  src === 'users'
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-sm'
+                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                指定ユーザー
+              </button>
+            </div>
+          </div>
+
+          {/* 指定ユーザーの場合 */}
+          {src === 'users' && (
+            <div>
+              <label className="block font-bold text-slate-300 mb-1">
+                指定ユーザー名 (カンマ区切り)
+              </label>
+              <input
+                type="text"
+                value={userList}
+                onChange={(e) => setUserList(e.target.value)}
+                placeholder="例: alice, bob@example.com"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+              />
+            </div>
+          )}
+
+          {/* 含めるキーワード */}
+          <div>
+            <label className="block font-bold text-slate-300 mb-1">
+              含めるキーワード (スペースまたはカンマ区切り)
+            </label>
+            <input
+              type="text"
+              value={keywords}
+              onChange={(e) => setKeywords(e.target.value)}
+              placeholder="例: イラスト 創作 ドット絵"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              いずれかのキーワードを含むノートを自動収集します。空の場合は指定ソースの全ノートが対象になります。
+            </p>
+          </div>
+
+          {/* 除外するキーワード */}
+          <div>
+            <label className="block font-bold text-slate-300 mb-1">
+              除外するキーワード (スペースまたはカンマ区切り)
+            </label>
+            <input
+              type="text"
+              value={excludeKeywords}
+              onChange={(e) => setExcludeKeywords(e.target.value)}
+              placeholder="例: bot スパム ネタバレ"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+            />
+          </div>
+
+          {/* オプションチェックボックス */}
+          <div className="space-y-2 pt-2 border-t border-slate-800/60">
+            <label className="flex items-center space-x-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={withFile}
+                onChange={(e) => setWithFile(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500 w-4 h-4"
+              />
+              <span className="text-slate-300 font-medium">画像・動画などメディア添付があるノートのみ</span>
+            </label>
+
+            <label className="flex items-center space-x-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={caseSensitive}
+                onChange={(e) => setCaseSensitive(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500 w-4 h-4"
+              />
+              <span className="text-slate-300 font-medium">大文字・小文字を厳密に区別する</span>
+            </label>
+
+            <label className="flex items-center space-x-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notify}
+                onChange={(e) => setNotify(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500 w-4 h-4"
+              />
+              <span className="text-slate-300 font-medium">マッチした新着投稿を受信した時に通知する</span>
+            </label>
+          </div>
+
+          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-800">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
+            >
+              キャンセル
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-bold shadow-lg shadow-emerald-500/20 transition cursor-pointer"
+            >
+              {initialData?.id ? 'アンテナを更新' : 'アンテナを作成'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// 📡 アンテナ管理・一覧モーダル
+function AntennaManageModal({
+  antennas,
+  activeAntenna,
+  onSelectAntenna,
+  onOpenCreate,
+  onEditAntenna,
+  onDeleteAntenna,
+  onClose,
+}: {
+  antennas: Antenna[];
+  activeAntenna: Antenna | null;
+  onSelectAntenna: (ant: Antenna) => void;
+  onOpenCreate: () => void;
+  onEditAntenna: (ant: Antenna) => void;
+  onDeleteAntenna: (id: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-emerald-400">
+            <Radio className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">
+              アンテナ管理 ({antennas.length})
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* 新規作成ボタン */}
+        <button
+          type="button"
+          onClick={() => {
+            onClose();
+            onOpenCreate();
+          }}
+          className="w-full py-2.5 px-4 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-2xl font-bold text-xs transition flex items-center justify-center space-x-2 cursor-pointer shadow-sm"
+        >
+          <Plus className="w-4 h-4" />
+          <span>新しいアンテナを作成する</span>
+        </button>
+
+        <div className="max-h-96 overflow-y-auto space-y-2.5 pr-1">
+          {antennas.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 text-xs space-y-2">
+              <Radio className="w-8 h-8 mx-auto opacity-40 text-slate-400" />
+              <p>アンテナはまだ作成されていません。</p>
+              <p className="text-emerald-400 font-semibold">
+                上のボタンからキーワードを設定してアンテナを作成しましょう！
+              </p>
+            </div>
+          ) : (
+            antennas.map((ant) => (
+              <div
+                key={ant.id}
+                className={`p-3.5 rounded-2xl border transition space-y-2 group ${
+                  activeAntenna?.id === ant.id
+                    ? 'bg-emerald-500/10 border-emerald-500/50'
+                    : 'bg-slate-950/70 border-slate-800/80 hover:border-emerald-500/30'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <Radio className="w-4 h-4 text-emerald-400" />
+                    <span className="font-bold text-sm text-slate-200">{ant.name}</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">
+                      {ant.src === 'home' ? 'ホームのみ' : ant.src === 'users' ? '指定ユーザー' : '全ノート'}
+                    </span>
+                    {ant.with_file ? (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-500/20 text-indigo-300">
+                        メディアあり
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onEditAntenna(ant);
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-indigo-300 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                      title="アンテナを編集"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteAntenna(ant.id)}
+                      className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                      title="アンテナを削除"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-400 space-y-1">
+                  {ant.keywords && (
+                    <p className="flex items-center space-x-1 text-[11px]">
+                      <span className="text-slate-500">キーワード:</span>
+                      <span className="text-emerald-300 font-mono font-bold">{ant.keywords}</span>
+                    </p>
+                  )}
+                  {ant.exclude_keywords && (
+                    <p className="flex items-center space-x-1 text-[11px]">
+                      <span className="text-slate-500">除外:</span>
+                      <span className="text-rose-400 font-mono">{ant.exclude_keywords}</span>
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-1 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelectAntenna(ant);
+                      onClose();
+                    }}
+                    className={`px-3 py-1 rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer ${
+                      activeAntenna?.id === ant.id
+                        ? 'bg-emerald-500 text-slate-950 shadow-md'
+                        : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40'
+                    }`}
+                  >
+                    <span>{activeAntenna?.id === ant.id ? '表示中' : 'このアンテナを表示'}</span>
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 📝 下書き一覧モーダル
+function DraftsModal({
+  drafts,
+  hasCurrentContent,
+  onSaveCurrent,
+  onLoadDraft,
+  onDeleteDraft,
+  onClose,
+}: {
+  drafts: Draft[];
+  hasCurrentContent: boolean;
+  onSaveCurrent: () => void;
+  onLoadDraft: (draft: Draft) => void;
+  onDeleteDraft: (id: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-cyan-400">
+            <FileText className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">
+              下書き一覧 ({drafts.length})
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* 現在の入力内容を下書き保存ボタン */}
+        {hasCurrentContent && (
+          <button
+            type="button"
+            onClick={onSaveCurrent}
+            className="w-full py-2.5 px-4 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/40 rounded-2xl font-bold text-xs transition flex items-center justify-center space-x-2 cursor-pointer shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            <span>現在の入力内容を新しく下書き保存する</span>
+          </button>
+        )}
+
+        <div className="max-h-96 overflow-y-auto space-y-2.5 pr-1">
+          {drafts.length === 0 ? (
+            <div className="py-12 text-center text-slate-500 text-xs space-y-2">
+              <FileText className="w-8 h-8 mx-auto opacity-40 text-slate-400" />
+              <p>保存された下書きはありません。</p>
+              {hasCurrentContent && (
+                <p className="text-cyan-400 font-semibold">
+                  上のボタンを押すと現在のノートを下書き保存できます。
+                </p>
+              )}
+            </div>
+          ) : (
+            drafts.map((draft) => (
+              <div
+                key={draft.id}
+                className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 hover:border-cyan-500/40 transition space-y-2 group"
+              >
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <div className="flex items-center space-x-2">
+                    <span className="font-mono">
+                      {new Date(draft.updated_at).toLocaleString('ja-JP')}
+                    </span>
+                    <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                      draft.visibility === 'local' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-indigo-500/20 text-indigo-300'
+                    }`}>
+                      {draft.visibility === 'local' ? 'ローカル' : '連合'}
+                    </span>
+                    {draft.media_attachments && draft.media_attachments.length > 0 && (
+                      <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[9px] font-bold">
+                        画像 {draft.media_attachments.length}枚
+                      </span>
+                    )}
+                    {draft.poll && (
+                      <span className="px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 text-[9px] font-bold">
+                        アンケート
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteDraft(draft.id)}
+                    className="p-1 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                    title="下書きを削除"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {draft.cw && (
+                  <div className="text-amber-300 text-xs font-semibold px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 w-fit">
+                    CW: {draft.cw}
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-200 line-clamp-3 whitespace-pre-wrap">
+                  {draft.content || <span className="text-slate-500 italic">（本文なし・メディアのみ）</span>}
+                </p>
+
+                <div className="pt-1 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => onLoadDraft(draft)}
+                    className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>フォームに読み込む</span>
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ⏰ 予約投稿モーダル
+function ScheduleModal({
+  scheduledPosts,
+  scheduledDateTime,
+  setScheduledDateTime,
+  hasCurrentContent,
+  onSubmitSchedule,
+  onCancelScheduledPost,
+  onClose,
+}: {
+  scheduledPosts: ScheduledPost[];
+  scheduledDateTime: string;
+  setScheduledDateTime: (dt: string) => void;
+  hasCurrentContent: boolean;
+  onSubmitSchedule: () => void;
+  onCancelScheduledPost: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<'new' | 'list'>('new');
+
+  // クイックプリセット日時設定ヘルパー
+  const setPresetTime = (minutesFromNow: number) => {
+    const target = new Date(Date.now() + minutesFromNow * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const formatted = `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}`;
+    setScheduledDateTime(formatted);
+  };
+
+  const setPresetTomorrow = (hour: number, minute: number) => {
+    const target = new Date();
+    target.setDate(target.getDate() + 1);
+    target.setHours(hour, minute, 0, 0);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const formatted = `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(target.getMinutes())}`;
+    setScheduledDateTime(formatted);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-amber-400">
+            <Clock className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">予約投稿</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* タブ切り替え */}
+        <div className="flex space-x-2 bg-slate-950 p-1 rounded-2xl border border-slate-800">
+          <button
+            type="button"
+            onClick={() => setActiveTab('new')}
+            className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition flex items-center justify-center space-x-1.5 cursor-pointer ${
+              activeTab === 'new'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>日時を指定して予約</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('list')}
+            className={`flex-1 py-1.5 text-xs font-bold rounded-xl transition flex items-center justify-center space-x-1.5 cursor-pointer ${
+              activeTab === 'list'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <FolderArchive className="w-3.5 h-3.5" />
+            <span>予約済み一覧 ({scheduledPosts.length})</span>
+          </button>
+        </div>
+
+        {activeTab === 'new' ? (
+          <div className="space-y-4 text-xs">
+            {!hasCurrentContent ? (
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-300 space-y-1">
+                <p className="font-bold">⚠️ 予約する投稿が入力されていません</p>
+                <p className="text-[11px] text-amber-400/80">
+                  予約投稿を行うには、まず背面の投稿フォームに本文や画像を入力してください。
+                </p>
+              </div>
+            ) : (
+              <>
+                <div>
+                  <label className="block font-bold text-slate-300 mb-1.5">
+                    公開予定日時 <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledDateTime}
+                    onChange={(e) => setScheduledDateTime(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 transition font-mono"
+                  />
+                </div>
+
+                {/* クイック日時プリセットボタン */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 mb-1.5">
+                    クイック指定
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setPresetTime(30)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition cursor-pointer text-[11px]"
+                    >
+                      30分後
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetTime(60)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition cursor-pointer text-[11px]"
+                    >
+                      1時間後
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetTime(180)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition cursor-pointer text-[11px]"
+                    >
+                      3時間後
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetTomorrow(8, 0)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition cursor-pointer text-[11px]"
+                    >
+                      明日の朝 08:00
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetTomorrow(20, 0)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-amber-300 hover:border-amber-500/40 transition cursor-pointer text-[11px]"
+                    >
+                      明日の夜 20:00
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
+                  <p className="font-semibold text-slate-300">💡 予約投稿の動作:</p>
+                  <p>
+                    指定した日時にサーバーのバックグラウンドスケジューラが自動で公開投稿（ActivityPub連合配信を含む）を行います。ブラウザを閉じていても問題ありません。
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end space-x-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onSubmitSchedule}
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-bold shadow-lg shadow-amber-500/20 transition flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>この日時で予約する</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="max-h-96 overflow-y-auto space-y-2.5 pr-1">
+              {scheduledPosts.length === 0 ? (
+                <div className="py-12 text-center text-slate-500 text-xs space-y-2">
+                  <Clock className="w-8 h-8 mx-auto opacity-40 text-slate-400" />
+                  <p>待機中の予約投稿はありません。</p>
+                </div>
+              ) : (
+                scheduledPosts.map((sp) => (
+                  <div
+                    key={sp.id}
+                    className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-2"
+                  >
+                    <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center space-x-2">
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30 flex items-center space-x-1">
+                          <Clock className="w-3 h-3" />
+                          <span>{new Date(sp.scheduled_at).toLocaleString('ja-JP')}</span>
+                        </span>
+                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                          sp.status === 'pending' ? 'bg-cyan-500/20 text-cyan-300' : 'bg-slate-700 text-slate-300'
+                        }`}>
+                          {sp.status === 'pending' ? '公開待機中' : sp.status}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onCancelScheduledPost(sp.id)}
+                        className="text-rose-400 hover:text-rose-300 text-xs font-semibold hover:underline flex items-center space-x-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>予約を解除</span>
+                      </button>
+                    </div>
+
+                    {sp.cw && (
+                      <div className="text-amber-300 text-xs font-semibold px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 w-fit">
+                        CW: {sp.cw}
+                      </div>
+                    )}
+
+                    <p className="text-xs text-slate-200 line-clamp-3 whitespace-pre-wrap">
+                      {sp.content || <span className="text-slate-500 italic">（本文なし・メディアのみ）</span>}
+                    </p>
+
+                    {sp.media_attachments && sp.media_attachments.length > 0 && (
+                      <span className="inline-block px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[10px]">
+                        添付画像 {sp.media_attachments.length}枚
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
-  // 現在のページビュー: 'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks'
-  const [currentView, setCurrentView] = useState<'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks'>('timeline');
+  // 現在のページビュー: 'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels'
+  const [currentView, setCurrentView] = useState<'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels'>('timeline');
+
+  // 🎨 テーマ & アクセントカラー設定 (localStorage 永続化)
+  const [themeMode, setThemeMode] = useState<'dark' | 'pure_black' | 'light'>(() => {
+    return (localStorage.getItem('spica_theme_mode') as any) || 'dark';
+  });
+  const [accentColor, setAccentColor] = useState<'indigo' | 'cyan' | 'emerald' | 'purple' | 'rose' | 'amber'>(() => {
+    return (localStorage.getItem('spica_accent_color') as any) || 'indigo';
+  });
+
+  // DOM 属性への即時テーマ適用
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', themeMode);
+    document.body.setAttribute('data-theme', themeMode);
+    localStorage.setItem('spica_theme_mode', themeMode);
+  }, [themeMode]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-accent', accentColor);
+    document.body.setAttribute('data-accent', accentColor);
+    localStorage.setItem('spica_accent_color', accentColor);
+  }, [accentColor]);
+
+  // 📢 チャンネル機能関連ステート
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [isLoadingChannels, setIsLoadingChannels] = useState<boolean>(false);
+  const [selectedChannel, setSelectedChannel] = useState<Channel | null>(null);
+  const [channelTimelinePosts, setChannelTimelinePosts] = useState<Post[]>([]);
+  const [isLoadingChannelTimeline, setIsLoadingChannelTimeline] = useState<boolean>(false);
+  const [channelCategoryFilter, setChannelCategoryFilter] = useState<string>('all');
+  const [showCreateChannelModal, setShowCreateChannelModal] = useState<boolean>(false);
+  const [newChannelName, setNewChannelName] = useState<string>('');
+  const [newChannelDesc, setNewChannelDesc] = useState<string>('');
+  const [newChannelColor, setNewChannelColor] = useState<string>('#6366f1');
+  const [newChannelCategory, setNewChannelCategory] = useState<string>('general');
+  const [isCreatingChannel, setIsCreatingChannel] = useState<boolean>(false);
+  const [postTargetChannelId, setPostTargetChannelId] = useState<string | null>(null); // 投稿先チャンネル
+
+  // 🔐 WebAuthn / パスキー生体認証関連ステート
+  const [passkeys, setPasskeys] = useState<WebAuthnCredential[]>([]);
+  const [isLoadingPasskeys, setIsLoadingPasskeys] = useState<boolean>(false);
+  const [isRegisteringPasskey, setIsRegisteringPasskey] = useState<boolean>(false);
+  const [isLoggingInWithPasskey, setIsLoggingInWithPasskey] = useState<boolean>(false);
+  const [passkeyDeviceName, setPasskeyDeviceName] = useState<string>('');
+  const [passkeyActionMessage, setPasskeyActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // 📊 アンケート（Poll）作成ステート
   const [showPollInput, setShowPollInput] = useState<boolean>(false);
@@ -1059,11 +1935,31 @@ export default function App() {
   const [regBio, setRegBio] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // タイムライン ('local' = 自ノードのみ, 'home' = 自ノード+フォロー中, 'all' = 連合・リレー含む全件, 'tag' = ハッシュタグ)
+  // タイムライン ('local' = 自ノードのみ, 'home' = 自ノード+フォロー中, 'all' = 連合・リレー含む全件, 'tag' = ハッシュタグ, 'antenna' = アンテナ)
   const [timeline, setTimeline] = useState<Post[]>([]);
-  const [timelineMode, setTimelineMode] = useState<'local' | 'home' | 'all' | 'tag'>(defaultTimeline);
+  const [timelineMode, setTimelineMode] = useState<'local' | 'home' | 'all' | 'tag' | 'antenna'>(defaultTimeline);
   const [activeHashtag, setActiveHashtag] = useState<string>('');
   const [followingUrls, setFollowingUrls] = useState<Set<string>>(new Set());
+
+  // 📡 アンテナ管理状態
+  const [antennas, setAntennas] = useState<Antenna[]>([]);
+  const [activeAntenna, setActiveAntenna] = useState<Antenna | null>(null);
+  const [showAntennaManageModal, setShowAntennaManageModal] = useState<boolean>(false);
+  const [showAntennaModal, setShowAntennaModal] = useState<boolean>(false);
+  const [editingAntenna, setEditingAntenna] = useState<Partial<Antenna> | null>(null);
+  const activeAntennaRef = useRef(activeAntenna);
+  useEffect(() => {
+    activeAntennaRef.current = activeAntenna;
+  }, [activeAntenna]);
+
+  // 📝 下書き管理状態
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [showDraftsModal, setShowDraftsModal] = useState<boolean>(false);
+
+  // ⏰ 予約投稿管理状態
+  const [scheduledPosts, setScheduledPosts] = useState<ScheduledPost[]>([]);
+  const [showScheduleModal, setShowScheduleModal] = useState<boolean>(false);
+  const [scheduledDateTime, setScheduledDateTime] = useState<string>('');
 
   // リアルタイム SSE コールバック用の最新状態参照 Ref (クロージャ stale state 回避)
   const timelineModeRef = useRef(timelineMode);
@@ -1086,15 +1982,42 @@ export default function App() {
     authUserRef.current = authUser;
   }, [authUser]);
 
-  // 🎯 投稿が現在のタイムラインモード（ローカル/ホーム/連合/タグ）に合致するか判定する共通ヘルパー
+  // 🎯 投稿が現在のタイムラインモード（ローカル/ホーム/連合/タグ/アンテナ）に合致するか判定する共通ヘルパー
   const isPostMatchingTimeline = (
     post: Post,
-    mode: 'local' | 'home' | 'all' | 'tag',
+    mode: 'local' | 'home' | 'all' | 'tag' | 'antenna',
     tag: string,
     followUrls: Set<string>,
     me: AuthUser | null
   ): boolean => {
     const isLocalPost = post.is_local === 1 || (post as any).is_local === true;
+
+    // 📡 アンテナ: 選択中のアンテナ条件に合致するか
+    if (mode === 'antenna') {
+      const ant = activeAntennaRef.current;
+      if (!ant) return false;
+      if (ant.with_file && (!post.media_attachments || post.media_attachments.length === 0)) return false;
+      const rawText = `${post.content || ''} ${post.cw || ''}`;
+      const searchTarget = ant.case_sensitive ? rawText : rawText.toLowerCase();
+      if (ant.exclude_keywords) {
+        const exList = ant.exclude_keywords.split(/[,、\n\s]+/).filter(Boolean);
+        for (const ex of exList) {
+          const t = ant.case_sensitive ? ex : ex.toLowerCase();
+          if (searchTarget.includes(t)) return false;
+        }
+      }
+      if (ant.keywords) {
+        const kwList = ant.keywords.split(/[,、\n\s]+/).filter(Boolean);
+        if (kwList.length > 0) {
+          const matched = kwList.some((kw) => {
+            const t = ant.case_sensitive ? kw : kw.toLowerCase();
+            return searchTarget.includes(t);
+          });
+          if (!matched) return false;
+        }
+      }
+      return true;
+    }
 
     // 🏠 ローカル: 自ノードの投稿 (is_local === 1) のみ！連合投稿は厳格に除外
     if (mode === 'local') {
@@ -1803,9 +2726,29 @@ export default function App() {
   };
 
   // タイムライン取得
-  const fetchTimeline = async (mode: 'local' | 'home' | 'all' | 'tag' = timelineMode, tagParam?: string) => {
+  const fetchTimeline = async (
+    mode: 'local' | 'home' | 'all' | 'tag' | 'antenna' = timelineMode,
+    tagParam?: string,
+    antennaIdParam?: string
+  ) => {
     setIsLoadingTimeline(true);
     try {
+      if (mode === 'antenna') {
+        const targetAntennaId = antennaIdParam || activeAntenna?.id;
+        if (!targetAntennaId) {
+          setTimeline([]);
+          return;
+        }
+        const res = await fetch(`/api/antennas/${targetAntennaId}/timeline`, {
+          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setTimeline(data.posts || []);
+        }
+        return;
+      }
+
       const currentTag = tagParam !== undefined ? tagParam : activeHashtag;
       const url = mode === 'tag' && currentTag
         ? `/api/timeline?mode=tag&tag=${encodeURIComponent(currentTag)}`
@@ -1824,10 +2767,271 @@ export default function App() {
   };
 
   // タイムラインモード切り替え（即時取得）
-  const handleSwitchTimelineMode = (mode: 'local' | 'home' | 'all' | 'tag') => {
+  const handleSwitchTimelineMode = (
+    mode: 'local' | 'home' | 'all' | 'tag' | 'antenna',
+    antenna?: Antenna
+  ) => {
     setNewPostsQueue([]);
     setTimelineMode(mode);
-    fetchTimeline(mode);
+    if (mode === 'antenna' && antenna) {
+      setActiveAntenna(antenna);
+      fetchTimeline('antenna', undefined, antenna.id);
+    } else {
+      if (mode !== 'antenna') {
+        setActiveAntenna(null);
+      }
+      fetchTimeline(mode);
+    }
+  };
+
+  // ==========================================
+  // 📡 アンテナ CRUD ハンドラー
+  // ==========================================
+  const fetchAntennas = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/antennas', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAntennas(data);
+      }
+    } catch (err) {
+      console.error('アンテナ一覧取得失敗:', err);
+    }
+  };
+
+  const handleSaveAntenna = async (antennaData: Partial<Antenna>) => {
+    if (!authToken) return;
+    try {
+      const isEdit = Boolean(antennaData.id);
+      const method = isEdit ? 'PUT' : 'POST';
+      const url = isEdit ? `/api/antennas/${antennaData.id}` : '/api/antennas';
+      const res = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(antennaData),
+      });
+      if (res.ok) {
+        const saved = await res.json();
+        await fetchAntennas();
+        setShowAntennaModal(false);
+        setEditingAntenna(null);
+        setActiveAntenna(saved);
+        handleSwitchTimelineMode('antenna', saved);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'アンテナの保存に失敗しました。');
+      }
+    } catch (err) {
+      console.error('アンテナ保存エラー:', err);
+    }
+  };
+
+  const handleDeleteAntenna = async (id: string) => {
+    if (!authToken || !window.confirm('このアンテナを削除してもよろしいですか？')) return;
+    try {
+      const res = await fetch(`/api/antennas/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        if (activeAntenna?.id === id) {
+          setActiveAntenna(null);
+          handleSwitchTimelineMode('local');
+        }
+        await fetchAntennas();
+      }
+    } catch (err) {
+      console.error('アンテナ削除エラー:', err);
+    }
+  };
+
+  // ==========================================
+  // 📝 下書き CRUD ハンドラー
+  // ==========================================
+  const fetchDrafts = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/drafts', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDrafts(data);
+      }
+    } catch (err) {
+      console.error('下書き一覧取得失敗:', err);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    if (!authToken) return;
+    if (!postContent.trim() && postAttachments.length === 0 && !quoteTargetPost) {
+      alert('保存する内容がありません。');
+      return;
+    }
+    try {
+      const pollData = showPollInput && pollChoices.filter((c) => c.trim()).length >= 2
+        ? { choices: pollChoices.filter((c) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
+        : null;
+      const res = await fetch('/api/drafts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          content: postContent,
+          cw: showCwInput ? cwContent : '',
+          visibility: postVisibility,
+          attachments: postAttachments,
+          poll: pollData,
+          quote_id: quoteTargetPost?.id || null,
+        }),
+      });
+      if (res.ok) {
+        await fetchDrafts();
+        alert('下書きを保存しました。');
+      } else {
+        alert('下書きの保存に失敗しました。');
+      }
+    } catch (err) {
+      console.error('下書き保存エラー:', err);
+    }
+  };
+
+  const handleLoadDraft = (draft: Draft) => {
+    if (postContent.trim() || postAttachments.length > 0) {
+      if (!window.confirm('入力中の内容が上書きされます。よろしいですか？')) return;
+    }
+    setPostContent(draft.content || '');
+    if (draft.cw) {
+      setCwContent(draft.cw);
+      setShowCwInput(true);
+    } else {
+      setCwContent('');
+      setShowCwInput(false);
+    }
+    setPostVisibility(draft.visibility || 'public');
+    setPostAttachments(draft.media_attachments || []);
+    if (draft.poll && draft.poll.choices) {
+      setShowPollInput(true);
+      setPollChoices(draft.poll.choices);
+      setPollMultiple(Boolean(draft.poll.multiple));
+      setPollExpiresIn(draft.poll.expiresIn || 86400);
+    } else {
+      setShowPollInput(false);
+      setPollChoices(['', '']);
+    }
+    setShowDraftsModal(false);
+  };
+
+  const handleDeleteDraft = async (id: string) => {
+    if (!authToken || !window.confirm('この下書きを削除してもよろしいですか？')) return;
+    try {
+      const res = await fetch(`/api/drafts/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        await fetchDrafts();
+      }
+    } catch (err) {
+      console.error('下書き削除エラー:', err);
+    }
+  };
+
+  // ==========================================
+  // ⏰ 予約投稿 CRUD ハンドラー
+  // ==========================================
+  const fetchScheduledPosts = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/scheduled-posts', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setScheduledPosts(data);
+      }
+    } catch (err) {
+      console.error('予約投稿一覧取得失敗:', err);
+    }
+  };
+
+  const handleCreateScheduledPost = async () => {
+    if (!authToken) return;
+    if (!scheduledDateTime) {
+      alert('予約日時を選択してください。');
+      return;
+    }
+    const scheduledDate = new Date(scheduledDateTime);
+    if (isNaN(scheduledDate.getTime()) || scheduledDate.getTime() <= Date.now()) {
+      alert('予約日時は現在より未来の日時を指定してください。');
+      return;
+    }
+    if (!postContent.trim() && postAttachments.length === 0 && !quoteTargetPost) {
+      alert('投稿内容または画像を入力してください。');
+      return;
+    }
+    try {
+      const pollData = showPollInput && pollChoices.filter((c) => c.trim()).length >= 2
+        ? { choices: pollChoices.filter((c) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
+        : null;
+      const res = await fetch('/api/scheduled-posts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          content: postContent,
+          cw: showCwInput ? cwContent : '',
+          visibility: postVisibility,
+          attachments: postAttachments,
+          poll: pollData,
+          quote_id: quoteTargetPost?.id || null,
+          scheduled_at: scheduledDate.toISOString(),
+        }),
+      });
+      if (res.ok) {
+        await fetchScheduledPosts();
+        setShowScheduleModal(false);
+        setScheduledDateTime('');
+        setPostContent('');
+        setPostAttachments([]);
+        setCwContent('');
+        setShowCwInput(false);
+        setShowPollInput(false);
+        setQuoteTargetPost(null);
+        alert('投稿を予約しました！指定時刻に自動公開されます。');
+      } else {
+        const err = await res.json();
+        alert(err.error || '予約投稿の作成に失敗しました。');
+      }
+    } catch (err) {
+      console.error('予約投稿エラー:', err);
+    }
+  };
+
+  const handleCancelScheduledPost = async (id: string) => {
+    if (!authToken || !window.confirm('この予約投稿をキャンセル（削除）してもよろしいですか？')) return;
+    try {
+      const res = await fetch(`/api/scheduled-posts/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        await fetchScheduledPosts();
+      }
+    } catch (err) {
+      console.error('予約投稿キャンセルエラー:', err);
+    }
   };
 
   // ハッシュタグ選択
@@ -2612,6 +3816,11 @@ export default function App() {
     if (authToken) {
       checkAuth(authToken);
       fetchUnreadCount();
+      fetchAntennas();
+      fetchDrafts();
+      fetchScheduledPosts();
+      fetchChannels();
+      fetchPasskeys();
       const timer = setInterval(fetchUnreadCount, 25000);
       return () => clearInterval(timer);
     } else {
@@ -2625,6 +3834,7 @@ export default function App() {
     fetchServerStats();
     fetchPopularTags();
     fetchCustomEmojis();
+    fetchChannels();
     checkPushSubscriptionStatus();
 
     // URL パラメータから招待コードを自動取得 (例: ?invite=spica-inv-xxx)
@@ -2941,6 +4151,267 @@ export default function App() {
     }
   };
 
+  // ==========================================
+  // 📢 チャンネル機能 ハンドラ
+  // ==========================================
+  const fetchChannels = async () => {
+    setIsLoadingChannels(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const url = channelCategoryFilter && channelCategoryFilter !== 'all'
+        ? `/api/channels?category=${encodeURIComponent(channelCategoryFilter)}`
+        : '/api/channels';
+      const res = await fetch(url, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setChannels(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch channels:', e);
+    } finally {
+      setIsLoadingChannels(false);
+    }
+  };
+
+  const openChannelDetail = async (channel: Channel) => {
+    setSelectedChannel(channel);
+    setIsLoadingChannelTimeline(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const res = await fetch(`/api/channels/${channel.id}/timeline`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setChannelTimelinePosts(data.posts || []);
+        if (data.channel) {
+          setSelectedChannel(data.channel);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch channel timeline:', e);
+    } finally {
+      setIsLoadingChannelTimeline(false);
+    }
+  };
+
+  const handleToggleChannelFollow = async (channelId: string) => {
+    if (!authToken) {
+      setShowLoginModal(true);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/channels/${channelId}/follow`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setChannels((prev) =>
+          prev.map((c) =>
+            c.id === channelId
+              ? {
+                  ...c,
+                  is_following: data.following,
+                  followers_count: data.following ? c.followers_count + 1 : Math.max(0, c.followers_count - 1),
+                }
+              : c
+          )
+        );
+        if (selectedChannel && selectedChannel.id === channelId) {
+          setSelectedChannel((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  is_following: data.following,
+                  followers_count: data.following ? prev.followers_count + 1 : Math.max(0, prev.followers_count - 1),
+                }
+              : null
+          );
+        }
+      }
+    } catch (e) {
+      console.error('Failed to toggle channel follow:', e);
+    }
+  };
+
+  const handleCreateChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !newChannelName.trim()) return;
+    setIsCreatingChannel(true);
+    try {
+      const res = await fetch('/api/channels', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          name: newChannelName.trim(),
+          description: newChannelDesc.trim(),
+          color: newChannelColor,
+          category: newChannelCategory,
+        }),
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setChannels((prev) => [created, ...prev]);
+        setShowCreateChannelModal(false);
+        setNewChannelName('');
+        setNewChannelDesc('');
+        openChannelDetail(created);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'チャンネルの作成に失敗しました。');
+      }
+    } catch (e: any) {
+      alert(`エラー: ${e.message}`);
+    } finally {
+      setIsCreatingChannel(false);
+    }
+  };
+
+  // ==========================================
+  // 🔐 WebAuthn / パスキー生体認証 ハンドラ
+  // ==========================================
+  const fetchPasskeys = async () => {
+    if (!authToken) return;
+    setIsLoadingPasskeys(true);
+    try {
+      const res = await fetch('/api/webauthn/credentials', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPasskeys(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch passkeys:', e);
+    } finally {
+      setIsLoadingPasskeys(false);
+    }
+  };
+
+  const handleRegisterPasskey = async () => {
+    if (!authToken) return;
+    setIsRegisteringPasskey(true);
+    setPasskeyActionMessage(null);
+    try {
+      const optRes = await fetch('/api/webauthn/register/options', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!optRes.ok) {
+        const err = await optRes.json();
+        throw new Error(err.error || 'オプション取得に失敗しました。');
+      }
+      const options = await optRes.json();
+
+      // SimpleWebAuthn ブラウザ側 API 実行
+      const regResponse = await startRegistration({ optionsJSON: options });
+
+      const verifyRes = await fetch('/api/webauthn/register/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          response: regResponse,
+          credential: regResponse,
+          device_name: passkeyDeviceName.trim() || undefined,
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        const err = await verifyRes.json();
+        throw new Error(err.error || '登録検証に失敗しました。');
+      }
+
+      setPasskeyDeviceName('');
+      setPasskeyActionMessage({ type: 'success', text: 'パスキーを正常に登録しました！次回から生体認証でワンタップログインできます。' });
+      fetchPasskeys();
+      setTimeout(() => setPasskeyActionMessage(null), 5000);
+    } catch (e: any) {
+      console.error('Passkey registration error:', e);
+      if (e.name !== 'NotAllowedError') {
+        setPasskeyActionMessage({ type: 'error', text: e.message || 'パスキー登録に失敗しました。' });
+      }
+    } finally {
+      setIsRegisteringPasskey(false);
+    }
+  };
+
+  const handleDeletePasskey = async (credId: string) => {
+    if (!authToken || !confirm('このパスキーを削除しますか？')) return;
+    try {
+      const res = await fetch(`/api/webauthn/credentials/${credId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        setPasskeys((prev) => prev.filter((p) => p.id !== credId));
+        setPasskeyActionMessage({ type: 'success', text: 'パスキーを削除しました。' });
+        setTimeout(() => setPasskeyActionMessage(null), 4000);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'パスキーの削除に失敗しました。');
+      }
+    } catch (e: any) {
+      alert(`エラー: ${e.message}`);
+    }
+  };
+
+  const handleLoginWithPasskey = async () => {
+    setIsLoggingInWithPasskey(true);
+    setAuthError(null);
+    try {
+      const optRes = await fetch('/api/webauthn/authenticate/options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: loginId.trim() || undefined }),
+      });
+      if (!optRes.ok) {
+        const err = await optRes.json();
+        throw new Error(err.error || '認証オプションの取得に失敗しました。');
+      }
+      const options = await optRes.json();
+
+      // SimpleWebAuthn ブラウザ側 生体認証 / パスキープロンプト起動
+      const authResponse = await startAuthentication({ optionsJSON: options });
+
+      const verifyRes = await fetch('/api/webauthn/authenticate/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credential: authResponse,
+          expectedChallenge: options.challenge,
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        const err = await verifyRes.json();
+        throw new Error(err.error || 'パスキー認証に失敗しました。');
+      }
+
+      const data = await verifyRes.json();
+      setAuthToken(data.token);
+      localStorage.setItem('spica_token', data.token);
+      localStorage.setItem('astrabit_token', data.token);
+      setAuthUser(data.user);
+      fetchMyFollowingUrls(data.token);
+      setShowLoginModal(false);
+      fetchTimeline();
+    } catch (e: any) {
+      console.error('Passkey login error:', e);
+      if (e.name !== 'NotAllowedError') {
+        setAuthError(e.message || 'パスキー認証に失敗しました。');
+      }
+    } finally {
+      setIsLoggingInWithPasskey(false);
+    }
+  };
+
   // ログインハンドラ
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3202,6 +4673,7 @@ export default function App() {
           quote_id: quoteTargetPost ? quoteTargetPost.id : undefined,
           is_sensitive: isSensitivePost,
           cw: showCwInput && cwContent.trim() ? cwContent.trim() : undefined,
+          channel_id: postTargetChannelId || undefined,
           poll: hasPoll
             ? {
                 choices: validChoices,
@@ -3224,8 +4696,12 @@ export default function App() {
         setPollMultiple(false);
         setPollExpiresIn(86400);
         setShowMobilePostModal(false);
+        setPostTargetChannelId(null);
         await fetchTimeline();
         await fetchServerStats();
+        if (selectedChannel) {
+          openChannelDetail(selectedChannel);
+        }
         if (authUser) {
           checkAuth(authToken);
         }
@@ -3992,8 +5468,23 @@ export default function App() {
                   {post.author_handle}
                 </span>
               </div>
-              <div className="flex items-center space-x-2 text-[11px] text-slate-500 mt-0.5 truncate">
+              <div className="flex items-center space-x-2 text-[11px] text-slate-500 mt-0.5 truncate flex-wrap gap-y-1">
                 <span className="shrink-0">{new Date(post.published_at).toLocaleString('ja-JP')}</span>
+                {post.channel && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openChannelDetail(post.channel as any);
+                      setCurrentView('channels');
+                    }}
+                    className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-bold text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 hover:bg-indigo-500/25 transition cursor-pointer shrink-0"
+                    title={`チャンネル「${post.channel.name}」を開く`}
+                  >
+                    <Hash className="w-2.5 h-2.5 text-indigo-400" />
+                    <span className="truncate max-w-[140px]">{post.channel.name}</span>
+                  </button>
+                )}
                 {post.visibility === 'local' && (
                   <span className="text-[10px] text-emerald-400/90 font-medium shrink-0">🏠 ローカル限定</span>
                 )}
@@ -4537,6 +6028,24 @@ export default function App() {
                 </button>
               </div>
             )}
+
+            {/* 🎨 テーマ切替ボタン (ダーク / 漆黒OLED / ライト) */}
+            <button
+              type="button"
+              onClick={() => {
+                setThemeMode((prev) => (prev === 'dark' ? 'pure_black' : prev === 'pure_black' ? 'light' : 'dark'));
+              }}
+              className="p-2 rounded-xl bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-700/60 transition cursor-pointer"
+              title={`外観テーマ切替 (現在: ${themeMode === 'pure_black' ? 'OLED漆黒モード' : themeMode === 'light' ? 'ソーラーライトモード' : 'コズミックダークモード'})`}
+            >
+              {themeMode === 'pure_black' ? (
+                <Moon className="w-4 h-4 text-purple-400" />
+              ) : themeMode === 'light' ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Palette className="w-4 h-4 text-cyan-400" />
+              )}
+            </button>
           </div>
         </div>
       </header>
@@ -4605,13 +6114,31 @@ export default function App() {
           )}
         </div>
 
-        <button
-          onClick={() => fetchTimeline(timelineMode)}
-          disabled={isLoadingTimeline}
-          className="p-1.5 text-slate-400 hover:text-slate-200 rounded-xl"
-        >
-          <RefreshCw className={`w-4 h-4 ${isLoadingTimeline ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center space-x-1">
+          <button
+            type="button"
+            onClick={() => {
+              setThemeMode((prev) => (prev === 'dark' ? 'pure_black' : prev === 'pure_black' ? 'light' : 'dark'));
+            }}
+            className="p-1.5 text-slate-400 hover:text-slate-200 rounded-xl"
+            title="外観テーマ切替"
+          >
+            {themeMode === 'pure_black' ? (
+              <Moon className="w-4 h-4 text-purple-400" />
+            ) : themeMode === 'light' ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Palette className="w-4 h-4 text-cyan-400" />
+            )}
+          </button>
+          <button
+            onClick={() => fetchTimeline(timelineMode)}
+            disabled={isLoadingTimeline}
+            className="p-1.5 text-slate-400 hover:text-slate-200 rounded-xl"
+          >
+            <RefreshCw className={`w-4 h-4 ${isLoadingTimeline ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </header>
 
       {/* メインビュー */}
@@ -6714,6 +8241,85 @@ export default function App() {
                     </p>
                   </div>
 
+                  {/* 🎨 外観テーマ & アクセントカラー設定 */}
+                  <div className="space-y-4 p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-200 mb-1 flex items-center space-x-2">
+                        <Palette className="w-4 h-4 text-indigo-400" />
+                        <span>外観テーマ & カラーテーマ</span>
+                      </label>
+                      <p className="text-[11px] text-slate-400">
+                        お好みの画面モードとアクセントカラーにカスタマイズできます（即時反映されます）。
+                      </p>
+                    </div>
+
+                    {/* テーマモード (ダーク / 漆黒OLED / ライト) */}
+                    <div>
+                      <span className="text-[11px] font-bold text-slate-300 block mb-2">画面モード</span>
+                      <div className="grid grid-cols-3 gap-2.5">
+                        {[
+                          { id: 'dark', label: 'コズミック・ダーク', icon: Moon, desc: '標準ダーク' },
+                          { id: 'pure_black', label: 'OLED 漆黒モード', icon: Zap, desc: '完全ブラック省電力' },
+                          { id: 'light', label: 'ソーラー・ライト', icon: Sun, desc: '明るい白基調' },
+                        ].map((m) => {
+                          const IconComp = m.icon;
+                          const isSelected = themeMode === m.id;
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setThemeMode(m.id as any)}
+                              className={`p-3 rounded-xl border text-center transition cursor-pointer flex flex-col items-center justify-center space-y-1 ${
+                                isSelected
+                                  ? 'bg-indigo-600/20 border-indigo-500 text-white font-bold ring-2 ring-indigo-500/30'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                              }`}
+                            >
+                              <IconComp className={`w-4 h-4 ${isSelected ? 'text-indigo-400' : 'text-slate-400'}`} />
+                              <span className="text-xs">{m.label}</span>
+                              <span className="text-[10px] text-slate-500">{m.desc}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* アクセントカラー (6色) */}
+                    <div>
+                      <span className="text-[11px] font-bold text-slate-300 block mb-2">アクセントカラー</span>
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                        {[
+                          { id: 'indigo', label: 'インディゴ', hex: '#6366f1' },
+                          { id: 'cyan', label: 'シアン', hex: '#06b6d4' },
+                          { id: 'emerald', label: 'エメラルド', hex: '#10b981' },
+                          { id: 'purple', label: 'パープル', hex: '#a855f7' },
+                          { id: 'rose', label: 'ローズ', hex: '#f43f5e' },
+                          { id: 'amber', label: 'アンバー', hex: '#f59e0b' },
+                        ].map((c) => {
+                          const isSelected = accentColor === c.id;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onClick={() => setAccentColor(c.id as any)}
+                              className={`p-2.5 rounded-xl border flex flex-col items-center space-y-1.5 transition cursor-pointer ${
+                                isSelected
+                                  ? 'border-white bg-slate-900 ring-2 ring-white/30'
+                                  : 'border-slate-800 bg-slate-900/60 hover:bg-slate-800/80'
+                              }`}
+                            >
+                              <div
+                                className="w-5 h-5 rounded-full shadow"
+                                style={{ backgroundColor: c.hex }}
+                              />
+                              <span className="text-[10px] font-bold text-slate-300">{c.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
                   {/* デフォルト投稿公開範囲 */}
                   <div className="space-y-2.5">
                     <label className="block text-xs font-bold text-slate-300">
@@ -7007,6 +8613,113 @@ export default function App() {
                         アカウント登録時に発行された <strong>マスターキー (spica_sk_... または astrabit_sk_...)</strong> があなたのアカウントの唯一の鍵です。
                         万が一紛失した場合は再ログインができなくなりますので、必ずパスワード管理ツールや安全な保管場所にバックアップしてください。
                       </p>
+                    </div>
+
+                    {/* 🔐 WebAuthn / パスキー生体認証管理 */}
+                    <div className="bg-slate-950/70 border border-slate-800 p-4 sm:p-5 rounded-2xl space-y-4 mt-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2 font-bold text-slate-100">
+                          <Fingerprint className="w-5 h-5 text-indigo-400 shrink-0" />
+                          <span className="text-sm">パスキー / 生体認証 (WebAuthn)</span>
+                        </div>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+                          FIDO2 / W3C標準
+                        </span>
+                      </div>
+
+                      <p className="leading-relaxed text-slate-300 text-xs">
+                        Windows Hello、Touch ID、Face ID、物理セキュリティキーを連携すると、長いマスターキーを入力することなく、指紋や顔認証だけでワンタップサインインが可能になります。
+                      </p>
+
+                      {/* アクションメッセージ */}
+                      {passkeyActionMessage && (
+                        <div
+                          className={`p-3 rounded-xl text-xs flex items-center space-x-2 animate-in fade-in ${
+                            passkeyActionMessage.type === 'success'
+                              ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+                              : 'bg-rose-500/20 border border-rose-500/30 text-rose-300'
+                          }`}
+                        >
+                          {passkeyActionMessage.type === 'success' ? (
+                            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                          ) : (
+                            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                          )}
+                          <span>{passkeyActionMessage.text}</span>
+                        </div>
+                      )}
+
+                      {/* パスキー新規登録フォーム */}
+                      <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                        <input
+                          type="text"
+                          placeholder="デバイス名 (例: 自宅PC, 会社のMacBook, スマホ)"
+                          value={passkeyDeviceName}
+                          onChange={(e) => setPasskeyDeviceName(e.target.value)}
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleRegisterPasskey}
+                          disabled={isRegisteringPasskey}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 shadow-md cursor-pointer shrink-0"
+                        >
+                          {isRegisteringPasskey ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Fingerprint className="w-3.5 h-3.5" />
+                          )}
+                          <span>{isRegisteringPasskey ? '端末認証中...' : 'パスキーを登録'}</span>
+                        </button>
+                      </div>
+
+                      {/* 登録済みパスキー一覧 */}
+                      <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                        <span className="text-[11px] font-bold text-slate-400 block">
+                          登録済みパスキー ({passkeys.length}件)
+                        </span>
+
+                        {isLoadingPasskeys ? (
+                          <div className="py-4 text-center text-xs text-slate-400">
+                            <RefreshCw className="w-4 h-4 animate-spin mx-auto text-indigo-400 mb-1" />
+                            読み込み中...
+                          </div>
+                        ) : passkeys.length === 0 ? (
+                          <div className="py-4 text-center text-xs text-slate-500 bg-slate-900/50 rounded-xl border border-dashed border-slate-800">
+                            登録されたパスキーはありません
+                          </div>
+                        ) : (
+                          passkeys.map((p) => (
+                            <div
+                              key={p.id}
+                              className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs"
+                            >
+                              <div className="flex items-center space-x-2.5 min-w-0">
+                                <Fingerprint className="w-4 h-4 text-emerald-400 shrink-0" />
+                                <div className="min-w-0">
+                                  <div className="font-bold text-slate-200 truncate">
+                                    {p.device_name || '生体認証デバイス'}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                    登録日: {new Date(p.created_at).toLocaleDateString('ja-JP')}
+                                    {p.last_used_at && (
+                                      <span> ・ 最終利用: {new Date(p.last_used_at).toLocaleDateString('ja-JP')}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePasskey(p.id)}
+                                className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition cursor-pointer"
+                                title="このパスキーを削除"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
 
                     {/* 📦 データエクスポート (バックアップ・データ主権) */}
@@ -7425,6 +9138,14 @@ export default function App() {
                   typeIcon = <UserCheck className="w-4 h-4 text-purple-400" />;
                   typeBadgeBg = 'bg-purple-500/15 text-purple-300 border-purple-500/30';
                   typeLabel = 'フォロー';
+                } else if (notif.type === 'antenna') {
+                  typeIcon = <Radio className="w-4 h-4 text-emerald-400" />;
+                  typeBadgeBg = 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+                  typeLabel = 'アンテナ';
+                } else if (notif.type === 'scheduled_published') {
+                  typeIcon = <Clock className="w-4 h-4 text-amber-400" />;
+                  typeBadgeBg = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+                  typeLabel = '予約公開';
                 }
 
                 return (
@@ -7509,6 +9230,12 @@ export default function App() {
                           )}
                           {notif.type === 'follow' && (
                             <span>あなたをフォローしました</span>
+                          )}
+                          {notif.type === 'antenna' && (
+                            <span className="text-emerald-300">アンテナ「{notif.content}」を受信しました</span>
+                          )}
+                          {notif.type === 'scheduled_published' && (
+                            <span className="text-amber-300">予約投稿が正常に公開されました</span>
                           )}
                         </div>
 
@@ -7934,6 +9661,53 @@ export default function App() {
                   <span>ブックマーク</span>
                 </button>
 
+                {/* 📢 チャンネル */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCurrentView('channels');
+                    fetchChannels();
+                  }}
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
+                    currentView === 'channels'
+                      ? 'bg-slate-900 text-emerald-400 border border-emerald-500/30 shadow-md'
+                      : 'text-slate-400 hover:text-slate-100 hover:bg-slate-900/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-3">
+                    <Hash className="w-5 h-5 text-indigo-400" />
+                    <span>チャンネル</span>
+                  </div>
+                  {channels.length > 0 && (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-500/20 text-indigo-300 font-mono">
+                      {channels.length}
+                    </span>
+                  )}
+                </button>
+
+                {/* 📡 アンテナ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (authUser) {
+                      setShowAntennaManageModal(true);
+                    } else {
+                      setShowLoginModal(true);
+                    }
+                  }}
+                  className="w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-900/60"
+                >
+                  <div className="flex items-center space-x-3">
+                    <Radio className="w-5 h-5 text-emerald-400" />
+                    <span>アンテナ</span>
+                  </div>
+                  {antennas.length > 0 && (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-emerald-500/20 text-emerald-300 font-mono">
+                      {antennas.length}
+                    </span>
+                  )}
+                </button>
+
                 {/* マイページ */}
                 <button
                   type="button"
@@ -8323,12 +10097,308 @@ export default function App() {
                   )}
                 </div>
               </div>
+            ) : currentView === 'channels' ? (
+              /* 📢 チャンネル機能ビュー (Misskey風 トピック別掲示板) */
+              <div className="space-y-4">
+                {selectedChannel ? (
+                  /* 📢 選択中チャンネル詳細 & タイムライン */
+                  <div className="space-y-4">
+                    <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4 overflow-hidden relative">
+                      <div
+                        className="h-2 absolute top-0 left-0 right-0"
+                        style={{ backgroundColor: selectedChannel.color || '#6366f1' }}
+                      />
+                      <div className="flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedChannel(null)}
+                          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-bold transition cursor-pointer"
+                        >
+                          <ArrowLeft className="w-3.5 h-3.5" />
+                          <span>全チャンネル一覧へ</span>
+                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleChannelFollow(selectedChannel.id)}
+                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 cursor-pointer shadow-sm ${
+                              selectedChannel.is_following
+                                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 hover:bg-rose-500/20 hover:text-rose-300 hover:border-rose-500/40'
+                                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                            }`}
+                          >
+                            <Users className="w-3.5 h-3.5" />
+                            <span>{selectedChannel.is_following ? '参加中' : '参加する'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openChannelDetail(selectedChannel)}
+                            disabled={isLoadingChannelTimeline}
+                            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 transition cursor-pointer"
+                            title="更新"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingChannelTimeline ? 'animate-spin text-indigo-400' : ''}`} />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex items-start space-x-3.5">
+                        <div
+                          className="w-12 h-12 rounded-2xl flex items-center justify-center text-white text-xl font-black shadow-lg shrink-0"
+                          style={{ backgroundColor: selectedChannel.color || '#6366f1' }}
+                        >
+                          <Hash className="w-6 h-6" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h2 className="text-lg font-black text-slate-100 flex items-center space-x-2 truncate">
+                            <span>{selectedChannel.name}</span>
+                          </h2>
+                          {selectedChannel.description && (
+                            <p className="text-xs text-slate-300 mt-1 leading-relaxed whitespace-pre-wrap">
+                              {selectedChannel.description}
+                            </p>
+                          )}
+                          <div className="flex items-center space-x-4 text-xs text-slate-400 mt-2 font-semibold">
+                            <span>ノート: <strong className="text-slate-200">{selectedChannel.posts_count}</strong></span>
+                            <span>参加者: <strong className="text-slate-200">{selectedChannel.followers_count}</strong></span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* このチャンネル宛てクイック投稿誘導 */}
+                      {authUser && (
+                        <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
+                          <span className="text-xs text-slate-400">
+                            {postTargetChannelId === selectedChannel.id ? (
+                              <strong className="text-indigo-300">📢 投稿フォームでこのチャンネルが選択されています</strong>
+                            ) : (
+                              'このチャンネルにノートを投稿しますか？'
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPostTargetChannelId(selectedChannel.id);
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                              document.querySelector<HTMLTextAreaElement>('#main-post-textarea')?.focus();
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow cursor-pointer"
+                          >
+                            このチャンネルに投稿する
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* チャンネル内タイムライン */}
+                    <div className="space-y-4">
+                      {isLoadingChannelTimeline ? (
+                        <div className="text-center py-20 bg-slate-900/60 rounded-3xl border border-slate-800 shadow-xl">
+                          <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-400 mb-3" />
+                          <p className="text-sm text-slate-400">ノートを読み込み中...</p>
+                        </div>
+                      ) : channelTimelinePosts.length === 0 ? (
+                        <div className="bg-slate-900/60 border border-slate-800 rounded-3xl p-12 text-center space-y-3 shadow-xl">
+                          <div className="w-14 h-14 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto text-indigo-400">
+                            <MessageSquare className="w-7 h-7" />
+                          </div>
+                          <h3 className="text-base font-bold text-slate-200">まだノートがありません</h3>
+                          <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                            このチャンネルの最初の投稿者になりましょう！
+                          </p>
+                          {authUser && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPostTargetChannelId(selectedChannel.id);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                                document.querySelector<HTMLTextAreaElement>('#main-post-textarea')?.focus();
+                              }}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
+                            >
+                              このチャンネルにノートを投稿する
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        channelTimelinePosts.map((post) => renderPostCard(post))
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* 📢 チャンネル一覧 & 探索 */
+                  <div className="space-y-4">
+                    <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-4 sm:p-5 shadow-xl space-y-4">
+                      <div className="flex items-center justify-between flex-wrap gap-3">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 shadow">
+                            <Layers className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h2 className="text-base sm:text-lg font-black text-slate-100 flex items-center space-x-2">
+                              <span>チャンネル</span>
+                              <span className="text-xs font-normal text-slate-400 font-mono">({channels.length})</span>
+                            </h2>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              興味のあるトピックに参加して、仲間と会話を深めましょう
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (authUser) setShowCreateChannelModal(true);
+                              else setShowLoginModal(true);
+                            }}
+                            className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-md shadow-indigo-600/30 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>チャンネル作成</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={fetchChannels}
+                            disabled={isLoadingChannels}
+                            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 transition cursor-pointer"
+                            title="更新"
+                          >
+                            <RefreshCw className={`w-4 h-4 ${isLoadingChannels ? 'animate-spin text-indigo-400' : ''}`} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* カテゴリフィルタ */}
+                      <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 [scrollbar-width:none]">
+                        {[
+                          { id: 'all', label: 'すべて' },
+                          { id: 'general', label: '💬 総合・雑談' },
+                          { id: 'gaming', label: '🎮 ゲーム' },
+                          { id: 'tech', label: '💻 技術・IT' },
+                          { id: 'art', label: '🎨 イラスト・創作' },
+                        ].map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => {
+                              setChannelCategoryFilter(cat.id);
+                              fetchChannels();
+                            }}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                              channelCategoryFilter === cat.id
+                                ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40'
+                                : 'bg-slate-950/60 border border-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {cat.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* チャンネルカードグリッド */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                      {isLoadingChannels ? (
+                        <div className="col-span-full text-center py-20 bg-slate-900/60 rounded-3xl border border-slate-800 shadow-xl">
+                          <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-400 mb-3" />
+                          <p className="text-sm text-slate-400">チャンネルを読み込み中...</p>
+                        </div>
+                      ) : channels.length === 0 ? (
+                        <div className="col-span-full bg-slate-900/60 border border-slate-800 rounded-3xl p-12 text-center space-y-3 shadow-xl">
+                          <div className="w-14 h-14 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto text-indigo-400">
+                            <Layers className="w-7 h-7" />
+                          </div>
+                          <h3 className="text-base font-bold text-slate-200">チャンネルがありません</h3>
+                          <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+                            最初のチャンネルを作成して、趣味や話題ごとの広場を開設しましょう！
+                          </p>
+                          {authUser && (
+                            <button
+                              type="button"
+                              onClick={() => setShowCreateChannelModal(true)}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
+                            >
+                              チャンネルを作成する
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        channels.map((ch) => (
+                          <div
+                            key={ch.id}
+                            className="bg-slate-900/90 border border-slate-800 hover:border-slate-700 rounded-2xl p-4 shadow-lg flex flex-col justify-between transition relative overflow-hidden group"
+                          >
+                            <div
+                              className="h-1.5 absolute top-0 left-0 right-0"
+                              style={{ backgroundColor: ch.color || '#6366f1' }}
+                            />
+                            <div className="space-y-2">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center space-x-2.5 min-w-0">
+                                  <div
+                                    className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold shrink-0 shadow"
+                                    style={{ backgroundColor: ch.color || '#6366f1' }}
+                                  >
+                                    <Hash className="w-4 h-4" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <h4 className="font-bold text-sm text-slate-100 truncate group-hover:text-indigo-300 transition">
+                                      {ch.name}
+                                    </h4>
+                                    <div className="flex items-center space-x-2 text-[10px] text-slate-400 mt-0.5">
+                                      <span>ノート {ch.posts_count}</span>
+                                      <span>・</span>
+                                      <span>参加 {ch.followers_count}人</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {ch.description && (
+                                <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
+                                  {ch.description}
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="pt-3 mt-3 border-t border-slate-800/60 flex items-center justify-between gap-2">
+                              <button
+                                type="button"
+                                onClick={() => openChannelDetail(ch)}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-bold transition flex items-center space-x-1 cursor-pointer"
+                              >
+                                <span>開く</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </button>
+
+                              {authUser && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleChannelFollow(ch.id)}
+                                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                    ch.is_following
+                                      ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40 hover:bg-rose-500/20 hover:text-rose-300'
+                                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                                  }`}
+                                >
+                                  {ch.is_following ? '参加中' : '参加'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             ) : (
               /* 🏠 通常タイムラインビュー */
               <div className="space-y-4">
                 {/* タイムライン上部タブ (Misskeyスタイル) */}
                 <div className="flex items-center justify-between bg-slate-900/90 border border-slate-800 rounded-2xl p-2 px-3 shadow-lg">
-                  <div className="flex items-center space-x-1 overflow-x-auto">
+                  <div className="flex items-center space-x-1 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                     <button
                       type="button"
                       onClick={() => handleSwitchTimelineMode('home')}
@@ -8365,6 +10435,42 @@ export default function App() {
                       <Globe className="w-3.5 h-3.5" />
                       <span>連合</span>
                     </button>
+
+                    {/* 📡 作成済みアンテナのタブ一覧 */}
+                    {antennas.map((ant) => {
+                      const isActive = timelineMode === 'antenna' && activeAntenna?.id === ant.id;
+                      return (
+                        <button
+                          key={ant.id}
+                          type="button"
+                          onClick={() => handleSwitchTimelineMode('antenna', ant)}
+                          className={`px-3 py-1.5 text-xs font-bold rounded-xl transition flex items-center space-x-1.5 shrink-0 cursor-pointer ${
+                            isActive
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                          }`}
+                          title={`アンテナ「${ant.name}」を表示`}
+                        >
+                          <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>{ant.name}</span>
+                        </button>
+                      );
+                    })}
+
+                    {/* 📡 アンテナ管理・追加ボタン */}
+                    <button
+                      type="button"
+                      onClick={() => setShowAntennaManageModal(true)}
+                      className="px-2.5 py-1.5 text-xs font-bold rounded-xl transition flex items-center space-x-1 shrink-0 text-slate-400 hover:text-emerald-300 hover:bg-slate-800/60 cursor-pointer border border-dashed border-slate-700/60 hover:border-emerald-500/40"
+                      title="アンテナの管理・新規作成"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>アンテナ</span>
+                      {antennas.length > 0 && (
+                        <span className="text-[10px] text-slate-500 font-mono">({antennas.length})</span>
+                      )}
+                    </button>
+
                     {timelineMode === 'tag' && activeHashtag && (
                       <div className="flex items-center space-x-1 px-3 py-1.5 text-xs font-bold rounded-xl bg-indigo-600/30 text-indigo-300 border border-indigo-500/50 shadow-sm shrink-0">
                         <Hash className="w-3.5 h-3.5 text-indigo-400" />
@@ -8458,6 +10564,26 @@ export default function App() {
                             title="引用を取り消す"
                           >
                             <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 📢 チャンネル宛て投稿バッジ */}
+                      {postTargetChannelId && (
+                        <div className="flex items-center justify-between px-3 py-2 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-xs text-indigo-300 animate-in fade-in duration-150">
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <Hash className="w-4 h-4 text-indigo-400 shrink-0" />
+                            <span className="font-bold truncate">
+                              投稿先: {channels.find((c) => c.id === postTargetChannelId)?.name || 'チャンネル'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setPostTargetChannelId(null)}
+                            className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition shrink-0 cursor-pointer"
+                            title="タイムライン全体投稿に戻す"
+                          >
+                            <X className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       )}
@@ -8641,6 +10767,53 @@ export default function App() {
                             <Smile className="w-3.5 h-3.5 text-yellow-400" />
                             <span className="text-[10px] font-bold">絵文字</span>
                           </button>
+
+                          {/* 📝 下書き保存・一覧 */}
+                          <button
+                            type="button"
+                            onClick={() => setShowDraftsModal(true)}
+                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-850 border-slate-700/60 text-slate-300 hover:text-cyan-300 hover:border-cyan-500/40"
+                            title="下書き一覧・保存"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                            <span className="text-[10px] font-bold">下書き</span>
+                            {drafts.length > 0 && (
+                              <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 text-[9px] font-bold font-mono">
+                                {drafts.length}
+                              </span>
+                            )}
+                          </button>
+
+                          {/* ⏰ 予約投稿 */}
+                          <button
+                            type="button"
+                            onClick={() => setShowScheduleModal(true)}
+                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-850 border-slate-700/60 text-slate-300 hover:text-amber-300 hover:border-amber-500/40"
+                            title="日時を指定して予約投稿"
+                          >
+                            <Clock className="w-3.5 h-3.5 text-amber-400" />
+                            <span className="text-[10px] font-bold">予約</span>
+                            {scheduledPosts.length > 0 && (
+                              <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[9px] font-bold font-mono">
+                                {scheduledPosts.length}
+                              </span>
+                            )}
+                          </button>
+
+                          {/* 📢 チャンネル宛て選択 */}
+                          <select
+                            value={postTargetChannelId || ''}
+                            onChange={(e) => setPostTargetChannelId(e.target.value || null)}
+                            className="bg-slate-850 border border-slate-700/60 rounded-lg px-2 py-1.5 text-xs text-slate-300 font-bold focus:outline-none focus:border-indigo-500 cursor-pointer"
+                            title="投稿先チャンネルを選択"
+                          >
+                            <option value="">📢 全体公開</option>
+                            {channels.map((ch) => (
+                              <option key={ch.id} value={ch.id}>
+                                📢 {ch.name}
+                              </option>
+                            ))}
+                          </select>
                         </div>
 
                         <button
@@ -9038,6 +11211,19 @@ export default function App() {
                     >
                       <Eye className="w-3.5 h-3.5 text-slate-400" />
                       <span>ゲストとしてタイムラインを見る</span>
+                    </button>
+
+                    <button
+                      onClick={handleLoginWithPasskey}
+                      disabled={isLoggingInWithPasskey}
+                      className="w-full py-2.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 text-xs font-bold rounded-2xl transition cursor-pointer flex items-center justify-center space-x-2 shadow-sm"
+                    >
+                      {isLoggingInWithPasskey ? (
+                        <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                      ) : (
+                        <Fingerprint className="w-4 h-4 text-indigo-400" />
+                      )}
+                      <span>{isLoggingInWithPasskey ? '生体認証を確認中...' : '🔐 パスキー / 生体認証でログイン'}</span>
                     </button>
 
                     <button
@@ -9573,6 +11759,26 @@ export default function App() {
                         className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-md transition transform active:scale-98 cursor-pointer mt-2"
                       >
                         認証してログイン
+                      </button>
+
+                      <div className="relative flex py-1 items-center">
+                        <div className="flex-grow border-t border-slate-800"></div>
+                        <span className="flex-shrink mx-2 text-[10px] text-slate-500 font-semibold">または</span>
+                        <div className="flex-grow border-t border-slate-800"></div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleLoginWithPasskey}
+                        disabled={isLoggingInWithPasskey}
+                        className="w-full py-2.5 bg-slate-850 hover:bg-slate-800 text-slate-200 hover:text-white text-xs font-bold rounded-xl border border-slate-700 transition flex items-center justify-center space-x-2 shadow cursor-pointer disabled:opacity-50"
+                      >
+                        {isLoggingInWithPasskey ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                        ) : (
+                          <Fingerprint className="w-3.5 h-3.5 text-emerald-400" />
+                        )}
+                        <span>{isLoggingInWithPasskey ? '生体認証を確認中...' : 'パスキー (Windows Hello / Touch ID) でログイン'}</span>
                       </button>
 
                       <div className="text-center pt-1">
@@ -11213,6 +13419,18 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
+                    setCurrentView('channels');
+                    fetchChannels();
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
+                >
+                  <Hash className="w-4 h-4 text-indigo-400" />
+                  <span>チャンネル</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
                     openSettings('profile');
                     setIsMobileMenuOpen(false);
                   }}
@@ -11310,6 +13528,10 @@ export default function App() {
                   <Repeat className="w-4 h-4 text-emerald-400" />
                 ) : notificationToast.type === 'reply' ? (
                   <MessageSquare className="w-4 h-4 text-indigo-400" />
+                ) : notificationToast.type === 'antenna' ? (
+                  <Radio className="w-4 h-4 text-emerald-400" />
+                ) : notificationToast.type === 'scheduled_published' ? (
+                  <Clock className="w-4 h-4 text-amber-400" />
                 ) : (
                   <UserPlus className="w-4 h-4 text-purple-400" />
                 )}
@@ -11324,6 +13546,10 @@ export default function App() {
                       ? 'がリノートしました'
                       : notificationToast.type === 'reply'
                       ? 'が返信しました'
+                      : notificationToast.type === 'antenna'
+                      ? `アンテナ「${notificationToast.content}」を受信`
+                      : notificationToast.type === 'scheduled_published'
+                      ? '予約投稿が公開されました'
                       : 'があなたをフォローしました'}
                   </span>
                 </p>
@@ -11344,6 +13570,175 @@ export default function App() {
             >
               <X className="w-3.5 h-3.5" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* 📡 アンテナ一覧・管理モーダル */}
+      {showAntennaManageModal && (
+        <AntennaManageModal
+          antennas={antennas}
+          activeAntenna={activeAntenna}
+          onSelectAntenna={(ant) => handleSwitchTimelineMode('antenna', ant)}
+          onOpenCreate={() => {
+            setEditingAntenna(null);
+            setShowAntennaModal(true);
+          }}
+          onEditAntenna={(ant) => {
+            setEditingAntenna(ant);
+            setShowAntennaModal(true);
+          }}
+          onDeleteAntenna={handleDeleteAntenna}
+          onClose={() => setShowAntennaManageModal(false)}
+        />
+      )}
+
+      {/* 📡 アンテナ作成・編集モーダル */}
+      {showAntennaModal && (
+        <AntennaEditModal
+          initialData={editingAntenna}
+          onSave={handleSaveAntenna}
+          onClose={() => {
+            setShowAntennaModal(false);
+            setEditingAntenna(null);
+          }}
+        />
+      )}
+
+      {/* 📝 下書き一覧・保存モーダル */}
+      {showDraftsModal && (
+        <DraftsModal
+          drafts={drafts}
+          hasCurrentContent={Boolean(postContent.trim() || postAttachments.length > 0 || quoteTargetPost)}
+          onSaveCurrent={handleSaveDraft}
+          onLoadDraft={handleLoadDraft}
+          onDeleteDraft={handleDeleteDraft}
+          onClose={() => setShowDraftsModal(false)}
+        />
+      )}
+
+      {/* ⏰ 予約投稿モーダル */}
+      {showScheduleModal && (
+        <ScheduleModal
+          scheduledPosts={scheduledPosts}
+          scheduledDateTime={scheduledDateTime}
+          setScheduledDateTime={setScheduledDateTime}
+          hasCurrentContent={Boolean(postContent.trim() || postAttachments.length > 0 || quoteTargetPost)}
+          onSubmitSchedule={handleCreateScheduledPost}
+          onCancelScheduledPost={handleCancelScheduledPost}
+          onClose={() => setShowScheduleModal(false)}
+        />
+      )}
+
+      {/* 📢 チャンネル作成モーダル */}
+      {showCreateChannelModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                  <Hash className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-slate-100">新規チャンネル作成</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateChannelModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateChannel} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  チャンネル名 <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={50}
+                  placeholder="例: ゲーム部屋、技術談義、雑談広場など"
+                  value={newChannelName}
+                  onChange={(e) => setNewChannelName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  チャンネルの説明
+                </label>
+                <textarea
+                  rows={3}
+                  maxLength={200}
+                  placeholder="このチャンネルの話題やルールを簡単に記載してください"
+                  value={newChannelDesc}
+                  onChange={(e) => setNewChannelDesc(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                    カテゴリ
+                  </label>
+                  <select
+                    value={newChannelCategory}
+                    onChange={(e) => setNewChannelCategory(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="general">総合・雑談</option>
+                    <option value="gaming">ゲーム</option>
+                    <option value="tech">技術・IT</option>
+                    <option value="art">イラスト・創作</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                    テーマカラー
+                  </label>
+                  <div className="flex items-center space-x-2 pt-1">
+                    {['#6366f1', '#06b6d4', '#10b981', '#a855f7', '#f43f5e', '#f59e0b'].map((col) => (
+                      <button
+                        key={col}
+                        type="button"
+                        onClick={() => setNewChannelColor(col)}
+                        className={`w-6 h-6 rounded-full transition transform hover:scale-110 cursor-pointer ${
+                          newChannelColor === col ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-900 scale-110' : ''
+                        }`}
+                        style={{ backgroundColor: col }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-3 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateChannelModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-bold transition cursor-pointer"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingChannel || !newChannelName.trim()}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/30 flex items-center space-x-1.5 disabled:opacity-50 cursor-pointer"
+                >
+                  {isCreatingChannel ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5" />
+                  )}
+                  <span>作成する</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

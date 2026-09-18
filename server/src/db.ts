@@ -241,6 +241,104 @@ export function initDatabase() {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS antennas (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      src TEXT NOT NULL DEFAULT 'all',
+      user_list TEXT DEFAULT '',
+      keywords TEXT NOT NULL,
+      exclude_keywords TEXT DEFAULT '',
+      case_sensitive INTEGER NOT NULL DEFAULT 0,
+      with_file INTEGER NOT NULL DEFAULT 0,
+      notify INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_antennas_user ON antennas(user_id);
+
+    CREATE TABLE IF NOT EXISTS drafts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      cw TEXT DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'public',
+      media_attachments TEXT DEFAULT '[]',
+      poll TEXT DEFAULT '',
+      in_reply_to TEXT DEFAULT '',
+      quote_id TEXT DEFAULT '',
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id);
+
+    CREATE TABLE IF NOT EXISTS scheduled_posts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      cw TEXT DEFAULT '',
+      visibility TEXT NOT NULL DEFAULT 'public',
+      media_attachments TEXT DEFAULT '[]',
+      poll TEXT DEFAULT '',
+      in_reply_to TEXT DEFAULT '',
+      quote_id TEXT DEFAULT '',
+      scheduled_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT DEFAULT '',
+      published_post_id TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status ON scheduled_posts(status, scheduled_at);
+
+    CREATE TABLE IF NOT EXISTS channels (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      banner_url TEXT DEFAULT '',
+      color TEXT DEFAULT '#6366f1',
+      category TEXT DEFAULT 'general',
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      posts_count INTEGER NOT NULL DEFAULT 0,
+      followers_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_channels_user ON channels(user_id);
+    CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS channel_follows (
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(channel_id, user_id),
+      FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_follows_user ON channel_follows(user_id);
+
+    CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_name TEXT NOT NULL DEFAULT '',
+      transports TEXT DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      last_used_at TEXT DEFAULT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
+
+    CREATE TABLE IF NOT EXISTS webauthn_challenges (
+      challenge TEXT PRIMARY KEY,
+      user_id TEXT,
+      type TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
       post_id UNINDEXED,
       content,
@@ -337,6 +435,54 @@ export function initDatabase() {
     END;`,
     "CREATE INDEX IF NOT EXISTS idx_custom_emojis_name ON custom_emojis(name);",
     "CREATE INDEX IF NOT EXISTS idx_invitation_codes_created_by ON invitation_codes(created_by);",
+    "ALTER TABLE posts ADD COLUMN channel_id TEXT DEFAULT NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id, published_at DESC);",
+    `CREATE TABLE IF NOT EXISTS channels (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      banner_url TEXT DEFAULT '',
+      color TEXT DEFAULT '#6366f1',
+      category TEXT DEFAULT 'general',
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      posts_count INTEGER NOT NULL DEFAULT 0,
+      followers_count INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );`,
+    "ALTER TABLE channels ADD COLUMN color TEXT DEFAULT '#6366f1';",
+    "ALTER TABLE channels ADD COLUMN category TEXT DEFAULT 'general';",
+    "ALTER TABLE channels ADD COLUMN followers_count INTEGER NOT NULL DEFAULT 1;",
+    "CREATE INDEX IF NOT EXISTS idx_channels_user ON channels(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);",
+    `CREATE TABLE IF NOT EXISTS channel_follows (
+      channel_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(channel_id, user_id),
+      FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_channel_follows_user ON channel_follows(user_id);",
+    `CREATE TABLE IF NOT EXISTS webauthn_credentials (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      counter INTEGER NOT NULL DEFAULT 0,
+      device_name TEXT NOT NULL DEFAULT '',
+      transports TEXT DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      last_used_at TEXT DEFAULT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);",
+    `CREATE TABLE IF NOT EXISTS webauthn_challenges (
+      challenge TEXT PRIMARY KEY,
+      user_id TEXT,
+      type TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );`,
   ];
 
   for (const sql of migrations) {
@@ -363,6 +509,31 @@ export function initDatabase() {
   } catch (ftsSyncErr) {
     console.warn('[FTS5 Sync Warning]:', ftsSyncErr);
   }
+}
+
+export interface ChannelRow {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  banner_url: string;
+  color?: string;
+  category?: string;
+  is_archived: number;
+  posts_count: number;
+  followers_count: number;
+  created_at: string;
+}
+
+export interface WebAuthnCredentialRow {
+  id: string;
+  user_id: string;
+  public_key: string;
+  counter: number;
+  device_name: string;
+  transports: string;
+  created_at: string;
+  last_used_at: string | null;
 }
 
 export interface PushSubscriptionRow {
@@ -523,6 +694,51 @@ export interface InvitationCodeRow {
   created_at: string;
 }
 
+export interface AntennaRow {
+  id: string;
+  user_id: string;
+  name: string;
+  src: 'all' | 'home' | 'users';
+  user_list: string;
+  keywords: string;
+  exclude_keywords: string;
+  case_sensitive: number;
+  with_file: number;
+  notify: number;
+  created_at: string;
+}
+
+export interface DraftRow {
+  id: string;
+  user_id: string;
+  content: string;
+  cw: string;
+  visibility: string;
+  media_attachments: string;
+  poll: string;
+  in_reply_to: string;
+  quote_id: string;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface ScheduledPostRow {
+  id: string;
+  user_id: string;
+  content: string;
+  cw: string;
+  visibility: string;
+  media_attachments: string;
+  poll: string;
+  in_reply_to: string;
+  quote_id: string;
+  scheduled_at: string;
+  status: 'pending' | 'published' | 'failed';
+  error_message: string;
+  published_post_id: string;
+  created_at: string;
+}
+
 /**
  * ホスト名またはURL、ハンドルからドメイン（小文字）を抽出
  */
@@ -625,7 +841,7 @@ export function purgeDomainData(domain: string): { posts: number; actors: number
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'reaction';
+  type: 'reply' | 'follow' | 'renote' | 'reaction' | 'antenna' | 'scheduled_published';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -642,7 +858,7 @@ export interface NotificationRow {
  */
 export function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published';
   actorId: string;
   actorName: string;
   actorHandle: string;
@@ -651,8 +867,8 @@ export function createNotification(params: {
   postContent?: string;
   content?: string;
 }): boolean {
-  // 自分自身に対するアクションは通知しない
-  if (params.userId === params.actorId || params.actorHandle.startsWith(`@${params.userId}@`)) {
+  // 自分自身に対するアクションは通知しない (予約投稿の自動公開など、システム自己通知は許可)
+  if (params.type !== 'scheduled_published' && (params.userId === params.actorId || params.actorHandle.startsWith(`@${params.userId}@`))) {
     return false;
   }
 

@@ -12,6 +12,7 @@ import {
 import { parseSignatureHeader, verifyHttpSignature } from '../crypto.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
+import { checkAntennaMatchesAndNotify } from '../postService.js';
 
 export const inboxRouter = Router();
 
@@ -582,6 +583,19 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           reply_count: 0,
           bookmarked: false,
           poll: pollData,
+        });
+
+        // 📡 アンテナ条件チェック ＆ 通知
+        checkAntennaMatchesAndNotify({
+          id: noteId,
+          user_id: actorUrl,
+          author_name: remoteActor.name || remoteActor.username,
+          author_url: actorUrl,
+          author_handle: authorHandle,
+          author_icon: authorIcon,
+          content,
+          cw,
+          media_attachments: attachments,
         });
 
         console.log(`[Inbox Note] 📝 Saved Note from ${authorHandle}: ${content.slice(0, 40)}...`);

@@ -1,10 +1,17 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow } from '../db.js';
+import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow } from '../db.js';
 import { config } from '../config.js';
 import { generateKeyPair } from '../crypto.js';
 import { uploadMediaFile } from '../storage.js';
+import { executeCreatePost } from '../postService.js';
+import {
+  createWebAuthnRegistrationOptions,
+  verifyWebAuthnRegistration,
+  createWebAuthnAuthenticationOptions,
+  verifyWebAuthnAuthentication,
+} from '../webauthnService.js';
 import {
   generateMasterKey,
   hashMasterKey,
@@ -510,8 +517,29 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
     }
   }
 
+  // 📢 チャンネル (Channels) 情報の一括取得
+  const channelsMap = new Map<string, any>();
+  const channelIds = Array.from(new Set(rows.map((r) => r.channel_id).filter(Boolean)));
+  if (channelIds.length > 0) {
+    try {
+      const cPlaceholders = channelIds.map(() => '?').join(',');
+      const channelRows = db.prepare(`
+        SELECT id, name, description, banner_url, color, posts_count, followers_count
+        FROM channels
+        WHERE id IN (${cPlaceholders})
+      `).all(...channelIds) as any[];
+
+      for (const ch of channelRows) {
+        channelsMap.set(ch.id, ch);
+      }
+    } catch (e) {
+      console.error('[enrichAndFilterPosts] Error fetching channels:', e);
+    }
+  }
+
   const enrichedItems = rows.map((r) => {
     const pid = r.post_id || r.id;
+    const cid = r.channel_id || null;
     return {
       id: pid,
       feed_id: r.announce_id ? `rn_${r.announce_id}` : pid,
@@ -553,6 +581,8 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
       my_announced: announcesMap.get(pid)?.me || false,
       reply_count: repliesMap.get(pid) || 0,
       bookmarked: bookmarkedSet.has(pid),
+      channel_id: cid,
+      channel: cid ? (channelsMap.get(cid) || null) : null,
     };
   });
 
@@ -621,6 +651,7 @@ apiRouter.get('/timeline', (req: Request, res: Response) => {
       p.in_reply_to,
       p.media_attachments,
       p.published_at,
+      p.channel_id,
       COALESCE(
         NULLIF(p.author_icon, ''),
         NULLIF(u.icon_url, ''),
@@ -654,6 +685,7 @@ apiRouter.get('/timeline', (req: Request, res: Response) => {
       p.in_reply_to,
       p.media_attachments,
       p.published_at,
+      p.channel_id,
       COALESCE(
         NULLIF(p.author_icon, ''),
         NULLIF(u.icon_url, ''),
@@ -949,269 +981,28 @@ apiRouter.post(
 
 // 新規投稿作成（認証必須・公開範囲選択・返信・画像添付・アンケート・引用・センシティブ対応）
 apiRouter.post('/posts', requireAuth, async (req: Request, res: Response) => {
-  const { content, in_reply_to, attachments, cw, poll, quote_id, is_sensitive } = req.body;
-  const visibility: 'public' | 'local' = req.body.visibility === 'local' ? 'local' : 'public';
-  const parsedAttachments = Array.isArray(attachments) ? attachments : [];
-
-  const postText = content ? content.trim() : '';
-  const inReplyTo = typeof in_reply_to === 'string' && in_reply_to.trim() ? in_reply_to.trim() : null;
-  const quoteId = typeof quote_id === 'string' && quote_id.trim() ? quote_id.trim() : null;
-  const isSensitive = Boolean(is_sensitive);
-  const cwText = typeof cw === 'string' && cw.trim() ? cw.trim() : null;
-  const user = req.rawUser!;
-  const actorUrl = `${config.origin}/users/${user.id}`;
-  const postId = `${actorUrl}/posts/${Date.now()}`;
-  const now = new Date().toISOString();
-  const authorHandle = `@${user.id}@${config.domain}`;
-  const authorIcon = user.icon_url || '';
-  const attachmentsJson = JSON.stringify(parsedAttachments);
-
-  // アンケート選択肢の抽出・バリデーション
-  const validChoices = (poll && Array.isArray(poll.choices))
-    ? poll.choices.map((c: any) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean)
-    : [];
-
-  if (!postText && parsedAttachments.length === 0 && validChoices.length === 0 && !quoteId) {
-    return res.status(400).json({ error: '投稿内容、画像、引用、またはアンケートを入力してください。' });
-  }
-
-  // 投稿本文内のカスタム絵文字ショートコード (:name:) を検出
-  const emojiMatches: string[] = Array.from(new Set(postText.match(/:([a-zA-Z0-9_]{2,30}):/g) || []));
-  let postEmojis: { name: string; url: string }[] = [];
-  let apEmojiTags: any[] = [];
-
-  if (emojiMatches.length > 0) {
-    const emojiNames = emojiMatches.map((m: string) => m.slice(1, -1).toLowerCase());
-    const placeholders = emojiNames.map(() => '?').join(',');
-    const foundEmojis = db.prepare(`
-      SELECT name, url FROM custom_emojis WHERE name IN (${placeholders})
-    `).all(...emojiNames) as unknown as { name: string; url: string }[];
-
-    if (foundEmojis.length > 0) {
-      postEmojis = foundEmojis.map((e) => ({
-        name: `:${e.name}:`,
-        url: e.url,
-      }));
-      apEmojiTags = foundEmojis.map((e) => ({
-        type: 'Emoji',
-        name: `:${e.name}:`,
-        icon: {
-          type: 'Image',
-          mediaType: 'image/png',
-          url: e.url,
-        },
-      }));
-    }
-  }
-  const emojisJson = postEmojis.length > 0 ? JSON.stringify(postEmojis) : '[]';
-
-  // 1. ローカルDBに投稿保存
-  db.prepare(`
-    INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now);
-
-  // 引用元投稿の解決（あれば）
-  let quotePostData: any = null;
-  if (quoteId) {
-    const qRow = db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
-    if (qRow) {
-      quotePostData = {
-        ...qRow,
-        is_sensitive: Boolean(qRow.is_sensitive),
-        media_attachments: (() => {
-          try { return typeof qRow.media_attachments === 'string' ? JSON.parse(qRow.media_attachments || '[]') : (qRow.media_attachments || []); }
-          catch { return []; }
-        })(),
-      };
-    }
-  }
-
-  // 2. アンケートがある場合は polls / poll_choices テーブルに保存
-  let pollDataForAp = null;
-  let createdPoll: any = null;
-
-  if (validChoices.length >= 2) {
-    const pollId = crypto.randomUUID();
-    const multiple = poll.multiple ? 1 : 0;
-    let expiresAt: string | null = null;
-    if (typeof poll.expires_in === 'number' && poll.expires_in > 0) {
-      expiresAt = new Date(Date.now() + poll.expires_in * 1000).toISOString();
-    }
-
-    db.prepare(`
-      INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(pollId, postId, multiple, expiresAt, now);
-
-    const insertChoice = db.prepare(`
-      INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
-      VALUES (?, ?, ?, ?, 0)
-    `);
-    validChoices.forEach((choiceText: string, idx: number) => {
-      insertChoice.run(crypto.randomUUID(), pollId, idx, choiceText);
+  try {
+    const { content, in_reply_to, attachments, cw, poll, quote_id, is_sensitive, visibility, channel_id } = req.body;
+    const result = await executeCreatePost({
+      user: req.rawUser!,
+      content,
+      in_reply_to,
+      attachments,
+      cw,
+      poll,
+      quote_id,
+      is_sensitive,
+      visibility,
+      channel_id,
     });
-
-    pollDataForAp = {
-      choices: validChoices,
-      multiple: Boolean(poll.multiple),
-      expiresAt,
-    };
-
-    createdPoll = {
-      id: pollId,
-      multiple: Boolean(multiple),
-      expires_at: expiresAt,
-      is_expired: false,
-      total_votes: 0,
-      my_voted: false,
-      choices: validChoices.map((text: string, idx: number) => ({
-        choice_index: idx,
-        text,
-        votes_count: 0,
-        me: false,
-      })),
-    };
-  }
-
-  console.log(`[Post] Note created by ${authorHandle} (visibility: ${visibility}, quote: ${quoteId || 'none'}, sensitive: ${isSensitive}, emojis: ${postEmojis.length}): "${postText.slice(0, 40)}"`);
-
-  // クライアント向け投稿オブジェクトの構築
-  const responsePostData = {
-    id: postId,
-    feed_id: postId,
-    user_id: user.id,
-    author_name: user.name,
-    author_url: actorUrl,
-    author_handle: authorHandle,
-    author_icon: authorIcon,
-    content: postText,
-    cw: cwText,
-    quote_id: quoteId,
-    quote: quotePostData,
-    is_sensitive: isSensitive,
-    poll: createdPoll,
-    is_pinned: false,
-    is_local: 1,
-    visibility,
-    emojis: emojisJson !== '[]' ? emojisJson : null,
-    in_reply_to: inReplyTo,
-    media_attachments: parsedAttachments,
-    published_at: now,
-    timeline_at: now,
-    renote: null,
-    reactions: [],
-    announce_count: 0,
-    my_announced: false,
-    reply_count: 0,
-    bookmarked: false,
-  };
-
-  // 📡 全SSE接続クライアントに新着ノートをプッシュ
-  broadcastNote(responsePostData);
-
-  // ローカル限定投稿の場合は外部配信（連合・リレー）を行わず即返却
-  if (visibility === 'local') {
-    return res.status(201).json({
-      ...responsePostData,
-      federatedTo: 0,
+    res.status(201).json({
+      ...result.post,
+      federatedTo: result.federatedTo,
     });
+  } catch (err: any) {
+    console.error('[Post Error]:', err);
+    res.status(400).json({ error: err.message || '投稿の作成に失敗しました。' });
   }
-
-  // 3. ActivityPub オブジェクトの構築（グローバル配信）
-  const note = buildNote({
-    id: postId,
-    authorUrl: actorUrl,
-    content: postText,
-    publishedAt: now,
-    inReplyTo,
-    quoteUrl: quoteId,
-    attachments: parsedAttachments,
-    summary: cwText,
-    sensitive: isSensitive,
-    poll: pollDataForAp,
-    tags: apEmojiTags.length > 0 ? apEmojiTags : undefined,
-  });
-
-  const createActivity = buildCreateActivity({
-    note,
-    actorUrl,
-  });
-
-  // 4. 配信先 Inbox の収集: フォロワー + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
-  const followerInboxes = (db.prepare(`
-    SELECT DISTINCT inbox_url FROM follows
-    WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
-  `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
-
-  const relayInboxes = (db.prepare(`
-    SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
-  `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
-
-  const directInboxes: string[] = [];
-  if (inReplyTo) {
-    const parentPost = db.prepare('SELECT author_url FROM posts WHERE id = ?').get(inReplyTo) as { author_url: string } | undefined;
-    if (parentPost && !parentPost.author_url.startsWith(config.origin)) {
-      try {
-        const remoteActor = await fetchRemoteActor(parentPost.author_url);
-        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
-      } catch {}
-    }
-  }
-  if (quoteId) {
-    const quotedPost = db.prepare('SELECT author_url FROM posts WHERE id = ?').get(quoteId) as { author_url: string } | undefined;
-    if (quotedPost && !quotedPost.author_url.startsWith(config.origin)) {
-      try {
-        const remoteActor = await fetchRemoteActor(quotedPost.author_url);
-        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
-      } catch {}
-    }
-  }
-
-  const allTargetInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes, ...directInboxes]));
-
-  console.log(`[Delivery] Delivering global note to ${allTargetInboxes.length} inboxes...`);
-
-  // 非同期でフォロワー及びリレーへ配送
-  Promise.allSettled(
-    allTargetInboxes.map((inboxUrl) =>
-      deliverActivity({
-        inboxUrl,
-        activity: createActivity,
-        senderUser: user,
-      })
-    )
-  ).then((results) => {
-    const succeeded = results.filter((r) => r.status === 'fulfilled' && r.value).length;
-    console.log(`[Delivery] Federation sent: ${succeeded}/${allTargetInboxes.length} inboxes`);
-  });
-
-  // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
-  if (inReplyTo) {
-    try {
-      const parentPost = db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
-      if (parentPost && parentPost.is_local === 1) {
-        createNotification({
-          userId: parentPost.user_id,
-          type: 'reply',
-          actorId: user.id,
-          actorName: user.name,
-          actorHandle: authorHandle,
-          actorIcon: authorIcon,
-          postId,
-          postContent: parentPost.content,
-          content: content.trim(),
-        });
-      }
-    } catch (e) {
-      console.error('[Notification Error] Reply notification failed:', e);
-    }
-  }
-
-  res.status(201).json({
-    ...responsePostData,
-    federatedTo: allTargetInboxes.length,
-  });
 });
 
 // 投稿の削除 (作成者本人または管理者)
@@ -2994,5 +2785,824 @@ apiRouter.post('/push/test', requireAuth, async (req: Request, res: Response) =>
     console.error('[WebPush Test Error]:', err);
     res.status(500).json({ error: 'テスト通知の送信に失敗しました。' });
   }
+});
+
+// ==========================================
+// 📡 アンテナ (Antenna) エンドポイント
+// ==========================================
+
+// アンテナ一覧取得
+apiRouter.get('/antennas', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rows = db.prepare('SELECT * FROM antennas WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as unknown as AntennaRow[];
+  res.json(rows.map((r) => ({
+    ...r,
+    case_sensitive: Boolean(r.case_sensitive),
+    with_file: Boolean(r.with_file),
+    notify: Boolean(r.notify),
+  })));
+});
+
+// アンテナ作成
+apiRouter.post('/antennas', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const { name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify } = req.body;
+
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'アンテナ名は必須です。' });
+  }
+
+  const id = crypto.randomUUID();
+  const validSrc = ['all', 'home', 'users'].includes(src) ? src : 'all';
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    user.id,
+    name.trim(),
+    validSrc,
+    typeof user_list === 'string' ? user_list.trim() : '',
+    typeof keywords === 'string' ? keywords.trim() : '',
+    typeof exclude_keywords === 'string' ? exclude_keywords.trim() : '',
+    case_sensitive ? 1 : 0,
+    with_file ? 1 : 0,
+    notify ? 1 : 0,
+    now
+  );
+
+  res.status(201).json({
+    id,
+    user_id: user.id,
+    name: name.trim(),
+    src: validSrc,
+    user_list: typeof user_list === 'string' ? user_list.trim() : '',
+    keywords: typeof keywords === 'string' ? keywords.trim() : '',
+    exclude_keywords: typeof exclude_keywords === 'string' ? exclude_keywords.trim() : '',
+    case_sensitive: Boolean(case_sensitive),
+    with_file: Boolean(with_file),
+    notify: Boolean(notify),
+    created_at: now,
+  });
+});
+
+// アンテナ詳細取得
+apiRouter.get('/antennas/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const antId = String(req.params.id);
+  const ant = db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  if (!ant) {
+    return res.status(404).json({ error: 'アンテナが見つかりません。' });
+  }
+  res.json({
+    ...ant,
+    case_sensitive: Boolean(ant.case_sensitive),
+    with_file: Boolean(ant.with_file),
+    notify: Boolean(ant.notify),
+  });
+});
+
+// アンテナ更新
+apiRouter.put('/antennas/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const antId = String(req.params.id);
+  const { name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify } = req.body;
+
+  const ant = db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  if (!ant) {
+    return res.status(404).json({ error: 'アンテナが見つかりません。' });
+  }
+
+  const newName = name !== undefined ? String(name).trim() : ant.name;
+  const newSrc = ['all', 'home', 'users'].includes(src) ? src : ant.src;
+  const newUserList = user_list !== undefined ? String(user_list).trim() : ant.user_list;
+  const newKeywords = keywords !== undefined ? String(keywords).trim() : ant.keywords;
+  const newExclude = exclude_keywords !== undefined ? String(exclude_keywords).trim() : ant.exclude_keywords;
+  const newCase = case_sensitive !== undefined ? (case_sensitive ? 1 : 0) : ant.case_sensitive;
+  const newWithFile = with_file !== undefined ? (with_file ? 1 : 0) : ant.with_file;
+  const newNotify = notify !== undefined ? (notify ? 1 : 0) : ant.notify;
+
+  db.prepare(`
+    UPDATE antennas 
+    SET name = ?, src = ?, user_list = ?, keywords = ?, exclude_keywords = ?, case_sensitive = ?, with_file = ?, notify = ?
+    WHERE id = ? AND user_id = ?
+  `).run(newName, newSrc, newUserList, newKeywords, newExclude, newCase, newWithFile, newNotify, ant.id, user.id);
+
+  res.json({
+    id: ant.id,
+    user_id: user.id,
+    name: newName,
+    src: newSrc,
+    user_list: newUserList,
+    keywords: newKeywords,
+    exclude_keywords: newExclude,
+    case_sensitive: Boolean(newCase),
+    with_file: Boolean(newWithFile),
+    notify: Boolean(newNotify),
+    created_at: ant.created_at,
+  });
+});
+
+// アンテナ削除
+apiRouter.delete('/antennas/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const antId = String(req.params.id);
+  const resDel = db.prepare('DELETE FROM antennas WHERE id = ? AND user_id = ?').run(antId, user.id);
+  if (resDel.changes === 0) {
+    return res.status(404).json({ error: 'アンテナが見つかりません。' });
+  }
+  res.json({ success: true });
+});
+
+// アンテナタイムライン取得
+apiRouter.get('/antennas/:id/timeline', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const antId = String(req.params.id);
+  const ant = db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  if (!ant) {
+    return res.status(404).json({ error: 'アンテナが見つかりません。' });
+  }
+
+  const limit = Math.min(parseInt(req.query.limit as string || '30', 10), 100);
+  const conditions: string[] = ['1=1'];
+  const params: any[] = [];
+
+  // ソースフィルタ
+  if (ant.src === 'home') {
+    const myActorUrl = `${config.origin}/users/${user.id}`;
+    conditions.push(`(p.is_local = 1 OR p.author_url IN (SELECT following_url FROM follows WHERE follower_url = ?))`);
+    params.push(myActorUrl);
+  } else if (ant.src === 'users') {
+    const userTokens = ant.user_list.split(',').map((u) => u.trim().replace(/^@/, '')).filter(Boolean);
+    if (userTokens.length > 0) {
+      const userConds = userTokens.map(() => `(p.user_id = ? OR p.author_handle LIKE ?)`).join(' OR ');
+      conditions.push(`(${userConds})`);
+      for (const token of userTokens) {
+        params.push(token, `%${token}%`);
+      }
+    }
+  }
+
+  // メディア有無フィルタ
+  if (ant.with_file === 1) {
+    conditions.push(`(p.media_attachments IS NOT NULL AND p.media_attachments != '[]' AND p.media_attachments != '')`);
+  }
+
+  // キーワードフィルタ (ORマッチ)
+  const kwList = ant.keywords.split(/[,、\n\s]+/).map((k) => k.trim()).filter(Boolean);
+  if (kwList.length > 0) {
+    const kwConds = kwList.map(() => `(p.content LIKE ? OR (p.cw IS NOT NULL AND p.cw LIKE ?))`).join(' OR ');
+    conditions.push(`(${kwConds})`);
+    for (const kw of kwList) {
+      params.push(`%${kw}%`, `%${kw}%`);
+    }
+  }
+
+  // 除外キーワードフィルタ (AND NOT)
+  const exList = ant.exclude_keywords.split(/[,、\n\s]+/).map((k) => k.trim()).filter(Boolean);
+  for (const ex of exList) {
+    conditions.push(`(p.content NOT LIKE ? AND (p.cw IS NULL OR p.cw NOT LIKE ?))`);
+    params.push(`%${ex}%`, `%${ex}%`);
+  }
+
+  params.push(limit);
+
+  const sql = `
+    SELECT 
+      p.id,
+      p.id AS feed_id,
+      p.user_id,
+      p.author_name,
+      p.author_url,
+      p.author_handle,
+      p.content,
+      p.cw,
+      p.is_local,
+      p.visibility,
+      p.emojis,
+      p.in_reply_to,
+      p.quote_id,
+      p.is_sensitive,
+      p.media_attachments,
+      p.published_at,
+      p.published_at AS timeline_at,
+      COALESCE(
+        NULLIF(p.author_icon, ''),
+        NULLIF(u.icon_url, ''),
+        NULLIF(ra.icon_url, ''),
+        ''
+      ) AS author_icon
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY p.published_at DESC
+    LIMIT ?
+  `;
+
+  const rows = db.prepare(sql).all(...params) as any[];
+
+  // 各ノートのリアクション、アンケート、引用、ブックマーク状態の補完
+  const decorated = rows.map((post) => {
+    // 添付メディア
+    let parsedAttachments: any[] = [];
+    try {
+      if (typeof post.media_attachments === 'string') parsedAttachments = JSON.parse(post.media_attachments || '[]');
+      else if (Array.isArray(post.media_attachments)) parsedAttachments = post.media_attachments;
+    } catch {}
+
+    // アンケート
+    let pollData = null;
+    const pollRow = db.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
+    if (pollRow) {
+      const choices = db.prepare('SELECT * FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(pollRow.id) as any[];
+      const myVotes = db.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(pollRow.id, user.id) as any[];
+      const myVotedIndices = new Set(myVotes.map((v) => v.choice_index));
+      pollData = {
+        id: pollRow.id,
+        multiple: Boolean(pollRow.multiple),
+        expires_at: pollRow.expires_at,
+        is_expired: pollRow.expires_at ? new Date(pollRow.expires_at) <= new Date() : false,
+        total_votes: choices.reduce((acc, c) => acc + (c.votes_count || 0), 0),
+        my_voted: myVotes.length > 0,
+        choices: choices.map((c) => ({
+          choice_index: c.choice_index,
+          text: c.text,
+          votes_count: c.votes_count || 0,
+          me: myVotedIndices.has(c.choice_index),
+        })),
+      };
+    }
+
+    // 引用投稿
+    let quotePostData: any = null;
+    if (post.quote_id) {
+      const qRow = db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(post.quote_id) as any;
+      if (qRow) {
+        quotePostData = {
+          ...qRow,
+          is_sensitive: Boolean(qRow.is_sensitive),
+          media_attachments: (() => {
+            try { return typeof qRow.media_attachments === 'string' ? JSON.parse(qRow.media_attachments || '[]') : (qRow.media_attachments || []); }
+            catch { return []; }
+          })(),
+        };
+      }
+    }
+
+    // リアクション
+    const reactionRows = db.prepare(`
+      SELECT reaction, count(*) as count, max(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as me
+      FROM reactions
+      WHERE post_id = ?
+      GROUP BY reaction
+    `).all(user.id, post.id) as any[];
+
+    // リノート集計
+    const announceCount = (db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(post.id) as any).c;
+    const myAnnounced = Boolean((db.prepare('SELECT 1 FROM announces WHERE post_id = ? AND user_id = ?').get(post.id, user.id) as any));
+
+    // 返信カウント
+    const replyCount = (db.prepare('SELECT count(*) as c FROM posts WHERE in_reply_to = ?').get(post.id) as any).c;
+
+    // ブックマーク判定
+    const isBookmarked = Boolean((db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(user.id, post.id) as any));
+
+    return {
+      ...post,
+      is_sensitive: Boolean(post.is_sensitive),
+      media_attachments: parsedAttachments,
+      poll: pollData,
+      quote: quotePostData,
+      reactions: reactionRows.map((r) => ({
+        reaction: r.reaction,
+        count: r.count,
+        me: Boolean(r.me),
+      })),
+      announce_count: announceCount,
+      my_announced: myAnnounced,
+      reply_count: replyCount,
+      bookmarked: isBookmarked,
+    };
+  });
+
+  res.json({
+    antenna: {
+      id: ant.id,
+      name: ant.name,
+    },
+    posts: decorated,
+  });
+});
+
+// ==========================================
+// 📝 下書き (Drafts) エンドポイント
+// ==========================================
+
+// 下書き一覧取得
+apiRouter.get('/drafts', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rows = db.prepare('SELECT * FROM drafts WHERE user_id = ? ORDER BY updated_at DESC').all(user.id) as unknown as DraftRow[];
+  res.json(rows.map((r) => ({
+    ...r,
+    media_attachments: (() => {
+      try { return JSON.parse(r.media_attachments || '[]'); } catch { return []; }
+    })(),
+    poll: (() => {
+      try { return r.poll ? JSON.parse(r.poll) : null; } catch { return null; }
+    })(),
+  })));
+});
+
+// 下書き作成・保存 (IDがあれば更新、無ければ新規)
+apiRouter.post('/drafts', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const { id: draftId, content, cw, visibility, attachments, poll, in_reply_to, quote_id } = req.body;
+
+  const contentText = typeof content === 'string' ? content : '';
+  const cwText = typeof cw === 'string' ? cw : '';
+  const vis = visibility === 'local' ? 'local' : 'public';
+  const attachmentsJson = JSON.stringify(Array.isArray(attachments) ? attachments : []);
+  const pollJson = poll ? JSON.stringify(poll) : '';
+  const replyTo = typeof in_reply_to === 'string' ? in_reply_to : '';
+  const quote = typeof quote_id === 'string' ? quote_id : '';
+  const now = new Date().toISOString();
+
+  if (draftId) {
+    const existing = db.prepare('SELECT id FROM drafts WHERE id = ? AND user_id = ?').get(draftId, user.id);
+    if (existing) {
+      db.prepare(`
+        UPDATE drafts 
+        SET content = ?, cw = ?, visibility = ?, media_attachments = ?, poll = ?, in_reply_to = ?, quote_id = ?, updated_at = ?
+        WHERE id = ? AND user_id = ?
+      `).run(contentText, cwText, vis, attachmentsJson, pollJson, replyTo, quote, now, draftId, user.id);
+
+      return res.json({
+        id: draftId,
+        user_id: user.id,
+        content: contentText,
+        cw: cwText,
+        visibility: vis,
+        media_attachments: Array.isArray(attachments) ? attachments : [],
+        poll: poll || null,
+        in_reply_to: replyTo,
+        quote_id: quote,
+        updated_at: now,
+      });
+    }
+  }
+
+  const newId = crypto.randomUUID();
+  db.prepare(`
+    INSERT INTO drafts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, updated_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(newId, user.id, contentText, cwText, vis, attachmentsJson, pollJson, replyTo, quote, now, now);
+
+  res.status(201).json({
+    id: newId,
+    user_id: user.id,
+    content: contentText,
+    cw: cwText,
+    visibility: vis,
+    media_attachments: Array.isArray(attachments) ? attachments : [],
+    poll: poll || null,
+    in_reply_to: replyTo,
+    quote_id: quote,
+    updated_at: now,
+    created_at: now,
+  });
+});
+
+// 下書き削除
+apiRouter.delete('/drafts/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const draftId = String(req.params.id);
+  const resDel = db.prepare('DELETE FROM drafts WHERE id = ? AND user_id = ?').run(draftId, user.id);
+  if (resDel.changes === 0) {
+    return res.status(404).json({ error: '下書きが見つかりません。' });
+  }
+  res.json({ success: true });
+});
+
+// ==========================================
+// ⏰ 予約投稿 (Scheduled Posts) エンドポイント
+// ==========================================
+
+// 待機中の予約投稿一覧取得
+apiRouter.get('/scheduled-posts', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rows = db.prepare(`
+    SELECT * FROM scheduled_posts 
+    WHERE user_id = ? AND status = 'pending'
+    ORDER BY scheduled_at ASC
+  `).all(user.id) as unknown as ScheduledPostRow[];
+
+  res.json(rows.map((r) => ({
+    ...r,
+    media_attachments: (() => {
+      try { return JSON.parse(r.media_attachments || '[]'); } catch { return []; }
+    })(),
+    poll: (() => {
+      try { return r.poll ? JSON.parse(r.poll) : null; } catch { return null; }
+    })(),
+  })));
+});
+
+// 予約投稿の作成
+apiRouter.post('/scheduled-posts', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const { content, cw, visibility, attachments, poll, in_reply_to, quote_id, scheduled_at } = req.body;
+
+  if (!scheduled_at) {
+    return res.status(400).json({ error: '予約日時は必須です。' });
+  }
+
+  const scheduledTime = new Date(scheduled_at).getTime();
+  if (isNaN(scheduledTime) || scheduledTime <= Date.now() + 1000) {
+    return res.status(400).json({ error: '予約日時は現在より未来の時刻を指定してください。' });
+  }
+
+  const contentText = typeof content === 'string' ? content.trim() : '';
+  const parsedAttachments = Array.isArray(attachments) ? attachments : [];
+  if (!contentText && parsedAttachments.length === 0 && !quote_id) {
+    return res.status(400).json({ error: '投稿内容または画像を入力してください。' });
+  }
+
+  const id = crypto.randomUUID();
+  const cwText = typeof cw === 'string' ? cw.trim() : '';
+  const vis = visibility === 'local' ? 'local' : 'public';
+  const attachmentsJson = JSON.stringify(parsedAttachments);
+  const pollJson = poll ? JSON.stringify(poll) : '';
+  const replyTo = typeof in_reply_to === 'string' ? in_reply_to.trim() : '';
+  const quote = typeof quote_id === 'string' ? quote_id.trim() : '';
+  const scheduledIso = new Date(scheduledTime).toISOString();
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO scheduled_posts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, scheduled_at, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(id, user.id, contentText, cwText, vis, attachmentsJson, pollJson, replyTo, quote, scheduledIso, now);
+
+  res.status(201).json({
+    id,
+    user_id: user.id,
+    content: contentText,
+    cw: cwText,
+    visibility: vis,
+    media_attachments: parsedAttachments,
+    poll: poll || null,
+    in_reply_to: replyTo,
+    quote_id: quote,
+    scheduled_at: scheduledIso,
+    status: 'pending',
+    created_at: now,
+  });
+});
+
+// 予約投稿のキャンセル（削除）
+apiRouter.delete('/scheduled-posts/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const postId = String(req.params.id);
+  const resDel = db.prepare(`
+    DELETE FROM scheduled_posts 
+    WHERE id = ? AND user_id = ? AND status = 'pending'
+  `).run(postId, user.id);
+
+  if (resDel.changes === 0) {
+    return res.status(404).json({ error: 'キャンセル可能な予約投稿が見つかりません。' });
+  }
+  res.json({ success: true, message: '予約投稿をキャンセルしました。' });
+});
+
+// ==========================================
+// 🔐 WebAuthn / パスキー (Passkey) エンドポイント
+// ==========================================
+
+// パスキー登録オプション生成 (要認証)
+apiRouter.post('/webauthn/register/options', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.rawUser!;
+    const reqOrigin = req.headers.origin as string | undefined;
+    const options = await createWebAuthnRegistrationOptions(user, reqOrigin);
+    res.json(options);
+  } catch (e: any) {
+    console.error('[WebAuthn] register/options error:', e);
+    res.status(500).json({ error: e.message || 'パスキー登録オプションの生成に失敗しました。' });
+  }
+});
+
+// パスキー登録レスポンス検証 (要認証)
+apiRouter.post('/webauthn/register/verify', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = req.rawUser!;
+    const { device_name } = req.body;
+    const reqOrigin = req.headers.origin as string | undefined;
+    const result = await verifyWebAuthnRegistration(user, req.body, device_name || '', reqOrigin);
+    res.json({ success: true, credential: result });
+  } catch (e: any) {
+    console.error('[WebAuthn] register/verify error:', e);
+    res.status(400).json({ error: e.message || 'パスキー登録の検証に失敗しました。' });
+  }
+});
+
+// パスキーログイン用 認証オプション生成 (認証不要)
+apiRouter.post('/webauthn/authenticate/options', async (req: Request, res: Response) => {
+  try {
+    const { user_id } = req.body;
+    const reqOrigin = req.headers.origin as string | undefined;
+    const options = await createWebAuthnAuthenticationOptions(user_id || undefined, reqOrigin);
+    res.json(options);
+  } catch (e: any) {
+    console.error('[WebAuthn] authenticate/options error:', e);
+    res.status(500).json({ error: e.message || '認証オプションの生成に失敗しました。' });
+  }
+});
+
+// パスキーログイン用 認証レスポンス検証 & ログイン (認証不要)
+apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Response) => {
+  try {
+    const reqOrigin = req.headers.origin as string | undefined;
+    const result = await verifyWebAuthnAuthentication(req.body, reqOrigin);
+    if (result.verified && result.user) {
+      const token = createSession(result.user.id);
+      res.json({
+        success: true,
+        token,
+        user: {
+          id: result.user.id,
+          name: result.user.name,
+          icon_url: result.user.icon_url,
+          header_url: result.user.banner_url,
+          summary: result.user.summary,
+          is_admin: result.user.role === 'admin',
+        },
+      });
+    } else {
+      res.status(401).json({ error: 'パスキー認証に失敗しました。' });
+    }
+  } catch (e: any) {
+    console.error('[WebAuthn] authenticate/verify error:', e);
+    res.status(401).json({ error: e.message || 'パスキー認証に失敗しました。' });
+  }
+});
+
+// 登録済みパスキー一覧取得 (要認証)
+apiRouter.get('/webauthn/credentials', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const rows = db.prepare(`
+    SELECT id, device_name, counter, created_at, last_used_at
+    FROM webauthn_credentials
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+  `).all(user.id) as unknown as WebAuthnCredentialRow[];
+  res.json(rows);
+});
+
+// パスキー削除 (要認証)
+apiRouter.delete('/webauthn/credentials/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const credId = String(req.params.id);
+  const resDel = db.prepare(`
+    DELETE FROM webauthn_credentials
+    WHERE id = ? AND user_id = ?
+  `).run(credId, user.id);
+
+  if (resDel.changes === 0) {
+    return res.status(404).json({ error: '指定されたパスキーが見つかりません。' });
+  }
+  res.json({ success: true, message: 'パスキーを削除しました。' });
+});
+
+// ==========================================
+// 📢 チャンネル (Channels) エンドポイント
+// ==========================================
+
+// チャンネル一覧取得
+apiRouter.get('/channels', (req: Request, res: Response) => {
+  const category = (req.query.category as string || '').trim();
+  const sort = req.query.sort === 'newest' ? 'newest' : 'popular';
+  const myUserId = req.user?.id || null;
+
+  let whereClause = 'WHERE is_archived = 0';
+  const params: any[] = [];
+  if (category) {
+    whereClause += ' AND category = ?';
+    params.push(category);
+  }
+
+  const orderBy = sort === 'newest' ? 'created_at DESC' : 'followers_count DESC, posts_count DESC, created_at DESC';
+
+  const rows = db.prepare(`
+    SELECT c.*,
+      CASE WHEN ? IS NOT NULL AND EXISTS(
+        SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
+      ) THEN 1 ELSE 0 END AS is_following
+    FROM channels c
+    ${whereClause}
+    ORDER BY ${orderBy}
+  `).all(myUserId, myUserId, ...params) as unknown as (ChannelRow & { is_following: number })[];
+
+  const channels = rows.map((c) => ({
+    ...c,
+    is_following: Boolean(c.is_following),
+    is_archived: Boolean(c.is_archived),
+  }));
+
+  res.json(channels);
+});
+
+// チャンネル新規作成 (要認証)
+apiRouter.post('/channels', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const { name, description, banner_url, color, category } = req.body;
+
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  if (!trimmedName || trimmedName.length > 50) {
+    return res.status(400).json({ error: 'チャンネル名は1〜50文字で入力してください。' });
+  }
+
+  const channelId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const desc = typeof description === 'string' ? description.trim() : '';
+  const banner = typeof banner_url === 'string' ? banner_url.trim() : '';
+  const col = typeof color === 'string' && color.trim() ? color.trim() : '#6366f1';
+  const cat = typeof category === 'string' && category.trim() ? category.trim() : 'general';
+
+  db.prepare(`
+    INSERT INTO channels (id, user_id, name, description, banner_url, color, category, posts_count, followers_count, is_archived, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, ?)
+  `).run(channelId, user.id, trimmedName, desc, banner, col, cat, now);
+
+  // 作成者を初期フォロワーとして登録
+  db.prepare(`
+    INSERT OR IGNORE INTO channel_follows (channel_id, user_id, created_at)
+    VALUES (?, ?, ?)
+  `).run(channelId, user.id, now);
+
+  res.status(201).json({
+    id: channelId,
+    user_id: user.id,
+    name: trimmedName,
+    description: desc,
+    banner_url: banner,
+    color: col,
+    category: cat,
+    posts_count: 0,
+    followers_count: 1,
+    is_archived: false,
+    is_following: true,
+    created_at: now,
+  });
+});
+
+// チャンネル詳細取得
+apiRouter.get('/channels/:id', (req: Request, res: Response) => {
+  const chId = String(req.params.id);
+  const myUserId = req.user?.id || null;
+
+  const row = db.prepare(`
+    SELECT c.*,
+      CASE WHEN ? IS NOT NULL AND EXISTS(
+        SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
+      ) THEN 1 ELSE 0 END AS is_following
+    FROM channels c
+    WHERE c.id = ?
+  `).get(myUserId, myUserId, chId) as unknown as (ChannelRow & { is_following: number }) | undefined;
+
+  if (!row) {
+    return res.status(404).json({ error: 'チャンネルが見つかりません。' });
+  }
+
+  res.json({
+    ...row,
+    is_following: Boolean(row.is_following),
+    is_archived: Boolean(row.is_archived),
+  });
+});
+
+// チャンネル編集 (要認証・作成者または管理者)
+apiRouter.put('/channels/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const chId = String(req.params.id);
+
+  const existing = db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  if (!existing) {
+    return res.status(404).json({ error: 'チャンネルが見つかりません。' });
+  }
+
+  if (existing.user_id !== user.id && user.role !== 'admin') {
+    return res.status(403).json({ error: 'このチャンネルを編集する権限がありません。' });
+  }
+
+  const { name, description, banner_url, color, category, is_archived } = req.body;
+  const newName = typeof name === 'string' && name.trim() ? name.trim() : existing.name;
+  const newDesc = typeof description === 'string' ? description.trim() : existing.description;
+  const newBanner = typeof banner_url === 'string' ? banner_url.trim() : existing.banner_url;
+  const newColor = typeof color === 'string' && color.trim() ? color.trim() : (existing.color || '#6366f1');
+  const newCat = typeof category === 'string' && category.trim() ? category.trim() : (existing.category || 'general');
+  const newArchived = typeof is_archived === 'boolean' ? (is_archived ? 1 : 0) : existing.is_archived;
+
+  db.prepare(`
+    UPDATE channels
+    SET name = ?, description = ?, banner_url = ?, color = ?, category = ?, is_archived = ?
+    WHERE id = ?
+  `).run(newName, newDesc, newBanner, newColor, newCat, newArchived, chId);
+
+  res.json({
+    ...existing,
+    name: newName,
+    description: newDesc,
+    banner_url: newBanner,
+    color: newColor,
+    category: newCat,
+    is_archived: Boolean(newArchived),
+  });
+});
+
+// チャンネル参加 / 解除トグル (要認証)
+apiRouter.post('/channels/:id/follow', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const chId = String(req.params.id);
+
+  const channel = db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  if (!channel) {
+    return res.status(404).json({ error: 'チャンネルが見つかりません。' });
+  }
+
+  const existingFollow = db.prepare('SELECT 1 FROM channel_follows WHERE channel_id = ? AND user_id = ?').get(chId, user.id);
+
+  if (existingFollow) {
+    // 解除
+    db.prepare('DELETE FROM channel_follows WHERE channel_id = ? AND user_id = ?').run(chId, user.id);
+    db.prepare('UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?').run(chId);
+    return res.json({ following: false, message: 'チャンネルの参加を解除しました。' });
+  } else {
+    // 参加
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO channel_follows (channel_id, user_id, created_at) VALUES (?, ?, ?)').run(chId, user.id, now);
+    db.prepare('UPDATE channels SET followers_count = followers_count + 1 WHERE id = ?').run(chId);
+    return res.json({ following: true, message: 'チャンネルに参加しました！' });
+  }
+});
+
+// チャンネル内タイムライン取得
+apiRouter.get('/channels/:id/timeline', (req: Request, res: Response) => {
+  const chId = String(req.params.id);
+  const limit = Math.min(parseInt(req.query.limit as string || '50', 10), 100);
+
+  const channel = db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  if (!channel) {
+    return res.status(404).json({ error: 'チャンネルが見つかりません。' });
+  }
+
+  const query = `
+    SELECT 
+      p.id AS post_id,
+      p.user_id,
+      p.author_name,
+      p.author_url,
+      p.author_handle,
+      p.content,
+      p.cw,
+      p.is_local,
+      p.visibility,
+      p.emojis,
+      p.in_reply_to,
+      p.media_attachments,
+      p.published_at,
+      p.channel_id,
+      COALESCE(
+        NULLIF(p.author_icon, ''),
+        NULLIF(u.icon_url, ''),
+        NULLIF(ra.icon_url, ''),
+        ''
+      ) AS author_icon,
+      NULL AS announce_id,
+      NULL AS renoted_by_name,
+      NULL AS renoted_by_handle,
+      NULL AS renoted_by_icon,
+      NULL AS renoted_by_url,
+      p.published_at AS timeline_at
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE p.channel_id = ?
+    ORDER BY p.published_at DESC
+    LIMIT ?
+  `;
+
+  const rows = db.prepare(query).all(chId, limit) as any[];
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  const enriched = enrichAndFilterPosts(rows, currentActorUrl, req.user?.id);
+
+  res.json({
+    channel: {
+      ...channel,
+      is_archived: Boolean(channel.is_archived),
+    },
+    posts: enriched,
+  });
 });
 

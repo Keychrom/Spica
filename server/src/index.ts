@@ -13,9 +13,13 @@ import { nodeinfoRouter } from './routes/nodeinfo.js';
 import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
+import { startScheduler } from './scheduler.js';
 
 // データベースの初期化
 initDatabase();
+
+// 予約投稿バックグラウンドワーカーの起動
+startScheduler();
 
 const app = express();
 
