@@ -1807,6 +1807,23 @@ export default function App() {
   const [newChannelCategory, setNewChannelCategory] = useState<string>('general');
   const [isCreatingChannel, setIsCreatingChannel] = useState<boolean>(false);
   const [postTargetChannelId, setPostTargetChannelId] = useState<string | null>(null); // 投稿先チャンネル
+  const [showPostExtraMenu, setShowPostExtraMenu] = useState<boolean>(false); // 🍔 投稿オプション・ハンバーガーメニュー開閉
+  const postExtraMenuRef = useRef<HTMLDivElement>(null);
+
+  // 外部クリック検知で投稿オプションメニューを閉じる
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (postExtraMenuRef.current && !postExtraMenuRef.current.contains(e.target as Node)) {
+        setShowPostExtraMenu(false);
+      }
+    }
+    if (showPostExtraMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showPostExtraMenu]);
 
   // 🔐 WebAuthn / パスキー生体認証関連ステート
   const [passkeys, setPasskeys] = useState<WebAuthnCredential[]>([]);
@@ -10743,84 +10760,161 @@ export default function App() {
                             <span className="text-[10px] font-bold">CW</span>
                           </button>
 
-                          <button
-                            type="button"
-                            onClick={() => setShowPollInput(!showPollInput)}
-                            className={`px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer ${
-                              showPollInput
-                                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300 shadow-sm'
-                                : 'bg-slate-850 border-slate-700/60 text-slate-400 hover:text-indigo-300'
-                            }`}
-                            title="アンケート（投票）を設定"
-                          >
-                            <BarChart2 className="w-3.5 h-3.5 text-indigo-400" />
-                            <span className="text-[10px] font-bold">アンケート</span>
-                          </button>
-
                           {/* 🎨 絵文字ピッカー起動ボタン */}
                           <button
                             type="button"
                             onClick={() => setShowRichEmojiPicker({ target: 'post' })}
-                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-850 border-slate-700/60 text-slate-300 hover:text-yellow-300 hover:border-yellow-500/40"
+                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-900 border-slate-700/60 text-slate-300 hover:text-yellow-300 hover:border-yellow-500/40"
                             title="絵文字・カスタム絵文字ピッカーを開く"
                           >
                             <Smile className="w-3.5 h-3.5 text-yellow-400" />
                             <span className="text-[10px] font-bold">絵文字</span>
                           </button>
 
-                          {/* 📝 下書き保存・一覧 */}
-                          <button
-                            type="button"
-                            onClick={() => setShowDraftsModal(true)}
-                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-850 border-slate-700/60 text-slate-300 hover:text-cyan-300 hover:border-cyan-500/40"
-                            title="下書き一覧・保存"
-                          >
-                            <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                            <span className="text-[10px] font-bold">下書き</span>
-                            {drafts.length > 0 && (
-                              <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 text-[9px] font-bold font-mono">
-                                {drafts.length}
-                              </span>
-                            )}
-                          </button>
-
-                          {/* ⏰ 予約投稿 */}
-                          <button
-                            type="button"
-                            onClick={() => setShowScheduleModal(true)}
-                            className="px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer bg-slate-850 border-slate-700/60 text-slate-300 hover:text-amber-300 hover:border-amber-500/40"
-                            title="日時を指定して予約投稿"
-                          >
-                            <Clock className="w-3.5 h-3.5 text-amber-400" />
-                            <span className="text-[10px] font-bold">予約</span>
-                            {scheduledPosts.length > 0 && (
-                              <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[9px] font-bold font-mono">
-                                {scheduledPosts.length}
-                              </span>
-                            )}
-                          </button>
-
-                          {/* 📢 チャンネル宛て選択 */}
-                          <div className="relative inline-flex items-center">
-                            <select
-                              value={postTargetChannelId || ''}
-                              onChange={(e) => setPostTargetChannelId(e.target.value || null)}
-                              className={`appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-semibold border transition cursor-pointer focus:outline-none ${
-                                postTargetChannelId
-                                  ? 'bg-indigo-950/80 border-indigo-500/60 text-indigo-300'
+                          {/* 🍔 投稿機能まとめ（ハンバーガーメニュー: アンケート・下書き・予約・チャンネル） */}
+                          <div className="relative inline-flex items-center" ref={postExtraMenuRef}>
+                            <button
+                              type="button"
+                              onClick={() => setShowPostExtraMenu(!showPostExtraMenu)}
+                              className={`px-2 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer ${
+                                showPostExtraMenu || showPollInput || postTargetChannelId || drafts.length > 0 || scheduledPosts.length > 0
+                                  ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300 shadow-sm'
                                   : 'bg-slate-900 border-slate-700/60 text-slate-300 hover:text-white hover:border-slate-600'
                               }`}
-                              title="投稿先チャンネルを選択"
+                              title="その他の投稿機能 (アンケート・下書き・予約・チャンネル)"
                             >
-                              <option value="" className="bg-slate-900 text-slate-200">📢 全体公開</option>
-                              {channels.map((ch) => (
-                                <option key={ch.id} value={ch.id} className="bg-slate-900 text-slate-200">
-                                  📢 {ch.name}
-                                </option>
-                              ))}
-                            </select>
-                            <ChevronDown className="w-3.5 h-3.5 absolute right-2 pointer-events-none text-slate-400" />
+                              <Menu className="w-3.5 h-3.5" />
+                              <span className="text-[10px] font-bold">その他</span>
+                              {(showPollInput || postTargetChannelId) && (
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                              )}
+                            </button>
+
+                            {/* ポップオーバーメニュー */}
+                            {showPostExtraMenu && (
+                              <div className="absolute bottom-full left-0 mb-2 w-64 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl p-2.5 z-50 space-y-1 backdrop-blur-xl">
+                                <div className="px-2 py-1 text-[11px] font-bold text-slate-400 border-b border-slate-800 flex items-center justify-between">
+                                  <span>その他の投稿機能</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowPostExtraMenu(false)}
+                                    className="text-slate-500 hover:text-slate-300 p-0.5 rounded-lg"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+
+                                {/* 📊 アンケート */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowPollInput(!showPollInput);
+                                    setShowPostExtraMenu(false);
+                                  }}
+                                  className={`w-full px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between transition cursor-pointer ${
+                                    showPollInput
+                                      ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/40'
+                                      : 'hover:bg-slate-800 text-slate-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center space-x-2">
+                                    <BarChart2 className="w-4 h-4 text-indigo-400" />
+                                    <span>アンケート</span>
+                                  </div>
+                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${showPollInput ? 'bg-indigo-500/30 text-indigo-200' : 'bg-slate-800 text-slate-400'}`}>
+                                    {showPollInput ? '有効' : '追加'}
+                                  </span>
+                                </button>
+
+                                {/* 📝 下書き保存・一覧 */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowDraftsModal(true);
+                                    setShowPostExtraMenu(false);
+                                  }}
+                                  className="w-full px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between hover:bg-slate-800 text-slate-300 transition cursor-pointer"
+                                >
+                                  <div className="flex items-center space-x-2">
+                                    <FileText className="w-4 h-4 text-cyan-400" />
+                                    <span>下書き一覧・保存</span>
+                                  </div>
+                                  {drafts.length > 0 ? (
+                                    <span className="text-[10px] font-bold font-mono px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300">
+                                      {drafts.length}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-500">一覧</span>
+                                  )}
+                                </button>
+
+                                {/* ⏰ 予約投稿 */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowScheduleModal(true);
+                                    setShowPostExtraMenu(false);
+                                  }}
+                                  className="w-full px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between hover:bg-slate-800 text-slate-300 transition cursor-pointer"
+                                >
+                                  <div className="flex items-center space-x-2">
+                                    <Clock className="w-4 h-4 text-amber-400" />
+                                    <span>日時指定予約</span>
+                                  </div>
+                                  {scheduledPosts.length > 0 ? (
+                                    <span className="text-[10px] font-bold font-mono px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300">
+                                      {scheduledPosts.length}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-500">設定</span>
+                                  )}
+                                </button>
+
+                                {/* 📢 投稿先チャンネル */}
+                                <div className="pt-1.5 border-t border-slate-800">
+                                  <label className="px-1 text-[10px] font-bold text-slate-400 block mb-1">
+                                    投稿先チャンネル
+                                  </label>
+                                  <div className="relative">
+                                    <select
+                                      value={postTargetChannelId || ''}
+                                      onChange={(e) => {
+                                        setPostTargetChannelId(e.target.value || null);
+                                      }}
+                                      className={`w-full appearance-none pl-2.5 pr-7 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer focus:outline-none ${
+                                        postTargetChannelId
+                                          ? 'bg-indigo-950/80 border-indigo-500/60 text-indigo-300'
+                                          : 'bg-slate-850 border-slate-700 text-slate-300 hover:text-white'
+                                      }`}
+                                    >
+                                      <option value="" className="bg-slate-900 text-slate-200">📢 全体公開 (チャンネルなし)</option>
+                                      {channels.map((ch) => (
+                                        <option key={ch.id} value={ch.id} className="bg-slate-900 text-slate-200">
+                                          📢 {ch.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <ChevronDown className="w-3.5 h-3.5 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400" />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
+
+                          {/* 📢 チャンネル宛て選択中のバッジ表示 */}
+                          {postTargetChannelId && (
+                            <span className="inline-flex items-center space-x-1 px-2 py-1 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-xs font-bold">
+                              <span>📢 {channels.find((c) => c.id === postTargetChannelId)?.name || 'チャンネル'}</span>
+                              <button
+                                type="button"
+                                onClick={() => setPostTargetChannelId(null)}
+                                className="text-indigo-400 hover:text-indigo-200 p-0.5 rounded cursor-pointer"
+                                title="チャンネル指定を解除 (全体公開にする)"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </span>
+                          )}
                         </div>
 
                         <button
