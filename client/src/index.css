@@ -300,6 +300,22 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
+/* Base form controls styling (preventing OS default white background) */
+select, input, textarea {
+  background-color: #0f172a;
+  color: #f1f5f9;
+  border-color: #334155;
+}
+
+select option {
+  background-color: #0f172a;
+  color: #f1f5f9;
+}
+
+.bg-slate-850 {
+  background-color: #151d2c !important;
+}
+
 .theme-accent-btn {
   background-color: var(--accent) !important;
   color: #ffffff !important;
