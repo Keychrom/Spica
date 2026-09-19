@@ -8495,8 +8495,8 @@ export default function App() {
                   </div>
 
                   {/* プレビュー表示 */}
-                  <div className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-950/60">
-                    <div className="h-28 relative bg-gradient-to-r from-indigo-950 via-slate-900 to-purple-950 overflow-hidden">
+                  <div className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/90 shadow-xl">
+                    <div className="h-32 sm:h-36 relative bg-gradient-to-r from-indigo-950 via-slate-900 to-purple-950 overflow-hidden">
                       {editBannerUrl ? (
                         <img
                           src={editBannerUrl}
@@ -8509,28 +8509,30 @@ export default function App() {
                       )}
                       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 to-transparent" />
                     </div>
-                    <div className="px-4 pb-4 -mt-10 flex items-end space-x-3">
-                      <div className="w-16 h-16 rounded-2xl p-1 bg-slate-900 border border-slate-700/60 shadow-xl shrink-0 overflow-hidden">
-                        {editIconUrl ? (
-                          <img
-                            src={editIconUrl}
-                            alt="Avatar Preview"
-                            className="w-full h-full rounded-xl object-cover"
-                            onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
-                          />
-                        ) : (
-                          <div className="w-full h-full rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center font-bold text-xl text-white">
-                            {(editName || authUser?.name || 'A').slice(0, 1).toUpperCase()}
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0 pb-1">
-                        <span className="font-bold text-sm text-slate-100 block truncate">
-                          {editName || authUser?.name || '表示名'}
-                        </span>
-                        <span className="text-[11px] font-mono text-indigo-400 block truncate">
-                          {authUser?.handle}
-                        </span>
+                    <div className="px-5 pb-5 pt-1 relative bg-slate-900/95">
+                      <div className="flex items-end space-x-3.5 -mt-10 relative z-10">
+                        <div className="w-16 h-16 rounded-2xl p-1 bg-slate-900 border-2 border-slate-700/80 shadow-2xl shrink-0 overflow-hidden">
+                          {editIconUrl ? (
+                            <img
+                              src={editIconUrl}
+                              alt="Avatar Preview"
+                              className="w-full h-full rounded-xl object-cover"
+                              onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
+                            />
+                          ) : (
+                            <div className="w-full h-full rounded-xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center font-bold text-xl text-white">
+                              {(editName || authUser?.name || 'A').slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className="min-w-0 pb-1 flex-1">
+                          <span className="font-bold text-sm text-slate-100 block truncate">
+                            {editName || authUser?.name || '表示名'}
+                          </span>
+                          <span className="text-xs font-mono text-indigo-400 block truncate">
+                            {authUser?.handle}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
