@@ -2470,10 +2470,14 @@ export default function App() {
   const showRichEmojiPickerRef = useRef(showRichEmojiPicker);
   useEffect(() => { showRichEmojiPickerRef.current = showRichEmojiPicker; }, [showRichEmojiPicker]);
 
+  // 📱 PWA / モバイル ホーム画面での戻るトラップ用
+  const lastBackPressTimeRef = useRef<number>(0);
+  const [showExitToast, setShowExitToast] = useState<boolean>(false);
+
   // モーダルオープン時の履歴プッシュ
   const pushModalState = (modalName: string) => {
     try {
-      window.history.pushState({ modal: modalName }, '', window.location.href);
+      window.history.pushState({ spica_guard: 'modal', modal: modalName }, '', window.location.href);
     } catch {}
   };
 
@@ -2492,7 +2496,7 @@ export default function App() {
         if (url.searchParams.has('post')) {
           url.searchParams.delete('post');
           const newPath = (url.pathname || '/') + (url.search ? url.search : '');
-          window.history.replaceState({ view: currentViewRef.current }, '', newPath);
+          window.history.replaceState({ spica_guard: 'active', view: currentViewRef.current }, '', newPath);
         }
       } catch {}
       closed = true;
@@ -2567,7 +2571,7 @@ export default function App() {
       if (url.searchParams.has('post')) {
         url.searchParams.delete('post');
         const newPath = (url.pathname || '/') + (url.search ? url.search : '');
-        window.history.replaceState({ view: currentViewRef.current }, '', newPath);
+        window.history.replaceState({ spica_guard: 'active', view: currentViewRef.current }, '', newPath);
       }
     } catch {}
   };
@@ -2591,7 +2595,7 @@ export default function App() {
         targetPath = timelineMode === 'local' ? '/?mode=local' : timelineMode === 'home' ? '/?mode=home' : '/?mode=all';
       }
       try {
-        window.history.pushState({ view }, '', targetPath);
+        window.history.pushState({ spica_guard: 'active', view }, '', targetPath);
       } catch {}
     }
   };
@@ -4179,23 +4183,63 @@ export default function App() {
       }
     } catch {}
 
+    // PWA/SPA での戻る操作で真っ白なページに飛ぶのを防止するための履歴ガード
+    try {
+      if (!window.history.state || !window.history.state.spica_guard) {
+        window.history.replaceState({ spica_guard: 'root', view: currentViewRef.current }, '', window.location.href);
+        window.history.pushState({ spica_guard: 'active', view: currentViewRef.current }, '', window.location.href);
+      }
+    } catch {}
+
     // 初期URL解析 & ブラウザ戻る/進む・スマホ戻るイベントリスナー登録
     parseUrlAndNavigate(window.location.pathname, window.location.search, true);
 
     const handlePopState = () => {
       // 1. モーダルが開いていればモーダルのみ閉じる（アプリから離脱しない）
       if (closeAllModals()) {
+        try {
+          window.history.pushState({ spica_guard: 'active', view: currentViewRef.current }, '', window.location.href);
+        } catch {}
         return;
       }
 
       // 2. チャンネル詳細画面にいて、URLがチャンネル詳細でないならチャンネル一覧に戻す
       if (selectedChannelRef.current && !window.location.pathname.startsWith('/channels/')) {
         setSelectedChannel(null);
+        try {
+          window.history.pushState({ spica_guard: 'active', view: 'channels' }, '', '/channels');
+        } catch {}
         return;
       }
 
-      // 3. URLに応じた画面の復元
-      parseUrlAndNavigate(window.location.pathname, window.location.search, false);
+      // 3. サブ画面（設定、通知、検索、ブックマーク、管理者、個別プロフィール等）にいる場合はホーム（タイムライン）に戻す
+      if (currentViewRef.current !== 'timeline') {
+        navigateToView('timeline', false);
+        try {
+          window.history.pushState({ spica_guard: 'active', view: 'timeline' }, '', '/');
+        } catch {}
+        return;
+      }
+
+      // 4. すでにホーム画面（タイムライン）にいる場合:
+      // スマホPWAで真っ白なページ（ブラウザ初期空白ページ等）に飛ぶのを防止する戻るトラップ
+      const now = Date.now();
+      if (now - lastBackPressTimeRef.current < 2000) {
+        // 2秒以内の連続戻る操作: アプリの終了（ブラウザ本来の離脱）を許可
+        return;
+      }
+
+      // 初回戻る: トラップしてホーム画面にとどめる
+      lastBackPressTimeRef.current = now;
+      try {
+        window.history.pushState({ spica_guard: 'active', view: 'timeline' }, '', window.location.href);
+      } catch {}
+
+      // 「もう一度戻ると終了します」トーストを2秒間表示
+      setShowExitToast(true);
+      setTimeout(() => {
+        setShowExitToast(false);
+      }, 2000);
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -14200,6 +14244,13 @@ export default function App() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* 📱 PWA / モバイル 終了確認トースト */}
+      {showExitToast && (
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-slate-900/95 text-slate-200 text-xs font-semibold rounded-full shadow-2xl border border-slate-700/80 backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-150 pointer-events-none">
+          もう一度戻ると終了します
         </div>
       )}
     </div>
