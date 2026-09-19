@@ -2,6 +2,9 @@
 
 > **自律分散とデータ主権のための、次世代 ActivityPub ノード**  
 > Misskey や Mastodon とシームレスにつながる、軽量かつ堅牢な国産ソーシャルネットワークエンジン。
+>
+> ⚠️ **現在は Alpha 版の開発中ソフトウェアです。実運用（本番環境での利用）は想定されていません。**
+> ⚠️ **本ドキュメントに記載されている手順は、理論上可能な手順を書いているだけであり、実際に導入可能かどうかなどは一切検証していません。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
