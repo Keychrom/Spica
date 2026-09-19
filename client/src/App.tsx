@@ -4222,24 +4222,20 @@ export default function App() {
       }
 
       // 4. すでにホーム画面（タイムライン）にいる場合:
-      // スマホPWAで真っ白なページ（ブラウザ初期空白ページ等）に飛ぶのを防止する戻るトラップ
-      const now = Date.now();
-      if (now - lastBackPressTimeRef.current < 2000) {
-        // 2秒以内の連続戻る操作: アプリの終了（ブラウザ本来の離脱）を許可
-        return;
-      }
-
-      // 初回戻る: トラップしてホーム画面にとどめる
-      lastBackPressTimeRef.current = now;
+      // スマホPWAで真っ白なページ（about:blank等）に飛ぶのを完全に防止する無限ガード
       try {
         window.history.pushState({ spica_guard: 'active', view: 'timeline' }, '', window.location.href);
       } catch {}
 
-      // 「もう一度戻ると終了します」トーストを2秒間表示
-      setShowExitToast(true);
-      setTimeout(() => {
-        setShowExitToast(false);
-      }, 2000);
+      // ホーム画面通知トーストを表示（連打防止: 1.5秒間隔）
+      const now = Date.now();
+      if (now - lastBackPressTimeRef.current > 1500) {
+        lastBackPressTimeRef.current = now;
+        setShowExitToast(true);
+        setTimeout(() => {
+          setShowExitToast(false);
+        }, 2200);
+      }
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -14247,10 +14243,10 @@ export default function App() {
         </div>
       )}
 
-      {/* 📱 PWA / モバイル 終了確認トースト */}
+      {/* 📱 PWA / モバイル ホームガード案内トースト */}
       {showExitToast && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-slate-900/95 text-slate-200 text-xs font-semibold rounded-full shadow-2xl border border-slate-700/80 backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-150 pointer-events-none">
-          もう一度戻ると終了します
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-slate-900/95 text-slate-200 text-xs font-semibold rounded-full shadow-2xl border border-slate-700/80 backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-150 pointer-events-none flex items-center space-x-2 whitespace-nowrap">
+          <span>ホーム画面です（閉じるにはホームボタンを押してください）</span>
         </div>
       )}
     </div>

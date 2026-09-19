@@ -1,5 +1,5 @@
-// Spica Service Worker v2.0.0 (Robust Offline & PWA Navigation)
-const CACHE_NAME = 'spica-pwa-v2';
+// Spica Service Worker v3.0.0 (Robust Offline & PWA Navigation & Maskable Icons)
+const CACHE_NAME = 'spica-pwa-v3';
 
 const PRECACHE_ASSETS = [
   '/',
