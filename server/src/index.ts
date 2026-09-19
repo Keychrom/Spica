@@ -84,9 +84,31 @@ const finalDistPath = fs.existsSync(clientDistPath) ? clientDistPath : (fs.exist
 
 if (finalDistPath) {
   console.log(`[Static] Serving client UI from ${finalDistPath}`);
+
+  // PWA Service Worker & Manifest 専用ヘッダー
+  app.get('/sw.js', (req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    const swPath = path.join(finalDistPath, 'sw.js');
+    if (fs.existsSync(swPath)) {
+      return res.sendFile(swPath);
+    }
+    next();
+  });
+
+  app.get(['/manifest.webmanifest', '/manifest.json'], (req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    next();
+  });
+
   app.use(express.static(finalDistPath));
-  // SPA用のフォールバックルーティング
+
+  // SPA用のフォールバックルーティング (HTMLリクエストは常にindex.htmlへ)
   app.get('*', (req: Request, res: Response, next: NextFunction) => {
+    if (req.headers.accept && req.headers.accept.includes('text/html')) {
+      return res.sendFile(path.join(finalDistPath, 'index.html'));
+    }
     if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/.well-known') || req.originalUrl.startsWith('/users')) {
       return next();
     }

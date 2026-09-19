@@ -1,28 +1,34 @@
-// Spica Service Worker v1.0.0
-const CACHE_NAME = 'spica-pwa-v1';
-const STATIC_ASSETS = [
+// Spica Service Worker v2.0.0 (Robust Offline & PWA Navigation)
+const CACHE_NAME = 'spica-pwa-v2';
+
+const PRECACHE_ASSETS = [
   '/',
   '/index.html',
+  '/manifest.webmanifest',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
   '/logo.jpg',
-  '/favicon.jpg',
-  '/manifest.webmanifest'
+  '/favicon.jpg'
 ];
 
+// 📦 インストール時: 必須シェルアセットをプリキャッシュ
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      console.log('[SW] Caching static assets');
-      return cache.addAll(STATIC_ASSETS);
+      console.log('[SW] Pre-caching app shell assets');
+      return cache.addAll(PRECACHE_ASSETS);
     }).then(() => self.skipWaiting())
   );
 });
 
+// 🔄 アクティベート時: 古いキャッシュの自動パージ & 即時クライアント制御
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
         keys.filter((key) => key !== CACHE_NAME).map((key) => {
-          console.log('[SW] Removing old cache:', key);
+          console.log('[SW] Deleting legacy cache:', key);
           return caches.delete(key);
         })
       );
@@ -30,34 +36,71 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// 🌐 フェッチハンドラ: ナビゲーションと静的アセットの最適キャッシュ
 self.addEventListener('fetch', (event) => {
-  const url = new URL(event.request.url);
+  const req = event.request;
+  const url = new URL(req.url);
 
-  // APIリクエストやActivityPub、POST等はネットワーク優先
+  // 1. 非GETリクエスト、API、ActivityPub、WebSocket、外部ドメインはキャッシュ対象外
   if (
+    req.method !== 'GET' ||
+    url.origin !== self.location.origin ||
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/inbox') ||
-    url.pathname.startsWith('/users/') ||
-    url.pathname.startsWith('/.well-known/') ||
     url.pathname.startsWith('/nodeinfo/') ||
-    event.request.method !== 'GET'
+    url.pathname.startsWith('/.well-known/')
   ) {
     return;
   }
 
-  // 静的アセット: Network first, fallback to cache
+  // 2. 📱 ナビゲーションリクエスト（HTML画面遷移・PWA起動）
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put('/index.html', clone);
+            });
+          }
+          return networkResponse;
+        })
+        .catch(async () => {
+          console.log('[SW] Offline navigation fallback to cached /index.html');
+          const cached = await caches.match('/index.html');
+          if (cached) return cached;
+          return caches.match('/');
+        })
+    );
+    return;
+  }
+
+  // 3. 🎨 静的アセット（JS / CSS / 画像 / フォントなど）
+  // Cache-First: キャッシュにあれば即返却、なければネットワークから取得してキャッシュに保存
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(req).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      return fetch(req)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(req, clone);
+            });
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          // 画像等で取得できない場合のフォールバック
+          if (req.destination === 'image') {
+            return caches.match('/favicon.jpg');
+          }
+          return null;
+        });
+    })
   );
 });
 
@@ -68,7 +111,7 @@ self.addEventListener('push', (event) => {
   let data = {
     title: 'Spica',
     body: '新しい通知が届きました',
-    icon: '/logo.jpg',
+    icon: '/icon-192.png',
     url: '/?view=notifications',
     tag: 'spica-notification',
   };
@@ -84,8 +127,8 @@ self.addEventListener('push', (event) => {
 
   const options = {
     body: data.body,
-    icon: data.icon || '/logo.jpg',
-    badge: '/favicon.jpg',
+    icon: data.icon || '/icon-192.png',
+    badge: '/icon-192.png',
     tag: data.tag || 'spica-notification',
     data: { url: data.url || '/?view=notifications' },
     vibrate: [100, 50, 100],

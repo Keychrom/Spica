@@ -2139,7 +2139,7 @@ export default function App() {
     setActiveRenoteMenuPostId(null);
     setQuoteTargetPost(post);
     if (window.innerWidth < 768) {
-      setShowMobilePostModal(true);
+      openMobilePostModal();
     } else {
       window.scrollTo({ top: 0, behavior: 'smooth' });
       const textarea = document.querySelector<HTMLTextAreaElement>('#main-post-textarea');
@@ -2410,9 +2410,200 @@ export default function App() {
   const [isUploadingIcon, setIsUploadingIcon] = useState<boolean>(false);
   const [isUploadingBanner, setIsUploadingBanner] = useState<boolean>(false);
 
+  // =========================================================================
+  // 🧭 SPA ナビゲーション & ブラウザ戻る/進む・スマホ戻る操作 (History API 連動)
+  // =========================================================================
+  const authTokenRef = useRef(authToken);
+  useEffect(() => { authTokenRef.current = authToken; }, [authToken]);
+
+  const currentViewRef = useRef(currentView);
+  useEffect(() => { currentViewRef.current = currentView; }, [currentView]);
+
+  const profileTargetRef = useRef(profileTarget);
+  useEffect(() => { profileTargetRef.current = profileTarget; }, [profileTarget]);
+
+  const selectedChannelRef = useRef(selectedChannel);
+  useEffect(() => { selectedChannelRef.current = selectedChannel; }, [selectedChannel]);
+
+  const previewMediaUrlRef = useRef(previewMediaUrl);
+  useEffect(() => { previewMediaUrlRef.current = previewMediaUrl; }, [previewMediaUrl]);
+
+  const threadModalPostRef = useRef(threadModalPost);
+  useEffect(() => { threadModalPostRef.current = threadModalPost; }, [threadModalPost]);
+
+  const showMobilePostModalRef = useRef(showMobilePostModal);
+  useEffect(() => { showMobilePostModalRef.current = showMobilePostModal; }, [showMobilePostModal]);
+
+  const showDraftsModalRef = useRef(showDraftsModal);
+  useEffect(() => { showDraftsModalRef.current = showDraftsModal; }, [showDraftsModal]);
+
+  const showScheduleModalRef = useRef(showScheduleModal);
+  useEffect(() => { showScheduleModalRef.current = showScheduleModal; }, [showScheduleModal]);
+
+  const showCreateChannelModalRef = useRef(showCreateChannelModal);
+  useEffect(() => { showCreateChannelModalRef.current = showCreateChannelModal; }, [showCreateChannelModal]);
+
+  const showEditProfileModalRef = useRef(showEditProfileModal);
+  useEffect(() => { showEditProfileModalRef.current = showEditProfileModal; }, [showEditProfileModal]);
+
+  const showAuthPortalRef = useRef(showAuthPortal);
+  useEffect(() => { showAuthPortalRef.current = showAuthPortal; }, [showAuthPortal]);
+
+  const showMasterKeyModalRef = useRef(showMasterKeyModal);
+  useEffect(() => { showMasterKeyModalRef.current = showMasterKeyModal; }, [showMasterKeyModal]);
+
+  const showAntennaManageModalRef = useRef(showAntennaManageModal);
+  useEffect(() => { showAntennaManageModalRef.current = showAntennaManageModal; }, [showAntennaManageModal]);
+
+  const showAntennaModalRef = useRef(showAntennaModal);
+  useEffect(() => { showAntennaModalRef.current = showAntennaModal; }, [showAntennaModal]);
+
+  const showSelfDeleteModalRef = useRef(showSelfDeleteModal);
+  useEffect(() => { showSelfDeleteModalRef.current = showSelfDeleteModal; }, [showSelfDeleteModal]);
+
+  const showPostExtraMenuRef = useRef(showPostExtraMenu);
+  useEffect(() => { showPostExtraMenuRef.current = showPostExtraMenu; }, [showPostExtraMenu]);
+
+  const isMobileMenuOpenRef = useRef(isMobileMenuOpen);
+  useEffect(() => { isMobileMenuOpenRef.current = isMobileMenuOpen; }, [isMobileMenuOpen]);
+
+  const showRichEmojiPickerRef = useRef(showRichEmojiPicker);
+  useEffect(() => { showRichEmojiPickerRef.current = showRichEmojiPicker; }, [showRichEmojiPicker]);
+
+  // モーダルオープン時の履歴プッシュ
+  const pushModalState = (modalName: string) => {
+    try {
+      window.history.pushState({ modal: modalName }, '', window.location.href);
+    } catch {}
+  };
+
+  // 全てのモーダル・オーバーレイを閉じる（戻る操作時に最優先で実行）
+  const closeAllModals = (): boolean => {
+    let closed = false;
+    if (previewMediaUrlRef.current) {
+      setPreviewMediaUrl(null);
+      closed = true;
+    }
+    if (threadModalPostRef.current) {
+      setThreadModalPost(null);
+      setThreadData(null);
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('post')) {
+          url.searchParams.delete('post');
+          const newPath = (url.pathname || '/') + (url.search ? url.search : '');
+          window.history.replaceState({ view: currentViewRef.current }, '', newPath);
+        }
+      } catch {}
+      closed = true;
+    }
+    if (showMobilePostModalRef.current) {
+      setShowMobilePostModal(false);
+      closed = true;
+    }
+    if (showDraftsModalRef.current) {
+      setShowDraftsModal(false);
+      closed = true;
+    }
+    if (showScheduleModalRef.current) {
+      setShowScheduleModal(false);
+      closed = true;
+    }
+    if (showCreateChannelModalRef.current) {
+      setShowCreateChannelModal(false);
+      closed = true;
+    }
+    if (showEditProfileModalRef.current) {
+      setShowEditProfileModal(false);
+      closed = true;
+    }
+    if (showMasterKeyModalRef.current) {
+      setShowMasterKeyModal(false);
+      closed = true;
+    }
+    if (showAntennaManageModalRef.current) {
+      setShowAntennaManageModal(false);
+      closed = true;
+    }
+    if (showAntennaModalRef.current) {
+      setShowAntennaModal(false);
+      closed = true;
+    }
+    if (showSelfDeleteModalRef.current) {
+      setShowSelfDeleteModal(false);
+      closed = true;
+    }
+    if (showPostExtraMenuRef.current) {
+      setShowPostExtraMenu(false);
+      closed = true;
+    }
+    if (isMobileMenuOpenRef.current) {
+      setIsMobileMenuOpen(false);
+      closed = true;
+    }
+    if (showRichEmojiPickerRef.current) {
+      setShowRichEmojiPicker(null);
+      closed = true;
+    }
+    if (showAuthPortalRef.current && authTokenRef.current) {
+      setShowAuthPortal(false);
+      closed = true;
+    }
+    return closed;
+  };
+
+  // 画像プレビューオープン（戻る操作連動）
+  const openMediaPreview = (url: string) => {
+    setPreviewMediaUrl(url);
+    pushModalState('media_preview');
+  };
+
+  // 会話スレッドモーダルを閉じる（URLの?post=を復元）
+  const closeThreadModal = () => {
+    setThreadModalPost(null);
+    setThreadData(null);
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('post')) {
+        url.searchParams.delete('post');
+        const newPath = (url.pathname || '/') + (url.search ? url.search : '');
+        window.history.replaceState({ view: currentViewRef.current }, '', newPath);
+      }
+    } catch {}
+  };
+
+  // 画面遷移ヘルパー（URLのプッシュとビュー切り替え）
+  const navigateToView = (view: typeof currentView, push: boolean = true) => {
+    closeAllModals();
+    setCurrentView(view);
+    if (view !== 'channels') {
+      setSelectedChannel(null);
+    }
+    if (push) {
+      let targetPath = '/';
+      if (view === 'channels') targetPath = '/channels';
+      else if (view === 'notifications') targetPath = '/notifications';
+      else if (view === 'bookmarks') targetPath = '/bookmarks';
+      else if (view === 'search') targetPath = '/search';
+      else if (view === 'settings') targetPath = '/settings';
+      else if (view === 'admin') targetPath = '/admin';
+      else if (view === 'timeline') {
+        targetPath = timelineMode === 'local' ? '/?mode=local' : timelineMode === 'home' ? '/?mode=home' : '/?mode=all';
+      }
+      try {
+        window.history.pushState({ view }, '', targetPath);
+      } catch {}
+    }
+  };
+
   // ユーザープロフィールを開く
-  const openUserProfile = async (identifier: string) => {
+  const openUserProfile = async (identifier: string, push: boolean = true) => {
     if (!identifier) return;
+    if (push) {
+      try {
+        window.history.pushState({ view: 'profile', identifier }, '', `/users/${encodeURIComponent(identifier)}`);
+      } catch {}
+    }
     setProfileTarget(identifier);
     setCurrentView('profile');
     setIsLoadingProfile(true);
@@ -2451,7 +2642,49 @@ export default function App() {
     setEditIconUrl(authUser.icon_url || '');
     setEditBannerUrl(authUser.banner_url || '');
     setShowEditProfileModal(true);
+    pushModalState('edit_profile');
   };
+
+  function openMobilePostModal() {
+    setShowMobilePostModal(true);
+    pushModalState('mobile_post');
+  }
+
+  function openDraftsModal() {
+    setShowDraftsModal(true);
+    setShowPostExtraMenu(false);
+    pushModalState('drafts');
+  }
+
+  function openScheduleModal() {
+    setShowScheduleModal(true);
+    setShowPostExtraMenu(false);
+    pushModalState('schedule');
+  }
+
+  function openCreateChannelModal() {
+    if (!authUser) {
+      setShowLoginModal(true);
+      return;
+    }
+    setShowCreateChannelModal(true);
+    pushModalState('create_channel');
+  }
+
+  function openAntennaManageModal() {
+    if (!authUser) {
+      setShowLoginModal(true);
+      return;
+    }
+    setShowAntennaManageModal(true);
+    pushModalState('antenna_manage');
+  }
+
+  function openAntennaModal(ant?: Partial<Antenna> | null) {
+    setEditingAntenna(ant || null);
+    setShowAntennaModal(true);
+    pushModalState('edit_antenna');
+  }
 
   // ユーザー設定画面を開く
   const openSettings = (tab: 'profile' | 'preferences' | 'account' | 'session' = 'profile') => {
@@ -2467,7 +2700,7 @@ export default function App() {
     }
     setSettingsTab(tab);
     setSettingsMessage(null);
-    setCurrentView('settings');
+    navigateToView('settings');
   };
 
   // プロフィール保存
@@ -3057,7 +3290,7 @@ export default function App() {
     setNewPostsQueue([]);
     setActiveHashtag(clean);
     setTimelineMode('tag');
-    setCurrentView('timeline');
+    navigateToView('timeline');
     fetchTimeline('tag', clean);
   };
 
@@ -3096,7 +3329,7 @@ export default function App() {
   const handleSearchSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
-    setCurrentView('search');
+    navigateToView('search');
     executeSearch(searchQuery);
   };
 
@@ -3523,7 +3756,12 @@ export default function App() {
   };
 
   // post_idからスレッドモーダルを開く
-  const handleOpenThreadById = async (postId: string) => {
+  const handleOpenThreadById = async (postId: string, push: boolean = true) => {
+    if (push) {
+      try {
+        window.history.pushState({ modal: 'thread', postId }, '', `/?post=${encodeURIComponent(postId)}`);
+      } catch {}
+    }
     setIsLoadingThread(true);
     setThreadModalPost({ id: postId } as any);
     try {
@@ -3846,7 +4084,83 @@ export default function App() {
     }
   }, [authToken]);
 
-  // サーバー基本情報・人気タグ・カスタム絵文字の初期取得 & 招待リンク検知 & Web Push 状態確認
+  // 🧭 URL パースと画面遷移の同期
+  const parseUrlAndNavigate = (pathname: string, search: string, isInitial: boolean = false) => {
+    try {
+      const searchParams = new URLSearchParams(search);
+      const postId = searchParams.get('post');
+
+      // 1. ?post=:id がある場合、スレッドモーダルを開く
+      if (postId) {
+        handleOpenThreadById(postId, false);
+      }
+
+      // 2. パスによるルーティング
+      if (pathname.startsWith('/users/')) {
+        const userId = decodeURIComponent(pathname.replace('/users/', ''));
+        if (userId) {
+          openUserProfile(userId, false);
+          return;
+        }
+      }
+
+      if (pathname.startsWith('/channels/')) {
+        const channelId = decodeURIComponent(pathname.replace('/channels/', ''));
+        if (channelId) {
+          setCurrentView('channels');
+          openChannelDetailById(channelId, false);
+          return;
+        }
+      }
+
+      if (pathname === '/channels') {
+        setCurrentView('channels');
+        setSelectedChannel(null);
+        fetchChannels();
+        return;
+      }
+
+      if (pathname === '/notifications') {
+        setCurrentView('notifications');
+        return;
+      }
+
+      if (pathname === '/bookmarks') {
+        setCurrentView('bookmarks');
+        fetchBookmarks();
+        return;
+      }
+
+      if (pathname === '/search') {
+        setCurrentView('search');
+        return;
+      }
+
+      if (pathname === '/settings') {
+        setCurrentView('settings');
+        return;
+      }
+
+      if (pathname === '/admin') {
+        setCurrentView('admin');
+        return;
+      }
+
+      // デフォルト: タイムライン
+      if (!isInitial || currentViewRef.current !== 'profile') {
+        setCurrentView('timeline');
+        setSelectedChannel(null);
+        const mode = searchParams.get('mode');
+        if (mode && ['local', 'home', 'all'].includes(mode)) {
+          handleSwitchTimelineMode(mode as any);
+        }
+      }
+    } catch (e) {
+      console.error('URL parse error:', e);
+    }
+  };
+
+  // サーバー基本情報・人気タグ・カスタム絵文字の初期取得 & 招待リンク検知 & Web Push 状態確認 & History API 連動
   useEffect(() => {
     fetchServerStats();
     fetchPopularTags();
@@ -3864,6 +4178,30 @@ export default function App() {
         setAuthPortalTab('register');
       }
     } catch {}
+
+    // 初期URL解析 & ブラウザ戻る/進む・スマホ戻るイベントリスナー登録
+    parseUrlAndNavigate(window.location.pathname, window.location.search, true);
+
+    const handlePopState = () => {
+      // 1. モーダルが開いていればモーダルのみ閉じる（アプリから離脱しない）
+      if (closeAllModals()) {
+        return;
+      }
+
+      // 2. チャンネル詳細画面にいて、URLがチャンネル詳細でないならチャンネル一覧に戻す
+      if (selectedChannelRef.current && !window.location.pathname.startsWith('/channels/')) {
+        setSelectedChannel(null);
+        return;
+      }
+
+      // 3. URLに応じた画面の復元
+      parseUrlAndNavigate(window.location.pathname, window.location.search, false);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
 
   // タイムラインモード変更時または認証状態変化時のタイムライン自動取得
@@ -4191,13 +4529,47 @@ export default function App() {
     }
   };
 
-  const openChannelDetail = async (channel: Channel) => {
+  const openChannelDetail = async (channel: Channel, push: boolean = true) => {
+    closeAllModals();
+    setCurrentView('channels');
+    if (push) {
+      try {
+        window.history.pushState({ view: 'channels', channelId: channel.id }, '', `/channels/${encodeURIComponent(channel.id)}`);
+      } catch {}
+    }
     setSelectedChannel(channel);
     setIsLoadingChannelTimeline(true);
     try {
       const headers: Record<string, string> = {};
       if (authToken) headers.Authorization = `Bearer ${authToken}`;
       const res = await fetch(`/api/channels/${channel.id}/timeline`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setChannelTimelinePosts(data.posts || []);
+        if (data.channel) {
+          setSelectedChannel(data.channel);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch channel timeline:', e);
+    } finally {
+      setIsLoadingChannelTimeline(false);
+    }
+  };
+
+  const openChannelDetailById = async (channelId: string, push: boolean = true) => {
+    closeAllModals();
+    setCurrentView('channels');
+    if (push) {
+      try {
+        window.history.pushState({ view: 'channels', channelId }, '', `/channels/${encodeURIComponent(channelId)}`);
+      } catch {}
+    }
+    setIsLoadingChannelTimeline(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const res = await fetch(`/api/channels/${channelId}/timeline`, { headers });
       if (res.ok) {
         const data = await res.json();
         setChannelTimelinePosts(data.posts || []);
@@ -4895,7 +5267,12 @@ export default function App() {
   };
 
   // 会話スレッドを開く
-  const handleOpenThread = async (post: Post) => {
+  const handleOpenThread = async (post: Post, push: boolean = true) => {
+    if (push) {
+      try {
+        window.history.pushState({ modal: 'thread', postId: post.id }, '', `/?post=${encodeURIComponent(post.id)}`);
+      } catch {}
+    }
     setThreadModalPost(post);
     setIsLoadingThread(true);
     try {
@@ -5659,7 +6036,7 @@ export default function App() {
             {/* 添付画像グリッド */}
             <PostMediaGrid
               attachments={post.media_attachments}
-              onImageClick={setPreviewMediaUrl}
+              onImageClick={openMediaPreview}
               className="mt-3"
               isSensitive={post.is_sensitive}
             />
@@ -5923,7 +6300,7 @@ export default function App() {
               if (!authUser) {
                 openWelcomePortal();
               } else {
-                setCurrentView('timeline');
+                navigateToView('timeline');
                 handleSwitchTimelineMode('local');
               }
             }}
@@ -5984,7 +6361,7 @@ export default function App() {
               <div className="flex items-center space-x-2">
                 {authUser.role === 'admin' && (
                   <button
-                    onClick={() => setCurrentView(currentView === 'admin' ? 'timeline' : 'admin')}
+                    onClick={() => navigateToView(currentView === 'admin' ? 'timeline' : 'admin')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-xl transition flex items-center space-x-1.5 ${
                       currentView === 'admin'
                         ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/30'
@@ -5997,7 +6374,7 @@ export default function App() {
                 )}
 
                 <button
-                  onClick={() => setCurrentView('notifications')}
+                  onClick={() => navigateToView('notifications')}
                   className={`relative p-2 rounded-xl transition ${
                     currentView === 'notifications'
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
@@ -6087,7 +6464,7 @@ export default function App() {
         <div className="flex items-center space-x-1 overflow-x-auto">
           <button
             onClick={() => {
-              setCurrentView('timeline');
+              navigateToView('timeline');
               handleSwitchTimelineMode('home');
             }}
             className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
@@ -6100,7 +6477,7 @@ export default function App() {
           </button>
           <button
             onClick={() => {
-              setCurrentView('timeline');
+              navigateToView('timeline');
               handleSwitchTimelineMode('local');
             }}
             className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
@@ -6113,7 +6490,7 @@ export default function App() {
           </button>
           <button
             onClick={() => {
-              setCurrentView('timeline');
+              navigateToView('timeline');
               handleSwitchTimelineMode('all');
             }}
             className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${
@@ -6166,7 +6543,7 @@ export default function App() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-800/80 mb-6">
             <div className="flex items-center space-x-3">
               <button
-                onClick={() => setCurrentView('timeline')}
+                onClick={() => navigateToView('timeline')}
                 className="p-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition"
                 title="タイムラインへ戻る"
               >
@@ -6398,7 +6775,7 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setCurrentView('timeline')}
+                  onClick={() => navigateToView('timeline')}
                   className="w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition cursor-pointer"
                 >
                   <ArrowLeft className="w-4 h-4 text-slate-400" />
@@ -7957,7 +8334,7 @@ export default function App() {
           <div className="flex items-center justify-between border-b border-slate-800 pb-4">
             <div className="flex items-center space-x-3">
               <button
-                onClick={() => setCurrentView('timeline')}
+                onClick={() => navigateToView('timeline')}
                 className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition"
                 title="タイムラインに戻る"
               >
@@ -9020,7 +9397,7 @@ export default function App() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
             <div className="flex items-center space-x-3">
               <button
-                onClick={() => setCurrentView('timeline')}
+                onClick={() => navigateToView('timeline')}
                 className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800 transition"
                 title="タイムラインに戻る"
               >
@@ -9300,7 +9677,7 @@ export default function App() {
           {/* 戻るボタン */}
           <div className="mb-4">
             <button
-              onClick={() => setCurrentView('timeline')}
+              onClick={() => navigateToView('timeline')}
               className="inline-flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:bg-slate-800 transition text-xs font-semibold"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -9321,7 +9698,7 @@ export default function App() {
               <h3 className="text-lg font-bold text-slate-200">ユーザーが見つかりませんでした</h3>
               <p className="text-xs text-slate-400 mt-1">指定されたユーザーが存在しないか、サーバーとの通信に失敗しました。</p>
               <button
-                onClick={() => setCurrentView('timeline')}
+                onClick={() => navigateToView('timeline')}
                 className="mt-5 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 transition"
               >
                 タイムラインに戻る
@@ -9606,7 +9983,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentView('timeline');
+                    navigateToView('timeline');
                     handleSwitchTimelineMode('home');
                   }}
                   className={`w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
@@ -9623,7 +10000,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (authUser) setCurrentView('notifications');
+                    if (authUser) navigateToView('notifications');
                     else setShowLoginModal(true);
                   }}
                   className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
@@ -9646,7 +10023,7 @@ export default function App() {
                 {/* 統合検索・見つける */}
                 <button
                   type="button"
-                  onClick={() => setCurrentView('search')}
+                  onClick={() => navigateToView('search')}
                   className={`w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
                     currentView === 'search'
                       ? 'bg-slate-900 text-emerald-400 border border-emerald-500/30 shadow-md'
@@ -9662,7 +10039,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     if (authUser) {
-                      setCurrentView('bookmarks');
+                      navigateToView('bookmarks');
                       fetchBookmarks();
                     } else {
                       setShowLoginModal(true);
@@ -9682,7 +10059,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentView('channels');
+                    navigateToView('channels');
                     fetchChannels();
                   }}
                   className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
@@ -9705,13 +10082,7 @@ export default function App() {
                 {/* 📡 アンテナ */}
                 <button
                   type="button"
-                  onClick={() => {
-                    if (authUser) {
-                      setShowAntennaManageModal(true);
-                    } else {
-                      setShowLoginModal(true);
-                    }
-                  }}
+                  onClick={openAntennaManageModal}
                   className="w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-900/60"
                 >
                   <div className="flex items-center space-x-3">
@@ -9760,7 +10131,7 @@ export default function App() {
                 {authUser?.role === 'admin' && (
                   <button
                     type="button"
-                    onClick={() => setCurrentView('admin')}
+                    onClick={() => navigateToView('admin')}
                     className="w-full flex items-center space-x-3 px-3.5 py-3 rounded-2xl text-sm font-bold text-purple-400 hover:bg-purple-950/30 border border-purple-500/20 hover:border-purple-500/40 transition cursor-pointer"
                   >
                     <ShieldCheck className="w-5 h-5 text-purple-400" />
@@ -9774,7 +10145,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (currentView !== 'timeline') setCurrentView('timeline');
+                    if (currentView !== 'timeline') navigateToView('timeline');
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                   }}
                   className="w-full py-3.5 px-4 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-black rounded-2xl shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40 transition flex items-center justify-center space-x-2 text-base group cursor-pointer"
@@ -10265,10 +10636,7 @@ export default function App() {
                         <div className="flex items-center space-x-2">
                           <button
                             type="button"
-                            onClick={() => {
-                              if (authUser) setShowCreateChannelModal(true);
-                              else setShowLoginModal(true);
-                            }}
+                            onClick={openCreateChannelModal}
                             className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-md shadow-indigo-600/30 cursor-pointer"
                           >
                             <Plus className="w-3.5 h-3.5" />
@@ -10333,7 +10701,7 @@ export default function App() {
                           {authUser && (
                             <button
                               type="button"
-                              onClick={() => setShowCreateChannelModal(true)}
+                              onClick={openCreateChannelModal}
                               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow transition cursor-pointer"
                             >
                               チャンネルを作成する
@@ -10477,7 +10845,7 @@ export default function App() {
                     {/* 📡 アンテナ管理・追加ボタン */}
                     <button
                       type="button"
-                      onClick={() => setShowAntennaManageModal(true)}
+                      onClick={openAntennaManageModal}
                       className="px-2.5 py-1.5 text-xs font-bold rounded-xl transition flex items-center space-x-1 shrink-0 text-slate-400 hover:text-emerald-300 hover:bg-slate-800/60 cursor-pointer border border-dashed border-slate-700/60 hover:border-emerald-500/40"
                       title="アンテナの管理・新規作成"
                     >
@@ -10829,10 +11197,7 @@ export default function App() {
                                 {/* 📝 下書き保存・一覧 */}
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setShowDraftsModal(true);
-                                    setShowPostExtraMenu(false);
-                                  }}
+                                  onClick={openDraftsModal}
                                   className="w-full px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between hover:bg-slate-800 text-slate-300 transition cursor-pointer"
                                 >
                                   <div className="flex items-center space-x-2">
@@ -10851,10 +11216,7 @@ export default function App() {
                                 {/* ⏰ 予約投稿 */}
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setShowScheduleModal(true);
-                                    setShowPostExtraMenu(false);
-                                  }}
+                                  onClick={openScheduleModal}
                                   className="w-full px-2.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between hover:bg-slate-800 text-slate-300 transition cursor-pointer"
                                 >
                                   <div className="flex items-center space-x-2">
@@ -12285,7 +12647,7 @@ export default function App() {
                   <FormattedPostContent content={replyTargetPost.content} emojis={replyTargetPost.emojis} enableEmojis={showCustomEmojis} />
                   <PostMediaGrid
                     attachments={replyTargetPost.media_attachments}
-                    onImageClick={setPreviewMediaUrl}
+                    onImageClick={openMediaPreview}
                     className="mt-2"
                   />
                 </div>
@@ -12364,7 +12726,7 @@ export default function App() {
                 <span>会話スレッド</span>
               </h3>
               <button
-                onClick={() => setThreadModalPost(null)}
+                onClick={closeThreadModal}
                 className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
               >
                 ✕
@@ -12394,7 +12756,7 @@ export default function App() {
                         <FormattedPostContent content={threadData.parent.content} emojis={threadData.parent.emojis} enableEmojis={showCustomEmojis} />
                         <PostMediaGrid
                           attachments={threadData.parent.media_attachments}
-                          onImageClick={setPreviewMediaUrl}
+                          onImageClick={openMediaPreview}
                           className="mt-2"
                           isSensitive={Boolean(threadData.parent.is_sensitive)}
                         />
@@ -12456,7 +12818,7 @@ export default function App() {
                     <FormattedPostContent content={threadData.post.content} emojis={threadData.post.emojis} enableEmojis={showCustomEmojis} />
                     <PostMediaGrid
                       attachments={threadData.post.media_attachments}
-                      onImageClick={setPreviewMediaUrl}
+                      onImageClick={openMediaPreview}
                       className="mt-3"
                       isSensitive={Boolean(threadData.post.is_sensitive)}
                     />
@@ -12538,7 +12900,7 @@ export default function App() {
                           <FormattedPostContent content={reply.content} emojis={reply.emojis} enableEmojis={showCustomEmojis} />
                           <PostMediaGrid
                             attachments={reply.media_attachments}
-                            onImageClick={setPreviewMediaUrl}
+                            onImageClick={openMediaPreview}
                             className="mt-2"
                             isSensitive={Boolean(reply.is_sensitive)}
                           />
@@ -13296,7 +13658,7 @@ export default function App() {
       {authUser && (
         <button
           type="button"
-          onClick={() => setShowMobilePostModal(true)}
+          onClick={openMobilePostModal}
           className="fixed bottom-20 right-5 z-40 md:hidden w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 flex items-center justify-center shadow-2xl shadow-emerald-500/40 hover:scale-105 active:scale-95 transition cursor-pointer border-2 border-emerald-400/50"
           title="ノートを作成"
         >
@@ -13309,7 +13671,10 @@ export default function App() {
         {/* メニュー (ドロワーオープン) */}
         <button
           type="button"
-          onClick={() => setIsMobileMenuOpen(true)}
+          onClick={() => {
+            setIsMobileMenuOpen(true);
+            pushModalState('mobile_menu');
+          }}
           className="flex flex-col items-center space-y-0.5 py-1 px-3 rounded-xl transition text-slate-400 hover:text-slate-200 cursor-pointer"
         >
           <Menu className="w-5 h-5" />
@@ -13320,7 +13685,7 @@ export default function App() {
         <button
           type="button"
           onClick={() => {
-            setCurrentView('timeline');
+            navigateToView('timeline');
             handleSwitchTimelineMode('home');
           }}
           className={`flex flex-col items-center space-y-0.5 py-1 px-3 rounded-xl transition cursor-pointer ${
@@ -13338,7 +13703,7 @@ export default function App() {
           type="button"
           onClick={() => {
             if (authUser) {
-              setCurrentView('notifications');
+              navigateToView('notifications');
             } else {
               setShowLoginModal(true);
             }
@@ -13363,7 +13728,7 @@ export default function App() {
         {/* 検索・見つける */}
         <button
           type="button"
-          onClick={() => setCurrentView('search')}
+          onClick={() => navigateToView('search')}
           className={`flex flex-col items-center space-y-0.5 py-1 px-3 rounded-xl transition cursor-pointer ${
             currentView === 'search'
               ? 'text-emerald-400 font-bold'
@@ -13481,7 +13846,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentView('timeline');
+                    navigateToView('timeline');
                     handleSwitchTimelineMode('home');
                     setIsMobileMenuOpen(false);
                   }}
@@ -13493,7 +13858,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentView('search');
+                    navigateToView('search');
                     setIsMobileMenuOpen(false);
                   }}
                   className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
@@ -13505,7 +13870,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     if (authUser) {
-                      setCurrentView('bookmarks');
+                      navigateToView('bookmarks');
                       fetchBookmarks();
                     } else {
                       setShowLoginModal(true);
@@ -13520,7 +13885,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCurrentView('channels');
+                    navigateToView('channels');
                     fetchChannels();
                     setIsMobileMenuOpen(false);
                   }}
@@ -13544,7 +13909,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      setCurrentView('admin');
+                      navigateToView('admin');
                       setIsMobileMenuOpen(false);
                     }}
                     className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-purple-400 hover:bg-purple-950/30 transition cursor-pointer"
@@ -13681,14 +14046,8 @@ export default function App() {
           antennas={antennas}
           activeAntenna={activeAntenna}
           onSelectAntenna={(ant) => handleSwitchTimelineMode('antenna', ant)}
-          onOpenCreate={() => {
-            setEditingAntenna(null);
-            setShowAntennaModal(true);
-          }}
-          onEditAntenna={(ant) => {
-            setEditingAntenna(ant);
-            setShowAntennaModal(true);
-          }}
+          onOpenCreate={() => openAntennaModal(null)}
+          onEditAntenna={(ant) => openAntennaModal(ant)}
           onDeleteAntenna={handleDeleteAntenna}
           onClose={() => setShowAntennaManageModal(false)}
         />
