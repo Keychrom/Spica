@@ -29,7 +29,9 @@
     "test:search-operators": "npx tsx scripts/test-search-operators.ts",
     "test:discovery": "npx tsx scripts/test-discovery.ts",
     "test:roles": "npx tsx scripts/test-roles.ts",
-    "test:profile-fields": "npx tsx scripts/test-profile-fields.ts"
+    "test:profile-fields": "npx tsx scripts/test-profile-fields.ts",
+    "test:mail-recovery": "npx tsx scripts/test-mail-recovery.ts",
+    "test:password-auth": "npx tsx scripts/test-password-auth.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

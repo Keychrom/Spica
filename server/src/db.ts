@@ -577,6 +577,23 @@ export function initDatabase() {
     // プロフィール項目（リンク集など）とディレクトリ公開設定
     "ALTER TABLE users ADD COLUMN fields TEXT DEFAULT '[]';",
     "ALTER TABLE users ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 1;",
+    // メールアドレス（任意）と確認状態 / パスワード方式用ハッシュ
+    "ALTER TABLE users ADD COLUMN email TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE users ADD COLUMN password_hash TEXT DEFAULT '';",
+    // メールアドレス確認・マスターキー復元の確認コード
+    `CREATE TABLE IF NOT EXISTS email_verifications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id, purpose);",
+    "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
   ];
 
   for (const sql of migrations) {
@@ -658,6 +675,12 @@ export interface UserRow {
   is_locked: number;
   /** プロフィール項目（JSON 配列: [{ name, value }]） */
   fields?: string;
+  /** メールアドレス（任意・復元用） */
+  email?: string;
+  /** メールアドレスの確認状態（1 = 確認済み） */
+  email_verified?: number;
+  /** パスワード方式（auth_mode = password）のハッシュ */
+  password_hash?: string;
   /** ユーザーディレクトリへの掲載可否（1 = 掲載） */
   discoverable?: number;
   public_key_pem: string;

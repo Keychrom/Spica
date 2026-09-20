@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode } from '../db.js';
+import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode, getServerSetting, setServerSetting } from '../db.js';
 import { requireAdmin, hasPermission } from '../auth.js';
 import { config } from '../config.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
+import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getStorageConfig, saveStorageConfig, isS3Configured, testStorageConnection, uploadMediaFile } from '../storage.js';
 import {
   buildFollowActivity,
@@ -1031,6 +1032,100 @@ adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Admin Announcement Delete Error]:', err);
     res.status(500).json({ error: 'お知らせの削除に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 📧 メール送信（SMTP）と認証方式の設定
+// ==========================================
+
+// 現在の設定を取得（パスワードは伏せる）
+adminRouter.get('/mail-settings', (_req: Request, res: Response) => {
+  try {
+    const cfg = getMailConfig();
+    const info = getInstanceInfo();
+    res.json({
+      host: cfg.host,
+      port: cfg.port,
+      secure: cfg.secure,
+      user: cfg.user,
+      hasPassword: Boolean(cfg.pass),
+      from: cfg.from,
+      configured: isMailConfigured(cfg),
+      allowEmailRegistration: String(getServerSetting('allow_email_registration', 'false')).toLowerCase() === 'true',
+      authMode: String(getServerSetting('auth_mode', 'master_key')).toLowerCase() === 'password' ? 'password' : 'master_key',
+      registrationMode: info.registration_mode,
+    });
+  } catch (err: any) {
+    console.error('[Admin Mail Settings Error]:', err);
+    res.status(500).json({ error: 'メール設定の取得に失敗しました。' });
+  }
+});
+
+// SMTP 設定の保存
+adminRouter.post('/mail-settings', (req: Request, res: Response) => {
+  try {
+    const { host, port, secure, user, pass, from } = req.body;
+    const patch: Record<string, unknown> = {};
+    if (typeof host === 'string') patch.host = host.trim();
+    if (port !== undefined) patch.port = parseInt(String(port), 10) || 587;
+    if (typeof secure === 'boolean') patch.secure = secure;
+    if (typeof user === 'string') patch.user = user.trim();
+    if (typeof pass === 'string' && pass) patch.pass = pass; // 空欄なら既存を維持
+    if (typeof from === 'string') patch.from = from.trim();
+
+    saveMailConfig(patch as any);
+    console.log(`[Admin Mail] 📧 SMTP 設定を更新 by @${req.user!.id}`);
+    res.json({ success: true, message: 'SMTP 設定を保存しました。' });
+  } catch (err: any) {
+    console.error('[Admin Mail Save Error]:', err);
+    res.status(500).json({ error: 'SMTP 設定の保存に失敗しました。' });
+  }
+});
+
+// 接続テスト（指定があればその場の値で試す）
+adminRouter.post('/mail-settings/test', async (req: Request, res: Response) => {
+  try {
+    const cfg = getMailConfig();
+    const candidate = {
+      ...cfg,
+      host: typeof req.body?.host === 'string' && req.body.host.trim() ? req.body.host.trim() : cfg.host,
+      port: req.body?.port ? parseInt(String(req.body.port), 10) : cfg.port,
+      user: typeof req.body?.user === 'string' ? req.body.user.trim() : cfg.user,
+      pass: typeof req.body?.pass === 'string' && req.body.pass ? req.body.pass : cfg.pass,
+      from: typeof req.body?.from === 'string' && req.body.from.trim() ? req.body.from.trim() : cfg.from,
+    };
+
+    const result = await verifyMailConnection(candidate as any);
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error || 'SMTP への接続に失敗しました。' });
+    }
+    res.json({ success: true, message: 'SMTP に接続できました。' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || '接続テストに失敗しました。' });
+  }
+});
+
+// 認証方式・メール登録可否の設定
+adminRouter.post('/auth-settings', (req: Request, res: Response) => {
+  try {
+    const { authMode, allowEmailRegistration } = req.body;
+
+    if (authMode !== undefined) {
+      if (authMode !== 'master_key' && authMode !== 'password') {
+        return res.status(400).json({ error: 'authMode は master_key または password を指定してください。' });
+      }
+      setServerSetting('auth_mode', authMode);
+    }
+    if (allowEmailRegistration !== undefined) {
+      setServerSetting('allow_email_registration', allowEmailRegistration ? 'true' : 'false');
+    }
+
+    console.log(`[Admin Auth] 🔐 認証設定を更新 (authMode=${authMode ?? '変更なし'}, email登録=${allowEmailRegistration ?? '変更なし'}) by @${req.user!.id}`);
+    res.json({ success: true, message: '認証設定を保存しました。' });
+  } catch (err: any) {
+    console.error('[Admin Auth Settings Error]:', err);
+    res.status(500).json({ error: '認証設定の保存に失敗しました。' });
   }
 });
 

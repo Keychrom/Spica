@@ -40,6 +40,38 @@ export function hashMasterKey(masterKey: string): string {
 }
 
 /**
+ * パスワードのハッシュ（Node 標準の scrypt。追加依存なし）
+ * 形式: "scrypt$<salt(hex)>$<hash(hex)>"
+ */
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+
+/** パスワードの検証（タイミング攻撃を避けるため timingSafeEqual を使う） */
+export function verifyPassword(password: string, stored: string | null | undefined): boolean {
+  if (!stored || !stored.startsWith('scrypt$')) {
+    return false;
+  }
+  const [, salt, expected] = stored.split('$');
+  if (!salt || !expected) {
+    return false;
+  }
+  try {
+    const actual = crypto.scryptSync(password, salt, 64).toString('hex');
+    const actualBuf = Buffer.from(actual, 'hex');
+    const expectedBuf = Buffer.from(expected, 'hex');
+    if (actualBuf.length !== expectedBuf.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(actualBuf, expectedBuf);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * セッショントークンを発行して DB に保存（有効期限: 30日）
  */
 export function createSession(userId: string): { token: string; expiresAt: string } {

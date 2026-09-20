@@ -13,6 +13,8 @@ import {
   AlertCircle,
   ExternalLink,
   Key,
+  KeyRound,
+  Mail,
   Lock,
   Copy,
   LogOut,
@@ -2373,7 +2375,7 @@ export default function App() {
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail'>('dashboard');
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
 
   // 🎨 カスタム絵文字管理ステート
@@ -4438,6 +4440,231 @@ export default function App() {
   const [directorySearch, setDirectorySearch] = useState<string>('');
   const [isLoadingDirectory, setIsLoadingDirectory] = useState<boolean>(false);
 
+  // 📧 メールアドレス登録 / 🔑 マスターキー復元 / 管理者のメール設定
+  const [recoveryStatus, setRecoveryStatus] = useState<{ authMode: string; allowEmailRegistration: boolean; mailConfigured: boolean; recoveryAvailable: boolean }>({
+    authMode: 'master_key',
+    allowEmailRegistration: false,
+    mailConfigured: false,
+    recoveryAvailable: false,
+  });
+  const [myEmail, setMyEmail] = useState<string>('');
+  const [emailInput, setEmailInput] = useState<string>('');
+  const [emailCode, setEmailCode] = useState<string>('');
+  const [emailMsg, setEmailMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
+  const [showRecoveryModal, setShowRecoveryModal] = useState<boolean>(false);
+  const [recoveryUserId, setRecoveryUserId] = useState<string>('');
+  const [recoveryEmail, setRecoveryEmail] = useState<string>('');
+  const [recoveryCode, setRecoveryCode] = useState<string>('');
+  const [recoveryStep, setRecoveryStep] = useState<'request' | 'verify' | 'done'>('request');
+  const [recoveryMsg, setRecoveryMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isRecovering, setIsRecovering] = useState<boolean>(false);
+  const [mailSettings, setMailSettings] = useState<any>({ host: '', port: 587, secure: false, user: '', pass: '', from: '', allowEmailRegistration: false, authMode: 'master_key' });
+  const [mailSettingsMsg, setMailSettingsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isSavingMail, setIsSavingMail] = useState<boolean>(false);
+
+  const fetchRecoveryStatus = async () => {
+    try {
+      const res = await fetch('/api/auth/recovery/status');
+      if (res.ok) setRecoveryStatus(await res.json());
+    } catch (err) {
+      console.error('認証設定の取得エラー:', err);
+    }
+  };
+
+  const fetchMailSettings = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/admin/mail-settings', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) setMailSettings(await res.json());
+    } catch (err) {
+      console.error('メール設定の取得エラー:', err);
+    }
+  };
+
+  const handleSaveMailSettings = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken) return;
+    setIsSavingMail(true);
+    setMailSettingsMsg(null);
+    try {
+      const res = await fetch('/api/admin/mail-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          host: mailSettings.host,
+          port: mailSettings.port,
+          secure: mailSettings.secure,
+          user: mailSettings.user,
+          pass: mailSettings.pass,
+          from: mailSettings.from,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMailSettingsMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
+        return;
+      }
+
+      // 認証方式・メール登録可否も同時に保存する
+      const authRes = await fetch('/api/admin/auth-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          authMode: mailSettings.authMode,
+          allowEmailRegistration: mailSettings.allowEmailRegistration,
+        }),
+      });
+      if (!authRes.ok) {
+        const authData = await authRes.json();
+        setMailSettingsMsg({ type: 'error', text: authData.error || '認証設定の保存に失敗しました。' });
+        return;
+      }
+
+      setMailSettingsMsg({ type: 'success', text: 'メール・認証設定を保存しました。' });
+      setMailSettings((prev: any) => ({ ...prev, pass: '' }));
+      await fetchRecoveryStatus();
+    } catch (err: any) {
+      setMailSettingsMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingMail(false);
+    }
+  };
+
+  const handleTestMailSettings = async () => {
+    if (!authToken) return;
+    setIsSavingMail(true);
+    setMailSettingsMsg(null);
+    try {
+      const res = await fetch('/api/admin/mail-settings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ host: mailSettings.host, port: mailSettings.port, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from }),
+      });
+      const data = await res.json();
+      setMailSettingsMsg(
+        res.ok
+          ? { type: 'success', text: data.message || 'SMTP に接続できました。' }
+          : { type: 'error', text: data.error || '接続テストに失敗しました。' },
+      );
+    } catch (err: any) {
+      setMailSettingsMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingMail(false);
+    }
+  };
+
+  // メールアドレスの登録（確認コード送信 → 検証）
+  const handleSendEmailCode = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !emailInput.trim()) return;
+    setIsSendingEmail(true);
+    setEmailMsg(null);
+    try {
+      const res = await fetch('/api/user/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ email: emailInput.trim() }),
+      });
+      const data = await res.json();
+      setEmailMsg(res.ok
+        ? { type: 'success', text: data.message || '確認コードを送信しました。' }
+        : { type: 'error', text: data.error || '送信に失敗しました。' });
+    } catch (err: any) {
+      setEmailMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleVerifyEmail = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !emailInput.trim() || !emailCode.trim()) return;
+    setIsSendingEmail(true);
+    setEmailMsg(null);
+    try {
+      const res = await fetch('/api/user/email/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ email: emailInput.trim(), code: emailCode.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMyEmail(emailInput.trim().toLowerCase());
+        setEmailCode('');
+        setEmailMsg({ type: 'success', text: data.message || 'メールアドレスを確認しました。' });
+      } else {
+        setEmailMsg({ type: 'error', text: data.error || '確認に失敗しました。' });
+      }
+    } catch (err: any) {
+      setEmailMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleDeleteEmail = async () => {
+    if (!authToken) return;
+    if (!confirm('登録したメールアドレスを削除しますか？（マスターキーの復元ができなくなります）')) return;
+    try {
+      const res = await fetch('/api/user/email', { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        setMyEmail('');
+        setEmailInput('');
+        setEmailMsg({ type: 'success', text: 'メールアドレスを削除しました。' });
+      }
+    } catch (err) {
+      console.error('メールアドレスの削除エラー:', err);
+    }
+  };
+
+  // 🔑 マスターキー復元（ID+メール → 確認コード → 新しいキーをメールで受領）
+  const handleRecoveryRequest = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!recoveryUserId.trim() || !recoveryEmail.trim()) return;
+    setIsRecovering(true);
+    setRecoveryMsg(null);
+    try {
+      const res = await fetch('/api/auth/recovery/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: recoveryUserId.trim(), email: recoveryEmail.trim() }),
+      });
+      const data = await res.json();
+      setRecoveryStep('verify');
+      setRecoveryMsg({ type: 'success', text: data.message || '確認コードを送信しました。メールをご確認ください。' });
+    } catch (err: any) {
+      setRecoveryMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
+  const handleRecoveryVerify = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!recoveryCode.trim()) return;
+    setIsRecovering(true);
+    setRecoveryMsg(null);
+    try {
+      const res = await fetch('/api/auth/recovery/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: recoveryUserId.trim(), email: recoveryEmail.trim(), code: recoveryCode.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRecoveryStep('done');
+        setRecoveryMsg({ type: 'success', text: data.message || '新しいマスターキーをメールで送信しました。' });
+      } else {
+        setRecoveryMsg({ type: 'error', text: data.error || '復元に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRecoveryMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
   const fetchDirectory = async (query = '') => {
     setIsLoadingDirectory(true);
     try {
@@ -4658,10 +4885,15 @@ export default function App() {
     } catch {}
   };
 
-  // 起動 / ログイン時にお知らせを取得（タイムライン上部のバナー表示用）
+  // 起動 / ログイン時にお知らせと認証設定を取得
   useEffect(() => {
     fetchAnnouncements();
+    fetchRecoveryStatus();
   }, [authToken]);
+
+  useEffect(() => {
+    setMyEmail(String((authUser as any)?.email || ''));
+  }, [authUser]);
 
   // 📥 アーカイブ（Mastodon outbox.json / Misskey notes.json）の取り込み
   const handleImportArchive = async () => {
@@ -7699,6 +7931,26 @@ export default function App() {
                     </span>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAdminTab('mail'); fetchMailSettings(); }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                    adminTab === 'mail'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <Mail className="w-4 h-4 text-sky-400" />
+                    <span>メール・認証</span>
+                  </div>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                    mailSettings.configured ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {mailSettings.configured ? '設定済' : '未設定'}
+                  </span>
+                </button>
               </div>
 
               {/* クイック操作 */}
@@ -8957,6 +9209,157 @@ export default function App() {
               )}
 
               {/* 🎟 招待コード & 登録モード管理タブ */}
+              {adminTab === 'mail' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                      <Mail className="w-4 h-4 text-sky-400" />
+                      <span>メール送信（SMTP）と認証方式</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      マスターキー復元やメール確認に使う SMTP を設定します。未設定のあいだ、メール関連の機能は自動的に無効になります。
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleSaveMailSettings} className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">SMTP ホスト</label>
+                        <input
+                          type="text"
+                          value={mailSettings.host}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, host: e.target.value }))}
+                          placeholder="smtp.example.com"
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">ポート</label>
+                        <input
+                          type="number"
+                          value={mailSettings.port}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, port: parseInt(e.target.value, 10) || 587 }))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">ユーザー名（任意）</label>
+                        <input
+                          type="text"
+                          value={mailSettings.user}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, user: e.target.value }))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          パスワード {mailSettings.hasPassword ? '（設定済み・空欄で維持）' : '（任意）'}
+                        </label>
+                        <input
+                          type="password"
+                          value={mailSettings.pass}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, pass: e.target.value }))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">差出人アドレス <span className="text-rose-400">*</span></label>
+                        <input
+                          type="text"
+                          value={mailSettings.from}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, from: e.target.value }))}
+                          placeholder="no-reply@example.com"
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <label className="flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(mailSettings.secure)}
+                        onChange={(e) => setMailSettings((p: any) => ({ ...p, secure: e.target.checked }))}
+                        className="w-3.5 h-3.5 accent-sky-500 cursor-pointer"
+                      />
+                      <span>SSL/TLS で接続する（ポート465など。587の場合はOFFのままでSTARTTLSを使います）</span>
+                    </label>
+
+                    <div className="pt-2 border-t border-slate-800 space-y-3">
+                      <h4 className="font-bold text-xs text-slate-200">認証方式とメール登録</h4>
+                      <div className="space-y-2">
+                        <label className="flex items-start space-x-2 text-xs text-slate-300 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="authMode"
+                            checked={mailSettings.authMode === 'master_key'}
+                            onChange={() => setMailSettings((p: any) => ({ ...p, authMode: 'master_key' }))}
+                            className="mt-0.5 accent-sky-500 cursor-pointer"
+                          />
+                          <span>マスターキー方式（パスワードレス・推奨）</span>
+                        </label>
+                        <label className="flex items-start space-x-2 text-xs text-slate-300 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="authMode"
+                            checked={mailSettings.authMode === 'password'}
+                            onChange={() => setMailSettings((p: any) => ({ ...p, authMode: 'password' }))}
+                            className="mt-0.5 accent-sky-500 cursor-pointer"
+                          />
+                          <span>
+                            メールアドレス＋パスワード方式
+                            <span className="block text-[10px] text-amber-300">
+                              ※ 現在のクライアントUIは登録フォームが未対応のため、切り替えるとWebから新規登録できません
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                      <label className="flex items-start space-x-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(mailSettings.allowEmailRegistration)}
+                          onChange={(e) => setMailSettings((p: any) => ({ ...p, allowEmailRegistration: e.target.checked }))}
+                          className="mt-0.5 w-3.5 h-3.5 accent-sky-500 cursor-pointer"
+                        />
+                        <span>
+                          ユーザーがメールアドレスを登録できるようにする
+                          <span className="block text-[10px] text-slate-500">オンにすると、ユーザー設定にメール登録欄が出て、マスターキー復元が使えるようになります</span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={handleTestMailSettings}
+                        disabled={isSavingMail || !mailSettings.host}
+                        className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer"
+                      >
+                        接続テスト
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSavingMail}
+                        className="px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center space-x-1.5 cursor-pointer"
+                      >
+                        {isSavingMail ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                        <span>設定を保存</span>
+                      </button>
+                    </div>
+
+                    {mailSettingsMsg && (
+                      <div className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                        mailSettingsMsg.type === 'success'
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                      }`}>
+                        {mailSettingsMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                        <span>{mailSettingsMsg.text}</span>
+                      </div>
+                    )}
+                  </form>
+                </div>
+              )}
+
               {adminTab === 'roles' && (
                 <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
                   <div>
@@ -10446,6 +10849,78 @@ export default function App() {
                       他の Fediverse サーバー（Misskey / Mastodon）からあなたを発見・フォローするためのアドレス情報です。
                     </p>
                   </div>
+
+                  {/* 📧 メールアドレス（マスターキー紛失時の復元手段） */}
+                  {recoveryStatus.allowEmailRegistration && recoveryStatus.mailConfigured && (
+                    <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
+                          <Mail className="w-4 h-4 text-sky-400" />
+                          <span>メールアドレス（復元用・任意）</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                          登録しておくと、<strong>マスターキーを忘れたときにメール経由で復元</strong>できます。
+                          ログインには使われません（現在: {myEmail ? `登録済み ${myEmail}` : '未登録'}）。
+                        </p>
+                      </div>
+
+                      {emailMsg && (
+                        <div className={`p-2.5 rounded-xl text-xs flex items-center space-x-2 ${
+                          emailMsg.type === 'success'
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                        }`}>
+                          {emailMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                          <span>{emailMsg.text}</span>
+                        </div>
+                      )}
+
+                      <form onSubmit={handleSendEmailCode} className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="email"
+                          value={emailInput}
+                          onChange={(e) => setEmailInput(e.target.value)}
+                          placeholder="you@example.com"
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isSendingEmail || !emailInput.trim()}
+                          className="px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap cursor-pointer"
+                        >
+                          {isSendingEmail ? '送信中...' : '確認コードを送信'}
+                        </button>
+                      </form>
+
+                      <form onSubmit={handleVerifyEmail} className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={emailCode}
+                          onChange={(e) => setEmailCode(e.target.value)}
+                          maxLength={6}
+                          placeholder="6桁の確認コード"
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isSendingEmail || !emailCode.trim()}
+                          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 text-xs font-bold rounded-xl transition whitespace-nowrap cursor-pointer"
+                        >
+                          確認する
+                        </button>
+                      </form>
+
+                      {myEmail && (
+                        <button
+                          type="button"
+                          onClick={handleDeleteEmail}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-rose-600/80 text-slate-300 hover:text-white rounded-lg text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          メールアドレスを削除
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {/* 📥 アカウント移行インポート */}
                   <div className="space-y-3 bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
@@ -14042,6 +14517,16 @@ export default function App() {
                         認証してログイン
                       </button>
 
+                      {recoveryStatus.recoveryAvailable && (
+                        <button
+                          type="button"
+                          onClick={() => { setShowRecoveryModal(true); setRecoveryStep('request'); setRecoveryMsg(null); }}
+                          className="w-full text-[11px] text-slate-400 hover:text-amber-300 transition cursor-pointer underline decoration-dotted"
+                        >
+                          マスターキーを忘れた方はこちら（メールで復元）
+                        </button>
+                      )}
+
                       <div className="relative flex py-1 items-center">
                         <div className="flex-grow border-t border-slate-800"></div>
                         <span className="flex-shrink mx-2 text-[10px] text-slate-500 font-semibold">または</span>
@@ -15391,6 +15876,133 @@ export default function App() {
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* 🔑 マスターキー復元モーダル */}
+      {showRecoveryModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setShowRecoveryModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
+                  <KeyRound className="w-4 h-4 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">マスターキーの復元</h3>
+                  <span className="text-[11px] text-slate-400">
+                    {recoveryStep === 'request' ? '① ユーザーIDとメールアドレス' : recoveryStep === 'verify' ? '② 確認コードの入力' : '完了'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRecoveryModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {recoveryMsg && (
+              <div className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                recoveryMsg.type === 'success'
+                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+              }`}>
+                {recoveryMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                <span>{recoveryMsg.text}</span>
+              </div>
+            )}
+
+            {recoveryStep === 'request' && (
+              <form onSubmit={handleRecoveryRequest} className="space-y-3">
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  事前に登録・確認済みのメールアドレスが必要です。入力された情報が一致する場合のみ確認コードをお送りします。
+                </p>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">ユーザーID</label>
+                  <input
+                    type="text"
+                    value={recoveryUserId}
+                    onChange={(e) => setRecoveryUserId(e.target.value)}
+                    placeholder="例: alice"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">登録済みのメールアドレス</label>
+                  <input
+                    type="email"
+                    value={recoveryEmail}
+                    onChange={(e) => setRecoveryEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isRecovering || !recoveryUserId.trim() || !recoveryEmail.trim()}
+                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition cursor-pointer"
+                >
+                  {isRecovering ? '送信中...' : '確認コードを送信'}
+                </button>
+              </form>
+            )}
+
+            {recoveryStep === 'verify' && (
+              <form onSubmit={handleRecoveryVerify} className="space-y-3">
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  メールに記載された6桁のコードを入力してください（10分間有効）。
+                  確認できると<strong>新しいマスターキーがメールで届きます</strong>。以前のキーは無効になります。
+                </p>
+                <input
+                  type="text"
+                  value={recoveryCode}
+                  onChange={(e) => setRecoveryCode(e.target.value)}
+                  maxLength={6}
+                  placeholder="123456"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 font-mono tracking-widest text-center focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isRecovering || !recoveryCode.trim()}
+                  className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition cursor-pointer"
+                >
+                  {isRecovering ? '確認中...' : '復元する（新しいキーを受け取る）'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRecoveryStep('request'); setRecoveryMsg(null); }}
+                  className="w-full text-[11px] text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                >
+                  戻る
+                </button>
+              </form>
+            )}
+
+            {recoveryStep === 'done' && (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  新しいマスターキーをメールで送信しました。メールをご確認のうえ、<strong>新しいキーでログイン</strong>してください。
+                  安全のため、以前のキーと既存のログイン状態はすべて無効になっています。
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowRecoveryModal(false)}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  閉じる
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow } from '../db.js';
+import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting } from '../db.js';
 import { config } from '../config.js';
 import { generateKeyPair } from '../crypto.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
@@ -12,6 +12,8 @@ import { getMutedWords, postMatchesMutedWords } from '../wordFilter.js';
 import { attachPreviewForContent } from '../linkPreview.js';
 import { parseArchive, importNotes } from '../importService.js';
 import { parseProfileFields } from '../activitypub.js';
+import { isMailConfigured, sendMail, generateVerificationCode, issueVerificationCode, verifyCode, getMailConfig, saveMailConfig, verifyMailConnection } from '../mailService.js';
+
 import { uploadMediaFile } from '../storage.js';
 import { executeCreatePost } from '../postService.js';
 import {
@@ -23,6 +25,8 @@ import {
 import {
   generateMasterKey,
   hashMasterKey,
+  hashPassword,
+  verifyPassword,
   createSession,
   destroySession,
   requireAuth,
@@ -156,7 +160,29 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
 
   console.log(`[Spica Register] Creating account @${cleanId} (Role: ${role}, Invite: ${verifiedInviteCode || 'none'})...`);
 
-  // 1. 暗号学的マスターキーを生成
+  // 🔐 パスワード方式（auth_mode = password）の場合はメールアドレスとパスワードを必須にする
+  let passwordHash = '';
+  let registerEmail = '';
+  if (getAuthMode() === 'password') {
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'このサーバーはメールアドレスでの登録が必要です。メールアドレスの形式をご確認ください。' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'パスワードは8文字以上で入力してください。' });
+    }
+    const emailTaken = db.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
+    if (emailTaken) {
+      return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
+    }
+    passwordHash = hashPassword(password);
+    registerEmail = email;
+    console.log(`[Spica Register] パスワード方式で登録します (@${cleanId}, email=${email})`);
+  }
+
+  // 1. 暗号学的マスターキーを生成（パスワード方式でも復元用に保持する）
   const masterKey = generateMasterKey();
   const masterKeyHash = hashMasterKey(masterKey);
 
@@ -166,8 +192,8 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
 
   // 3. DB にユーザー保存
   db.prepare(`
-    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
   `).run(
     cleanId,
     name.trim(),
@@ -176,7 +202,9 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
     role,
     keyPair.publicKeyPem,
     keyPair.privateKeyPem,
-    now
+    now,
+    passwordHash,
+    registerEmail,
   );
 
   // 4. 招待コードの使用回数をインクリメント
@@ -213,27 +241,45 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
   });
 });
 
-// ログイン (マスターキー検証)
+// ログイン (マスターキー / パスワードの両対応)
 apiRouter.post('/auth/login', (req: Request, res: Response) => {
-  const { id, masterKey } = req.body;
-  if (!id || !masterKey) {
-    return res.status(400).json({ error: 'ユーザーIDとマスターキーを入力してください。' });
+  const { id, email, masterKey, password } = req.body;
+
+  if (!masterKey && !password) {
+    return res.status(400).json({ error: 'マスターキーまたはパスワードを入力してください。' });
+  }
+  if (!id && !email) {
+    return res.status(400).json({ error: 'ユーザーIDまたはメールアドレスを入力してください。' });
   }
 
-  const cleanId = id.trim().toLowerCase();
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(cleanId) as unknown as UserRow | undefined;
+  // ユーザーID または メールアドレスで利用者を解決する
+  let user: UserRow | undefined;
+  if (id) {
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(String(id).trim().toLowerCase().replace(/^@/, '')) as unknown as UserRow | undefined;
+  }
+  if (!user && email) {
+    user = db.prepare('SELECT * FROM users WHERE email = ? AND email != ?').get(String(email).trim().toLowerCase(), '') as unknown as UserRow | undefined;
+  }
 
   if (!user) {
-    return res.status(401).json({ error: 'ユーザーIDまたはマスターキーが一致しません。' });
+    return res.status(401).json({ error: '認証情報が一致しません。' });
   }
 
   if (user.is_frozen === 1) {
     return res.status(403).json({ error: 'このアカウントは凍結されています。管理者にお問い合わせください。' });
   }
 
-  const inputHash = hashMasterKey(masterKey.trim());
-  if (inputHash !== user.master_key_hash) {
-    return res.status(401).json({ error: 'ユーザーIDまたはマスターキーが一致しません。' });
+  // 認証: マスターキー（指定時）→ 一致しなければパスワード（設定時）
+  let authenticated = false;
+  if (masterKey) {
+    authenticated = hashMasterKey(String(masterKey).trim()) === user.master_key_hash;
+  }
+  if (!authenticated && password) {
+    authenticated = verifyPassword(String(password), (user as any).password_hash);
+  }
+
+  if (!authenticated) {
+    return res.status(401).json({ error: '認証情報が一致しません。' });
   }
 
   const session = createSession(user.id);
@@ -3360,6 +3406,224 @@ apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), 
   } catch (err: any) {
     console.error('[Import Error]:', err);
     res.status(500).json({ error: err.message || 'インポートに失敗しました。' });
+  }
+});
+
+// 📧 メールアドレスの登録（任意・マスターキー方式のサーバー向け）
+//     ※ ログインには使わず、マスターキーを紛失したときの復元手段としてのみ利用する
+
+/** メールアドレスの形式チェック（厳密な完全検証ではなく実用範囲） */
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) && email.length <= 254;
+}
+
+/** メール登録が許可されているか（管理者設定） */
+function isEmailRegistrationAllowed(): boolean {
+  return String(getServerSetting('allow_email_registration', 'false')).toLowerCase() === 'true';
+}
+
+/** インスタンスの認証方式（master_key / password） */
+function getAuthMode(): 'master_key' | 'password' {
+  return String(getServerSetting('auth_mode', 'master_key')).toLowerCase() === 'password' ? 'password' : 'master_key';
+}
+
+// メール登録・復元の利用可否（クライアントがUIを出し分けるための情報）
+apiRouter.get('/auth/recovery/status', (_req: Request, res: Response) => {
+  res.json({
+    authMode: getAuthMode(),
+    allowEmailRegistration: isEmailRegistrationAllowed(),
+    mailConfigured: isMailConfigured(),
+    recoveryAvailable: isEmailRegistrationAllowed() && isMailConfigured(),
+  });
+});
+
+// メールアドレスの登録（確認コードを送信）
+apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+
+  if (!isEmailRegistrationAllowed()) {
+    return res.status(403).json({ error: 'このサーバーではメールアドレスの登録が許可されていません。' });
+  }
+  if (!isMailConfigured()) {
+    return res.status(503).json({ error: 'サーバーのメール送信が設定されていないため登録できません。' });
+  }
+
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'メールアドレスの形式が正しくありません。' });
+  }
+
+  // 既に他のユーザーが確認済みで使っているメールは登録できない
+  const taken = db.prepare('SELECT id FROM users WHERE email = ? AND email_verified = 1 AND id != ?').get(email, user.id);
+  if (taken) {
+    return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
+  }
+
+  try {
+    const code = generateVerificationCode();
+    issueVerificationCode({ userId: user.id, email, purpose: 'verify_email', code });
+    db.prepare('UPDATE users SET email = ?, email_verified = 0 WHERE id = ?').run(email, user.id);
+
+    const sent = await sendMail({
+      to: email,
+      subject: `【${config.instanceName}】メールアドレス確認コード`,
+      text: [
+        `${config.instanceName} (${config.domain}) のメールアドレス確認です。`,
+        '',
+        `確認コード: ${code}`,
+        '',
+        'このコードは10分間有効です。心当たりがない場合はこのメールを破棄してください。',
+        '※ このメールアドレスはログインには使われません。マスターキーを紛失したときの復元にのみ使用します。',
+      ].join('\n'),
+    });
+
+    if (!sent.ok) {
+      return res.status(502).json({ error: `確認メールの送信に失敗しました: ${sent.error}` });
+    }
+
+    res.json({ success: true, message: '確認コードをメールで送信しました。' });
+  } catch (err: any) {
+    console.error('[Email Register Error]:', err);
+    res.status(500).json({ error: 'メールアドレスの登録に失敗しました。' });
+  }
+});
+
+// 確認コードの検証（メールアドレスの有効化）
+apiRouter.post('/user/email/verify', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+
+  if (!code || !email) {
+    return res.status(400).json({ error: 'メールアドレスと確認コードを入力してください。' });
+  }
+
+  const result = verifyCode({ userId: user.id, email, code, purpose: 'verify_email' });
+  if (!result.ok) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  db.prepare('UPDATE users SET email = ?, email_verified = 1 WHERE id = ?').run(email, user.id);
+  console.log(`[Email] ✅ @${user.id} のメールアドレスを確認しました`);
+  res.json({ success: true, message: 'メールアドレスを確認しました。マスターキーを紛失した際に復元できます。' });
+});
+
+// メールアドレスの削除
+apiRouter.delete('/user/email', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  db.prepare('DELETE FROM email_verifications WHERE user_id = ?').run(user.id);
+  db.prepare("UPDATE users SET email = '', email_verified = 0 WHERE id = ?").run(user.id);
+  console.log(`[Email] 🗑️ @${user.id} がメールアドレスを削除しました`);
+  res.json({ success: true });
+});
+
+// 🔑 マスターキー紛失時の復元（手順: ID+メール → 確認コード → 新しいキーをメールで受領）
+apiRouter.post('/auth/recovery/request', async (req: Request, res: Response) => {
+  const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim().replace(/^@/, '').toLowerCase() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+
+  // 存在の有無を漏らさないため、どのような場合でも同じ応答を返す
+  const genericResponse = {
+    success: true,
+    message: '入力された情報に一致するアカウントがあり、メールアドレスが確認済みの場合は、確認コードを送信しました。',
+  };
+
+  if (!userId || !isValidEmail(email) || !isEmailRegistrationAllowed() || !isMailConfigured()) {
+    return res.json(genericResponse);
+  }
+
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+    if (!user || !user.email || user.email.toLowerCase() !== email || Number((user as any).email_verified) !== 1) {
+      console.log(`[Recovery] 該当なし（存在秘匿）: id=${userId}`);
+      return res.json(genericResponse);
+    }
+
+    const code = generateVerificationCode();
+    issueVerificationCode({ userId: user.id, email, purpose: 'recovery', code });
+
+    const sent = await sendMail({
+      to: email,
+      subject: `【${config.instanceName}】マスターキー復元の確認コード`,
+      text: [
+        `${config.instanceName} (${config.domain}) のマスターキー復元リクエストを受け付けました。`,
+        '',
+        `確認コード: ${code}`,
+        '',
+        'このコードは10分間有効です。',
+        'コードを入力すると、新しいマスターキーがこのメールアドレス宛に発行されます。',
+        '',
+        '※ 心当たりがない場合は、このメールを破棄してください。あなたの現在のマスターキーは変わりません。',
+      ].join('\n'),
+    });
+
+    if (!sent.ok) {
+      console.error('[Recovery] 確認コードの送信に失敗しました:', sent.error);
+    }
+    res.json(genericResponse);
+  } catch (err: any) {
+    console.error('[Recovery Request Error]:', err);
+    res.json(genericResponse);
+  }
+});
+
+// 確認コードの検証 → 新しいマスターキーを発行してメールで送る
+apiRouter.post('/auth/recovery/verify', async (req: Request, res: Response) => {
+  const userId = typeof req.body?.userId === 'string' ? req.body.userId.trim().replace(/^@/, '').toLowerCase() : '';
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+
+  if (!userId || !isValidEmail(email) || !code) {
+    return res.status(400).json({ error: 'ユーザーID・メールアドレス・確認コードを入力してください。' });
+  }
+  if (!isEmailRegistrationAllowed() || !isMailConfigured()) {
+    return res.status(403).json({ error: 'このサーバーでは復元機能が利用できません。' });
+  }
+
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+    if (!user || !user.email || user.email.toLowerCase() !== email || Number((user as any).email_verified) !== 1) {
+      return res.status(400).json({ error: 'ユーザーIDまたはメールアドレスが正しくありません。' });
+    }
+
+    const verified = verifyCode({ userId: user.id, email, code, purpose: 'recovery' });
+    if (!verified.ok) {
+      return res.status(400).json({ error: verified.error });
+    }
+
+    // 新しいマスターキーを生成して先にメール送信し、成功した場合のみDBを更新する
+    // （送信に失敗したままキーを更新すると、ユーザーが締め出されるため）
+    const newMasterKey = generateMasterKey();
+    const sent = await sendMail({
+      to: email,
+      subject: `【${config.instanceName}】新しいマスターキー`,
+      text: [
+        `${config.instanceName} (${config.domain}) の新しいマスターキーです。`,
+        '',
+        `ユーザーID: ${user.id}`,
+        `新しいマスターキー: ${newMasterKey}`,
+        '',
+        'このキーは再発行されません。安全な場所に保管してください。',
+        '以前のマスターキーは無効になりました。',
+      ].join('\n'),
+    });
+
+    if (!sent.ok) {
+      return res.status(502).json({ error: `新しいマスターキーの送信に失敗しました: ${sent.error}` });
+    }
+
+    db.prepare('UPDATE users SET master_key_hash = ? WHERE id = ?').run(hashMasterKey(newMasterKey), user.id);
+    // 復元後は既存セッションをすべて無効化する（乗っ取り対策）
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+
+    console.log(`[Recovery] 🔑 @${user.id} のマスターキーを再発行しました`);
+    res.json({
+      success: true,
+      message: '新しいマスターキーをメールで送信しました。以前のキーは無効になり、再ログインが必要です。',
+    });
+  } catch (err: any) {
+    console.error('[Recovery Verify Error]:', err);
+    res.status(500).json({ error: '復元処理に失敗しました。' });
   }
 });
 
