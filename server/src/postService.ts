@@ -9,6 +9,7 @@ import {
   fetchRemoteActor,
 } from './activitypub.js';
 import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibility.js';
+import { queueLinkPreviewFetch } from './linkPreview.js';
 
 export interface CreatePostParams {
   user: UserRow;
@@ -208,6 +209,9 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     channel: channelData,
   };
 
+  // 🔗 本文に URL があればリンクプレビュー（OGPカード）を非同期で取得しておく
+  queueLinkPreviewFetch(postText);
+
   // 📡 全SSE接続クライアントに新着ノートをプッシュ（公開投稿のみ。
   //    ローカル限定・フォロワー限定は配信すると存在自体が漏れるため配信しない）
   if (visibility === 'public') {
@@ -221,10 +225,14 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   }
 
   // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
+  // 返信相手（重複通知を避けるためメンション通知から除外する）
+  let replyParentUserId: string | null = null;
+
   if (inReplyTo) {
     try {
       const parentPost = db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
       if (parentPost && parentPost.is_local === 1) {
+        replyParentUserId = parentPost.user_id;
         createNotification({
           userId: parentPost.user_id,
           type: 'reply',
@@ -240,6 +248,49 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     } catch (e) {
       console.error('[Notification Error] Reply notification failed:', e);
     }
+  }
+
+  // 🔔 メンション通知: 本文中の @user / @user@domain を検出してローカルユーザーへ通知する
+  try {
+    const mentionMatches = postText.match(/@[a-zA-Z0-9_]{2,30}(?:@[a-zA-Z0-9.\-]+)?/g) || [];
+    const mentionedIds = new Set<string>();
+
+    for (const raw of mentionMatches) {
+      const body = raw.slice(1);
+      const [name, domain] = body.split('@');
+      const mentionedId = (name || '').toLowerCase();
+      if (!mentionedId || mentionedId === user.id) {
+        continue;
+      }
+      // ドメイン指定がある場合は自ノード宛のみを対象にする
+      if (domain && domain.toLowerCase() !== config.domain.toLowerCase()) {
+        continue;
+      }
+      if (replyParentUserId && mentionedId === replyParentUserId) {
+        continue; // 返信通知と重複するため
+      }
+      mentionedIds.add(mentionedId);
+    }
+
+    for (const mentionedId of mentionedIds) {
+      const target = db.prepare('SELECT id FROM users WHERE id = ?').get(mentionedId);
+      if (!target) {
+        continue;
+      }
+      createNotification({
+        userId: mentionedId,
+        type: 'mention',
+        actorId: user.id,
+        actorName: user.name,
+        actorHandle: authorHandle,
+        actorIcon: authorIcon,
+        postId,
+        postContent: postText,
+      });
+      console.log(`[Notification] 📣 メンション通知: @${user.id} → @${mentionedId}`);
+    }
+  } catch (e) {
+    console.error('[Notification Error] Mention notification failed:', e);
   }
 
   // ローカル限定投稿の場合は外部配信を行わず終了

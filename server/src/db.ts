@@ -529,6 +529,34 @@ export function initDatabase() {
       updated_at TEXT NOT NULL
     );`,
     "CREATE INDEX IF NOT EXISTS idx_announcements_active ON announcements(is_active, created_at DESC);",
+    // リンクプレビュー（OGP/oEmbed）キャッシュ
+    `CREATE TABLE IF NOT EXISTS link_previews (
+      url TEXT PRIMARY KEY,
+      title TEXT,
+      description TEXT,
+      image_url TEXT,
+      site_name TEXT,
+      status TEXT NOT NULL DEFAULT 'ok',
+      fetched_at TEXT NOT NULL
+    );`,
+    // リスト（ユーザーを束ねた専用タイムライン）
+    `CREATE TABLE IF NOT EXISTS lists (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE TABLE IF NOT EXISTS list_members (
+      id TEXT PRIMARY KEY,
+      list_id TEXT NOT NULL,
+      member TEXT NOT NULL,
+      display_name TEXT DEFAULT '',
+      created_at TEXT NOT NULL,
+      UNIQUE(list_id, member)
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_list_members_list ON list_members(list_id);",
   ];
 
   for (const sql of migrations) {
@@ -906,7 +934,7 @@ export interface NotificationRow {
  */
 export function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
   actorId: string;
   actorName: string;
   actorHandle: string;

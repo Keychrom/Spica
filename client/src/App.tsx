@@ -22,6 +22,8 @@ import {
   ArrowLeft,
   Check,
   UserPlus,
+  AtSign,
+  List as ListIcon,
   UserCheck,
   Edit3,
   Calendar,
@@ -207,6 +209,39 @@ function PostMediaGrid({
   const renderContent = () => {
     if (count === 1) {
       const att = attachments[0];
+      const mediaType = String(att.mediaType || '');
+
+      // 🎬 動画
+      if (mediaType.startsWith('video/')) {
+        return (
+          <div className="rounded-2xl overflow-hidden border border-slate-800/80 bg-black max-w-full">
+            <video
+              src={att.url}
+              controls
+              preload="metadata"
+              playsInline
+              className="w-full max-h-96 bg-black"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        );
+      }
+
+      // 🎵 音声
+      if (mediaType.startsWith('audio/')) {
+        return (
+          <div className="rounded-2xl border border-slate-800/80 bg-slate-950 p-3 max-w-md">
+            <audio
+              src={att.url}
+              controls
+              preload="metadata"
+              className="w-full"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        );
+      }
+
       return (
         <div className="rounded-2xl overflow-hidden border border-slate-800/80 bg-slate-950 max-h-96 w-fit max-w-full">
           <img
@@ -530,6 +565,14 @@ interface Post {
   content: string;
   is_local: number;
   visibility?: 'public' | 'local' | 'followers';
+  // 🔗 リンクプレビュー（OGPカード）
+  link_preview?: {
+    url: string;
+    title?: string | null;
+    description?: string | null;
+    image_url?: string | null;
+    site_name?: string | null;
+  } | null;
   emojis?: string;
   in_reply_to?: string | null;
   media_attachments?: MediaAttachment[];
@@ -591,7 +634,7 @@ export interface WebAuthnCredential {
 export interface AppNotification {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -4243,6 +4286,136 @@ export default function App() {
     }
   });
 
+  // 📋 リスト（ユーザーを束ねた専用タイムライン）
+  const [lists, setLists] = useState<any[]>([]);
+  const [showListsModal, setShowListsModal] = useState<boolean>(false);
+  const [activeListId, setActiveListId] = useState<string | null>(null);
+  const [listTimelinePosts, setListTimelinePosts] = useState<Post[]>([]);
+  const [isLoadingListTimeline, setIsLoadingListTimeline] = useState<boolean>(false);
+  const [newListName, setNewListName] = useState<string>('');
+  const [newListMember, setNewListMember] = useState<string>('');
+  const [listActionMsg, setListActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const fetchLists = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/lists', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setLists(data);
+        if (!activeListId && data.length > 0) {
+          setActiveListId(data[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('リストの取得エラー:', err);
+    }
+  };
+
+  const handleCreateList = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newListName.trim()) return;
+    try {
+      const res = await fetch('/api/lists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ name: newListName.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNewListName('');
+        setListActionMsg({ type: 'success', text: `リスト「${data.name}」を作成しました。` });
+        await fetchLists();
+      } else {
+        setListActionMsg({ type: 'error', text: data.error || 'リストの作成に失敗しました。' });
+      }
+    } catch (err: any) {
+      setListActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleDeleteList = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このリストを削除しますか？')) return;
+    try {
+      const res = await fetch(`/api/lists/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        if (activeListId === id) {
+          setActiveListId(null);
+          setListTimelinePosts([]);
+        }
+        setListActionMsg({ type: 'success', text: 'リストを削除しました。' });
+        await fetchLists();
+      }
+    } catch (err) {
+      console.error('リストの削除エラー:', err);
+    }
+  };
+
+  const handleAddListMember = async (listId: string, e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newListMember.trim()) return;
+    try {
+      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ member: newListMember.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNewListMember('');
+        setListActionMsg({ type: 'success', text: `${data.display_name} を追加しました。` });
+        await fetchLists();
+      } else {
+        setListActionMsg({ type: 'error', text: data.error || 'メンバーの追加に失敗しました。' });
+      }
+    } catch (err: any) {
+      setListActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleRemoveListMember = async (listId: string, memberId: string) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(memberId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        await fetchLists();
+      }
+    } catch (err) {
+      console.error('メンバーの削除エラー:', err);
+    }
+  };
+
+  const openListTimeline = async (listId: string) => {
+    if (!authToken) return;
+    setActiveListId(listId);
+    setIsLoadingListTimeline(true);
+    try {
+      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/timeline`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setListTimelinePosts(data.posts || []);
+      }
+    } catch (err) {
+      console.error('リストタイムラインの取得エラー:', err);
+    } finally {
+      setIsLoadingListTimeline(false);
+    }
+  };
+
+  // 📥 アカウント移行インポート
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [isImporting, setIsImporting] = useState<boolean>(false);
+  const [importResult, setImportResult] = useState<{ type: 'success' | 'error'; text: string; detail?: string } | null>(null);
+
   // 📢 お知らせの取得（全ユーザー向け / 管理者向け）
   const fetchAnnouncements = async () => {
     try {
@@ -4343,6 +4516,42 @@ export default function App() {
   useEffect(() => {
     fetchAnnouncements();
   }, [authToken]);
+
+  // 📥 アーカイブ（Mastodon outbox.json / Misskey notes.json）の取り込み
+  const handleImportArchive = async () => {
+    if (!authToken || !importFile) return;
+    setIsImporting(true);
+    setImportResult(null);
+    try {
+      const form = new FormData();
+      form.append('archive', importFile);
+
+      const res = await fetch('/api/import/archive', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: form,
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        setImportResult({
+          type: 'success',
+          text: data.message || `${data.imported} 件の投稿を取り込みました。`,
+          detail: `形式: ${data.format} / 取り込み: ${data.imported} / 重複スキップ: ${data.skipped} / 失敗: ${data.failed}${data.total ? ` / 対象: ${data.total}` : ''}${
+            Array.isArray(data.errors) && data.errors.length > 0 ? `\n${data.errors.join('\n')}` : ''
+          }`,
+        });
+        setImportFile(null);
+        await fetchTimeline();
+      } else {
+        setImportResult({ type: 'error', text: data.error || 'インポートに失敗しました。' });
+      }
+    } catch (err: any) {
+      setImportResult({ type: 'error', text: err.message });
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   const fetchBlocksAndMutes = async () => {
     if (!authToken) return;
@@ -5309,12 +5518,12 @@ export default function App() {
     setAuthPortalTab('welcome');
   };
 
-  // メディア（画像）選択・アップロード処理
+  // メディア（画像・動画・音声）選択・アップロード処理
   const handleSelectMedia = async (files: FileList | null) => {
     if (!files || files.length === 0 || !authToken) return;
     const currentCount = postAttachments.length;
     if (currentCount >= 4) {
-      alert('一度に添付できる画像は最大4枚までです。');
+      alert('一度に添付できるファイルは最大4件までです。');
       return;
     }
     const remainingSlots = 4 - currentCount;
@@ -5324,14 +5533,26 @@ export default function App() {
     try {
       for (let i = 0; i < filesToUpload.length; i++) {
         const rawFile = filesToUpload[i];
-        if (!rawFile.type.startsWith('image/')) {
-          alert(`「${rawFile.name}」は画像ファイルではありません。`);
+        const isImage = rawFile.type.startsWith('image/');
+        const isAv = rawFile.type.startsWith('video/') || rawFile.type.startsWith('audio/');
+
+        if (!isImage && !isAv) {
+          alert(`「${rawFile.name}」は対応していない形式です（画像・動画・音声のみ）。`);
           continue;
         }
 
-        // ⚡ Misskey風 クライアント自動圧縮 (ONの場合)
+        // 動画・音声は1件まで（サイズが大きいため）
+        const alreadyHasAv = postAttachments.some(
+          (a: any) => String(a.mediaType || '').startsWith('video/') || String(a.mediaType || '').startsWith('audio/'),
+        );
+        if (isAv && (alreadyHasAv || filesToUpload.filter((f) => f.type.startsWith('video/') || f.type.startsWith('audio/')).length > 1)) {
+          alert('動画・音声は1件まで添付できます。');
+          continue;
+        }
+
+        // ⚡ Misskey風 クライアント自動圧縮 (ONの場合 / 画像のみ)
         let fileToUpload = rawFile;
-        if (autoCompressImages) {
+        if (autoCompressImages && isImage) {
           setUploadStatusText(`画像を最適化中... (${i + 1}/${filesToUpload.length})`);
           const compressRes = await compressImage(rawFile, {
             maxDimension: 2048,
@@ -5341,8 +5562,9 @@ export default function App() {
           fileToUpload = compressRes.file;
         }
 
-        if (fileToUpload.size > 15 * 1024 * 1024) {
-          alert(`「${fileToUpload.name}」のサイズが15MBを超えています。`);
+        const maxSize = isImage ? 15 * 1024 * 1024 : 50 * 1024 * 1024;
+        if (fileToUpload.size > maxSize) {
+          alert(`「${fileToUpload.name}」のサイズが${isImage ? '15MB' : '50MB'}を超えています。`);
           continue;
         }
 
@@ -6514,6 +6736,41 @@ export default function App() {
               isSensitive={post.is_sensitive}
             />
 
+            {/* 🔗 リンクプレビュー（OGPカード） */}
+            {post.link_preview && (post.link_preview.title || post.link_preview.image_url) && (
+              <a
+                href={post.link_preview.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="mt-3 block rounded-2xl border border-slate-800 bg-slate-950/60 overflow-hidden hover:border-indigo-500/40 transition group"
+              >
+                {post.link_preview.image_url && (
+                  <img
+                    src={post.link_preview.image_url}
+                    alt=""
+                    loading="lazy"
+                    className="w-full max-h-64 object-cover border-b border-slate-800"
+                  />
+                )}
+                <div className="p-3 space-y-1">
+                  <span className="text-[10px] text-slate-500 font-mono block truncate">
+                    {post.link_preview.site_name || new URL(post.link_preview.url).hostname}
+                  </span>
+                  {post.link_preview.title && (
+                    <span className="text-xs font-bold text-slate-100 block group-hover:text-indigo-300 transition">
+                      {post.link_preview.title}
+                    </span>
+                  )}
+                  {post.link_preview.description && (
+                    <span className="text-[11px] text-slate-400 block leading-relaxed line-clamp-2">
+                      {post.link_preview.description}
+                    </span>
+                  )}
+                </div>
+              </a>
+            )}
+
             {/* 💬 引用ノート（Quote）カード */}
             {post.quote && (
               <QuoteCard
@@ -6809,7 +7066,7 @@ export default function App() {
             <Search className="absolute left-3 w-4 h-4 text-slate-500 pointer-events-none" />
             <input
               type="text"
-              placeholder="キーワード、@user@misskey.io、#ハッシュタグで検索..."
+              placeholder="キーワード、@user@misskey.io、#タグ、from:user / has:media / before:2026-09-01..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-slate-950/90 border border-slate-800 hover:border-slate-700 rounded-2xl pl-9 pr-8 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-slate-950 transition"
@@ -9766,6 +10023,56 @@ export default function App() {
                     </p>
                   </div>
 
+                  {/* 📥 アカウント移行インポート */}
+                  <div className="space-y-3 bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
+                        <Upload className="w-4 h-4 text-emerald-400" />
+                        <span>他のサーバーからの移行（インポート）</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        Mastodon の <code className="text-slate-300">outbox.json</code>、または Misskey の{' '}
+                        <code className="text-slate-300">notes.json</code> を取り込むと、過去の投稿（本文・CW・公開範囲・投稿日時）を復元できます。
+                        元の投稿日時が保持されるため、時系列が崩れません。同じファイルを再度取り込んでも重複しません。
+                        <br />※ メディア（画像・動画）とフォロー/ブックマークの取り込みは現在未対応です。
+                      </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
+                        className="flex-1 text-xs text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:bg-slate-800 file:text-slate-200 file:text-xs file:font-bold hover:file:bg-slate-700 cursor-pointer"
+                      />
+                      <button
+                        type="button"
+                        disabled={!importFile || isImporting}
+                        onClick={handleImportArchive}
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap flex items-center justify-center space-x-1.5 cursor-pointer"
+                      >
+                        {isImporting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                        <span>{isImporting ? '取り込み中...' : '取り込む'}</span>
+                      </button>
+                    </div>
+                    {importResult && (
+                      <div
+                        className={`p-3 rounded-xl text-xs flex items-start space-x-2 ${
+                          importResult.type === 'success'
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                        }`}
+                      >
+                        {importResult.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />}
+                        <div className="space-y-0.5">
+                          <span className="block whitespace-pre-wrap">{importResult.text}</span>
+                          {importResult.detail && (
+                            <span className="block text-[10px] opacity-80 whitespace-pre-wrap">{importResult.detail}</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-3">
                     {/* 連合ハンドル */}
                     <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800 space-y-1.5">
@@ -10501,6 +10808,10 @@ export default function App() {
                   typeIcon = <MessageCircle className="w-4 h-4 text-cyan-400" />;
                   typeBadgeBg = 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30';
                   typeLabel = '返信';
+                } else if (notif.type === 'mention') {
+                  typeIcon = <AtSign className="w-4 h-4 text-violet-400" />;
+                  typeBadgeBg = 'bg-violet-500/15 text-violet-300 border-violet-500/30';
+                  typeLabel = 'メンション';
                 } else if (notif.type === 'reaction') {
                   typeIcon = <Heart className="w-4 h-4 text-pink-400 fill-pink-400/30" />;
                   typeBadgeBg = 'bg-pink-500/15 text-pink-300 border-pink-500/30';
@@ -11073,6 +11384,23 @@ export default function App() {
                   {channels.length > 0 && (
                     <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-indigo-500/20 text-indigo-300 font-mono">
                       {channels.length}
+                    </span>
+                  )}
+                </button>
+
+                {/* 📋 リスト */}
+                <button
+                  type="button"
+                  onClick={() => { setShowListsModal(true); fetchLists(); }}
+                  className="w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-900/60"
+                >
+                  <div className="flex items-center space-x-3">
+                    <ListIcon className="w-5 h-5 text-sky-400" />
+                    <span>リスト</span>
+                  </div>
+                  {lists.length > 0 && (
+                    <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-sky-500/20 text-sky-300 font-mono">
+                      {lists.length}
                     </span>
                   )}
                 </button>
@@ -12074,7 +12402,7 @@ export default function App() {
                             </span>
                             <input
                               type="file"
-                              accept="image/*"
+                              accept="image/*,video/*,audio/*"
                               multiple
                               disabled={isUploadingMedia || postAttachments.length >= 4}
                               onChange={(e) => {
@@ -14346,6 +14674,180 @@ export default function App() {
         </div>
       )}
 
+      {/* 📋 リスト（管理 + 専用タイムライン） */}
+      {showListsModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setShowListsModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center">
+                  <ListIcon className="w-4 h-4 text-sky-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">リスト</h3>
+                  <span className="text-[11px] text-slate-400">選んだユーザーだけの専用タイムライン</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowListsModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* リスト選択 */}
+            <div className="flex flex-wrap gap-2">
+              {lists.map((list) => (
+                <button
+                  key={list.id}
+                  type="button"
+                  onClick={() => { setActiveListId(list.id); setListTimelinePosts([]); }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                    activeListId === list.id
+                      ? 'bg-sky-600 border-sky-500 text-white'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/60'
+                  }`}
+                >
+                  {list.name} ({list.members?.length ?? 0})
+                </button>
+              ))}
+              {lists.length === 0 && (
+                <span className="text-xs text-slate-500">まだリストがありません。下のフォームから作成してください。</span>
+              )}
+            </div>
+
+            {/* 作成フォーム */}
+            <form onSubmit={handleCreateList} className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                value={newListName}
+                onChange={(e) => setNewListName(e.target.value)}
+                maxLength={60}
+                placeholder="新しいリスト名（例: 親しい人たち）"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+              <button
+                type="submit"
+                disabled={!newListName.trim()}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap flex items-center justify-center space-x-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>リスト作成</span>
+              </button>
+            </form>
+
+            {listActionMsg && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                  listActionMsg.type === 'success'
+                    ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                }`}
+              >
+                {listActionMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                <span>{listActionMsg.text}</span>
+              </div>
+            )}
+
+            {/* 選択中のリストの中身 */}
+            {activeListId && (() => {
+              const activeList = lists.find((l) => l.id === activeListId);
+              if (!activeList) return null;
+              return (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-sm text-slate-100">{activeList.name} のメンバー</h4>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={() => openListTimeline(activeList.id)}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                      >
+                        タイムラインを表示
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteList(activeList.id)}
+                        className="px-3 py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>削除</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <form onSubmit={(e) => handleAddListMember(activeList.id, e)} className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={newListMember}
+                      onChange={(e) => setNewListMember(e.target.value)}
+                      placeholder="追加するユーザー（@user または @user@domain）"
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!newListMember.trim()}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 text-xs font-bold rounded-xl transition whitespace-nowrap cursor-pointer"
+                    >
+                      メンバー追加
+                    </button>
+                  </form>
+
+                  {activeList.members?.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {activeList.members.map((m: any) => (
+                        <span
+                          key={m.id}
+                          className="inline-flex items-center space-x-2 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200"
+                        >
+                          <span className="truncate max-w-[180px]">{m.display_name || m.member}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveListMember(activeList.id, m.id)}
+                            className="p-0.5 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                            title="リストから外す"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-4 bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                      メンバーがいません。ユーザーを追加してください。
+                    </div>
+                  )}
+
+                  {/* リストのタイムライン */}
+                  <div className="space-y-3 pt-2 border-t border-slate-800">
+                    {isLoadingListTimeline ? (
+                      <div className="text-center py-10">
+                        <RefreshCw className="w-6 h-6 animate-spin mx-auto text-sky-400 mb-2" />
+                        <p className="text-xs text-slate-400">ノートを読み込み中...</p>
+                      </div>
+                    ) : listTimelinePosts.length === 0 ? (
+                      <div className="text-center py-8 bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                        表示できるノートがありません。「タイムラインを表示」を押すか、メンバーを追加してください。
+                      </div>
+                    ) : (
+                      listTimelinePosts.map((post) => renderPostCard(post))
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* 🚩 通報モーダル */}
       {reportTarget && (
         <div
@@ -14726,7 +15228,7 @@ export default function App() {
                     <span className="text-[11px]">{isUploadingMedia ? uploadStatusText || '処理中...' : `画像 (${postAttachments.length}/4)`}</span>
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,video/*,audio/*"
                       multiple
                       disabled={isUploadingMedia || postAttachments.length >= 4}
                       onChange={(e) => {

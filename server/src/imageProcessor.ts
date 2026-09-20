@@ -42,6 +42,10 @@ export async function convertImageToWebp(
   buffer: Buffer,
   mimetype: string,
 ): Promise<{ buffer: Buffer; size: number } | null> {
+  // 画像以外（動画・音声など）は変換対象外
+  if (!mimetype.startsWith('image/')) {
+    return null;
+  }
   if (SKIP_MIMETYPES.has(mimetype)) {
     return null;
   }

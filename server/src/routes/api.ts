@@ -9,6 +9,8 @@ import { applyPageHeaders, cursorPredicate, parsePageQuery } from '../pagination
 import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } from '../postVisibility.js';
 import { createReport, logNewReport } from '../reportService.js';
 import { getMutedWords, postMatchesMutedWords } from '../wordFilter.js';
+import { attachPreviewForContent } from '../linkPreview.js';
+import { parseArchive, importNotes } from '../importService.js';
 import { uploadMediaFile } from '../storage.js';
 import { executeCreatePost } from '../postService.js';
 import {
@@ -62,17 +64,26 @@ import {
 
 export const apiRouter = Router();
 
-// 画像アップロード用 multer 設定 (メモリバッファ保存, 最大15MB, 画像形式のみ)
+// メディアアップロード用 multer 設定 (メモリバッファ保存)
+//  - 画像: 最大 15MB / 動画・音声: MEDIA_MAX_BYTES (既定 50MB)
+//  - 種別ごとの上限と件数制限はハンドラ側で判定する
+const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+const MEDIA_MAX_BYTES = (() => {
+  const parsed = parseInt(process.env.MEDIA_MAX_BYTES || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 50 * 1024 * 1024;
+})();
+const ALLOWED_MEDIA_PREFIXES = ['image/', 'video/', 'audio/'];
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 15 * 1024 * 1024,
+    fileSize: MEDIA_MAX_BYTES,
   },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    if (ALLOWED_MEDIA_PREFIXES.some((prefix) => file.mimetype.startsWith(prefix))) {
       cb(null, true);
     } else {
-      cb(new Error('対応していないファイル形式です。画像ファイル（JPEG, PNG, GIF, WebP, SVGなど）を選択してください。'));
+      cb(new Error('対応していないファイル形式です。画像（JPEG/PNG/GIF/WebP/SVG）、動画（MP4/WebM/MOV）、音声（MP3/OGG/WAV/M4A）を選択してください。'));
     }
   },
 });
@@ -578,6 +589,8 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
       })(),
       published_at: r.published_at,
       timeline_at: r.timeline_at || r.published_at,
+      // 🔗 リンクプレビュー（OGP カード）: キャッシュ済みのものだけ添付する
+      link_preview: attachPreviewForContent(r.content),
       renote: r.announce_id ? {
         id: r.announce_id,
         name: r.renoted_by_name || '誰か',
@@ -791,18 +804,74 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     return res.json({ remoteUser: null, users: [], posts: [] });
   }
 
+  // 🔎 検索演算子: from:user / before:YYYY-MM-DD / after:YYYY-MM-DD / has:media / -除外語
+  interface ParsedSearchQuery {
+    text: string;
+    from: string | null;
+    before: string | null;
+    after: string | null;
+    hasMedia: boolean;
+    excludes: string[];
+  }
+  const parsedQuery: ParsedSearchQuery = (() => {
+    let text = q;
+    let from: string | null = null;
+    let before: string | null = null;
+    let after: string | null = null;
+    let hasMedia = false;
+    const excludes: string[] = [];
+
+    text = text.replace(/(?:^|\s)from:([^\s]+)/gi, (_m, v: string) => { from = v.replace(/^@/, ''); return ' '; });
+    text = text.replace(/(?:^|\s)before:([^\s]+)/gi, (_m, v: string) => { before = v; return ' '; });
+    text = text.replace(/(?:^|\s)after:([^\s]+)/gi, (_m, v: string) => { after = v; return ' '; });
+    text = text.replace(/(?:^|\s)has:media/gi, () => { hasMedia = true; return ' '; });
+    text = text.replace(/(?:^|\s)-([^\s]+)/g, (_m, v: string) => { excludes.push(v); return ' '; });
+
+    return { text: text.trim(), from, before, after, hasMedia, excludes };
+  })();
+
+  const searchText = parsedQuery.text;
+  const hasOperators = Boolean(
+    parsedQuery.from || parsedQuery.before || parsedQuery.after || parsedQuery.hasMedia || parsedQuery.excludes.length > 0,
+  );
+
+  // 演算子を SQL 条件に変換する（FTS / LIKE の両方に適用）
+  const extraConds: string[] = [];
+  const extraParams: any[] = [];
+  if (parsedQuery.from) {
+    extraConds.push('(p.user_id = ? OR p.author_handle LIKE ? OR p.author_url LIKE ?)');
+    const pattern = parsedQuery.from.startsWith('http') ? parsedQuery.from : `%${parsedQuery.from}%`;
+    extraParams.push(parsedQuery.from, pattern, pattern);
+  }
+  for (const term of parsedQuery.excludes) {
+    extraConds.push('p.content NOT LIKE ?');
+    extraParams.push(`%${term}%`);
+  }
+  if (parsedQuery.hasMedia) {
+    extraConds.push("(p.media_attachments IS NOT NULL AND p.media_attachments != '[]' AND p.media_attachments != '')");
+  }
+  if (parsedQuery.after) {
+    extraConds.push('p.published_at >= ?');
+    extraParams.push(`${parsedQuery.after}T00:00:00.000Z`);
+  }
+  if (parsedQuery.before) {
+    extraConds.push('p.published_at < ?');
+    extraParams.push(`${parsedQuery.before}T00:00:00.000Z`);
+  }
+  const extraWhere = extraConds.length > 0 ? ` AND ${extraConds.join(' AND ')}` : '';
+
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   let remoteUser: any = null;
 
   // 1. Fediverse アドレス直接解決 (@user@domain または URL)
-  const isAddressOrUrl = q.includes('@') || q.startsWith('http://') || q.startsWith('https://');
+  const isAddressOrUrl = searchText.includes('@') || searchText.startsWith('http://') || searchText.startsWith('https://');
   if (isAddressOrUrl) {
     try {
       let actorUrl = '';
-      if (q.startsWith('http://') || q.startsWith('https://')) {
-        actorUrl = q;
+      if (searchText.startsWith('http://') || searchText.startsWith('https://')) {
+        actorUrl = searchText;
       } else {
-        actorUrl = await resolveWebFinger(q);
+        actorUrl = await resolveWebFinger(searchText);
       }
 
       if (actorUrl) {
@@ -830,20 +899,20 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
   }
 
   // 2. ユーザー検索 (ローカルユーザー + キャッシュ済みリモートユーザー)
-  const searchPattern = `%${q.replace(/^@/, '')}%`;
-  const localUsers = db.prepare(`
+  const searchPattern = `%${searchText.replace(/^@/, '')}%`;
+  const localUsers = searchText ? db.prepare(`
     SELECT id, name, summary, icon_url, 1 as is_local, NULL as domain, ('@' || id) as handle
     FROM users
     WHERE id LIKE ? OR name LIKE ?
     LIMIT 10
-  `).all(searchPattern, searchPattern) as any[];
+  `).all(searchPattern, searchPattern) as any[] : [];
 
-  const remoteActors = db.prepare(`
+  const remoteActors = searchText ? db.prepare(`
     SELECT id, username, domain, name, summary, icon_url, 0 as is_local, ('@' || username || '@' || domain) as handle
     FROM remote_actors
     WHERE username LIKE ? OR name LIKE ? OR domain LIKE ?
     LIMIT 10
-  `).all(searchPattern, searchPattern, searchPattern) as any[];
+  `).all(searchPattern, searchPattern, searchPattern) as any[] : [];
 
   const combinedUsers = [...localUsers, ...remoteActors].map((u) => {
     let isFollowing = false;
@@ -860,7 +929,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
 
   // 3. 投稿本文検索 (SQLite FTS5 / trigram 超高速・高精度検索 ＆ 短語・フェイルセーフ対応)
   let postRows: any[] = [];
-  const terms = q.split(/\s+/).filter(Boolean);
+  const terms = searchText.split(/\s+/).filter(Boolean);
   const hasLongTerm = terms.some((t) => t.length >= 3);
 
   if (hasLongTerm) {
@@ -899,10 +968,10 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
           JOIN posts p ON f.post_id = p.id
           LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
           LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-          WHERE posts_fts MATCH ?
+          WHERE posts_fts MATCH ?${extraWhere}
           ORDER BY bm25(posts_fts), p.published_at DESC
           LIMIT 40
-        `).all(ftsQuery) as any[];
+        `).all(ftsQuery, ...extraParams) as any[];
       }
     } catch (ftsErr: any) {
       console.warn('[FTS5 Search Fallback]:', ftsErr.message);
@@ -910,8 +979,9 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
   }
 
   // 短い単語（1〜2文字）の場合、または FTS5 で未ヒット時の LIKE 補完
-  if (postRows.length === 0 && terms.length > 0) {
-    const postPattern = `%${q}%`;
+  // 演算子のみの検索（例: has:media だけ）にも対応するため、本文が空でも実行する
+  if (postRows.length === 0 && (terms.length > 0 || extraConds.length > 0)) {
+    const postPattern = terms.length > 0 ? `%${searchText}%` : '%';
     postRows = db.prepare(`
       SELECT 
         p.id AS post_id,
@@ -942,10 +1012,10 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
       LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE p.content LIKE ?
+      WHERE p.content LIKE ?${extraWhere}
       ORDER BY p.published_at DESC
       LIMIT 30
-    `).all(postPattern) as any[];
+    `).all(postPattern, ...extraParams) as any[];
   }
 
   const posts = enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);
@@ -961,7 +1031,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
 // メディアアップロード (S3 / Cloudflare R2 / ローカル)
 // ==========================================
 
-// 画像アップロード (最大4枚, 任意のフィールド名 'file' / 'files' に対応)
+// メディアアップロード (画像 最大4枚 / 動画・音声 は1件まで)
 apiRouter.post(
   '/media/upload',
   requireAuth,
@@ -970,7 +1040,7 @@ apiRouter.post(
       if (err) {
         if (err instanceof multer.MulterError) {
           if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: 'ファイルサイズが大きすぎます (最大15MBまで)。' });
+            return res.status(400).json({ error: `ファイルサイズが大きすぎます (上限 ${Math.floor(MEDIA_MAX_BYTES / (1024 * 1024))}MB)。` });
           }
           return res.status(400).json({ error: `アップロードエラー: ${err.message}` });
         }
@@ -984,11 +1054,23 @@ apiRouter.post(
     const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
 
     if (!files || files.length === 0) {
-      return res.status(400).json({ error: 'アップロードする画像ファイルを選択してください。' });
+      return res.status(400).json({ error: 'アップロードするメディアファイルを選択してください。' });
     }
 
     if (files.length > 4) {
-      return res.status(400).json({ error: '一度にアップロードできる画像は最大4枚までです。' });
+      return res.status(400).json({ error: '一度にアップロードできるファイルは最大4件までです。' });
+    }
+
+    // 動画・音声はサイズが大きいため1件までに制限する
+    const avFiles = files.filter((f) => f.mimetype.startsWith('video/') || f.mimetype.startsWith('audio/'));
+    if (avFiles.length > 1) {
+      return res.status(400).json({ error: '動画・音声は1件まで添付できます。' });
+    }
+
+    // 画像は従来どおり 15MB まで
+    const oversizedImage = files.find((f) => f.mimetype.startsWith('image/') && f.size > IMAGE_MAX_BYTES);
+    if (oversizedImage) {
+      return res.status(400).json({ error: '画像サイズが大きすぎます (最大15MBまで)。' });
     }
 
     try {
@@ -1073,8 +1155,9 @@ apiRouter.delete('/posts/:id', requireAuth, async (req: Request, res: Response) 
     broadcastDeletePost(postId);
   }
 
-  // グローバル公開されていた場合、ActivityPub Delete をフォロワー & リレーへ配信
-  if (post.visibility !== 'local' && post.is_local === 1) {
+  // 公開投稿だった場合のみ ActivityPub Delete をフォロワー & リレーへ配信
+  // （ローカル限定・フォロワー限定はリレーへ配送しない）
+  if (post.visibility === 'public' && post.is_local === 1) {
     const authorUser = db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
     if (authorUser) {
       const actorUrl = `${config.origin}/users/${authorUser.id}`;
@@ -2128,6 +2211,8 @@ apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
 
   if (filter === 'reply') {
     filterClause = ` AND type = 'reply'`;
+  } else if (filter === 'mention') {
+    filterClause = ` AND type = 'mention'`;
   } else if (filter === 'reaction') {
     filterClause = ` AND type IN ('reaction', 'announce', 'renote')`;
   } else if (filter === 'follow') {
@@ -2978,6 +3063,235 @@ apiRouter.post('/follow-requests/respond', requireAuth, async (req: Request, res
   }
 
   res.json({ success: true, action, actorUrl });
+});
+
+// 📋 リスト（ユーザーを束ねた専用タイムライン）
+//    アンテナの「ユーザー指定」と同じ考え方で、登録したメンバーの投稿だけを時系列で返す
+
+// 自分のリスト一覧
+apiRouter.get('/lists', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const lists = db.prepare('SELECT * FROM lists WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as any[];
+  const withMembers = lists.map((list) => ({
+    ...list,
+    members: db.prepare('SELECT id, member, display_name FROM list_members WHERE list_id = ? ORDER BY created_at ASC').all(list.id),
+  }));
+  res.json(withMembers);
+});
+
+// リスト作成
+apiRouter.post('/lists', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
+  if (!name) {
+    return res.status(400).json({ error: 'リスト名を入力してください。' });
+  }
+  const count = (db.prepare('SELECT COUNT(*) AS c FROM lists WHERE user_id = ?').get(user.id) as { c: number }).c;
+  if (count >= 50) {
+    return res.status(400).json({ error: '作成できるリストは 50 件までです。' });
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO lists (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, user.id, name, now, now);
+  console.log(`[List] 📋 @${user.id} がリスト「${name}」を作成`);
+  res.status(201).json({ success: true, id, name });
+});
+
+// リスト名の変更
+apiRouter.put('/lists/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const id = String(req.params.id);
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
+  if (!name) {
+    return res.status(400).json({ error: 'リスト名を入力してください。' });
+  }
+  const result = db.prepare('UPDATE lists SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+    .run(name, new Date().toISOString(), id, user.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'リストが見つかりません。' });
+  }
+  res.json({ success: true, id, name });
+});
+
+// リスト削除
+apiRouter.delete('/lists/:id', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const id = String(req.params.id);
+  const existing = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(id, user.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'リストが見つかりません。' });
+  }
+  db.prepare('DELETE FROM list_members WHERE list_id = ?').run(id);
+  db.prepare('DELETE FROM lists WHERE id = ?').run(id);
+  res.json({ success: true });
+});
+
+// メンバー追加（ローカルID / ハンドル / actor URL を受け付ける）
+apiRouter.post('/lists/:id/members', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const listId = String(req.params.id);
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
+  if (!list) {
+    return res.status(404).json({ error: 'リストが見つかりません。' });
+  }
+
+  const raw = typeof req.body?.member === 'string' ? req.body.member.trim() : '';
+  if (!raw) {
+    return res.status(400).json({ error: '追加するユーザー（@user または @user@domain）を指定してください。' });
+  }
+
+  // 表示名の解決（ローカルユーザー → リモートアクター → そのまま）
+  const localId = raw.replace(/^@/, '').split('@')[0].toLowerCase();
+  const localUser = db.prepare('SELECT id, name FROM users WHERE id = ?').get(localId) as { id: string; name: string } | undefined;
+  const remoteActor = localUser
+    ? undefined
+    : (db.prepare('SELECT id, name, username FROM remote_actors WHERE id = ?').get(raw) as
+        | { id: string; name: string | null; username: string }
+        | undefined);
+
+  const member = localUser ? localUser.id : raw;
+  const displayName = localUser?.name || remoteActor?.name || remoteActor?.username || raw;
+
+  const count = (db.prepare('SELECT COUNT(*) AS c FROM list_members WHERE list_id = ?').get(listId) as { c: number }).c;
+  if (count >= 500) {
+    return res.status(400).json({ error: '1つのリストに追加できるのは 500 人までです。' });
+  }
+
+  try {
+    db.prepare('INSERT INTO list_members (id, list_id, member, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(crypto.randomUUID(), listId, member, displayName, new Date().toISOString());
+  } catch {
+    return res.status(409).json({ error: '既にこのリストに追加されています。' });
+  }
+
+  res.status(201).json({ success: true, member, display_name: displayName });
+});
+
+// メンバー削除
+apiRouter.delete('/lists/:id/members/:memberId', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const listId = String(req.params.id);
+  const list = db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
+  if (!list) {
+    return res.status(404).json({ error: 'リストが見つかりません。' });
+  }
+  const result = db.prepare('DELETE FROM list_members WHERE id = ? AND list_id = ?').run(String(req.params.memberId), listId);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: 'メンバーが見つかりません。' });
+  }
+  res.json({ success: true });
+});
+
+// リストのタイムライン（メンバーの投稿のみ / 公開範囲とミュートワードを尊重）
+apiRouter.get('/lists/:id/timeline', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const listId = String(req.params.id);
+  const list = db.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id) as any;
+  if (!list) {
+    return res.status(404).json({ error: 'リストが見つかりません。' });
+  }
+
+  const page = parsePageQuery(req, 50);
+  if (page.error) {
+    return res.status(400).json({ error: page.error });
+  }
+
+  const members = (db.prepare('SELECT member FROM list_members WHERE list_id = ?').all(listId) as { member: string }[])
+    .map((m) => m.member);
+
+  if (members.length === 0) {
+    return res.json({ list: { id: list.id, name: list.name }, posts: [], memberCount: 0 });
+  }
+
+  // メンバー条件は OR でまとめ、カーソル条件は AND で絞り込む（優先順位に注意）
+  const memberConds: string[] = [];
+  const params: any[] = [];
+  for (const member of members) {
+    memberConds.push('(p.user_id = ? OR p.author_url = ? OR p.author_handle = ? OR p.author_handle LIKE ?)');
+    params.push(member, member, member, `%${member.replace(/^@/, '')}%`);
+  }
+  const conditions: string[] = [`(${memberConds.join(' OR ')})`];
+  if (page.cursor) {
+    conditions.push(cursorPredicate('p.published_at', 'p.id'));
+    params.push(page.cursor.at, page.cursor.at, page.cursor.id);
+  }
+  params.push(page.limit + 1);
+
+  const rows = db.prepare(`
+    SELECT
+      p.id AS post_id,
+      p.*,
+      COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
+      p.published_at AS timeline_at
+    FROM posts p
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT ?
+  `).all(...params) as any[];
+
+  const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
+  const viewerActor = `${config.origin}/users/${user.id}`;
+  const visible = filterVisiblePosts(pageRows, viewerActor)
+    .filter((post) => !postMatchesMutedWords(post, getMutedWords(user.id)));
+  const enriched = enrichAndFilterPosts(visible, viewerActor, user.id);
+
+  res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
+});
+
+// 📥 アカウント移行インポート（Mastodon の outbox.json / Misskey の notes.json）
+const archiveUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.includes('json') || file.originalname.toLowerCase().endsWith('.json')) {
+      cb(null, true);
+    } else {
+      cb(new Error('JSON ファイル（Mastodon の outbox.json / Misskey の notes.json）を選択してください。'));
+    }
+  },
+});
+
+apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const file = (req as Request & { file?: { buffer: Buffer } }).file;
+  if (!file) {
+    return res.status(400).json({ error: 'アーカイブファイル（JSON）が必要です。' });
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(file.buffer.toString('utf8'));
+  } catch {
+    return res.status(400).json({
+      error: 'JSON の解析に失敗しました。Mastodon の outbox.json か Misskey の notes.json を選択してください。',
+    });
+  }
+
+  try {
+    const { format, notes } = parseArchive(data);
+    if (notes.length === 0) {
+      return res.status(400).json({ error: '取り込める投稿が見つかりませんでした（ファイル形式をご確認ください）。', format });
+    }
+
+    const result = importNotes(user, notes);
+    console.log(
+      `[Import] 📥 @${user.id} が投稿を取り込み: imported=${result.imported} skipped=${result.skipped} failed=${result.failed} (format=${format})`,
+    );
+
+    res.json({
+      success: true,
+      format,
+      ...result,
+      message: `${result.imported} 件の投稿を取り込みました（重複スキップ ${result.skipped} 件）。`,
+    });
+  } catch (err: any) {
+    console.error('[Import Error]:', err);
+    res.status(500).json({ error: err.message || 'インポートに失敗しました。' });
+  }
 });
 
 // 🚩 通報の作成（投稿 / ユーザー）

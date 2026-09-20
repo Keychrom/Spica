@@ -21,7 +21,12 @@
     "test:followers-visibility": "npx tsx scripts/test-followers-visibility.ts",
     "test:reports": "npx tsx scripts/test-reports.ts",
     "test:filters-and-locked": "npx tsx scripts/test-filters-and-locked.ts",
-    "test:announcements": "npx tsx scripts/test-announcements.ts"
+    "test:announcements": "npx tsx scripts/test-announcements.ts",
+    "test:differentiation": "npx tsx scripts/test-differentiation.ts",
+    "test:import": "npx tsx scripts/test-import.ts",
+    "test:lists": "npx tsx scripts/test-lists.ts",
+    "test:media-video": "npx tsx scripts/test-media-video.ts",
+    "test:search-operators": "npx tsx scripts/test-search-operators.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

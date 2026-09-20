@@ -138,6 +138,17 @@ function getExtension(mimetype: string, originalname: string): string {
     'image/webp': 'webp',
     'image/svg+xml': 'svg',
     'image/avif': 'avif',
+    // 動画・音声（変換せずそのまま保存する）
+    'video/mp4': 'mp4',
+    'video/webm': 'webm',
+    'video/quicktime': 'mov',
+    'video/ogg': 'ogv',
+    'audio/mpeg': 'mp3',
+    'audio/mp4': 'm4a',
+    'audio/ogg': 'ogg',
+    'audio/wav': 'wav',
+    'audio/x-wav': 'wav',
+    'audio/webm': 'weba',
   };
   return mimeMap[mimetype] || 'bin';
 }

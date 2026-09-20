@@ -172,8 +172,21 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         console.log(`[Inbox Accept] 🤝 Received Accept from ${actorUrl}, target: ${targetUrl}`);
 
         // 1. follows テーブルの更新 (個人アカウントのフォロー承認)
+        //    ※ 宛先 (following_url) だけでは「同じ相手をフォローしている他のローカルユーザー」
+        //      まで承認してしまうため、フォロー元 (follower_url) も必ず特定する
         if (targetUrl) {
-          db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ?").run(targetUrl);
+          if (targetUsername) {
+            const followerActor = `${config.origin}/users/${targetUsername.toLowerCase()}`;
+            const result = db.prepare('UPDATE follows SET status = ? WHERE following_url = ? AND follower_url = ?')
+              .run('accepted', targetUrl, followerActor);
+            if (result.changes === 0) {
+              // 個人Inbox宛でもフォロー元が一致しない場合に備え、自ノード発のフォローに限定して更新する
+              db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
+            }
+          } else {
+            // 共有Inbox: 自ノードのユーザーが行ったフォローに限定する
+            db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
+          }
         }
 
         // 2. リレーサーバーのステータス自動更新 (ドメイン・URL柔軟照合)

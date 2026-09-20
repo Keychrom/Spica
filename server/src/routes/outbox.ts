@@ -63,6 +63,16 @@ outboxRouter.get('/:username/outbox', (req: Request, res: Response) => {
       content: post.content,
       publishedAt: post.published_at,
       inReplyTo: post.in_reply_to,
+      summary: post.cw || null,
+      sensitive: Number(post.is_sensitive) === 1,
+      attachments: (() => {
+        try {
+          const parsed = typeof post.media_attachments === 'string' ? JSON.parse(post.media_attachments || '[]') : post.media_attachments;
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })(),
     });
     return buildCreateActivity({
       note,

@@ -11,6 +11,16 @@ import {
 
 export const usersRouter = Router();
 
+/** 投稿の media_attachments（JSON文字列）を ActivityPub 用の配列に変換する */
+function parseMediaAttachments(raw: unknown): { url: string; mediaType?: string; name?: string }[] {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw || '[]') : raw;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 // Actor (Person) エンドポイント
 usersRouter.get('/:username', (req: Request, res: Response) => {
   const username = req.params.username as string;
@@ -101,6 +111,9 @@ usersRouter.get('/:username/posts/:postId', (req: Request, res: Response) => {
     content: post.content,
     publishedAt: post.published_at,
     inReplyTo: post.in_reply_to,
+    summary: post.cw || null,
+    sensitive: Number(post.is_sensitive) === 1,
+    attachments: parseMediaAttachments(post.media_attachments),
   });
 
   res.setHeader('Content-Type', `${ACTIVITY_CONTENT_TYPE}; charset=utf-8`);
@@ -128,6 +141,9 @@ usersRouter.get('/:username/posts/:postId/activity', (req: Request, res: Respons
     content: post.content,
     publishedAt: post.published_at,
     inReplyTo: post.in_reply_to,
+    summary: post.cw || null,
+    sensitive: Number(post.is_sensitive) === 1,
+    attachments: parseMediaAttachments(post.media_attachments),
   });
 
   const createActivity = buildCreateActivity({
