@@ -33,7 +33,8 @@ nodeinfoRouter.get('/nodeinfo/2.1', (req: Request, res: Response) => {
       inbound: [],
       outbound: [],
     },
-    openRegistrations: true,
+    // 新規登録の受付状態を実際の設定から返す（連合先やインスタンス一覧が参照する）
+    openRegistrations: info.registration_mode === 'open',
     usage: {
       users: {
         total: userCount,
@@ -46,6 +47,9 @@ nodeinfoRouter.get('/nodeinfo/2.1', (req: Request, res: Response) => {
       nodeName: info.name,
       nodeDescription: info.description,
       nodeIcon: info.icon_url,
+      // 参考情報（invite = 招待制 / closed = 停止中）
+      registrationMode: info.registration_mode,
+      staffAccounts: db.prepare("SELECT id FROM users WHERE role = 'admin'").all().map((row: any) => `${config.origin}/users/${row.id}`),
     },
   });
 });

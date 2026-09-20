@@ -1013,10 +1013,10 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
       LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE p.content LIKE ?${extraWhere}
+      WHERE (p.content LIKE ? OR p.cw LIKE ?)${extraWhere}
       ORDER BY p.published_at DESC
       LIMIT 30
-    `).all(postPattern, ...extraParams) as any[];
+    `).all(postPattern, postPattern, ...extraParams) as any[];
   }
 
   const posts = enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);

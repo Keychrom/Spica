@@ -941,7 +941,7 @@ export function purgeDomainData(domain: string): { posts: number; actors: number
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'reaction' | 'antenna' | 'scheduled_published';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
