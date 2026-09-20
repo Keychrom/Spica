@@ -99,6 +99,53 @@ const upload = multer({
 // 認証 (Auth) エンドポイント - マスターキー方式
 // ==========================================
 
+// 📧 登録前のメールアドレス確認コード送信（パスワード方式の新規登録で使用）
+apiRouter.post('/auth/register/email-code', async (req: Request, res: Response) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+
+  if (!isMailConfigured()) {
+    return res.status(503).json({ error: 'このサーバーはメール送信が設定されていないため、確認コードを送信できません。' });
+  }
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'メールアドレスの形式が正しくありません。' });
+  }
+
+  // 既に使われているメールアドレスには送らない（登録時と同じ 409 で揃える）
+  const taken = db.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
+  if (taken) {
+    return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
+  }
+
+  try {
+    const code = generateVerificationCode();
+    // 登録前はユーザーが存在しないため、メールアドレス単位の擬似IDでコードを管理する
+    issueVerificationCode({ userId: `register:${email}`, email, purpose: 'register', code });
+
+    const sent = await sendMail({
+      to: email,
+      subject: `【${config.instanceName}】アカウント登録の確認コード`,
+      text: [
+        `${config.instanceName} (${config.domain}) のアカウント登録の確認です。`,
+        '',
+        `確認コード: ${code}`,
+        '',
+        'このコードは10分間有効です。登録画面に入力してください。',
+        '心当たりがない場合はこのメールを破棄してください。',
+      ].join('\n'),
+    });
+
+    if (!sent.ok) {
+      return res.status(502).json({ error: `確認メールの送信に失敗しました: ${sent.error}` });
+    }
+
+    console.log(`[Register] 📧 登録用の確認コードを送信: ${email}`);
+    res.json({ success: true, message: '確認コードを送信しました。メールをご確認ください。' });
+  } catch (err: any) {
+    console.error('[Register Email Code Error]:', err);
+    res.status(500).json({ error: '確認コードの送信に失敗しました。' });
+  }
+});
+
 // アカウント新規登録 (マスターキー発行)
 apiRouter.post('/auth/register', (req: Request, res: Response) => {
   const { id, name, summary, inviteCode, agreedToRules } = req.body;
@@ -165,6 +212,7 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
   // 🔐 パスワード方式（auth_mode = password）の場合はメールアドレスとパスワードを必須にする
   let passwordHash = '';
   let registerEmail = '';
+  let registerEmailVerified = 0;
   if (getAuthMode() === 'password') {
     const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -179,6 +227,24 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
     if (emailTaken) {
       return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
     }
+
+    // 📧 メール送信が設定されているサーバーでは、確認コードによるメール確認を必須にする。
+    //    SMTP 未設定のサーバーではメール関連機能が無効のため、確認なしで登録できる。
+    if (isMailConfigured()) {
+      const emailCode = typeof req.body?.emailCode === 'string' ? req.body.emailCode.trim() : '';
+      if (!emailCode) {
+        return res.status(400).json({ error: 'メールアドレスの確認コードを入力してください（「確認コードを送信」から取得できます）。' });
+      }
+      const verified = verifyCode({ userId: `register:${email}`, email, code: emailCode, purpose: 'register' });
+      if (!verified.ok) {
+        return res.status(400).json({ error: verified.error || '確認コードが正しくありません。' });
+      }
+      registerEmailVerified = 1;
+      console.log(`[Spica Register] ✅ メールアドレスの確認コードを検証しました (${email})`);
+    } else {
+      console.log(`[Spica Register] ℹ️ メール送信が未設定のため、メール確認はスキップします (${email})`);
+    }
+
     passwordHash = hashPassword(password);
     registerEmail = email;
     console.log(`[Spica Register] パスワード方式で登録します (@${cleanId}, email=${email})`);
@@ -194,8 +260,8 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
 
   // 3. DB にユーザー保存
   db.prepare(`
-    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
   `).run(
     cleanId,
     name.trim(),
@@ -207,6 +273,7 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
     now,
     passwordHash,
     registerEmail,
+    registerEmailVerified,
   );
 
   // 4. 招待コードの使用回数をインクリメント
@@ -236,6 +303,10 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
       actorUrl,
       role,
       createdAt: now,
+      // 設定画面の出し分け用（本人にだけ返す。ハッシュ類は返さない）
+      email: registerEmail,
+      email_verified: registerEmailVerified,
+      hasPassword: Boolean(passwordHash),
     },
     masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
     sessionToken: session.token,
@@ -296,6 +367,10 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
       actorUrl: `${config.origin}/users/${user.id}`,
       role: user.role,
       createdAt: user.created_at,
+      // 本人にだけ返す自分のメール状態とパスワード設定の有無（ハッシュ類は返さない）
+      email: user.email || '',
+      email_verified: Number((user as any).email_verified) || 0,
+      hasPassword: Boolean((user as any).password_hash),
     },
     sessionToken: session.token,
     sessionExpiresAt: session.expiresAt,
@@ -315,6 +390,7 @@ apiRouter.post('/auth/logout', (req: Request, res: Response) => {
 // 現在のログインユーザー情報
 apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
   const user = req.user!;
+  const raw = req.rawUser;
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ?').get(myActorUrl) as any).c;
   const followingCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ?').get(myActorUrl) as any).c;
@@ -327,6 +403,10 @@ apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
     followerCount,
     followingCount,
     postCount,
+    // 本人にだけ返す自分のメール状態とパスワード設定の有無（ハッシュ類は返さない）
+    email: raw?.email || '',
+    email_verified: Number(raw?.email_verified) || 0,
+    hasPassword: Boolean(raw?.password_hash),
   });
 });
 
@@ -3583,17 +3663,51 @@ apiRouter.get('/auth/recovery/status', (_req: Request, res: Response) => {
 });
 
 // メールアドレスの登録（確認コードを送信）
+// 🔑 パスワードの設定・変更（パスワード方式のサーバー向け）
+//    既存ユーザー（登録時にパスワードが無いユーザー）はマスターキーで設定できる
+apiRouter.post('/user/password', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+  const masterKey = typeof req.body?.masterKey === 'string' ? req.body.masterKey.trim() : '';
+
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'パスワードは8文字以上で入力してください。' });
+  }
+
+  const hasPassword = Boolean((user as any).password_hash);
+  const masterKeyOk = masterKey ? hashMasterKey(masterKey) === user.master_key_hash : false;
+  const currentPasswordOk = hasPassword && currentPassword ? verifyPassword(currentPassword, (user as any).password_hash) : false;
+
+  // 設定済み: 現在のパスワードまたはマスターキー / 未設定: マスターキー で本人確認する
+  if (hasPassword ? !(currentPasswordOk || masterKeyOk) : !masterKeyOk) {
+    return res.status(403).json({
+      error: hasPassword
+        ? '現在のパスワードまたはマスターキーが正しくありません。'
+        : 'パスワードを設定するにはマスターキーが必要です。',
+    });
+  }
+
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), user.id);
+  console.log(`[Password] 🔑 @${user.id} のパスワードを${hasPassword ? '変更' : '設定'}しました`);
+  res.json({ success: true, message: hasPassword ? 'パスワードを変更しました。' : 'パスワードを設定しました。' });
+});
+
 apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
 
-  if (!isEmailRegistrationAllowed()) {
+  // 既に登録済みのメールアドレスの「確認」は、メール登録が許可されていないサーバーでも行える
+  const existingEmail = String((user as any).email || '').toLowerCase();
+  const isReverify = existingEmail !== '' && existingEmail === email;
+
+  if (!isEmailRegistrationAllowed() && !isReverify) {
     return res.status(403).json({ error: 'このサーバーではメールアドレスの登録が許可されていません。' });
   }
   if (!isMailConfigured()) {
     return res.status(503).json({ error: 'サーバーのメール送信が設定されていないため登録できません。' });
   }
 
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'メールアドレスの形式が正しくありません。' });
   }
@@ -3618,7 +3732,9 @@ apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) =
         `確認コード: ${code}`,
         '',
         'このコードは10分間有効です。心当たりがない場合はこのメールを破棄してください。',
-        '※ このメールアドレスはログインには使われません。マスターキーを紛失したときの復元にのみ使用します。',
+        getAuthMode() === 'password'
+          ? '※ このメールアドレスはログインとマスターキーの復元に使用します。'
+          : '※ このメールアドレスはログインには使われません。マスターキーを紛失したときの復元にのみ使用します。',
       ].join('\n'),
     });
 

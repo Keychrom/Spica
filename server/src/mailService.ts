@@ -127,11 +127,16 @@ export interface EmailVerificationRow {
   created_at: string;
 }
 
-/** 確認コードを発行して保存する（同じ用途の古いコードは無効化） */
+/**
+ * 確認コードを発行して保存する（同じ用途の古いコードは無効化）
+ *
+ * purpose = 'register' はアカウント登録前の確認用で、まだユーザーが存在しないため
+ * userId に `register:<メールアドレス>` という擬似IDを渡してメール単位で管理する。
+ */
 export function issueVerificationCode(params: {
   userId: string;
   email: string;
-  purpose: 'verify_email' | 'recovery';
+  purpose: 'verify_email' | 'recovery' | 'register';
   code: string;
   ttlMinutes?: number;
 }): void {
@@ -168,7 +173,7 @@ export function verifyCode(params: {
   userId: string;
   email: string;
   code: string;
-  purpose: 'verify_email' | 'recovery';
+  purpose: 'verify_email' | 'recovery' | 'register';
 }): VerifyCodeResult {
   const row = db.prepare(
     'SELECT * FROM email_verifications WHERE user_id = ? AND purpose = ?',

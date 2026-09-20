@@ -522,6 +522,9 @@ interface AuthUser {
   followerCount?: number;
   followingCount?: number;
   postCount?: number;
+  email?: string;
+  email_verified?: number;
+  hasPassword?: boolean;
 }
 
 export interface PostReaction {
@@ -2027,6 +2030,10 @@ export default function App() {
   const [regEmail, setRegEmail] = useState<string>('');
   const [regPassword, setRegPassword] = useState<string>('');
   const [regPasswordConfirm, setRegPasswordConfirm] = useState<string>('');
+  // 登録前のメール確認コード（SMTP 設定済みのサーバーでのみ使う）
+  const [regEmailCode, setRegEmailCode] = useState<string>('');
+  const [isSendingRegCode, setIsSendingRegCode] = useState<boolean>(false);
+  const [regCodeMsg, setRegCodeMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
   // タイムライン ('local' = 自ノードのみ, 'home' = 自ノード+フォロー中, 'all' = 連合・リレー含む全件, 'tag' = ハッシュタグ, 'antenna' = アンテナ)
@@ -4479,10 +4486,18 @@ export default function App() {
   }, [isPasswordAuthMode]);
 
   const [myEmail, setMyEmail] = useState<string>('');
+  const [myEmailVerified, setMyEmailVerified] = useState<boolean>(false);
   const [emailInput, setEmailInput] = useState<string>('');
   const [emailCode, setEmailCode] = useState<string>('');
   const [emailMsg, setEmailMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
+  // 🔑 パスワードの設定・変更（password 方式）
+  const [pwCurrent, setPwCurrent] = useState<string>('');
+  const [pwMasterKey, setPwMasterKey] = useState<string>('');
+  const [pwNew, setPwNew] = useState<string>('');
+  const [pwNewConfirm, setPwNewConfirm] = useState<string>('');
+  const [isSavingPassword, setIsSavingPassword] = useState<boolean>(false);
+  const [passwordMsg, setPasswordMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showRecoveryModal, setShowRecoveryModal] = useState<boolean>(false);
   const [recoveryUserId, setRecoveryUserId] = useState<string>('');
   const [recoveryEmail, setRecoveryEmail] = useState<string>('');
@@ -4694,6 +4709,7 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         setMyEmail(emailInput.trim().toLowerCase());
+        setMyEmailVerified(true);
         setEmailCode('');
         setEmailMsg({ type: 'success', text: data.message || 'メールアドレスを確認しました。' });
       } else {
@@ -4713,11 +4729,67 @@ export default function App() {
       const res = await fetch('/api/user/email', { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
       if (res.ok) {
         setMyEmail('');
+        setMyEmailVerified(false);
         setEmailInput('');
         setEmailMsg({ type: 'success', text: 'メールアドレスを削除しました。' });
       }
     } catch (err) {
       console.error('メールアドレスの削除エラー:', err);
+    }
+  };
+
+  // 🔑 パスワードの設定・変更（password 方式のサーバー用）
+  //    パスワード未設定ならマスターキー必須、設定済みなら現在のパスワードかマスターキーで認証する
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    setPasswordMsg(null);
+
+    const hasPassword = Boolean(authUser?.hasPassword);
+    if (pwNew.length < 8) {
+      setPasswordMsg({ type: 'error', text: '新しいパスワードは8文字以上で入力してください。' });
+      return;
+    }
+    if (pwNew !== pwNewConfirm) {
+      setPasswordMsg({ type: 'error', text: '確認用の新しいパスワードが一致しません。' });
+      return;
+    }
+    if (hasPassword ? (!pwCurrent && !pwMasterKey.trim()) : !pwMasterKey.trim()) {
+      setPasswordMsg({
+        type: 'error',
+        text: hasPassword
+          ? '現在のパスワード、またはマスターキーを入力してください。'
+          : 'パスワードを新しく設定するにはマスターキーが必要です。',
+      });
+      return;
+    }
+
+    setIsSavingPassword(true);
+    try {
+      const res = await fetch('/api/user/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          newPassword: pwNew,
+          ...(pwCurrent ? { currentPassword: pwCurrent } : {}),
+          ...(pwMasterKey.trim() ? { masterKey: pwMasterKey.trim() } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPasswordMsg({ type: 'error', text: data.error || 'パスワードの変更に失敗しました。' });
+        return;
+      }
+      setPasswordMsg({ type: 'success', text: data.message || 'パスワードを変更しました。' });
+      setPwCurrent('');
+      setPwMasterKey('');
+      setPwNew('');
+      setPwNewConfirm('');
+      setAuthUser((prev) => (prev ? { ...prev, hasPassword: true } : prev));
+    } catch (err: any) {
+      setPasswordMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingPassword(false);
     }
   };
 
@@ -4996,6 +5068,7 @@ export default function App() {
 
   useEffect(() => {
     setMyEmail(String((authUser as any)?.email || ''));
+    setMyEmailVerified(Number((authUser as any)?.email_verified) === 1);
   }, [authUser]);
 
   // 📥 アーカイブ（Mastodon outbox.json / Misskey notes.json）の取り込み
@@ -5574,6 +5647,32 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [notificationToast]);
 
+  // 登録前のメール確認コードを送ってもらう（SMTP 未設定のサーバーではこの UI 自体を出さない）
+  const handleSendRegisterCode = async () => {
+    const email = regEmail.trim();
+    if (!isValidEmailFormat(email)) {
+      setRegCodeMsg({ type: 'error', text: 'メールアドレスの形式をご確認ください。' });
+      return;
+    }
+    setIsSendingRegCode(true);
+    setRegCodeMsg(null);
+    try {
+      const res = await fetch('/api/auth/register/email-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json();
+      setRegCodeMsg(res.ok
+        ? { type: 'success', text: data.message || '確認コードを送信しました（10分有効）。' }
+        : { type: 'error', text: data.error || '送信に失敗しました。' });
+    } catch (err: any) {
+      setRegCodeMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingRegCode(false);
+    }
+  };
+
   // 新規登録ハンドラ
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -5594,6 +5693,11 @@ export default function App() {
         setAuthError('確認用パスワードが一致しません。');
         return;
       }
+      // SMTP が設定されているサーバーでは、なりすまし登録を防ぐため確認コードを必須にする
+      if (recoveryStatus.mailConfigured && !regEmailCode.trim()) {
+        setAuthError('メールアドレスの確認コードを入力してください（「確認コードを送信」から取得できます）。');
+        return;
+      }
     }
 
     try {
@@ -5606,7 +5710,7 @@ export default function App() {
           summary: regBio.trim(),
           inviteCode: inviteCodeInput.trim() || undefined,
           agreedToRules: hasAgreedToRules || true,
-          ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword } : {}),
+          ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}),
         }),
       });
 
@@ -5629,6 +5733,8 @@ export default function App() {
       setIsCopied(false);
       setRegPassword('');
       setRegPasswordConfirm('');
+      setRegEmailCode('');
+      setRegCodeMsg(null);
       fetchServerStats();
     } catch (err: any) {
       setAuthError(err.message);
@@ -11260,17 +11366,25 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* 📧 メールアドレス（マスターキー紛失時の復元手段） */}
-                  {recoveryStatus.allowEmailRegistration && recoveryStatus.mailConfigured && (
+                  {/* 📧 メールアドレス（復元手段 / password 方式ではログインID） */}
+                  {recoveryStatus.mailConfigured && (recoveryStatus.allowEmailRegistration || Boolean(myEmail)) && (
                     <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
                       <div>
                         <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
                           <Mail className="w-4 h-4 text-sky-400" />
-                          <span>メールアドレス（復元用・任意）</span>
+                          <span>メールアドレス{isPasswordAuthMode ? '' : '（復元用・任意）'}</span>
+                          {myEmail && (
+                            myEmailVerified ? (
+                              <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold">確認済み</span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-bold">未確認</span>
+                            )
+                          )}
                         </h4>
                         <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                          登録しておくと、<strong>マスターキーを忘れたときにメール経由で復元</strong>できます。
-                          ログインには使われません（現在: {myEmail ? `登録済み ${myEmail}` : '未登録'}）。
+                          {isPasswordAuthMode
+                            ? <>ログインと、<strong>マスターキーを忘れたときの復元</strong>に使います。下の「確認コードを送信」→「確認する」で確認済みにできます（現在: {myEmail ? `登録済み ${myEmail}` : '未登録'}）。</>
+                            : <>登録しておくと、<strong>マスターキーを忘れたときにメール経由で復元</strong>できます。ログインには使われません（現在: {myEmail ? `登録済み ${myEmail}` : '未登録'}）。</>}
                         </p>
                       </div>
 
@@ -11329,6 +11443,118 @@ export default function App() {
                           メールアドレスを削除
                         </button>
                       )}
+                    </div>
+                  )}
+
+                  {/* 🔑 パスワードの設定・変更（password 方式のみ） */}
+                  {isPasswordAuthMode && (
+                    <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
+                          <KeyRound className="w-4 h-4 text-amber-400" />
+                          <span>{authUser?.hasPassword ? 'パスワードの変更' : 'パスワードの設定'}</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                          {authUser?.hasPassword
+                            ? '現在のパスワード（またはマスターキー）を入力して、新しいパスワードに変更します。'
+                            : 'このアカウントにはまだパスワードが設定されていません。パスワードを設定すると、メールアドレスでログインできるようになります（マスターキーが必要です）。'}
+                        </p>
+                      </div>
+
+                      {passwordMsg && (
+                        <div className={`p-2.5 rounded-xl text-xs flex items-center space-x-2 ${
+                          passwordMsg.type === 'success'
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                        }`}>
+                          {passwordMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                          <span>{passwordMsg.text}</span>
+                        </div>
+                      )}
+
+                      <form onSubmit={handleChangePassword} className="space-y-3">
+                        {authUser?.hasPassword ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-300 mb-1">現在のパスワード</label>
+                              <input
+                                type="password"
+                                autoComplete="current-password"
+                                value={pwCurrent}
+                                onChange={(e) => setPwCurrent(e.target.value)}
+                                placeholder="現在のパスワード"
+                                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-300 mb-1">マスターキー（上記の代わり）</label>
+                              <input
+                                type="password"
+                                autoComplete="off"
+                                value={pwMasterKey}
+                                onChange={(e) => setPwMasterKey(e.target.value)}
+                                placeholder="SPICA-XXXX-XXXX-XXXX"
+                                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                              マスターキー <span className="text-rose-400 font-bold">*必須</span>
+                            </label>
+                            <input
+                              type="password"
+                              autoComplete="off"
+                              value={pwMasterKey}
+                              onChange={(e) => setPwMasterKey(e.target.value)}
+                              placeholder="SPICA-XXXX-XXXX-XXXX"
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            />
+                            <p className="text-[10px] text-slate-500 mt-1">
+                              初回登録時に発行されたマスターキー（SPICA-…）を入力してください。分からない場合は、メールアドレスでマスターキーを復元できます。
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                              新しいパスワード <span className="text-slate-500 font-normal">(8文字以上)</span>
+                            </label>
+                            <input
+                              type="password"
+                              autoComplete="new-password"
+                              value={pwNew}
+                              onChange={(e) => setPwNew(e.target.value)}
+                              placeholder="8文字以上"
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-semibold text-slate-300 mb-1">新しいパスワード (確認)</label>
+                            <input
+                              type="password"
+                              autoComplete="new-password"
+                              value={pwNewConfirm}
+                              onChange={(e) => setPwNewConfirm(e.target.value)}
+                              placeholder="同じパスワードをもう一度入力"
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <button
+                            type="submit"
+                            disabled={isSavingPassword || !pwNew || !pwNewConfirm}
+                            className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center space-x-1.5 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>{isSavingPassword ? '保存中...' : authUser?.hasPassword ? 'パスワードを変更' : 'パスワードを設定'}</span>
+                          </button>
+                        </div>
+                      </form>
                     </div>
                   )}
 
@@ -14974,6 +15200,44 @@ export default function App() {
                                 このサーバーはメールアドレス＋パスワード方式です。パスワードを忘れたときの復元にも使います。
                               </p>
                             </div>
+
+                            {/* メール確認コード（SMTP が設定されているサーバーのみ） */}
+                            {recoveryStatus.mailConfigured && (
+                              <div>
+                                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                                  メール確認コード <span className="text-rose-400 font-bold">*必須</span>
+                                </label>
+                                <div className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    autoComplete="one-time-code"
+                                    maxLength={6}
+                                    placeholder="6桁のコード"
+                                    value={regEmailCode}
+                                    onChange={(e) => setRegEmailCode(e.target.value.replace(/[^0-9]/g, ''))}
+                                    className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono tracking-widest focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={handleSendRegisterCode}
+                                    disabled={isSendingRegCode || !regEmail.trim()}
+                                    className="px-3 py-2 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-[11px] font-bold rounded-xl shadow-md transition whitespace-nowrap cursor-pointer"
+                                  >
+                                    {isSendingRegCode ? '送信中...' : '確認コードを送信'}
+                                  </button>
+                                </div>
+                                {regCodeMsg ? (
+                                  <p className={`text-[10px] mt-1 ${regCodeMsg.type === 'success' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {regCodeMsg.text}
+                                  </p>
+                                ) : (
+                                  <p className="text-[10px] text-slate-500 mt-1">
+                                    入力したメールアドレスに6桁のコードを送ります（10分有効）。他人のメールアドレスでの登録を防ぐため必須です。
+                                  </p>
+                                )}
+                              </div>
+                            )}
 
                             <div>
                               <label className="block text-[11px] font-semibold text-slate-300 mb-1">
