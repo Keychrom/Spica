@@ -13,6 +13,7 @@ import { nodeinfoRouter } from './routes/nodeinfo.js';
 import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
+import { rateLimit } from './rateLimit.js';
 import { startScheduler } from './scheduler.js';
 
 // データベースの初期化
@@ -58,6 +59,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// レート制限（ブルートフォース・スパム・flooding 対策）
+//  - 認証系は厳しめ、通常 API は緩め、Inbox は連合配送を妨げないよう非常に緩め
+if (!config.rateLimitDisabled) {
+  app.use('/api/auth', rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    keyPrefix: 'auth',
+    message: '認証リクエストが多すぎます。しばらく待ってからお試しください。',
+  }));
+  app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 600, keyPrefix: 'api' }));
+  app.use('/inbox', rateLimit({ windowMs: 60 * 1000, max: 3000, keyPrefix: 'inbox' }));
+}
+
 // ActivityPub & Well-Known ルーティング
 app.use('/.well-known', webfingerRouter);
 app.use('/', nodeinfoRouter);
@@ -75,6 +89,13 @@ const uploadsDir = path.resolve(process.cwd(), 'data/uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
+// アップロードメディアは同一オリジンで配信されるため、SVG 等に埋め込まれた
+// スクリプトが実行されないよう CSP で無効化する（nosniff も付与）
+app.use('/uploads', (req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+});
 app.use('/uploads', express.static(uploadsDir));
 
 // 本番ビルドされたフロントエンド静的ファイルの配信 (client/dist)
@@ -136,7 +157,7 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 
 // サーバー起動
 const server = app.listen(config.port, config.bindHost, () => {
-  console.log(`
+    console.log(`
 =====================================================
 ✨ Spica is running!
 🌐 URL: ${config.origin}
@@ -144,8 +165,17 @@ const server = app.listen(config.port, config.bindHost, () => {
 🔍 WebFinger: ${config.origin}/.well-known/webfinger
 📊 NodeInfo: ${config.origin}/nodeinfo/2.1
 🛡️ Admin API: ${config.origin}/api/admin
+🔐 Inbox signature mode: ${config.inboxSignatureMode}
 =====================================================
   `);
+
+    if (config.inboxSignatureMode === 'log') {
+      console.warn(`
+⚠️  [SECURITY WARNING] INBOX_SIGNATURE_MODE=log
+    署名検証に失敗した Activity もそのまま処理されます（なりすまし投稿が可能な状態）。
+    本番運用では INBOX_SIGNATURE_MODE=strict（既定値）を使用してください。
+`);
+    }
 });
 
 export default app;

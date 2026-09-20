@@ -89,9 +89,10 @@ usersRouter.get('/:username/posts/:postId', (req: Request, res: Response) => {
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
-  // ローカル限定投稿の場合は外部 ActivityPub 解決を拒絶
-  if (post.visibility === 'local') {
-    return res.status(403).json({ error: 'この投稿はローカル限定のため外部には公開されていません。' });
+  // ローカル限定・フォロワー限定投稿の場合は外部 ActivityPub 解決を拒絶
+  // （フォロワー限定は配信時にフォロワーへ直接届くため、未認証の解決は許可しない）
+  if (post.visibility === 'local' || post.visibility === 'followers') {
+    return res.status(403).json({ error: 'この投稿は限定公開のため外部には公開されていません。' });
   }
 
   const note = buildNote({
@@ -116,8 +117,8 @@ usersRouter.get('/:username/posts/:postId/activity', (req: Request, res: Respons
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
-  if (post.visibility === 'local') {
-    return res.status(403).json({ error: 'この投稿はローカル限定です。' });
+  if (post.visibility === 'local' || post.visibility === 'followers') {
+    return res.status(403).json({ error: 'この投稿は限定公開です。' });
   }
 
   const actorUrl = `${config.origin}/users/${username}`;

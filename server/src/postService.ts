@@ -8,6 +8,7 @@ import {
   deliverActivity,
   fetchRemoteActor,
 } from './activitypub.js';
+import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibility.js';
 
 export interface CreatePostParams {
   user: UserRow;
@@ -18,7 +19,7 @@ export interface CreatePostParams {
   poll?: any;
   quote_id?: string | null;
   is_sensitive?: boolean;
-  visibility?: 'public' | 'local';
+  visibility?: 'public' | 'local' | 'followers';
   channel_id?: string | null;
 }
 
@@ -27,7 +28,7 @@ export interface CreatePostParams {
  */
 export async function executeCreatePost(params: CreatePostParams): Promise<{ post: any; federatedTo: number }> {
   const { user, in_reply_to, attachments, cw, poll, quote_id, is_sensitive } = params;
-  const visibility: 'public' | 'local' = params.visibility === 'local' ? 'local' : 'public';
+  const visibility: PostVisibility = normalizeVisibility(params.visibility);
   const parsedAttachments = Array.isArray(attachments) ? attachments : [];
   const channelId = typeof params.channel_id === 'string' && params.channel_id.trim() ? params.channel_id.trim() : null;
 
@@ -81,6 +82,16 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     }
   }
   const emojisJson = postEmojis.length > 0 ? JSON.stringify(postEmojis) : '[]';
+
+  // 引用元が閲覧できない投稿（フォロワー限定など）は引用を拒否する
+  if (quoteId) {
+    const quoteTarget = db.prepare('SELECT id, author_url, visibility FROM posts WHERE id = ?').get(quoteId) as
+      | { id: string; author_url: string; visibility: string | null }
+      | undefined;
+    if (quoteTarget && !canViewPost(quoteTarget, actorUrl)) {
+      throw new Error('この投稿は引用できません。');
+    }
+  }
 
   // 1. ローカルDBに投稿保存
   db.prepare(`
@@ -197,11 +208,17 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     channel: channelData,
   };
 
-  // 📡 全SSE接続クライアントに新着ノートをプッシュ
-  broadcastNote(responsePostData);
+  // 📡 全SSE接続クライアントに新着ノートをプッシュ（公開投稿のみ。
+  //    ローカル限定・フォロワー限定は配信すると存在自体が漏れるため配信しない）
+  if (visibility === 'public') {
+    broadcastNote(responsePostData);
+  }
 
   // 📡 新着ノートに対するアンテナ条件チェック ＆ 通知
-  checkAntennaMatchesAndNotify(responsePostData);
+  //    （フォロワー限定は、フォローしていないユーザーのアンテナ通知経由で内容が漏れるため対象外）
+  if (visibility !== 'followers') {
+    checkAntennaMatchesAndNotify(responsePostData);
+  }
 
   // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
   if (inReplyTo) {
@@ -230,7 +247,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     return { post: responsePostData, federatedTo: 0 };
   }
 
-  // 3. ActivityPub オブジェクトの構築（グローバル配信）
+  // 3. ActivityPub オブジェクトの構築（公開 / フォロワー限定は外部配信）
   const note = buildNote({
     id: postId,
     authorUrl: actorUrl,
@@ -243,6 +260,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     sensitive: isSensitive,
     poll: pollDataForAp,
     tags: apEmojiTags.length > 0 ? apEmojiTags : undefined,
+    visibility,
   });
 
   const createActivity = buildCreateActivity({
@@ -250,15 +268,18 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     actorUrl,
   });
 
-  // 4. 配信先 Inbox の収集: フォロワー + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
+  // 4. 配信先 Inbox の収集: フォロワー(承認済みのみ) + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
   const followerInboxes = (db.prepare(`
     SELECT DISTINCT inbox_url FROM follows
-    WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
+    WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
   `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
-  const relayInboxes = (db.prepare(`
-    SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
-  `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+  // リレーは不特定多数のサーバーへ再配信するため、フォロワー限定投稿では使用しない
+  const relayInboxes = visibility === 'public'
+    ? (db.prepare(`
+        SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+      `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
+    : [];
 
   const directInboxes: string[] = [];
   if (inReplyTo) {

@@ -26,6 +26,9 @@ Spica は起動時に以下の優先順序で `.env` ファイルを探索し、
 > [!NOTE]
 > `DOMAIN` にプロトコル（`https://`）や末尾スラッシュは含めないでください。自動的に整形されます。
 
+> [!IMPORTANT]
+> `DOMAIN` は HTTP Signature の検証でも「署名された host」の候補として使用されます。実際の公開ホスト名と一致していない場合、他サーバーからの配送がすべて署名検証に失敗し、連合が停止します（詳細は「[6. Inbox 署名検証](#-6-inbox-署名検証-http-signature)」）。
+
 ---
 
 ## 🗄️ 2. データベース設定
@@ -73,6 +76,64 @@ PWA やモバイルブラウザへのプッシュ通知に使用されるキー�
 | `VAPID_PUBLIC_KEY` | 文字列 | VAPID 公開鍵。未設定の場合、サーバー初回起動時に自動生成されます。 |
 | `VAPID_PRIVATE_KEY`| 文字列 | VAPID 秘密鍵。未設定の場合、サーバー初回起動時に自動生成されます。 |
 | `VAPID_SUBJECT` | 文字列 | プッシュサービス提供者への連絡先（例: `mailto:admin@example.com`）。 |
+
+---
+
+## 🔐 6. Inbox 署名検証 (HTTP Signature)
+
+受信した ActivityPub の Activity が「本当にその `actor` 本人から送られたものか」を検証する設定です。  
+既定では、検証に失敗した Activity は **401 で拒否** され、なりすまし投稿・改ざん・リプレイ攻撃を防ぎます。
+
+| 環境変数名 | 型 | デフォルト値 | 必須 | 説明 |
+| :--- | :--- | :--- | :--- | :--- |
+| `INBOX_SIGNATURE_MODE` | 文字列 | `strict` | 任意 | `strict`: 検証失敗を 401 で拒否（**推奨**）。`log`: 警告ログのみで処理を続行（従来挙動・**非推奨**）。 |
+| `INBOX_FORWARDED_ACTIVITY_POLICY` | 文字列 | `relay` | 任意 | `relay`: 管理パネルで承認済み（`accepted`）のリレーからの代理転送のみ許可。`any`: 誰からの代理転送でも許可（**非推奨**）。 |
+| `SIGNATURE_MAX_AGE_SECONDS` | 数値 | `43200`（12 時間） | 任意 | 署名 `Date` ヘッダーの許容幅（秒）。リプレイ攻撃対策です。 |
+| `ALLOW_PRIVATE_REMOTE_FETCH` | 真偽値 | `https` 公開時は `false` | 任意 | プライベート IP・内部ホスト名への remote actor 取得を許可するか（SSRF 対策）。同一 LAN 内の自前ノードと連合テストする場合のみ `true`。 |
+
+### 検証項目
+
+1. `Signature` ヘッダーが存在し、パースできること
+2. 署名対象ヘッダーに `(request-target)` が含まれること（署名の別エンドポイントへの転用防止）
+3. ボディ付きリクエストでは `digest` が署名対象に含まれ、**実際のボディの SHA-256 と一致**すること（改ざん防止）
+4. 署名の `Date` が `SIGNATURE_MAX_AGE_SECONDS` 以内であること（リプレイ防止）
+5. 署名鍵（`keyId`）の持ち主が Activity の `actor` と一致し、その鍵で署名が検証できること（なりすまし防止）
+
+### リレーによる代理転送について
+
+公開リレーは、他サーバーの Activity を **自分の鍵で** 転送（inbox forwarding）することがあります。この場合 5 の条件を満たさないため、Spica は **管理パネルで `accepted` 済みのリレー** からの転送に限ってこれを許容します（`INBOX_FORWARDED_ACTIVITY_POLICY=relay`）。承認していない第三者が `actor` を詐称しても拒否されます。
+
+### リバースプロキシ経由時の `DOMAIN` の重要性
+
+Cloudflare Tunnel など Host ヘッダーをローカルオリジンへ書き換える構成では、受信した `Host` が署名時のドメインと一致しません。Spica はこれに対応するため `DOMAIN` の値を署名検証の `host` 候補として試行します。  
+したがって **`DOMAIN` が実際の公開ホスト名と一致していないと、すべての受信 Activity が署名検証に失敗します。**
+
+### 連合が停止した場合の切り分け
+
+サーバーログの `[Inbox Rejected]` 行に拒否理由が記録されます。
+
+| ログ中の理由 | 主な原因 |
+| :--- | :--- |
+| `Signature header missing` / `Malformed Signature header` | 送信側が署名していない、または不正なリクエスト |
+| `Digest header does not match the request body` | プロキシによるボディ改変、または改ざん攻撃 |
+| `date header is outside the allowed clock skew` | サーバーの時刻ずれ（NTP を確認）、またはリプレイ攻撃 |
+| `keyId owner (...) does not match the activity actor (...)` | 未承認のリレー等からの代理転送 |
+| `does not verify against the public key` | **`DOMAIN` の設定誤り（最頻出）** |
+| `Remote hostname did not resolve` | 相手サーバーの DNS 障害、または SSRF 対策による拒否 |
+
+> [!WARNING]
+> `INBOX_SIGNATURE_MODE=log` は署名を検証しないため、**誰でも任意のユーザーになりすまして投稿を注入できます**。原因を特定したら速やかに `strict` へ戻してください。`log` で起動した場合は起動ログに警告が表示されます。
+
+### 関連するテストスクリプト
+
+```bash
+npx tsx scripts/test-inbox-signature.ts          # 署名強制の検証（15 項目）
+npx tsx scripts/test-federation.ts               # 2 ノード間の署名付き連合
+npx tsx scripts/test-relay-and-timelines.ts      # 署名付きリレー受信とタイムライン
+```
+
+> [!NOTE]
+> テストスクリプトは既定でポート 3000 を使用します。サーバーが稼働中の環境では `TEST_PORT` で空きポートを指定してください。指定せずに実行すると、稼働中のサーバーが応答している場合に処理を中断します（誤って本番データを書き換えないための保護です）。
 
 ---
 

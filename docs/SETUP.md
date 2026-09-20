@@ -151,6 +151,33 @@ sudo certbot --nginx -d spica.example.com
 2. ドメイン（例: `spica.example.com`）の転送先 Service に `http://localhost:3000` を指定。
 3. `Additional application settings` で HTTP Host Header を `spica.example.com` に設定。
 
+> [!NOTE]
+> 手順 3 の HTTP Host Header は、Spica 側で `.env` の `DOMAIN` を署名検証の `host` 候補として使用するため、**省略しても動作します**。  
+> ただし `DOMAIN` が実際の公開ホスト名と一致していない場合、受信した Activity の HTTP Signature 検証がすべて失敗し、連合（他サーバーからの投稿受信）が停止します。
+
+---
+
+## 🔐 ステップ 3.5: Inbox 署名検証の確認
+
+Spica は受信した ActivityPub の Activity を HTTP Signature で検証し、失敗したものを **401 で拒否** します（既定: `INBOX_SIGNATURE_MODE=strict`）。公開前に、署名検証が有効であることと、連合が成立していることを確認してください。
+
+```bash
+DOMAIN=spica.example.com
+
+# 1) 署名検証が有効か（未知の Activity 種別を送るため DB は変化しません）
+#    → 401 が返れば strict が有効です
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "https://$DOMAIN/inbox" \
+  -H "Content-Type: application/activity+json" \
+  -d '{"type":"SetupProbe","actor":"https://probe.invalid/users/probe"}'
+
+# 2) WebFinger / Actor が外部から取得できるか
+curl -s "https://$DOMAIN/.well-known/webfinger?resource=acct:admin@$DOMAIN"
+curl -s -H "Accept: application/activity+json" "https://$DOMAIN/users/admin"
+```
+
+Fediverse（Misskey / Mastodon 等）から `@admin@spica.example.com` を検索して投稿が届けば連合は成立しています。  
+投稿が届かない場合は、サーバーログの `[Inbox Rejected]` 行に拒否理由が記録されます。理由ごとの対処は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) の「Inbox 署名検証」を参照してください。
+
 ---
 
 ## 🚀 ステップ 4: プロセスの常駐化 (PM2 または systemd)

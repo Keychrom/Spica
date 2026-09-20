@@ -29,6 +29,7 @@ import {
   Sliders,
   Repeat,
   MessageCircle,
+  Megaphone,
   Share2,
   SmilePlus,
   GitBranch,
@@ -528,7 +529,7 @@ interface Post {
   author_icon?: string;
   content: string;
   is_local: number;
-  visibility?: 'public' | 'local';
+  visibility?: 'public' | 'local' | 'followers';
   emojis?: string;
   in_reply_to?: string | null;
   media_attachments?: MediaAttachment[];
@@ -621,7 +622,7 @@ export interface Draft {
   user_id: string;
   content: string;
   cw: string;
-  visibility: 'public' | 'local';
+  visibility: 'public' | 'local' | 'followers';
   media_attachments: MediaAttachment[];
   poll: any;
   in_reply_to: string;
@@ -635,7 +636,7 @@ export interface ScheduledPost {
   user_id: string;
   content: string;
   cw: string;
-  visibility: 'public' | 'local';
+  visibility: 'public' | 'local' | 'followers';
   media_attachments: MediaAttachment[];
   poll: any;
   in_reply_to: string;
@@ -1470,9 +1471,13 @@ function DraftsModal({
                       {new Date(draft.updated_at).toLocaleString('ja-JP')}
                     </span>
                     <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
-                      draft.visibility === 'local' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-indigo-500/20 text-indigo-300'
+                      draft.visibility === 'local'
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : draft.visibility === 'followers'
+                          ? 'bg-amber-500/20 text-amber-300'
+                          : 'bg-indigo-500/20 text-indigo-300'
                     }`}>
-                      {draft.visibility === 'local' ? 'ローカル' : '連合'}
+                      {draft.visibility === 'local' ? 'ローカル' : draft.visibility === 'followers' ? '🔒 フォロワー' : '連合'}
                     </span>
                     {draft.media_attachments && draft.media_attachments.length > 0 && (
                       <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-300 text-[9px] font-bold">
@@ -1860,13 +1865,23 @@ export default function App() {
   const [mutedUsers, setMutedUsers] = useState<any[]>([]);
   const [isLoadingBlocksMutes, setIsLoadingBlocksMutes] = useState<boolean>(false);
 
+  // 🔇 ワードフィルター / 🔒 フォローリクエスト
+  const [mutedWords, setMutedWords] = useState<any[]>([]);
+  const [newMutedWord, setNewMutedWord] = useState<string>('');
+  const [mutedWordCaseSensitive, setMutedWordCaseSensitive] = useState<boolean>(false);
+  const [mutedWordWholeWord, setMutedWordWholeWord] = useState<boolean>(false);
+  const [isSavingMutedWord, setIsSavingMutedWord] = useState<boolean>(false);
+  const [followRequests, setFollowRequests] = useState<any[]>([]);
+  const [isRespondingRequest, setIsRespondingRequest] = useState<string | null>(null);
+  const [profileIsLocked, setProfileIsLocked] = useState<boolean>(false);
+
   // 投稿ドロップダウンメニュー用ステート
   const [activeMenuPostId, setActiveMenuPostId] = useState<string | null>(null);
 
   // クライアント環境設定 (localStorage 永続化)
-  const [defaultVisibility, setDefaultVisibility] = useState<'public' | 'local'>(() => {
+  const [defaultVisibility, setDefaultVisibility] = useState<'public' | 'local' | 'followers'>(() => {
     const val = localStorage.getItem('spica_pref_visibility') || localStorage.getItem('astrabit_pref_visibility');
-    return (val as 'public' | 'local') || 'public';
+    return (val === 'local' || val === 'followers') ? val : 'public';
   });
   const [defaultTimeline, setDefaultTimeline] = useState<'local' | 'home' | 'all'>(() => {
     const val = localStorage.getItem('spica_pref_timeline') || localStorage.getItem('astrabit_pref_timeline');
@@ -1956,6 +1971,9 @@ export default function App() {
   const [timeline, setTimeline] = useState<Post[]>([]);
   const [timelineMode, setTimelineMode] = useState<'local' | 'home' | 'all' | 'tag' | 'antenna'>(defaultTimeline);
   const [activeHashtag, setActiveHashtag] = useState<string>('');
+  // サーバーが返す X-Next-Cursor（続きがある場合のみ）。過去のノート追加読み込みに使う
+  const [timelineCursor, setTimelineCursor] = useState<string | null>(null);
+  const [isLoadingOlderPosts, setIsLoadingOlderPosts] = useState<boolean>(false);
   const [followingUrls, setFollowingUrls] = useState<Set<string>>(new Set());
 
   // 📡 アンテナ管理状態
@@ -2008,6 +2026,19 @@ export default function App() {
     me: AuthUser | null
   ): boolean => {
     const isLocalPost = post.is_local === 1 || (post as any).is_local === true;
+
+    // 🔒 閲覧権限の確認: フォロワー限定の投稿は「自分自身」または「フォロー中の相手」のみ表示する
+    //    （サーバー側でも除外しているが、SSE で届いた投稿などの取りこぼしを防ぐ二重の防御）
+    const isFollowersOnly = post.visibility === 'followers';
+    if (isFollowersOnly) {
+      const myActorUrl = me ? `/users/${me.id}` : null;
+      const isMine = Boolean(me && (post.author_url?.endsWith(myActorUrl || '\u0000') || post.user_id === me.id));
+      const isFollowed = Boolean(
+        post.author_url &&
+          (followUrls.has(post.author_url) || followUrls.has(post.author_url.replace(/\/$/, ''))),
+      );
+      if (!isMine && !isFollowed) return false;
+    }
 
     // 📡 アンテナ: 選択中のアンテナ条件に合致するか
     if (mode === 'antenna') {
@@ -2097,7 +2128,7 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
   const [postContent, setPostContent] = useState<string>('');
-  const [postVisibility, setPostVisibility] = useState<'public' | 'local'>(defaultVisibility); // 🌐 グローバル or 🏠 ローカル限定
+  const [postVisibility, setPostVisibility] = useState<'public' | 'local' | 'followers'>(defaultVisibility); // 🌐 グローバル / 🏠 ローカル限定 / 🔒 フォロワー限定
   const [postAttachments, setPostAttachments] = useState<MediaAttachment[]>([]);
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false);
   const [uploadStatusText, setUploadStatusText] = useState<string>('');
@@ -2299,7 +2330,7 @@ export default function App() {
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements'>('dashboard');
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
 
   // 🎨 カスタム絵文字管理ステート
@@ -2369,6 +2400,18 @@ export default function App() {
   const [blockInputReason, setBlockInputReason] = useState<string>('');
   const [isBlockingDomain, setIsBlockingDomain] = useState<boolean>(false);
   const [blockMessage, setBlockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // 🚩 通報（モデレーション）ステート
+  const [adminReports, setAdminReports] = useState<any[]>([]);
+  const [adminReportCounts, setAdminReportCounts] = useState<{ open: number; total: number }>({ open: 0, total: 0 });
+  const [reportStatusFilter, setReportStatusFilter] = useState<'open' | 'all' | 'resolved' | 'rejected'>('open');
+  const [isUpdatingReport, setIsUpdatingReport] = useState<string | null>(null);
+  const [reportActionMsg, setReportActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  // 通報フォーム（一般ユーザー向け）
+  const [reportTarget, setReportTarget] = useState<{ type: 'post' | 'user'; id: string; label: string } | null>(null);
+  const [reportCategory, setReportCategory] = useState<string>('spam');
+  const [reportComment, setReportComment] = useState<string>('');
+  const [isSubmittingReport, setIsSubmittingReport] = useState<boolean>(false);
 
   // メディアストレージ設定ステート (Cloudflare R2 / S3)
   const [adminStorageConfig, setAdminStorageConfig] = useState<{
@@ -2701,6 +2744,7 @@ export default function App() {
       setEditBio(authUser.summary || '');
       setEditIconUrl(authUser.icon_url || '');
       setEditBannerUrl(authUser.banner_url || '');
+      setProfileIsLocked(Boolean((authUser as any).is_locked));
     }
     setSettingsTab(tab);
     setSettingsMessage(null);
@@ -2725,6 +2769,7 @@ export default function App() {
           summary: editBio,
           icon_url: editIconUrl,
           banner_url: editBannerUrl,
+          is_locked: profileIsLocked,
         }),
       });
 
@@ -2991,6 +3036,7 @@ export default function App() {
         const targetAntennaId = antennaIdParam || activeAntenna?.id;
         if (!targetAntennaId) {
           setTimeline([]);
+          setTimelineCursor(null);
           return;
         }
         const res = await fetch(`/api/antennas/${targetAntennaId}/timeline`, {
@@ -2999,6 +3045,7 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setTimeline(data.posts || []);
+          setTimelineCursor(res.headers.get('X-Next-Cursor'));
         }
         return;
       }
@@ -3012,11 +3059,58 @@ export default function App() {
       });
       if (res.ok) {
         setTimeline(await res.json());
+        setTimelineCursor(res.headers.get('X-Next-Cursor'));
       }
     } catch (err) {
       console.error(err);
     } finally {
       setIsLoadingTimeline(false);
+    }
+  };
+
+  // 過去のノート追加読み込み（カーソルページネーション）
+  const loadOlderPosts = async () => {
+    if (!timelineCursor || isLoadingOlderPosts) return;
+
+    // 取得中にモードが変わっていたら結果を破棄するためのスナップショット
+    const requestedMode = timelineMode;
+    const requestedTag = activeHashtag;
+    const requestedAntennaId = activeAntenna?.id;
+
+    setIsLoadingOlderPosts(true);
+    try {
+      let url: string;
+      if (requestedMode === 'antenna') {
+        if (!requestedAntennaId) return;
+        url = `/api/antennas/${requestedAntennaId}/timeline?cursor=${encodeURIComponent(timelineCursor)}`;
+      } else if (requestedMode === 'tag' && requestedTag) {
+        url = `/api/timeline?mode=tag&tag=${encodeURIComponent(requestedTag)}&cursor=${encodeURIComponent(timelineCursor)}`;
+      } else {
+        url = `/api/timeline?mode=${requestedMode}&cursor=${encodeURIComponent(timelineCursor)}`;
+      }
+
+      const res = await fetch(url, {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      });
+      // 失敗時はカーソルを保持して、再試行できるようにする
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const older: Post[] = Array.isArray(data) ? data : (data.posts || []);
+
+      // 取得中にタイムラインの表示条件が変わっていたら破棄
+      if (timelineModeRef.current !== requestedMode) return;
+      if (requestedMode === 'tag' && activeHashtagRef.current !== requestedTag) return;
+
+      setTimeline((prev) => {
+        const existing = new Set(prev.map((p) => p.id));
+        return [...prev, ...older.filter((p) => !existing.has(p.id))];
+      });
+      setTimelineCursor(res.headers.get('X-Next-Cursor'));
+    } catch (err) {
+      console.error('過去のノート読み込みエラー:', err);
+    } finally {
+      setIsLoadingOlderPosts(false);
     }
   };
 
@@ -3026,6 +3120,7 @@ export default function App() {
     antenna?: Antenna
   ) => {
     setNewPostsQueue([]);
+    setTimelineCursor(null);
     setTimelineMode(mode);
     if (mode === 'antenna' && antenna) {
       setActiveAntenna(antenna);
@@ -3292,6 +3387,7 @@ export default function App() {
   const handleSelectHashtag = (tag: string) => {
     const clean = tag.replace(/^#/, '');
     setNewPostsQueue([]);
+    setTimelineCursor(null);
     setActiveHashtag(clean);
     setTimelineMode('tag');
     navigateToView('timeline');
@@ -3374,13 +3470,107 @@ export default function App() {
     }
   };
 
+  // 🚩 通報の分類ラベル
+  const REPORT_CATEGORY_LABELS: Record<string, string> = {
+    spam: 'スパム',
+    abuse: '嫌がらせ・誹謗中傷',
+    sensitive: '不適切な内容',
+    impersonation: 'なりすまし',
+    other: 'その他',
+  };
+
+  // 🚩 通報一覧の取得（管理者）
+  const fetchReports = async (status: 'open' | 'all' | 'resolved' | 'rejected' = reportStatusFilter) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/admin/reports?status=${status}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setAdminReports(data.reports || []);
+      setAdminReportCounts(data.counts || { open: 0, total: 0 });
+    } catch (err) {
+      console.error('通報一覧の取得エラー:', err);
+    }
+  };
+
+  // 🚩 通報への対応（対応済み / 却下 / 再オープン）
+  const handleResolveReport = async (reportId: string, action: 'resolve' | 'reject' | 'reopen') => {
+    if (!authToken) return;
+    setIsUpdatingReport(reportId);
+    setReportActionMsg(null);
+    try {
+      const res = await fetch(`/api/admin/reports/${encodeURIComponent(reportId)}/resolve`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setReportActionMsg({
+          type: 'success',
+          text:
+            action === 'resolve'
+              ? '通報を「対応済み」にしました。'
+              : action === 'reject'
+                ? '通報を「却下」にしました。'
+                : '通報を再オープンしました。',
+        });
+        await fetchAdminData();
+      } else {
+        setReportActionMsg({ type: 'error', text: data.error || '通報の更新に失敗しました。' });
+      }
+    } catch (err: any) {
+      setReportActionMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsUpdatingReport(null);
+    }
+  };
+
+  // 🚩 通報の送信（一般ユーザー）
+  const handleSubmitReport = async () => {
+    if (!authToken || !reportTarget) return;
+    setIsSubmittingReport(true);
+    try {
+      const res = await fetch('/api/reports', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify(
+          reportTarget.type === 'post'
+            ? { targetPostId: reportTarget.id, category: reportCategory, comment: reportComment }
+            : { targetUserId: reportTarget.id, category: reportCategory, comment: reportComment },
+        ),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setReportTarget(null);
+        setReportComment('');
+        setReportCategory('spam');
+        alert(data.message || '通報を受け付けました。ご協力ありがとうございます。');
+      } else {
+        alert(data.error || '通報の送信に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
+
   // 管理者データの取得
   const fetchAdminData = async () => {
     if (!authToken || authUser?.role !== 'admin') return;
     setIsLoadingAdmin(true);
     try {
       const headers = { Authorization: `Bearer ${authToken}` };
-      const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes] = await Promise.all([
+      const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes, repRes, annRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/users', { headers }),
         fetch('/api/admin/federation', { headers }),
@@ -3390,6 +3580,8 @@ export default function App() {
         fetch('/api/admin/server-settings', { headers }),
         fetch('/api/admin/emojis', { headers }),
         fetch('/api/admin/invitations', { headers }),
+        fetch('/api/admin/reports?status=all', { headers }),
+        fetch('/api/admin/announcements', { headers }),
       ]);
       if (sRes.ok) setAdminStats(await sRes.json());
       if (uRes.ok) setAdminUsers(await uRes.json());
@@ -3398,6 +3590,12 @@ export default function App() {
       if (bRes.ok) setAdminBlockedDomains(await bRes.json());
       if (emRes.ok) setAdminEmojis(await emRes.json());
       if (invRes.ok) setAdminInvitations(await invRes.json());
+      if (annRes.ok) setAdminAnnouncements(await annRes.json());
+      if (repRes.ok) {
+        const repData = await repRes.json();
+        setAdminReports(repData.reports || []);
+        setAdminReportCounts(repData.counts || { open: 0, total: 0 });
+      }
       if (stRes.ok) {
         const sData = await stRes.json();
         setAdminStorageConfig(sData);
@@ -3932,6 +4130,220 @@ export default function App() {
   };
 
   // ブロック・ミュート一覧取得
+  // 🔇 ワードフィルターの取得 / 追加 / 削除
+  const fetchMutedWords = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/muted-words', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) setMutedWords(await res.json());
+    } catch (err) {
+      console.error('ミュートワードの取得エラー:', err);
+    }
+  };
+
+  const handleAddMutedWord = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newMutedWord.trim()) return;
+    setIsSavingMutedWord(true);
+    try {
+      const res = await fetch('/api/muted-words', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          keyword: newMutedWord.trim(),
+          caseSensitive: mutedWordCaseSensitive,
+          wholeWord: mutedWordWholeWord,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNewMutedWord('');
+        setMutedWordCaseSensitive(false);
+        setMutedWordWholeWord(false);
+        await fetchMutedWords();
+        await fetchTimeline();
+      } else {
+        alert(data.error || 'キーワードの登録に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSavingMutedWord(false);
+    }
+  };
+
+  const handleDeleteMutedWord = async (id: string) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/muted-words/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        await fetchMutedWords();
+        await fetchTimeline();
+      }
+    } catch (err) {
+      console.error('ミュートワードの削除エラー:', err);
+    }
+  };
+
+  // 🔒 フォローリクエスト（鍵アカウント）の取得 / 承認・拒否
+  const fetchFollowRequests = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/follow-requests', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) setFollowRequests(await res.json());
+    } catch (err) {
+      console.error('フォローリクエストの取得エラー:', err);
+    }
+  };
+
+  const handleRespondFollowRequest = async (actorUrl: string, action: 'accept' | 'reject') => {
+    if (!authToken) return;
+    setIsRespondingRequest(actorUrl);
+    try {
+      const res = await fetch('/api/follow-requests/respond', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ actorUrl, action }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchFollowRequests();
+        alert(action === 'accept' ? 'フォローを承認しました。' : 'フォローを拒否しました。');
+      } else {
+        alert(data.error || '処理に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsRespondingRequest(null);
+    }
+  };
+
+  // 📢 お知らせ
+  const [adminAnnouncements, setAdminAnnouncements] = useState<any[]>([]);
+  const [newAnnouncementTitle, setNewAnnouncementTitle] = useState<string>('');
+  const [newAnnouncementContent, setNewAnnouncementContent] = useState<string>('');
+  const [isSavingAnnouncement, setIsSavingAnnouncement] = useState<boolean>(false);
+  const [announcementMsg, setAnnouncementMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [publicAnnouncements, setPublicAnnouncements] = useState<any[]>([]);
+  const [dismissedAnnouncements, setDismissedAnnouncements] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('spica_dismissed_announcements') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  // 📢 お知らせの取得（全ユーザー向け / 管理者向け）
+  const fetchAnnouncements = async () => {
+    try {
+      const res = await fetch('/api/announcements');
+      if (res.ok) setPublicAnnouncements(await res.json());
+    } catch (err) {
+      console.error('お知らせの取得エラー:', err);
+    }
+  };
+
+  const fetchAdminAnnouncements = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/admin/announcements', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) setAdminAnnouncements(await res.json());
+    } catch (err) {
+      console.error('お知らせ管理の取得エラー:', err);
+    }
+  };
+
+  const handleCreateAnnouncement = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newAnnouncementTitle.trim() || !newAnnouncementContent.trim()) return;
+    setIsSavingAnnouncement(true);
+    setAnnouncementMsg(null);
+    try {
+      const res = await fetch('/api/admin/announcements', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ title: newAnnouncementTitle.trim(), content: newAnnouncementContent.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setNewAnnouncementTitle('');
+        setNewAnnouncementContent('');
+        setAnnouncementMsg({ type: 'success', text: 'お知らせを投稿しました。' });
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      } else {
+        setAnnouncementMsg({ type: 'error', text: data.error || 'お知らせの投稿に失敗しました。' });
+      }
+    } catch (err: any) {
+      setAnnouncementMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingAnnouncement(false);
+    }
+  };
+
+  const handleToggleAnnouncement = async (id: string, isActive: boolean) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ isActive }),
+      });
+      if (res.ok) {
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      }
+    } catch (err) {
+      console.error('お知らせの更新エラー:', err);
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このお知らせを削除しますか？')) return;
+    try {
+      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      }
+    } catch (err) {
+      console.error('お知らせの削除エラー:', err);
+    }
+  };
+
+  const dismissAnnouncement = (id: string) => {
+    const next = Array.from(new Set([...dismissedAnnouncements, id]));
+    setDismissedAnnouncements(next);
+    try {
+      localStorage.setItem('spica_dismissed_announcements', JSON.stringify(next));
+    } catch {}
+  };
+
+  // 起動 / ログイン時にお知らせを取得（タイムライン上部のバナー表示用）
+  useEffect(() => {
+    fetchAnnouncements();
+  }, [authToken]);
+
   const fetchBlocksAndMutes = async () => {
     if (!authToken) return;
     setIsLoadingBlocksMutes(true);
@@ -4260,6 +4672,8 @@ export default function App() {
       fetchBookmarks();
     } else if (currentView === 'settings' && settingsTab === 'mutes_blocks') {
       fetchBlocksAndMutes();
+      fetchMutedWords();
+      fetchFollowRequests();
     }
   }, [currentView, notificationFilter, settingsTab]);
 
@@ -5922,6 +6336,9 @@ export default function App() {
                 {post.visibility === 'local' && (
                   <span className="text-[10px] text-emerald-400/90 font-medium shrink-0">🏠 ローカル限定</span>
                 )}
+                {post.visibility === 'followers' && (
+                  <span className="text-[10px] text-amber-400/90 font-medium shrink-0">🔒 フォロワー限定</span>
+                )}
               </div>
             </div>
           </div>
@@ -5932,6 +6349,10 @@ export default function App() {
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium flex items-center space-x-1">
                   <Globe className="w-2.5 h-2.5 mr-0.5" />
                   <span>連合配信</span>
+                </span>
+              ) : post.visibility === 'followers' ? (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-medium flex items-center space-x-1">
+                  <span>🔒 フォロワー限定</span>
                 </span>
               ) : (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium flex items-center space-x-1">
@@ -6018,6 +6439,18 @@ export default function App() {
                       >
                         <Ban className="w-3.5 h-3.5" />
                         <span>{post.author_name} をブロック</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveMenuPostId(null);
+                          setReportCategory('spam');
+                          setReportComment('');
+                          setReportTarget({ type: 'post', id: post.id, label: `${post.author_name} のノート` });
+                        }}
+                        className="w-full flex items-center space-x-2 px-2.5 py-2 rounded-xl text-rose-400 hover:bg-rose-500/10 transition text-left"
+                      >
+                        <ShieldAlert className="w-3.5 h-3.5" />
+                        <span>この投稿を通報</span>
                       </button>
                     </>
                   )}
@@ -6796,6 +7229,50 @@ export default function App() {
                   }`}>
                     {serverStats?.registration_mode === 'invite' ? '招待制' : serverStats?.registration_mode === 'closed' ? '停止中' : '公開'}
                   </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAdminTab('reports'); fetchReports(reportStatusFilter); }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                    adminTab === 'reports'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <ShieldAlert className="w-4 h-4 text-rose-400" />
+                    <span>通報</span>
+                  </div>
+                  {adminReportCounts.open > 0 && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                      adminTab === 'reports' ? 'bg-rose-600 text-white' : 'bg-rose-500/20 text-rose-300'
+                    }`}>
+                      {adminReportCounts.open}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAdminTab('announcements'); fetchAdminAnnouncements(); }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                    adminTab === 'announcements'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <Megaphone className="w-4 h-4 text-amber-400" />
+                    <span>お知らせ</span>
+                  </div>
+                  {adminAnnouncements.filter((a) => a.is_active === 1).length > 0 && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                      adminTab === 'announcements' ? 'bg-indigo-700 text-white' : 'bg-slate-800 text-amber-400'
+                    }`}>
+                      {adminAnnouncements.filter((a) => a.is_active === 1).length}
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -8055,6 +8532,297 @@ export default function App() {
               )}
 
               {/* 🎟 招待コード & 登録モード管理タブ */}
+              {adminTab === 'announcements' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                      <Megaphone className="w-4 h-4 text-amber-400" />
+                      <span>お知らせ ({adminAnnouncements.length})</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      サーバーからの一斉告知です。有効なお知らせは全ユーザーのタイムライン上部に表示されます。メンテナンス予定や運営からの連絡にご利用ください。
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleCreateAnnouncement} className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        タイトル <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={newAnnouncementTitle}
+                        onChange={(e) => setNewAnnouncementTitle(e.target.value)}
+                        maxLength={120}
+                        placeholder="例: サーバーメンテナンスのお知らせ"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        本文 <span className="text-rose-400">*</span>
+                      </label>
+                      <textarea
+                        value={newAnnouncementContent}
+                        onChange={(e) => setNewAnnouncementContent(e.target.value)}
+                        rows={3}
+                        maxLength={5000}
+                        placeholder="例: 9/25 3:00〜5:00 の間、メンテナンスのため停止します。"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-amber-500 focus:outline-none resize-none"
+                      />
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={isSavingAnnouncement || !newAnnouncementTitle.trim() || !newAnnouncementContent.trim()}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center space-x-1.5 cursor-pointer"
+                      >
+                        {isSavingAnnouncement ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Megaphone className="w-3.5 h-3.5" />}
+                        <span>お知らせを投稿</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {announcementMsg && (
+                    <div
+                      className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                        announcementMsg.type === 'success'
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      {announcementMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                      <span>{announcementMsg.text}</span>
+                    </div>
+                  )}
+
+                  {adminAnnouncements.length === 0 ? (
+                    <div className="p-8 text-center bg-slate-950/40 rounded-2xl border border-slate-800/60">
+                      <Megaphone className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+                      <p className="text-xs text-slate-400 font-bold">まだお知らせがありません</p>
+                      <p className="text-[11px] text-slate-500 mt-1">上のフォームから投稿できます。</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {adminAnnouncements.map((a) => (
+                        <div key={a.id} className="bg-slate-950/50 border border-slate-800 rounded-2xl p-4 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center space-x-2 min-w-0">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                                a.is_active === 1 ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700'
+                              }`}>
+                                {a.is_active === 1 ? '公開中' : '非公開'}
+                              </span>
+                              <span className="font-bold text-xs text-slate-100 truncate">{a.title}</span>
+                            </div>
+                            <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                              {new Date(a.created_at).toLocaleString('ja-JP')}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-300 whitespace-pre-wrap break-words bg-slate-900/60 rounded-xl p-3 border border-slate-800">
+                            {a.content}
+                          </p>
+                          <div className="flex items-center justify-end space-x-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAnnouncement(a.id, a.is_active !== 1)}
+                              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                            >
+                              {a.is_active === 1 ? '非公開にする' : '公開する'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAnnouncement(a.id)}
+                              className="px-3 py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>削除</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {adminTab === 'reports' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                        <ShieldAlert className="w-4 h-4 text-rose-400" />
+                        <span>通報の対応（未対応 {adminReportCounts.open} 件 / 全 {adminReportCounts.total} 件）</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                        ユーザーおよび他サーバーから届いた通報の一覧です。内容を確認し、必要に応じて対象アカウントの凍結やドメインブロックを行ってください。
+                        他サーバーのユーザーを通報した場合は、相手サーバーへ Flag として転送されます。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => fetchReports(reportStatusFilter)}
+                      className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition flex items-center space-x-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>更新</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {([['open', '未対応'], ['all', 'すべて'], ['resolved', '対応済み'], ['rejected', '却下']] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => { setReportStatusFilter(value); fetchReports(value); }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                          reportStatusFilter === value
+                            ? 'bg-indigo-600 border-indigo-500 text-white'
+                            : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/60'
+                        }`}
+                      >
+                        {label}
+                        {value === 'open' && adminReportCounts.open > 0 ? ` (${adminReportCounts.open})` : ''}
+                      </button>
+                    ))}
+                  </div>
+
+                  {reportActionMsg && (
+                    <div
+                      className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                        reportActionMsg.type === 'success'
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      {reportActionMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                      <span>{reportActionMsg.text}</span>
+                    </div>
+                  )}
+
+                  {(() => {
+                    const shown = reportStatusFilter === 'all'
+                      ? adminReports
+                      : adminReports.filter((r) => r.status === reportStatusFilter);
+
+                    if (shown.length === 0) {
+                      return (
+                        <div className="p-8 text-center bg-slate-950/40 rounded-2xl border border-slate-800/60">
+                          <ShieldAlert className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+                          <p className="text-xs text-slate-400 font-bold">該当する通報はありません</p>
+                          <p className="text-[11px] text-slate-500 mt-1">新しい通報が届くとここに表示されます。</p>
+                        </div>
+                      );
+                    }
+
+                    return shown.map((r) => {
+                      const statusStyle =
+                        r.status === 'open'
+                          ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                          : r.status === 'resolved'
+                            ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                            : 'bg-slate-800 text-slate-400 border border-slate-700';
+                      const statusLabel = r.status === 'open' ? '未対応' : r.status === 'resolved' ? '対応済み' : '却下';
+
+                      return (
+                        <div key={r.id} className="bg-slate-950/50 border border-slate-800 rounded-2xl p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${statusStyle}`}>{statusLabel}</span>
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-300">
+                                {REPORT_CATEGORY_LABELS[r.category] || r.category}
+                              </span>
+                              {r.is_remote === 1 && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">他サーバーから</span>
+                              )}
+                              {r.forwarded === 1 && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-slate-800 text-slate-400">Flag転送済</span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-slate-500 font-mono">
+                              {new Date(r.created_at).toLocaleString('ja-JP')}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                            <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
+                              <span className="text-[10px] text-slate-500 font-bold block mb-1">通報者</span>
+                              <span className="text-slate-200 break-all">{r.reporter_handle || r.reporter_actor_url}</span>
+                            </div>
+                            <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
+                              <span className="text-[10px] text-slate-500 font-bold block mb-1">対象</span>
+                              <span className="text-slate-200 break-all">
+                                {r.target_handle || r.target_actor_url}
+                                {r.target_post_id ? ' の投稿' : ''}
+                              </span>
+                            </div>
+                          </div>
+
+                          {r.comment && (
+                            <p className="text-xs text-slate-300 bg-slate-900/60 rounded-xl p-3 border border-slate-800 whitespace-pre-wrap break-words">
+                              {r.comment}
+                            </p>
+                          )}
+                          {r.target_post_content && (
+                            <p className="text-[11px] text-slate-400 bg-slate-900/40 rounded-xl p-3 border border-slate-800/60 whitespace-pre-wrap break-words">
+                              対象投稿: {r.target_post_content}
+                            </p>
+                          )}
+                          {r.resolution_note && (
+                            <p className="text-[11px] text-emerald-300/80 bg-emerald-500/5 rounded-xl p-3 border border-emerald-500/20 whitespace-pre-wrap break-words">
+                              対応メモ: {r.resolution_note}
+                            </p>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                            {r.target_user_id && (
+                              <button
+                                type="button"
+                                onClick={() => { setAdminUserSearch(r.target_user_id); setAdminTab('users'); }}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                              >
+                                対象ユーザーを管理
+                              </button>
+                            )}
+                            {r.status !== 'open' && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingReport === r.id}
+                                onClick={() => handleResolveReport(r.id, 'reopen')}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                              >
+                                再オープン
+                              </button>
+                            )}
+                            {r.status === 'open' && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={isUpdatingReport === r.id}
+                                  onClick={() => handleResolveReport(r.id, 'reject')}
+                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                                >
+                                  却下
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isUpdatingReport === r.id}
+                                  onClick={() => handleResolveReport(r.id, 'resolve')}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-md transition disabled:opacity-50 cursor-pointer flex items-center space-x-1"
+                                >
+                                  {isUpdatingReport === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                                  <span>対応済みにする</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              )}
+
               {adminTab === 'invites' && (
                 <div className="space-y-6">
                   {/* ヘッダーカード */}
@@ -8648,6 +9416,25 @@ export default function App() {
                     />
                   </div>
 
+                  {/* 🔒 鍵アカウント設定 */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2">
+                    <label className="flex items-start space-x-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={profileIsLocked}
+                        onChange={(e) => setProfileIsLocked(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-amber-500 cursor-pointer"
+                      />
+                      <div>
+                        <span className="font-bold text-xs text-slate-100 block">🔒 鍵アカウント（フォロー承認制）</span>
+                        <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                          オンにすると、新しいフォローは自動承認されず「フォローリクエスト」として届きます。
+                          承認した相手だけがフォロワーになり、フォロワー限定の投稿が届きます（連合先にも承認制として伝わります）。
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+
                   {/* 保存ボタン */}
                   <div className="pt-2 flex justify-end">
                     <button
@@ -8794,6 +9581,24 @@ export default function App() {
                           <span className="font-bold text-xs block">🏠 ローカル限定</span>
                           <span className="text-[11px] text-slate-400 mt-0.5 block leading-relaxed">
                             このノード内のみに留め、外部サーバーには配信しません。
+                          </span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDefaultVisibility('followers')}
+                        className={`p-3.5 rounded-2xl border text-left transition flex items-start space-x-3 ${
+                          defaultVisibility === 'followers'
+                            ? 'bg-amber-600/15 border-amber-500/60 ring-2 ring-amber-500/30 text-white'
+                            : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <Users className={`w-4 h-4 mt-0.5 shrink-0 ${defaultVisibility === 'followers' ? 'text-amber-400' : 'text-slate-400'}`} />
+                        <div>
+                          <span className="font-bold text-xs block">🔒 フォロワー限定</span>
+                          <span className="text-[11px] text-slate-400 mt-0.5 block leading-relaxed">
+                            あなたのフォロワーだけが閲覧できます（連合先のフォロワーにも届きます）。
                           </span>
                         </div>
                       </button>
@@ -9261,6 +10066,140 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="space-y-8">
+                      {/* 🔒 フォローリクエスト（鍵アカウント） */}
+                      {followRequests.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center space-x-2">
+                            <User className="w-4 h-4 text-emerald-400" />
+                            <h4 className="font-bold text-sm text-slate-100">
+                              フォローリクエスト ({followRequests.length})
+                            </h4>
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-relaxed">
+                            鍵アカウントのため承認待ちになっているフォローです。承認すると相手にフォロワーとして通知（Accept）が送られます。
+                          </p>
+                          <div className="space-y-2">
+                            {followRequests.map((req) => (
+                              <div
+                                key={req.id}
+                                className="flex items-center justify-between space-x-3 bg-slate-950/60 border border-slate-800 rounded-2xl px-3.5 py-3"
+                              >
+                                <div className="flex items-center space-x-3 min-w-0">
+                                  {req.icon_url ? (
+                                    <img src={req.icon_url} alt="" className="w-9 h-9 rounded-full object-cover shrink-0" />
+                                  ) : (
+                                    <div className="w-9 h-9 rounded-full bg-slate-800 shrink-0" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <span className="font-bold text-xs text-slate-100 block truncate">{req.name}</span>
+                                    <span className="text-[11px] text-slate-400 block truncate">{req.handle}</span>
+                                  </div>
+                                </div>
+                                <div className="flex items-center space-x-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    disabled={isRespondingRequest === req.actor_url}
+                                    onClick={() => handleRespondFollowRequest(req.actor_url, 'reject')}
+                                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+                                  >
+                                    拒否
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isRespondingRequest === req.actor_url}
+                                    onClick={() => handleRespondFollowRequest(req.actor_url, 'accept')}
+                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-md transition cursor-pointer disabled:opacity-50"
+                                  >
+                                    承認
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 🔇 ミュートワード（ワードフィルター） */}
+                      <div className="space-y-3">
+                        <div className="flex items-center space-x-2">
+                          <ShieldAlert className="w-4 h-4 text-amber-400" />
+                          <h4 className="font-bold text-sm text-slate-100">
+                            ミュートワード ({mutedWords.length})
+                          </h4>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          登録したキーワードを含む投稿（本文・CW）は、タイムラインやアンテナなどから自動的に除外されます。
+                        </p>
+
+                        <form onSubmit={handleAddMutedWord} className="space-y-2 bg-slate-950/60 border border-slate-800 rounded-2xl p-3.5">
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="text"
+                              value={newMutedWord}
+                              onChange={(e) => setNewMutedWord(e.target.value)}
+                              maxLength={100}
+                              placeholder="除外したいキーワード（例: ネタバレ）"
+                              className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                            <button
+                              type="submit"
+                              disabled={isSavingMutedWord || !newMutedWord.trim()}
+                              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap flex items-center space-x-1 justify-center"
+                            >
+                              {isSavingMutedWord ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                              <span>追加</span>
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-300">
+                            <label className="flex items-center space-x-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={mutedWordCaseSensitive}
+                                onChange={(e) => setMutedWordCaseSensitive(e.target.checked)}
+                                className="w-3.5 h-3.5 accent-amber-500 cursor-pointer"
+                              />
+                              <span>大文字小文字を区別</span>
+                            </label>
+                            <label className="flex items-center space-x-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={mutedWordWholeWord}
+                                onChange={(e) => setMutedWordWholeWord(e.target.checked)}
+                                className="w-3.5 h-3.5 accent-amber-500 cursor-pointer"
+                              />
+                              <span>単語単位（英数字のみ）</span>
+                            </label>
+                          </div>
+                        </form>
+
+                        {mutedWords.length === 0 ? (
+                          <div className="text-center py-5 bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                            登録されているキーワードはありません。
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {mutedWords.map((w) => (
+                              <span
+                                key={w.id}
+                                className="inline-flex items-center space-x-2 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200"
+                              >
+                                <span className="font-mono">{w.keyword}</span>
+                                {w.case_sensitive === 1 && <span className="text-[9px] text-amber-400 font-bold">Aa</span>}
+                                {w.whole_word === 1 && <span className="text-[9px] text-amber-400 font-bold">W</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMutedWord(w.id)}
+                                  className="p-0.5 rounded text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                                  title="削除"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
                       {/* ミュート中ユーザーセクション */}
                       <div className="space-y-3">
                         <div className="flex items-center space-x-2">
@@ -9875,6 +10814,23 @@ export default function App() {
                                 title="このユーザーをブロック"
                               >
                                 <Ban className="w-4 h-4" />
+                              </button>
+
+                              {/* 通報ボタン */}
+                              <button
+                                onClick={() => {
+                                  setReportCategory('spam');
+                                  setReportComment('');
+                                  setReportTarget({
+                                    type: 'user',
+                                    id: profileData.handle || profileData.id,
+                                    label: profileData.name || profileData.handle || profileData.id,
+                                  });
+                                }}
+                                className="p-2 rounded-xl text-xs font-bold border border-slate-700 bg-slate-800/80 text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition flex items-center space-x-1 cursor-pointer"
+                                title="このユーザーを通報"
+                              >
+                                <ShieldAlert className="w-4 h-4" />
                               </button>
                             </>
                           )}
@@ -10967,6 +11923,18 @@ export default function App() {
                             <Server className="w-3.5 h-3.5 text-emerald-200" />
                             <span>🏠 ローカル</span>
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setPostVisibility('followers')}
+                            className={`px-3 py-1 text-xs font-bold rounded-lg transition flex items-center space-x-1.5 cursor-pointer ${
+                              postVisibility === 'followers'
+                                ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            <Users className="w-3.5 h-3.5 text-amber-200" />
+                            <span>🔒 フォロワー</span>
+                          </button>
                         </div>
                       </div>
 
@@ -11356,6 +12324,37 @@ export default function App() {
                   </div>
                 )}
 
+                {/* 📢 お知らせ（運営からの告知） */}
+                {publicAnnouncements.filter((a) => !dismissedAnnouncements.includes(a.id)).length > 0 && (
+                  <div className="space-y-2">
+                    {publicAnnouncements
+                      .filter((a) => !dismissedAnnouncements.includes(a.id))
+                      .slice(0, 3)
+                      .map((a) => (
+                        <div
+                          key={a.id}
+                          className="bg-amber-500/5 border border-amber-500/25 rounded-2xl p-3.5 flex items-start space-x-3"
+                        >
+                          <Megaphone className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                          <div className="min-w-0 flex-1">
+                            <span className="font-bold text-xs text-amber-200 block break-words">{a.title}</span>
+                            <p className="text-[11px] text-slate-300 mt-1 whitespace-pre-wrap break-words leading-relaxed">
+                              {a.content}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => dismissAnnouncement(a.id)}
+                            className="p-1 rounded-lg text-slate-500 hover:text-white hover:bg-slate-800 transition shrink-0 cursor-pointer"
+                            title="閉じる"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                )}
+
                 {/* 投稿一覧 */}
                 <div className="space-y-4">
                   {/* 📡 新着投稿バッジ (Misskey風) */}
@@ -11379,6 +12378,19 @@ export default function App() {
                     </div>
                   ) : (
                     timeline.map((post) => renderPostCard(post))
+                  )}
+
+                  {/* 📜 過去のノート追加読み込み（カーソルページネーション） */}
+                  {timelineCursor && (
+                    <button
+                      type="button"
+                      onClick={loadOlderPosts}
+                      disabled={isLoadingOlderPosts}
+                      className="w-full py-3 px-4 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-white text-xs transition cursor-pointer flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingOlderPosts ? 'animate-spin' : ''}`} />
+                      <span>{isLoadingOlderPosts ? '過去のノートを読み込み中...' : '📜 過去のノートを読み込む'}</span>
+                    </button>
                   )}
                 </div>
               </div>
@@ -13334,6 +14346,100 @@ export default function App() {
         </div>
       )}
 
+      {/* 🚩 通報モーダル */}
+      {reportTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => !isSubmittingReport && setReportTarget(null)}
+        >
+          <div
+            className="bg-slate-900 border border-rose-500/30 rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-3 text-rose-400">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">通報する</h3>
+                  <span className="text-[11px] text-slate-400">{reportTarget.label}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReportTarget(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">通報の理由 <span className="text-rose-400">*</span></label>
+                <select
+                  value={reportCategory}
+                  onChange={(e) => setReportCategory(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500"
+                >
+                  <option value="spam">スパム</option>
+                  <option value="abuse">嫌がらせ・誹謗中傷</option>
+                  <option value="sensitive">不適切な内容</option>
+                  <option value="impersonation">なりすまし</option>
+                  <option value="other">その他</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">詳細（任意）</label>
+                <textarea
+                  value={reportComment}
+                  onChange={(e) => setReportComment(e.target.value)}
+                  maxLength={1000}
+                  rows={3}
+                  placeholder="状況を詳しく記載してください（運営が確認します）"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500 resize-none"
+                />
+              </div>
+
+              <p className="text-[11px] text-slate-500 leading-relaxed bg-slate-950/60 border border-slate-800 rounded-xl p-3">
+                通報内容は管理者のみが確認します。他サーバーのユーザーを通報した場合は、相手サーバーへも通報（Flag）が転送されます。
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end space-x-2 pt-2">
+              <button
+                type="button"
+                disabled={isSubmittingReport}
+                onClick={() => setReportTarget(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingReport}
+                onClick={handleSubmitReport}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-600/30 transition cursor-pointer flex items-center space-x-1.5 disabled:opacity-50"
+              >
+                {isSubmittingReport ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>送信中...</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span>通報を送信する</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ⚠️ 本人退会・アカウント削除モーダル */}
       {showSelfDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-150">
@@ -13462,6 +14568,18 @@ export default function App() {
                   <Server className="w-3 h-3" />
                   <span>ローカル</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setPostVisibility('followers')}
+                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition flex items-center space-x-1 ${
+                    postVisibility === 'followers'
+                      ? 'bg-amber-600 text-white shadow'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  <Users className="w-3 h-3" />
+                  <span>フォロワー</span>
+                </button>
               </div>
 
               <button
@@ -13541,7 +14659,9 @@ export default function App() {
                   placeholder={
                     postVisibility === 'public'
                       ? 'いまどうしてる？ (@ユーザー, #タグ自動補完)'
-                      : 'いまどうしてる？ (ローカル限定, @ユーザー, #タグ自動補完)'
+                      : postVisibility === 'followers'
+                        ? 'いまどうしてる？ (🔒 フォロワー限定, @ユーザー, #タグ自動補完)'
+                        : 'いまどうしてる？ (ローカル限定, @ユーザー, #タグ自動補完)'
                   }
                   autoFocus
                   className="w-full flex-1 min-h-[100px] bg-transparent text-sm sm:text-base text-slate-100 placeholder-slate-500 focus:outline-none resize-none leading-relaxed"
@@ -13685,7 +14805,7 @@ export default function App() {
 
                   <span className="flex items-center space-x-1 text-indigo-400/80 font-mono text-[10px]">
                     <ShieldCheck className="w-3 h-3 text-emerald-400" />
-                    <span>{postVisibility === 'public' ? '連合' : 'ローカル'}</span>
+                    <span>{postVisibility === 'public' ? '連合' : postVisibility === 'followers' ? '🔒 フォロワー限定' : 'ローカル'}</span>
                   </span>
                 </div>
 

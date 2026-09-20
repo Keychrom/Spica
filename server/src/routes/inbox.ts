@@ -9,59 +9,14 @@ import {
   replaceCustomEmojis,
   federatePollUpdate,
 } from '../activitypub.js';
-import { parseSignatureHeader, verifyHttpSignature } from '../crypto.js';
+import { verifyInboxSignature } from '../inboxAuth.js';
+import { isPublicPost } from '../postVisibility.js';
+import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 
 export const inboxRouter = Router();
-
-/**
- * HTTP Signature の検証ミドルウェア / ヘルパー
- */
-async function verifyIncomingRequest(req: Request): Promise<{ verified: boolean; keyActorUrl?: string; error?: string }> {
-  const sigHeader = req.headers['signature'];
-  if (!sigHeader || typeof sigHeader !== 'string') {
-    return { verified: false, error: 'Signature header missing' };
-  }
-
-  const parsed = parseSignatureHeader(sigHeader);
-  if (!parsed) {
-    return { verified: false, error: 'Malformed Signature header' };
-  }
-
-  try {
-    const keyActorUrl = parsed.keyId.split('#')[0];
-    
-    let publicKeyPem: string | null = null;
-    if (keyActorUrl.startsWith(config.origin)) {
-      const username = keyActorUrl.split('/').pop() || '';
-      const localUser = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
-      publicKeyPem = localUser?.public_key_pem || null;
-    } else {
-      const remoteActor = await fetchRemoteActor(keyActorUrl);
-      publicKeyPem = remoteActor.public_key_pem;
-    }
-
-    if (!publicKeyPem) {
-      return { verified: false, error: `Public key not found for keyId: ${parsed.keyId}` };
-    }
-
-    const rawBody = (req as any).rawBody;
-    const isValid = verifyHttpSignature({
-      method: req.method,
-      path: req.originalUrl,
-      headers: req.headers,
-      rawBody,
-      publicKeyPem,
-    });
-
-    return { verified: isValid, keyActorUrl, error: isValid ? undefined : 'Signature verification failed' };
-  } catch (err: any) {
-    console.error('[Inbox Auth] Error during signature verification:', err);
-    return { verified: false, error: err.message };
-  }
-}
 
 /**
  * 共通の Activity 受信ハンドラ (User Inbox & Shared Inbox)
@@ -85,10 +40,14 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
     return res.status(403).json({ error: 'This domain is blocked by server policy.' });
   }
 
-  // 署名検証（パブリックリレー等の大量受信時にログが埋まらないよう抑制）
-  const auth = await verifyIncomingRequest(req);
-  if (!auth.verified && activity.type !== 'Announce') {
-    console.log(`[Inbox Auth Info] Signature check: ${auth.error || 'unverified'} for ${activity.type} from ${actorUrl}`);
+  // HTTP Signature 検証: 失敗した Activity は受け付けない（なりすまし・改ざん防止）
+  const auth = await verifyInboxSignature(req, actorUrl);
+  if (!auth.verified) {
+    if (config.inboxSignatureMode === 'strict') {
+      console.log(`[Inbox Rejected] 🔒 ${activity.type} from ${actorUrl} (keyId: ${auth.keyActorUrl || 'unknown'}) - ${auth.error || 'verification failed'}`);
+      return res.status(401).json({ error: 'HTTP Signature verification failed.', reason: auth.error });
+    }
+    console.log(`[Inbox Auth Warn] ⚠️ Signature check failed but INBOX_SIGNATURE_MODE=log, processing anyway: ${activity.type} from ${actorUrl} - ${auth.error}`);
   }
 
   try {
@@ -150,13 +109,20 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const followId = `${actorUrl} -> ${canonicalTargetActorUrl}`;
         const now = new Date().toISOString();
 
+        // 鍵アカウント（フォロー承認制）の場合は承認待ちとして保存し、Accept は返さない
+        const isLocked = Number((targetUser as any).is_locked ?? 0) === 1;
+        const initialStatus = isLocked ? 'pending' : 'accepted';
+
         db.prepare(`
           INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
-          VALUES (?, ?, ?, ?, 0, 'accepted', ?)
+          VALUES (?, ?, ?, ?, 0, ?, ?)
           ON CONFLICT(follower_url, following_url) DO UPDATE SET
-            status = 'accepted',
+            status = CASE
+              WHEN follows.status = 'accepted' THEN 'accepted'
+              ELSE excluded.status
+            END,
             inbox_url = excluded.inbox_url
-        `).run(followId, actorUrl, canonicalTargetActorUrl, remoteActor.inbox_url, now);
+        `).run(followId, actorUrl, canonicalTargetActorUrl, remoteActor.inbox_url, initialStatus, now);
 
         try {
           createNotification({
@@ -169,6 +135,11 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           });
         } catch (e) {
           console.error('[Notification Error] Inbox follow notification failed:', e);
+        }
+
+        if (isLocked) {
+          console.log(`[Inbox Follow Pending] ⏳ 鍵アカウントのため承認待ち: ${actorUrl} -> ${canonicalTargetActorUrl}`);
+          return res.status(202).json({ status: 'Follow pending approval' });
         }
 
         console.log(`[Inbox Follow Success] ✅ Registered follower: ${actorUrl} follows ${canonicalTargetActorUrl}`);
@@ -429,12 +400,24 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const isSensitive = Boolean(note.sensitive || cw) ? 1 : 0;
         const quoteId = typeof note._misskey_quote === 'string' ? note._misskey_quote : (typeof note.quoteUrl === 'string' ? note.quoteUrl : null);
 
+        // 宛先 (to/cc) から公開範囲を判定する。
+        // Public コレクションが含まれない場合はフォロワー限定として保存し、
+        // リモートの限定公開ノートをローカルで「公開」扱いにしてしまわないようにする。
+        const addressing = [
+          ...(Array.isArray(note.to) ? note.to : note.to ? [note.to] : []),
+          ...(Array.isArray(note.cc) ? note.cc : note.cc ? [note.cc] : []),
+        ];
+        const hasAddressing = addressing.length > 0;
+        const noteIsPublic = !hasAddressing || addressing.includes('https://www.w3.org/ns/activitystreams#Public');
+        const noteVisibility = noteIsPublic ? 'public' : 'followers';
+
         db.prepare(`
-          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             author_icon = CASE WHEN excluded.author_icon != '' THEN excluded.author_icon ELSE posts.author_icon END,
+            visibility = excluded.visibility,
             emojis = excluded.emojis,
             cw = excluded.cw,
             quote_id = excluded.quote_id,
@@ -449,6 +432,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           authorHandle,
           authorIcon,
           content,
+          noteVisibility,
           emojisJson,
           cw,
           inReplyTo,
@@ -555,48 +539,54 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         }
 
         // 📡 リアルタイム SSE ブロードキャスト（新着ノートをクライアントへプッシュ）
-        broadcastNote({
-          id: noteId,
-          feed_id: noteId,
-          user_id: actorUrl,
-          author_name: remoteActor.name || remoteActor.username,
-          author_url: actorUrl,
-          author_handle: authorHandle,
-          author_icon: authorIcon,
-          content,
-          cw,
-          quote_id: quoteId,
-          quote: quotePostData,
-          is_sensitive: Boolean(isSensitive),
-          is_pinned: false,
-          is_local: 0,
-          visibility: 'public',
-          emojis: emojisJson,
-          in_reply_to: inReplyTo,
-          media_attachments: attachments,
-          published_at: publishedAt,
-          timeline_at: publishedAt,
-          renote: null,
-          reactions: [],
-          announce_count: 0,
-          my_announced: false,
-          reply_count: 0,
-          bookmarked: false,
-          poll: pollData,
-        });
+        //    フォロワー限定のノートは全クライアントへ配信すると存在自体が漏れるため配信しない
+        if (noteIsPublic) {
+          broadcastNote({
+            id: noteId,
+            feed_id: noteId,
+            user_id: actorUrl,
+            author_name: remoteActor.name || remoteActor.username,
+            author_url: actorUrl,
+            author_handle: authorHandle,
+            author_icon: authorIcon,
+            content,
+            cw,
+            quote_id: quoteId,
+            quote: quotePostData,
+            is_sensitive: Boolean(isSensitive),
+            is_pinned: false,
+            is_local: 0,
+            visibility: noteVisibility,
+            emojis: emojisJson,
+            in_reply_to: inReplyTo,
+            media_attachments: attachments,
+            published_at: publishedAt,
+            timeline_at: publishedAt,
+            renote: null,
+            reactions: [],
+            announce_count: 0,
+            my_announced: false,
+            reply_count: 0,
+            bookmarked: false,
+            poll: pollData,
+          });
+        }
 
         // 📡 アンテナ条件チェック ＆ 通知
-        checkAntennaMatchesAndNotify({
-          id: noteId,
-          user_id: actorUrl,
-          author_name: remoteActor.name || remoteActor.username,
-          author_url: actorUrl,
-          author_handle: authorHandle,
-          author_icon: authorIcon,
-          content,
-          cw,
-          media_attachments: attachments,
-        });
+        // 📡 アンテナ条件チェック ＆ 通知（フォロワー限定は通知経由で内容が漏れるため対象外）
+        if (noteIsPublic) {
+          checkAntennaMatchesAndNotify({
+            id: noteId,
+            user_id: actorUrl,
+            author_name: remoteActor.name || remoteActor.username,
+            author_url: actorUrl,
+            author_handle: authorHandle,
+            author_icon: authorIcon,
+            content,
+            cw,
+            media_attachments: attachments,
+          });
+        }
 
         console.log(`[Inbox Note] 📝 Saved Note from ${authorHandle}: ${content.slice(0, 40)}...`);
         return res.status(201).json({ status: 'Note created' });
@@ -708,12 +698,14 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             );
             console.log(`[Inbox Boost] 🔁 Recorded boost on ${boostedPostId} by @${boosterActor.username}@${boosterActor.domain}`);
 
-            // 📡 リアルタイム SSE リノート更新
-            const announceCountRow = db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(boostedPostId) as any;
-            broadcastAnnounce({
-              postId: boostedPostId,
-              count: announceCountRow ? announceCountRow.c : 1,
-            });
+            // 📡 リアルタイム SSE リノート更新（公開投稿のみ）
+            if (isPublicPost(boostedPostId)) {
+              const announceCountRow = db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(boostedPostId) as any;
+              broadcastAnnounce({
+                postId: boostedPostId,
+                count: announceCountRow ? announceCountRow.c : 1,
+              });
+            }
 
             // ローカル投稿がブーストされた場合、投稿者にリノート通知を送信
             try {
@@ -943,6 +935,28 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId}`);
         }
         return res.status(200).json({ status: 'Delete processed' });
+      }
+
+      case 'Flag': {
+        // 他サーバーからの通報（Mastodon / Misskey の通報機能）
+        const rawObjects = Array.isArray(activity.object) ? activity.object : [activity.object];
+        const objects = rawObjects
+          .map((o: any) => (typeof o === 'string' ? o : o?.id))
+          .filter((o: any): o is string => typeof o === 'string' && o.length > 0);
+
+        if (objects.length === 0) {
+          return res.status(400).json({ error: 'Flag の object が不正です。' });
+        }
+
+        const report = ingestRemoteFlag({
+          actorUrl,
+          objects,
+          content: typeof activity.content === 'string' ? activity.content : '',
+        });
+        if (report) {
+          logNewReport(report);
+        }
+        return res.status(200).json({ status: 'Flag received' });
       }
 
       default:

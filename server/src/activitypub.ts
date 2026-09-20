@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked } from './db.js';
 import { signHeaders } from './crypto.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
+import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
 import crypto from 'node:crypto';
 
 export const ACTIVITYSTREAMS_CONTEXT = [
@@ -27,6 +28,8 @@ export function buildPerson(user: UserRow) {
     preferredUsername: user.id,
     name: user.name,
     summary: user.summary || '',
+    // 鍵アカウント（フォロー承認制）であることを連合先へ伝える
+    manuallyApprovesFollowers: user.is_locked === 1,
     icon: user.icon_url ? {
       type: 'Image',
       mediaType: 'image/png',
@@ -76,6 +79,8 @@ export function buildNote(params: {
   sensitive?: boolean;
   poll?: NotePoll | null;
   tags?: any[];
+  /** 公開範囲。'followers' の場合は Public コレクションへ送らず、フォロワー限定として宛先を組む */
+  visibility?: string;
 }) {
   const attachmentList = (params.attachments || []).map((att) => ({
     type: 'Document',
@@ -86,6 +91,9 @@ export function buildNote(params: {
 
   const hasSummary = Boolean(params.summary && params.summary.trim());
   const isSensitive = Boolean(params.sensitive || hasSummary);
+  // フォロワー限定は Public コレクションへ送らない（受け取ったサーバーが公開扱いしないよう、
+  // to をフォロワーコレクションのみにする）
+  const isFollowersOnly = params.visibility === 'followers';
 
   // アンケート（ActivityPub Question 仕様: oneOf / anyOf / endTime）
   const isQuestion = Boolean(params.poll && params.poll.choices && params.poll.choices.length > 0);
@@ -126,8 +134,8 @@ export function buildNote(params: {
     content: params.content,
     url: params.id,
     published: params.publishedAt,
-    to: ['https://www.w3.org/ns/activitystreams#Public'],
-    cc: [`${params.authorUrl}/followers`],
+    to: isFollowersOnly ? [`${params.authorUrl}/followers`] : ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: isFollowersOnly ? [] : [`${params.authorUrl}/followers`],
     inReplyTo: params.inReplyTo || null,
     sensitive: isSensitive,
     _misskey_quote: params.quoteUrl || undefined,
@@ -190,6 +198,28 @@ export function buildAcceptActivity(params: {
     '@context': ACTIVITYSTREAMS_CONTEXT,
     id: `${config.origin}/activities/accept/${uuid}`,
     type: 'Accept',
+    actor: params.actorUrl,
+    to: recipient ? [recipient] : undefined,
+    object: params.followActivity,
+  };
+}
+
+/**
+ * Reject(Follow) Activity を構築（鍵アカウントでフォローを拒否した場合）
+ */
+export function buildRejectActivity(params: {
+  actorUrl: string;
+  followActivity: any;
+}) {
+  const uuid = crypto.randomUUID();
+  const recipient = typeof params.followActivity.actor === 'string'
+    ? params.followActivity.actor
+    : params.followActivity.actor?.id;
+
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${config.origin}/activities/reject/${uuid}`,
+    type: 'Reject',
     actor: params.actorUrl,
     to: recipient ? [recipient] : undefined,
     object: params.followActivity,
@@ -379,6 +409,12 @@ export async function resolveWebFinger(handle: string): Promise<string> {
   const protocol = domain.startsWith('localhost') || domain.startsWith('127.0.0.1') ? 'http' : 'https';
   const url = `${protocol}://${domain}/.well-known/webfinger?resource=acct:${username}@${domain}`;
 
+  // SSRF 対策: 内部アドレスや解決できないホストへの取得を拒否する
+  const webfingerSafety = await assertFetchableRemoteUrl(url);
+  if (!webfingerSafety.safe) {
+    throw new Error(`安全でないホストのため WebFinger 解決を拒否しました: ${webfingerSafety.reason}`);
+  }
+
   console.log(`[WebFinger] Querying: ${url}`);
   const res = await fetch(url, {
     headers: {
@@ -430,6 +466,12 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
     if (existing) {
       return existing;
     }
+  }
+
+  // SSRF 対策: キャッシュ済みアクターは対象外とし、実際に取得する URL のみ検証する
+  const fetchSafety = await assertFetchableRemoteUrl(actorUrl);
+  if (!fetchSafety.safe) {
+    throw new Error(`安全でないアクターURLのため取得を拒否しました: ${fetchSafety.reason}`);
   }
 
   console.log(`[Actor] Fetching remote actor: ${actorUrl}`);
@@ -518,6 +560,14 @@ export async function deliverActivity(params: {
 }) {
   if (isDomainBlocked(params.inboxUrl)) {
     console.log(`[Delivery Skipped] 🚫 Skipping delivery to blocked domain inbox: ${params.inboxUrl}`);
+    return false;
+  }
+
+  // SSRF 対策: 配送先はリモートの Actor 文書由来（外部入力）のため、
+  // 内部アドレス等へ署名済みリクエストを送ってしまわないよう検証する
+  const deliverySafety = await assertFetchableRemoteUrl(params.inboxUrl);
+  if (!deliverySafety.safe) {
+    console.log(`[Delivery Skipped] 🚫 安全でない配送先のためスキップ: ${params.inboxUrl} (${deliverySafety.reason})`);
     return false;
   }
 
@@ -648,8 +698,10 @@ export function buildUpdateQuestionActivity(params: {
     content: params.post.content,
     url: params.post.id,
     published: params.post.published_at,
-    to: ['https://www.w3.org/ns/activitystreams#Public'],
-    cc: [`${authorUrl}/followers`],
+    to: params.post.visibility === 'followers'
+      ? [`${authorUrl}/followers`]
+      : ['https://www.w3.org/ns/activitystreams#Public'],
+    cc: params.post.visibility === 'followers' ? [] : [`${authorUrl}/followers`],
     inReplyTo: params.post.in_reply_to || null,
     votersCount: totalVotes,
   };
@@ -714,9 +766,12 @@ export async function federatePollUpdate(params: {
       WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
     `).all(authorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
-    const relayInboxes = (db.prepare(`
-      SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
-    `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
+    // リレーは不特定多数へ再配信するため、公開投稿以外では使用しない
+    const relayInboxes = post.visibility === 'public'
+      ? (db.prepare(`
+          SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+        `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
+      : [];
 
     const directInboxes: string[] = [];
     if (params.senderVoterActorUrl) {

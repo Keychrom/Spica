@@ -83,6 +83,26 @@ Spica は起動時に自動的にデータベーススキーマを検査し、�
 diff -u .env .env.example
 ```
 
+> [!IMPORTANT]
+> **署名検証が有効になったことによる影響**
+> アップデート後は、受信した Activity の HTTP Signature 検証が有効になります（`INBOX_SIGNATURE_MODE=strict`、既定）。
+> これまで検証せずに受理していた Activity が拒否される可能性があるため、更新後しばらくはサーバーログに `[Inbox Rejected]` が出ていないか確認してください。
+> 連合が停止した場合は、原因を切り分けるまでの暫定措置として `.env` に `INBOX_SIGNATURE_MODE=log` を設定して再起動してください（**署名検証が無効になるため、原因判明後は速やかに `strict` へ戻してください**）。
+
+主な追加項目:
+
+| 環境変数名 | デフォルト値 | 説明 |
+| :--- | :--- | :--- |
+| `INBOX_SIGNATURE_MODE` | `strict` | 署名検証に失敗した Activity を 401 で拒否（`log` は従来挙動・非推奨） |
+| `INBOX_FORWARDED_ACTIVITY_POLICY` | `relay` | 管理パネルで承認済みのリレーからの代理転送のみ許可 |
+| `SIGNATURE_MAX_AGE_SECONDS` | `43200` | 署名 `Date` ヘッダーの許容幅（秒）。リプレイ対策 |
+| `ALLOW_PRIVATE_REMOTE_FETCH` | `https` 公開時は `false` | プライベート IP への remote actor 取得の可否（SSRF 対策） |
+
+詳細は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) を参照してください。
+
+> [!NOTE]
+> `DOMAIN` は署名検証の `host` 候補としても使われます。実際の公開ホスト名と一致していない場合、すべての受信 Activity が署名検証に失敗し連合が停止します。
+
 ---
 
 ## 🚨 トラブルシューティング ＆ ロールバック

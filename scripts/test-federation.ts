@@ -1,11 +1,17 @@
 import { spawn, ChildProcess } from 'node:child_process';
+import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 
+// ポートは TEST_PORT で変更可能（既定 3000/3001）。稼働中の開発サーバーと衝突させずに実行できる。
+const PORT_A = process.env.TEST_PORT ? parseInt(process.env.TEST_PORT, 10) : 3000;
+const PORT_B = PORT_A + 1;
+const BASE_A = `http://localhost:${PORT_A}`;
+const BASE_B = `http://localhost:${PORT_B}`;
 const ROOT_DIR = process.cwd();
 
 // テスト用DBを初期化・クリーンアップ
-['data_3000.sqlite', 'data_3001.sqlite', 'data_3000.sqlite-wal', 'data_3001.sqlite-wal', 'data_3000.sqlite-shm', 'data_3001.sqlite-shm'].forEach((f) => {
+[`data_${PORT_A}.sqlite`, `data_${PORT_B}.sqlite`].flatMap((f) => [f, `${f}-wal`, `${f}-shm`]).forEach((f) => {
   const p1 = path.resolve(ROOT_DIR, f);
   const p2 = path.resolve(ROOT_DIR, 'server', f);
   [p1, p2].forEach((p) => {
@@ -17,6 +23,26 @@ const ROOT_DIR = process.cwd();
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 稼働中のサーバーへ誤ってリクエストを送らないためのガード。
+// bind の成否は Windows では当てにならない（0.0.0.0 で待受中でも 127.0.0.1 へ bind できてしまう）ため、
+// 実際に TCP 接続できるかどうかで判定する。接続のみでデータは送信しない。
+async function assertPortFree(port: number): Promise<void> {
+  const inUse = await new Promise<boolean>((resolve) => {
+    const socket = net.connect({ port, host: '127.0.0.1' });
+    const finish = (result: boolean) => { socket.destroy(); resolve(result); };
+    socket.setTimeout(2000);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+  if (inUse) {
+    throw new Error(
+      `ポート ${port} では既にサーバーが応答しています。稼働中のインスタンスへ書き込まないよう中断しました。\n` +
+      `空きポートを指定して実行してください:  TEST_PORT=3400 npx tsx scripts/test-federation.ts`,
+    );
+  }
 }
 
 async function waitForServer(url: string, maxRetries = 40): Promise<boolean> {
@@ -39,34 +65,42 @@ async function waitForServer(url: string, maxRetries = 40): Promise<boolean> {
 async function run() {
   console.log('====================================================');
   console.log('🧪 ActivityPub マルチノード・フェデレーション疎通テスト');
+  console.log(`   Node A=${PORT_A} / Node B=${PORT_B}`);
   console.log('====================================================\n');
 
   let nodeA: ChildProcess | null = null;
   let nodeB: ChildProcess | null = null;
 
   try {
-    // 1. Node A (Port 3000) 起動
-    console.log('▶️ Node A (Port 3000) を起動中...');
+    await assertPortFree(PORT_A);
+    await assertPortFree(PORT_B);
+
+    // 1. Node A 起動
+    console.log(`▶️ Node A (Port ${PORT_A}) を起動中...`);
     nodeA = spawn('npx', ['tsx', 'src/index.ts'], {
       cwd: path.resolve(ROOT_DIR, 'server'),
       env: {
         ...process.env,
-        PORT: '3000',
-        DOMAIN: 'localhost:3000',
+        PORT: String(PORT_A),
+        DOMAIN: `localhost:${PORT_A}`,
+        PROTOCOL: 'http', // ローカル2ノード間の連合テストのため http を明示
+        DB_PATH: path.resolve(ROOT_DIR, 'server', `data_${PORT_A}.sqlite`),
         INSTANCE_NAME: 'Node-A',
       },
       stdio: 'pipe',
       shell: true,
     });
 
-    // 2. Node B (Port 3001) 起動
-    console.log('▶️ Node B (Port 3001) を起動中...');
+    // 2. Node B 起動
+    console.log(`▶️ Node B (Port ${PORT_B}) を起動中...`);
     nodeB = spawn('npx', ['tsx', 'src/index.ts'], {
       cwd: path.resolve(ROOT_DIR, 'server'),
       env: {
         ...process.env,
-        PORT: '3001',
-        DOMAIN: 'localhost:3001',
+        PORT: String(PORT_B),
+        DOMAIN: `localhost:${PORT_B}`,
+        PROTOCOL: 'http',
+        DB_PATH: path.resolve(ROOT_DIR, 'server', `data_${PORT_B}.sqlite`),
         INSTANCE_NAME: 'Node-B',
       },
       stdio: 'pipe',
@@ -77,8 +111,8 @@ async function run() {
     nodeB.stdout?.on('data', (d) => console.log(`[Node B] ${d.toString().trim()}`));
 
     console.log('⏳ サーバーの起動待機中...');
-    const okA = await waitForServer('http://localhost:3000');
-    const okB = await waitForServer('http://localhost:3001');
+    const okA = await waitForServer(BASE_A);
+    const okB = await waitForServer(BASE_B);
 
     if (!okA || !okB) {
       throw new Error('サーバーの起動に失敗しました。');
@@ -87,27 +121,35 @@ async function run() {
 
     // 3. Node A に Alice を作成
     console.log('👤 [Node A] ユーザー Alice を作成中...');
-    const resAlice = await fetch('http://localhost:3000/api/users', {
+    const resAlice = await fetch(`${BASE_A}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: 'alice', name: 'Alice Wonderland', summary: 'Hello from Node A!' }),
     });
-    const alice = await resAlice.json();
+    const aliceBody = await resAlice.json();
+    const alice = aliceBody.user;
+    if (!alice?.actorUrl || !aliceBody.sessionToken) {
+      throw new Error(`Alice 作成に失敗: HTTP ${resAlice.status} ${JSON.stringify(aliceBody)}`);
+    }
     console.log(`✅ Alice 作成成功: ${alice.handle} (${alice.actorUrl})`);
 
     // 4. Node B に Bob を作成
     console.log('👤 [Node B] ユーザー Bob を作成中...');
-    const resBob = await fetch('http://localhost:3001/api/users', {
+    const resBob = await fetch(`${BASE_B}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: 'bob', name: 'Bob Builder', summary: 'Hello from Node B!' }),
     });
-    const bob = await resBob.json();
+    const bobBody = await resBob.json();
+    const bob = bobBody.user;
+    if (!bob?.actorUrl || !bobBody.sessionToken) {
+      throw new Error(`Bob 作成に失敗: HTTP ${resBob.status} ${JSON.stringify(bobBody)}`);
+    }
     console.log(`✅ Bob 作成成功: ${bob.handle} (${bob.actorUrl})\n`);
 
     // 5. WebFinger 検証
     console.log('🔍 [WebFinger 検証] Node A から Bob の WebFinger を解決...');
-    const wfRes = await fetch('http://localhost:3001/.well-known/webfinger?resource=acct:bob@localhost:3001');
+    const wfRes = await fetch(`${BASE_B}/.well-known/webfinger?resource=acct:bob@localhost:${PORT_B}`);
     const wfData = await wfRes.json();
     console.log(`✅ WebFinger 応答: subject=${wfData.subject}`);
     const selfLink = wfData.links?.find((l: any) => l.rel === 'self');
@@ -124,20 +166,27 @@ async function run() {
     console.log(`✅ Public Key ID: ${actorData.publicKey?.id}\n`);
 
     // 7. フォローリクエスト検証: Alice (Node A) -> Bob (Node B)
+    //    ノード間の配送は HTTP Signature 付きで行われるため、署名検証の回帰テストも兼ねる
     console.log('🤝 [Follow 検証] Alice (@Node A) が Bob (@Node B) をフォロー...');
-    const followRes = await fetch('http://localhost:3000/api/follow', {
+    const followRes = await fetch(`${BASE_A}/api/follow`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'alice', targetHandle: '@bob@localhost:3001' }),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${aliceBody.sessionToken}`,
+      },
+      body: JSON.stringify({ targetHandle: `@bob@localhost:${PORT_B}` }),
     });
     const followData = await followRes.json();
+    if (!followRes.ok) {
+      throw new Error(`Follow リクエストが失敗: HTTP ${followRes.status} ${JSON.stringify(followData)}`);
+    }
     console.log('✅ Follow レスポンス:', followData);
 
     // Accept の非同期配送を少し待機
     await sleep(2000);
 
     // Node B 側で Alice がフォロワーとして記録されているか確認
-    const followersRes = await fetch('http://localhost:3001/api/followers?userId=bob');
+    const followersRes = await fetch(`${BASE_B}/api/followers?userId=bob`);
     const followersData = await followersRes.json();
     console.log(`✅ Node B の Bob のフォロワー数: ${followersData.length}`);
     console.log('✅ フォロワー詳細:', followersData[0]?.follower_url);
@@ -150,12 +199,18 @@ async function run() {
     // 8. 投稿＆連合配信検証: Bob (Node B) が投稿 -> Alice (Node A) のタイムラインに届くか
     console.log('📝 [Federation 投稿検証] Bob が Node B で投稿...');
     const postContent = '分散型SNS SN-SNSの世界へようこそ！🚀 ActivityPubで繋がっています！';
-    const postRes = await fetch('http://localhost:3001/api/posts', {
+    const postRes = await fetch(`${BASE_B}/api/posts`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: 'bob', content: postContent }),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${bobBody.sessionToken}`,
+      },
+      body: JSON.stringify({ content: postContent }),
     });
     const postData = await postRes.json();
+    if (!postRes.ok) {
+      throw new Error(`投稿が失敗: HTTP ${postRes.status} ${JSON.stringify(postData)}`);
+    }
     console.log('✅ Bob の投稿完了:', postData.content);
 
     // 連合配送の完了を少し待機
@@ -163,13 +218,13 @@ async function run() {
 
     // Node A のタイムラインを取得して Bob の投稿が保存されているか確認！
     console.log('📡 [Node A タイムライン確認] Alice (Node A) の連合タイムラインを確認...');
-    const tlRes = await fetch('http://localhost:3000/api/timeline');
+    const tlRes = await fetch(`${BASE_A}/api/timeline?mode=all`);
     const tlPosts = await tlRes.json();
     console.log(`✅ Node A のタイムライン件数: ${tlPosts.length}`);
-    
+
     const federatedPost = tlPosts.find((p: any) => p.content.includes('分散型SNS'));
     if (!federatedPost) {
-      throw new Error('Node A に Bob の連合投稿が届いていませんでした。');
+      throw new Error('Node A に Bob の連合投稿が届いていませんでした（署名検証で拒否された可能性があります）。');
     }
 
     console.log('🎉 連合投稿を正常に受信しました！');

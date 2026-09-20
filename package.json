@@ -13,7 +13,15 @@
     "dev:client": "npm --workspace=client run dev",
     "build": "npm --workspace=server run build && npm --workspace=client run build",
     "start": "npm --workspace=server start",
-    "test": "npx tsx scripts/test-astrabit.ts"
+    "test": "npx tsx scripts/test-astrabit.ts",
+    "test:inbox-signature": "npx tsx scripts/test-inbox-signature.ts",
+    "test:federation": "npx tsx scripts/test-federation.ts",
+    "test:relay": "npx tsx scripts/test-relay-and-timelines.ts",
+    "test:pagination": "npx tsx scripts/test-pagination.ts",
+    "test:followers-visibility": "npx tsx scripts/test-followers-visibility.ts",
+    "test:reports": "npx tsx scripts/test-reports.ts",
+    "test:filters-and-locked": "npx tsx scripts/test-filters-and-locked.ts",
+    "test:announcements": "npx tsx scripts/test-announcements.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

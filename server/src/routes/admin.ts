@@ -4,6 +4,8 @@ import multer from 'multer';
 import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode } from '../db.js';
 import { requireAdmin } from '../auth.js';
 import { config } from '../config.js';
+import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
+import { listReports, resolveReport, countOpenReports } from '../reportService.js';
 import { getStorageConfig, saveStorageConfig, isS3Configured, testStorageConnection, uploadMediaFile } from '../storage.js';
 import {
   buildFollowActivity,
@@ -198,6 +200,12 @@ adminRouter.post('/relays', async (req: Request, res: Response) => {
     }
 
     try {
+      // SSRF 対策: 内部アドレス等への取得を拒否する。
+      // candidateActorUrl と cleanUrl は同一ホストのため、この検証でフォールバック取得も防げる。
+      const relaySafety = await assertFetchableRemoteUrl(candidateActorUrl);
+      if (!relaySafety.safe) {
+        throw new Error(`安全でないリレー URL のため Actor 取得をスキップ: ${relaySafety.reason}`);
+      }
       console.log(`[Relay] Fetching relay actor: ${candidateActorUrl}`);
       const fetchRes = await fetch(candidateActorUrl, {
         headers: {
@@ -916,6 +924,137 @@ adminRouter.post('/registration-mode', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Admin Registration Mode Error]:', err);
     res.status(500).json({ error: '登録モードの変更に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 📢 お知らせ（サーバーからの一斉告知）
+// ==========================================
+
+// お知らせ一覧（無効なものも含む）
+adminRouter.get('/announcements', (_req: Request, res: Response) => {
+  try {
+    const rows = db.prepare('SELECT * FROM announcements ORDER BY created_at DESC LIMIT 200').all();
+    res.json(rows);
+  } catch (err: any) {
+    console.error('[Admin Announcements Error]:', err);
+    res.status(500).json({ error: 'お知らせの取得に失敗しました。' });
+  }
+});
+
+// お知らせの作成
+adminRouter.post('/announcements', (req: Request, res: Response) => {
+  const { title, content, isActive } = req.body;
+  const cleanTitle = typeof title === 'string' ? title.trim().slice(0, 120) : '';
+  const cleanContent = typeof content === 'string' ? content.trim().slice(0, 5000) : '';
+
+  if (!cleanTitle || !cleanContent) {
+    return res.status(400).json({ error: 'タイトルと本文は必須です。' });
+  }
+
+  try {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO announcements (id, title, content, is_active, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, cleanTitle, cleanContent, isActive === false ? 0 : 1, req.user!.id, now, now);
+
+    console.log(`[Admin Announcement] 📢 作成: ${cleanTitle} (@${req.user!.id})`);
+    res.status(201).json({ success: true, id, announcement: db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
+  } catch (err: any) {
+    console.error('[Admin Announcement Create Error]:', err);
+    res.status(500).json({ error: 'お知らせの作成に失敗しました。' });
+  }
+});
+
+// お知らせの更新（タイトル / 本文 / 有効・無効）
+adminRouter.put('/announcements/:id', (req: Request, res: Response) => {
+  const { title, content, isActive } = req.body;
+  const id = String(req.params.id);
+
+  try {
+    const existing = db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) as any;
+    if (!existing) {
+      return res.status(404).json({ error: 'お知らせが見つかりません。' });
+    }
+
+    const nextTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 120) : existing.title;
+    const nextContent = typeof content === 'string' && content.trim() ? content.trim().slice(0, 5000) : existing.content;
+    const nextActive = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : existing.is_active;
+
+    db.prepare('UPDATE announcements SET title = ?, content = ?, is_active = ?, updated_at = ? WHERE id = ?')
+      .run(nextTitle, nextContent, nextActive, new Date().toISOString(), id);
+
+    res.json({ success: true, announcement: db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
+  } catch (err: any) {
+    console.error('[Admin Announcement Update Error]:', err);
+    res.status(500).json({ error: 'お知らせの更新に失敗しました。' });
+  }
+});
+
+// お知らせの削除
+adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
+  try {
+    const result = db.prepare('DELETE FROM announcements WHERE id = ?').run(String(req.params.id));
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'お知らせが見つかりません。' });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('[Admin Announcement Delete Error]:', err);
+    res.status(500).json({ error: 'お知らせの削除に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 🚩 通報（モデレーションキュー）
+// ==========================================
+
+// 通報一覧（?status=open|resolved|rejected|all）
+adminRouter.get('/reports', (req: Request, res: Response) => {
+  try {
+    const status = (req.query.status as string) || 'all';
+    const reports = listReports(status === 'all' ? undefined : status);
+    res.json({
+      reports,
+      counts: {
+        open: countOpenReports(),
+        total: (db.prepare('SELECT COUNT(*) AS c FROM reports').get() as { c: number }).c,
+      },
+    });
+  } catch (err: any) {
+    console.error('[Admin Reports Error]:', err);
+    res.status(500).json({ error: '通報一覧の取得に失敗しました。' });
+  }
+});
+
+// 未対応の通報件数（バッジ用）
+adminRouter.get('/reports/count', (_req: Request, res: Response) => {
+  try {
+    res.json({ open: countOpenReports() });
+  } catch (err: any) {
+    res.status(500).json({ error: '通報件数の取得に失敗しました。' });
+  }
+});
+
+// 通報への対応（action: resolve=対応済み / reject=却下 / reopen=再オープン）
+adminRouter.post('/reports/:id/resolve', (req: Request, res: Response) => {
+  const { action, note } = req.body;
+  if (!['resolve', 'reject', 'reopen'].includes(String(action))) {
+    return res.status(400).json({ error: 'action は resolve / reject / reopen のいずれかを指定してください。' });
+  }
+
+  try {
+    const updated = resolveReport(String(req.params.id), action, req.user!.id, typeof note === 'string' ? note : undefined);
+    if (!updated) {
+      return res.status(404).json({ error: '通報が見つかりません。' });
+    }
+    console.log(`[Admin Report] ✅ ${updated.id} を ${updated.status} にしました (@${req.user!.id})`);
+    res.json({ success: true, report: updated });
+  } catch (err: any) {
+    console.error('[Admin Report Resolve Error]:', err);
+    res.status(500).json({ error: '通報の更新に失敗しました。' });
   }
 });
 

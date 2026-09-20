@@ -483,6 +483,52 @@ export function initDatabase() {
       type TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     );`,
+    // 通報（モデレーションキュー）
+    `CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY,
+      reporter_actor_url TEXT NOT NULL,
+      reporter_user_id TEXT,
+      reporter_handle TEXT DEFAULT '',
+      target_actor_url TEXT NOT NULL,
+      target_user_id TEXT,
+      target_handle TEXT DEFAULT '',
+      target_post_id TEXT,
+      target_post_content TEXT,
+      is_remote INTEGER NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'other',
+      comment TEXT DEFAULT '',
+      forwarded INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolved_by TEXT,
+      resolved_at TEXT,
+      resolution_note TEXT,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_actor_url);",
+    // 鍵アカウント（フォロー承認制）
+    "ALTER TABLE users ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0;",
+    // ワードフィルター（ミュートワード）
+    `CREATE TABLE IF NOT EXISTS muted_words (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      case_sensitive INTEGER NOT NULL DEFAULT 0,
+      whole_word INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_muted_words_user ON muted_words(user_id);",
+    // お知らせ（サーバーからの一斉告知）
+    `CREATE TABLE IF NOT EXISTS announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_announcements_active ON announcements(is_active, created_at DESC);",
   ];
 
   for (const sql of migrations) {
@@ -560,6 +606,8 @@ export interface UserRow {
   master_key_hash: string;
   role: 'admin' | 'user';
   is_frozen: number;
+  /** 鍵アカウント（フォロー承認制）: 1 なら新規フォローを承認制にする */
+  is_locked: number;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;
@@ -581,7 +629,7 @@ export interface PostRow {
   author_icon?: string;
   content: string;
   is_local: number;
-  visibility: 'public' | 'local';
+  visibility: 'public' | 'local' | 'followers';
   emojis?: string;
   cw?: string | null;
   in_reply_to: string | null;

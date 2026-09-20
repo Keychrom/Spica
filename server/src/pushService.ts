@@ -1,6 +1,7 @@
 import webpush from 'web-push';
 import { db, getServerSetting, setServerSetting, PushSubscriptionRow } from './db.js';
 import { config } from './config.js';
+import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
 
 /**
  * VAPIDキーの初期化と取得
@@ -109,6 +110,13 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 
     await Promise.allSettled(
       subs.map(async (sub) => {
+        // SSRF 対策: 送信先は端末が登録した URL（利用者入力）のため、内部アドレス等へは送信しない
+        const endpointSafety = await assertFetchableRemoteUrl(sub.endpoint);
+        if (!endpointSafety.safe) {
+          console.warn(`[WebPush Warning] 安全でない送信先のためスキップ (${endpointSafety.reason})`);
+          return;
+        }
+
         const pushSubscription = {
           endpoint: sub.endpoint,
           keys: {
