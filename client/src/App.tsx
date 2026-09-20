@@ -636,7 +636,7 @@ export interface WebAuthnCredential {
 export interface AppNotification {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -1964,6 +1964,17 @@ export default function App() {
   // データエクスポートステート
   const [isExportingData, setIsExportingData] = useState<boolean>(false);
   const [exportingFormat, setExportingFormat] = useState<'json' | 'zip' | null>(null);
+  // 📦 引っ越し（Move）の状態
+  const [migrationInfo, setMigrationInfo] = useState<{ actorUrl: string; movedTo: string; alsoKnownAs: string; followers: number }>({
+    actorUrl: '',
+    movedTo: '',
+    alsoKnownAs: '',
+    followers: 0,
+  });
+  const [migrationAliasInput, setMigrationAliasInput] = useState<string>('');
+  const [migrationTargetInput, setMigrationTargetInput] = useState<string>('');
+  const [migrationMsg, setMigrationMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isMigrating, setIsMigrating] = useState<boolean>(false);
 
   const setShowLoginModal = (show: boolean) => {
     if (show) {
@@ -2007,9 +2018,15 @@ export default function App() {
   // 登録・ログインフォーム
   const [loginId, setLoginId] = useState<string>('');
   const [loginKey, setLoginKey] = useState<string>('');
+  const [loginPassword, setLoginPassword] = useState<string>('');
+  // ログイン画面で表示する方式 (auth_mode = password のときはパスワード方式を既定にする)
+  const [loginMethod, setLoginMethod] = useState<'master_key' | 'password'>('master_key');
   const [regId, setRegId] = useState<string>('');
   const [regName, setRegName] = useState<string>('');
   const [regBio, setRegBio] = useState<string>('');
+  const [regEmail, setRegEmail] = useState<string>('');
+  const [regPassword, setRegPassword] = useState<string>('');
+  const [regPasswordConfirm, setRegPasswordConfirm] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
 
   // タイムライン ('local' = 自ノードのみ, 'home' = 自ノード+フォロー中, 'all' = 連合・リレー含む全件, 'tag' = ハッシュタグ, 'antenna' = アンテナ)
@@ -2375,7 +2392,7 @@ export default function App() {
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail' | 'delivery'>('dashboard');
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
 
   // 🎨 カスタム絵文字管理ステート
@@ -4447,6 +4464,20 @@ export default function App() {
     mailConfigured: false,
     recoveryAvailable: false,
   });
+
+  // インスタンスの認証方式 (auth_mode = password なら メールアドレス＋パスワード方式で登録・ログインする)
+  const isPasswordAuthMode = String(recoveryStatus.authMode || 'master_key').toLowerCase() === 'password';
+  // ログイン画面で今どちらの方式を表示しているか (切替リンクで入れ替えられる)
+  const showPasswordLoginForm = isPasswordAuthMode && loginMethod === 'password';
+
+  // サーバー側 (routes/api.ts の isValidEmail) と同じ形式チェック
+  const isValidEmailFormat = (value: string): boolean =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value) && value.length <= 254;
+
+  useEffect(() => {
+    setLoginMethod(isPasswordAuthMode ? 'password' : 'master_key');
+  }, [isPasswordAuthMode]);
+
   const [myEmail, setMyEmail] = useState<string>('');
   const [emailInput, setEmailInput] = useState<string>('');
   const [emailCode, setEmailCode] = useState<string>('');
@@ -4462,6 +4493,17 @@ export default function App() {
   const [mailSettings, setMailSettings] = useState<any>({ host: '', port: 587, secure: false, user: '', pass: '', from: '', allowEmailRegistration: false, authMode: 'master_key' });
   const [mailSettingsMsg, setMailSettingsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isSavingMail, setIsSavingMail] = useState<boolean>(false);
+  // 📮 配送再送キューの状態（管理画面）
+  const [deliveryQueue, setDeliveryQueue] = useState<any>({
+    stats: { pending: 0, delivered: 0, failed: 0, nextAttemptAt: null },
+    pending: [],
+    recentFailures: [],
+    maxAttempts: 9,
+    retryDelaysMs: [],
+  });
+  const [isLoadingDeliveryQueue, setIsLoadingDeliveryQueue] = useState<boolean>(false);
+  const [isActingOnDelivery, setIsActingOnDelivery] = useState<boolean>(false);
+  const [deliveryQueueMsg, setDeliveryQueueMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const fetchRecoveryStatus = async () => {
     try {
@@ -4469,6 +4511,67 @@ export default function App() {
       if (res.ok) setRecoveryStatus(await res.json());
     } catch (err) {
       console.error('認証設定の取得エラー:', err);
+    }
+  };
+
+  // 📮 配送再送キュー（ActivityPub 配送の指数バックオフ再送）
+  const fetchDeliveryQueue = async () => {
+    if (!authToken) return;
+    setIsLoadingDeliveryQueue(true);
+    try {
+      const res = await fetch('/api/admin/delivery-queue', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) setDeliveryQueue(await res.json());
+    } catch (err) {
+      console.error('配送キューの取得エラー:', err);
+    } finally {
+      setIsLoadingDeliveryQueue(false);
+    }
+  };
+
+  const handleRetryDeliveries = async () => {
+    if (!authToken) return;
+    setIsActingOnDelivery(true);
+    setDeliveryQueueMsg(null);
+    try {
+      const res = await fetch('/api/admin/delivery-queue/retry', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDeliveryQueueMsg({ type: 'error', text: data.error || '再送の実行に失敗しました。' });
+        return;
+      }
+      setDeliveryQueueMsg({ type: 'success', text: data.message || '再送を開始しました。' });
+      await fetchDeliveryQueue();
+    } catch (err: any) {
+      setDeliveryQueueMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsActingOnDelivery(false);
+    }
+  };
+
+  const handleClearFailedDeliveries = async () => {
+    if (!authToken) return;
+    if (!window.confirm('失敗が確定した配送の記録を削除しますか？（再送は行われません）')) return;
+    setIsActingOnDelivery(true);
+    setDeliveryQueueMsg(null);
+    try {
+      const res = await fetch('/api/admin/delivery-queue/clear-failed', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDeliveryQueueMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
+        return;
+      }
+      setDeliveryQueueMsg({ type: 'success', text: data.message || '削除しました。' });
+      await fetchDeliveryQueue();
+    } catch (err: any) {
+      setDeliveryQueueMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsActingOnDelivery(false);
     }
   };
 
@@ -5261,6 +5364,8 @@ export default function App() {
       fetchBlocksAndMutes();
       fetchMutedWords();
       fetchFollowRequests();
+    } else if (currentView === 'settings' && settingsTab === 'account') {
+      fetchMigrationInfo();
     }
   }, [currentView, notificationFilter, settingsTab]);
 
@@ -5473,6 +5578,24 @@ export default function App() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+
+    // メールアドレス＋パスワード方式: 送信前にフォーム側でも検証する (サーバーも 400 を返す)
+    if (isPasswordAuthMode) {
+      const email = regEmail.trim();
+      if (!isValidEmailFormat(email)) {
+        setAuthError('メールアドレスの形式をご確認ください。');
+        return;
+      }
+      if (regPassword.length < 8) {
+        setAuthError('パスワードは8文字以上で入力してください。');
+        return;
+      }
+      if (regPassword !== regPasswordConfirm) {
+        setAuthError('確認用パスワードが一致しません。');
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -5483,6 +5606,7 @@ export default function App() {
           summary: regBio.trim(),
           inviteCode: inviteCodeInput.trim() || undefined,
           agreedToRules: hasAgreedToRules || true,
+          ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword } : {}),
         }),
       });
 
@@ -5503,9 +5627,107 @@ export default function App() {
       setShowMasterKeyModal(true);
       setHasConfirmedSaved(false);
       setIsCopied(false);
+      setRegPassword('');
+      setRegPasswordConfirm('');
       fetchServerStats();
     } catch (err: any) {
       setAuthError(err.message);
+    }
+  };
+
+  // ==========================================
+  // 📦 引っ越し（Move / alsoKnownAs）
+  // ==========================================
+  const fetchMigrationInfo = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/user/migration', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setMigrationInfo(data);
+        setMigrationAliasInput(data.alsoKnownAs || '');
+      }
+    } catch (err) {
+      console.error('引っ越し情報の取得エラー:', err);
+    }
+  };
+
+  const handleSaveMigrationAlias = async () => {
+    if (!authToken) return;
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await fetch('/api/user/migration/alias', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ alias: migrationAliasInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMigrationMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
+        return;
+      }
+      setMigrationMsg({ type: 'success', text: data.message || '保存しました。' });
+      await fetchMigrationInfo();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleExecuteMove = async () => {
+    if (!authToken) return;
+    const target = migrationTargetInput.trim();
+    if (!target) {
+      setMigrationMsg({ type: 'error', text: '引っ越し先アカウント（@ユーザー名@サーバー）を入力してください。' });
+      return;
+    }
+    if (!window.confirm(`このアカウントから ${target} へ引っ越しますか？\nフォロワー全員に通知され、元には戻せません。`)) {
+      return;
+    }
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await fetch('/api/user/migration/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ target }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMigrationMsg({ type: 'error', text: data.error || '引っ越しに失敗しました。' });
+        return;
+      }
+      setMigrationMsg({ type: 'success', text: data.message || '引っ越しを実行しました。' });
+      await fetchMigrationInfo();
+      fetchTimeline();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleCancelMove = async () => {
+    if (!authToken) return;
+    if (!window.confirm('引っ越し先の記録を解除しますか？（連合先へ配送済みの通知は取り消せません）')) return;
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await fetch('/api/user/migration/cancel', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      setMigrationMsg(
+        res.ok ? { type: 'success', text: data.message || '解除しました。' } : { type: 'error', text: data.error || '解除に失敗しました。' },
+      );
+      await fetchMigrationInfo();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
     }
   };
 
@@ -5842,18 +6064,34 @@ export default function App() {
     }
   };
 
-  // ログインハンドラ
+  // ログインハンドラ (マスターキー方式 / メールアドレス＋パスワード方式)
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+
+    const identifier = loginId.trim();
+    const usePassword = isPasswordAuthMode && loginMethod === 'password';
+    if (usePassword) {
+      if (!identifier) {
+        setAuthError('ユーザーIDまたはメールアドレスを入力してください。');
+        return;
+      }
+      if (!loginPassword) {
+        setAuthError('パスワードを入力してください。');
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: loginId.trim(),
-          masterKey: loginKey.trim(),
-        }),
+        body: JSON.stringify(
+          usePassword
+            // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
+            ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) }
+            : { id: identifier, masterKey: loginKey.trim() },
+        ),
       });
 
       const data = await res.json();
@@ -5869,6 +6107,7 @@ export default function App() {
       fetchMyFollowingUrls(data.sessionToken);
       setShowLoginModal(false);
       setLoginKey('');
+      setLoginPassword('');
       setLoginId('');
       fetchTimeline();
     } catch (err: any) {
@@ -7951,6 +8190,28 @@ export default function App() {
                     {mailSettings.configured ? '設定済' : '未設定'}
                   </span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAdminTab('delivery'); setDeliveryQueueMsg(null); fetchDeliveryQueue(); }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                    adminTab === 'delivery'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <Send className="w-4 h-4 text-emerald-400" />
+                    <span>配送キュー</span>
+                  </div>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+                    (deliveryQueue.stats?.pending || 0) > 0
+                      ? 'bg-amber-500/20 text-amber-400'
+                      : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {deliveryQueue.stats?.pending || 0}
+                  </span>
+                </button>
               </div>
 
               {/* クイック操作 */}
@@ -9307,8 +9568,8 @@ export default function App() {
                           />
                           <span>
                             メールアドレス＋パスワード方式
-                            <span className="block text-[10px] text-amber-300">
-                              ※ 現在のクライアントUIは登録フォームが未対応のため、切り替えるとWebから新規登録できません
+                            <span className="block text-[10px] text-slate-500">
+                              ※ 新規登録とログインがメールアドレス＋パスワード方式に切り替わります（招待コードや利用規約の同意はそのまま有効です。メール送信が未設定でも登録できます）
                             </span>
                           </span>
                         </label>
@@ -9357,6 +9618,155 @@ export default function App() {
                       </div>
                     )}
                   </form>
+                </div>
+              )}
+
+              {/* 📮 配送再送キュー（ActivityPub 配送の指数バックオフ再送） */}
+              {adminTab === 'delivery' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                        <Send className="w-4 h-4 text-emerald-400" />
+                        <span>配送キュー（再送待ち / 失敗）</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                        相手サーバーの一時的な障害（ネットワークエラー・5xx・429 など）で失敗した配送を指数バックオフで自動再送します。
+                        401/403/404 などの恒久的な失敗は再送しません。最大 {deliveryQueue.maxAttempts ?? 9} 回試行します。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchDeliveryQueue}
+                      disabled={isLoadingDeliveryQueue}
+                      className="shrink-0 px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer flex items-center space-x-1.5"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDeliveryQueue ? 'animate-spin text-emerald-400' : ''}`} />
+                      <span>更新</span>
+                    </button>
+                  </div>
+
+                  {/* 統計 */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3">
+                      <p className="text-[11px] text-slate-400">再送待ち</p>
+                      <p className="text-xl font-black text-amber-300 mt-0.5">{deliveryQueue.stats?.pending ?? 0}</p>
+                    </div>
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3">
+                      <p className="text-[11px] text-slate-400">再送に成功</p>
+                      <p className="text-xl font-black text-emerald-300 mt-0.5">{deliveryQueue.stats?.delivered ?? 0}</p>
+                    </div>
+                    <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3">
+                      <p className="text-[11px] text-slate-400">失敗（確定）</p>
+                      <p className="text-xl font-black text-rose-300 mt-0.5">{deliveryQueue.stats?.failed ?? 0}</p>
+                    </div>
+                  </div>
+
+                  {deliveryQueue.stats?.nextAttemptAt && (
+                    <p className="text-[11px] text-slate-400">
+                      次回の再送予定:{' '}
+                      <span className="font-mono text-slate-200">
+                        {new Date(deliveryQueue.stats.nextAttemptAt).toLocaleString('ja-JP')}
+                      </span>
+                    </p>
+                  )}
+
+                  {/* 操作 */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleRetryDeliveries}
+                      disabled={isActingOnDelivery || (deliveryQueue.stats?.pending ?? 0) === 0}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl shadow-md transition cursor-pointer flex items-center space-x-1.5"
+                    >
+                      {isActingOnDelivery ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                      <span>今すぐ再送</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearFailedDeliveries}
+                      disabled={isActingOnDelivery || (deliveryQueue.stats?.failed ?? 0) === 0}
+                      className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer flex items-center space-x-1.5"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>失敗した記録を削除</span>
+                    </button>
+                  </div>
+
+                  {deliveryQueueMsg && (
+                    <div className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                      deliveryQueueMsg.type === 'success'
+                        ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                        : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                    }`}>
+                      {deliveryQueueMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                      <span>{deliveryQueueMsg.text}</span>
+                    </div>
+                  )}
+
+                  {/* 再送待ちの一覧 */}
+                  <div className="space-y-2">
+                    <h4 className="font-bold text-xs text-slate-300">
+                      再送待ちの配送 ({deliveryQueue.pending?.length ?? 0})
+                    </h4>
+                    {(deliveryQueue.pending?.length ?? 0) === 0 ? (
+                      <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                        再送待ちの配送はありません。
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {deliveryQueue.pending.map((item: any) => (
+                          <div key={item.id} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 text-xs space-y-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="font-bold text-slate-200 break-all">
+                                {item.activity_type || 'Activity'} → <span className="font-mono text-slate-300">{item.inbox_url}</span>
+                              </span>
+                              <span className="shrink-0 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-mono text-[10px]">
+                                {item.attempts}回失敗
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500">
+                              次回: {new Date(item.next_attempt_at).toLocaleString('ja-JP')}
+                              {item.last_status ? ` / 直近の応答: HTTP ${item.last_status}` : ''}
+                            </p>
+                            {item.last_error && <p className="text-[11px] text-rose-300/80 break-all">{item.last_error}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 失敗が確定した配送 */}
+                  <div className="space-y-2">
+                    <h4 className="font-bold text-xs text-slate-300">
+                      失敗が確定した配送 ({deliveryQueue.recentFailures?.length ?? 0})
+                    </h4>
+                    {(deliveryQueue.recentFailures?.length ?? 0) === 0 ? (
+                      <p className="text-xs text-slate-500 bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                        失敗が確定した配送はありません。
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {deliveryQueue.recentFailures.map((item: any) => (
+                          <div key={item.id} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 text-xs space-y-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="font-bold text-slate-200 break-all">
+                                {item.activity_type || 'Activity'} → <span className="font-mono text-slate-300">{item.inbox_url}</span>
+                              </span>
+                              <span className="shrink-0 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-mono text-[10px]">
+                                {item.attempts}回失敗
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500">
+                              最終試行: {new Date(item.updated_at).toLocaleString('ja-JP')}
+                              {item.last_status ? ` / 応答: HTTP ${item.last_status}` : ''}
+                            </p>
+                            {item.last_error && <p className="text-[11px] text-rose-300/80 break-all">{item.last_error}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -11053,12 +11463,22 @@ export default function App() {
                     <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 p-4 rounded-2xl text-xs space-y-2 mt-4">
                       <div className="flex items-center space-x-2 font-bold text-amber-400">
                         <Key className="w-4 h-4" />
-                        <span>マスターキー認証に関する重要事項</span>
+                        <span>{isPasswordAuthMode ? 'ログインとマスターキーに関する重要事項' : 'マスターキー認証に関する重要事項'}</span>
                       </div>
                       <p className="leading-relaxed text-amber-300/90 text-[11px]">
-                        Spica では個人情報を収集しないため、メールアドレスやパスワードによるリセット機能はありません。
-                        アカウント登録時に発行された <strong>マスターキー (spica_sk_... または astrabit_sk_...)</strong> があなたのアカウントの唯一の鍵です。
-                        万が一紛失した場合は再ログインができなくなりますので、必ずパスワード管理ツールや安全な保管場所にバックアップしてください。
+                        {isPasswordAuthMode ? (
+                          <>
+                            このサーバーはメールアドレス＋パスワード方式です。通常はメールアドレスとパスワードでログインできます。
+                            アカウント登録時に発行された <strong>マスターキー (spica_sk_... または astrabit_sk_...)</strong> は、パスワードを忘れたときの最終手段として使えます。
+                            紛失すると復旧できなくなる場合がありますので、必ずパスワード管理ツールや安全な保管場所にバックアップしてください。
+                          </>
+                        ) : (
+                          <>
+                            Spica では個人情報を収集しないため、メールアドレスやパスワードによるリセット機能はありません。
+                            アカウント登録時に発行された <strong>マスターキー (spica_sk_... または astrabit_sk_...)</strong> があなたのアカウントの唯一の鍵です。
+                            万が一紛失した場合は再ログインができなくなりますので、必ずパスワード管理ツールや安全な保管場所にバックアップしてください。
+                          </>
+                        )}
                       </p>
                     </div>
 
@@ -11210,6 +11630,106 @@ export default function App() {
                       <p className="text-[11px] text-slate-500">
                         ※ ZIPアーカイブには各カテゴリ別のJSONファイルと解説用READMEが格納されます。
                       </p>
+                    </div>
+
+                    {/* 📦 アカウントの引っ越し（Move / alsoKnownAs） */}
+                    <div className="bg-slate-950/70 border border-slate-800 p-4 sm:p-5 rounded-2xl space-y-4 mt-4">
+                      <div className="flex items-center space-x-2 font-bold text-slate-100">
+                        <Send className="w-5 h-5 text-indigo-400 shrink-0" />
+                        <span className="text-sm">アカウントの引っ越し（Move）</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        別のサーバーへ引っ越すときは、引っ越し先アカウントで旧アカウント（このアカウント）を
+                        <span className="font-mono text-slate-300"> alsoKnownAs </span>
+                        として設定してから、ここで引っ越しを実行します。フォロワーには
+                        <span className="font-mono text-slate-300"> Move </span>
+                        が配送され、引っ越し先のフォローに引き継がれます。
+                      </p>
+
+                      {migrationInfo.movedTo && (
+                        <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 p-3 rounded-xl text-xs space-y-1.5">
+                          <div className="flex items-center space-x-2 font-bold">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span>このアカウントは引っ越し済みです</span>
+                          </div>
+                          <p className="font-mono text-[11px] break-all text-amber-200/90">{migrationInfo.movedTo}</p>
+                          <button
+                            type="button"
+                            onClick={handleCancelMove}
+                            disabled={isMigrating}
+                            className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-50 text-amber-200 border border-amber-500/40 rounded-xl text-[11px] font-bold transition cursor-pointer"
+                          >
+                            引っ越し先の記録を解除
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 引っ越し元（他のサーバーからここへ引っ越してきた場合） */}
+                      <div className="space-y-2">
+                        <label className="block text-xs font-bold text-slate-300">
+                          引っ越し元アカウント（他のサーバーからここへ引っ越した場合）
+                        </label>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            value={migrationAliasInput}
+                            onChange={(e) => setMigrationAliasInput(e.target.value)}
+                            placeholder="@old@example.com または https://example.com/users/old"
+                            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSaveMigrationAlias}
+                            disabled={isMigrating}
+                            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer shrink-0"
+                          >
+                            保存
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          設定すると Actor 文書の <span className="font-mono">alsoKnownAs</span> として公開され、他のサーバーがあなたの引っ越しを検証できるようになります（空欄で保存すると解除）。
+                        </p>
+                      </div>
+
+                      {/* 引っ越し先（このサーバーから出ていく場合） */}
+                      <div className="space-y-2 pt-3 border-t border-slate-800">
+                        <label className="block text-xs font-bold text-slate-300">
+                          引っ越し先アカウント（このサーバーから引っ越す場合）
+                        </label>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            value={migrationTargetInput}
+                            onChange={(e) => setMigrationTargetInput(e.target.value)}
+                            placeholder="@new@example.com"
+                            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleExecuteMove}
+                            disabled={isMigrating}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center justify-center space-x-1.5 cursor-pointer shrink-0"
+                          >
+                            {isMigrating ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                            <span>引っ越しを実行</span>
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          フォロワー（{migrationInfo.followers} 件）へ Move を配送します。先に引っ越し先アカウント側で、このアカウントを
+                          <span className="font-mono"> alsoKnownAs </span>に設定しておく必要があります。
+                        </p>
+                      </div>
+
+                      {migrationMsg && (
+                        <div className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                          migrationMsg.type === 'success'
+                            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                        }`}>
+                          {migrationMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                          <span>{migrationMsg.text}</span>
+                        </div>
+                      )}
                     </div>
 
                     {/* ⚠️ 危険なエリア: アカウントの削除（退会） */}
@@ -11731,6 +12251,10 @@ export default function App() {
                   typeIcon = <Clock className="w-4 h-4 text-amber-400" />;
                   typeBadgeBg = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
                   typeLabel = '予約公開';
+                } else if (notif.type === 'move') {
+                  typeIcon = <Send className="w-4 h-4 text-sky-400" />;
+                  typeBadgeBg = 'bg-sky-500/15 text-sky-300 border-sky-500/30';
+                  typeLabel = '引っ越し';
                 }
 
                 return (
@@ -13904,7 +14428,8 @@ export default function App() {
                     <Ticket className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                     <div className="text-xs text-amber-200/90 leading-relaxed">
                       <strong className="text-amber-300 font-bold block mb-0.5">招待制コミュニティ</strong>
-                      このサーバーへの新規参加には有効な招待コードが必要です。暗号学的マスターキーで今すぐ利用開始できます。
+                      このサーバーへの新規参加には有効な招待コードが必要です。
+                      {isPasswordAuthMode ? 'メールアドレスとパスワードで今すぐ利用開始できます。' : '暗号学的マスターキーで今すぐ利用開始できます。'}
                     </div>
                   </div>
                 ) : (
@@ -13912,7 +14437,9 @@ export default function App() {
                     <Zap className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
                     <div className="text-xs text-indigo-200/90 leading-relaxed">
                       <strong className="text-cyan-300 font-bold block mb-0.5">オープン参加受付中</strong>
-                      招待コードや電話番号・メールアドレスは不要です。暗号学的マスターキーで今すぐ利用開始できます。
+                      {isPasswordAuthMode
+                        ? '招待コードは不要です。メールアドレスとパスワードで今すぐ利用開始できます。'
+                        : '招待コードや電話番号・メールアドレスは不要です。暗号学的マスターキーで今すぐ利用開始できます。'}
                     </div>
                   </div>
                 )}
@@ -13990,7 +14517,7 @@ export default function App() {
                       className="w-full py-2.5 bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 text-xs font-semibold rounded-2xl border border-slate-700/60 transition cursor-pointer flex items-center justify-center space-x-1.5"
                     >
                       <LogIn className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>マスターキーでログイン</span>
+                      <span>{isPasswordAuthMode ? 'メールアドレスでログイン' : 'マスターキーでログイン'}</span>
                     </button>
 
                     {/* フッター規約・ポリシーリンク */}
@@ -14348,7 +14875,7 @@ export default function App() {
                             }}
                             className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition cursor-pointer"
                           >
-                            マスターキーでログインする
+                            {isPasswordAuthMode ? 'メールアドレスでログインする' : 'マスターキーでログインする'}
                           </button>
                         </div>
                       </div>
@@ -14428,6 +14955,60 @@ export default function App() {
                           />
                         </div>
 
+                        {isPasswordAuthMode && (
+                          <>
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                                メールアドレス <span className="text-rose-400 font-bold">*必須</span>
+                              </label>
+                              <input
+                                type="email"
+                                required
+                                autoComplete="email"
+                                placeholder="you@example.com"
+                                value={regEmail}
+                                onChange={(e) => setRegEmail(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              />
+                              <p className="text-[10px] text-slate-500 mt-1">
+                                このサーバーはメールアドレス＋パスワード方式です。パスワードを忘れたときの復元にも使います。
+                              </p>
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                                パスワード <span className="text-rose-400 font-bold">*必須</span>
+                                <span className="text-slate-500 font-normal"> (8文字以上)</span>
+                              </label>
+                              <input
+                                type="password"
+                                required
+                                minLength={8}
+                                autoComplete="new-password"
+                                placeholder="8文字以上"
+                                value={regPassword}
+                                onChange={(e) => setRegPassword(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                                パスワード (確認)
+                              </label>
+                              <input
+                                type="password"
+                                required
+                                autoComplete="new-password"
+                                placeholder="同じパスワードをもう一度入力"
+                                value={regPasswordConfirm}
+                                onChange={(e) => setRegPasswordConfirm(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                              />
+                            </div>
+                          </>
+                        )}
+
                         <div>
                           <label className="block text-[11px] font-semibold text-slate-300 mb-1">
                             自己紹介 (Bio)
@@ -14445,7 +15026,7 @@ export default function App() {
                           type="submit"
                           className="w-full py-2.5 bg-gradient-to-r from-cyan-500 via-indigo-600 to-purple-600 hover:from-cyan-400 hover:via-indigo-500 hover:to-purple-500 text-white text-xs font-bold rounded-xl shadow-md transition transform active:scale-98 cursor-pointer mt-2"
                         >
-                          マスターキーを発行して登録
+                          {isPasswordAuthMode ? 'メールアドレスで登録する' : 'マスターキーを発行して登録'}
                         </button>
 
                         <div className="text-center pt-1">
@@ -14478,43 +15059,63 @@ export default function App() {
                         <ArrowLeft className="w-3.5 h-3.5" />
                         <span>戻る</span>
                       </button>
-                      <span className="text-xs font-bold text-slate-300">マスターキーでログイン</span>
+                      <span className="text-xs font-bold text-slate-300">
+                        {showPasswordLoginForm ? 'メールアドレス・パスワードでログイン' : 'マスターキーでログイン'}
+                      </span>
                     </div>
 
                     <form onSubmit={handleLogin} className="space-y-3 text-left">
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                          ユーザーID
+                          {showPasswordLoginForm ? 'ユーザーID または メールアドレス' : 'ユーザーID'}
                         </label>
                         <input
                           type="text"
                           required
-                          placeholder="例: alice"
+                          placeholder={showPasswordLoginForm ? '例: alice または you@example.com' : '例: alice'}
                           value={loginId}
                           onChange={(e) => setLoginId(e.target.value)}
                           className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                         />
                       </div>
 
-                      <div>
-                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                          マスターキー
-                        </label>
-                        <input
-                          type="password"
-                          required
-                          placeholder="spica_sk_... または astrabit_sk_..."
-                          value={loginKey}
-                          onChange={(e) => setLoginKey(e.target.value)}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        />
-                      </div>
+                      {showPasswordLoginForm ? (
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                            パスワード
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            placeholder="••••••••"
+                            autoComplete="current-password"
+                            value={loginPassword}
+                            onChange={(e) => setLoginPassword(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                            マスターキー
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            autoComplete="off"
+                            placeholder="spica_sk_... または astrabit_sk_..."
+                            value={loginKey}
+                            onChange={(e) => setLoginKey(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                        </div>
+                      )}
 
                       <button
                         type="submit"
                         className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-md transition transform active:scale-98 cursor-pointer mt-2"
                       >
-                        認証してログイン
+                        {showPasswordLoginForm ? 'ログイン' : '認証してログイン'}
                       </button>
 
                       {recoveryStatus.recoveryAvailable && (
@@ -14524,6 +15125,21 @@ export default function App() {
                           className="w-full text-[11px] text-slate-400 hover:text-amber-300 transition cursor-pointer underline decoration-dotted"
                         >
                           マスターキーを忘れた方はこちら（メールで復元）
+                        </button>
+                      )}
+
+                      {isPasswordAuthMode && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAuthError(null);
+                            setLoginMethod(showPasswordLoginForm ? 'master_key' : 'password');
+                          }}
+                          className="w-full text-[11px] text-indigo-400 hover:text-indigo-300 transition cursor-pointer underline decoration-dotted"
+                        >
+                          {showPasswordLoginForm
+                            ? 'マスターキーでログインする'
+                            : 'メールアドレス＋パスワードでログインする'}
                         </button>
                       )}
 
@@ -14694,7 +15310,11 @@ export default function App() {
                 アカウントが作成されました！
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                以下があなたのアカウントの唯一の<strong className="text-purple-300">マスターキー</strong>です。
+                {isPasswordAuthMode ? (
+                  <>緊急時用に、あなたのアカウントの<strong className="text-purple-300">マスターキー</strong>も発行されました。</>
+                ) : (
+                  <>以下があなたのアカウントの唯一の<strong className="text-purple-300">マスターキー</strong>です。</>
+                )}
               </p>
             </div>
 
@@ -14703,7 +15323,9 @@ export default function App() {
               <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5 text-amber-400" />
               <div className="leading-relaxed">
                 <strong>重要: このキーは二度と再表示・再発行できません。</strong><br />
-                紛失すると二度とログインできなくなります。必ず安全なパスワードマネージャー等に保存してください。
+                {isPasswordAuthMode
+                  ? '通常はメールアドレスとパスワードでログインできます。このキーはパスワードを忘れたときの最終手段になるので、必ず安全なパスワードマネージャー等に保存してください。'
+                  : '紛失すると二度とログインできなくなります。必ず安全なパスワードマネージャー等に保存してください。'}
               </div>
             </div>
 
@@ -16716,6 +17338,65 @@ export default function App() {
                 >
                   <Hash className="w-4 h-4 text-indigo-400" />
                   <span>チャンネル</span>
+                </button>
+
+                {/* 👥 ユーザーディレクトリ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDirectoryModal(true);
+                    fetchDirectory('');
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
+                >
+                  <Users className="w-4 h-4 text-cyan-400" />
+                  <span>ユーザー一覧</span>
+                </button>
+
+                {/* 📋 リスト */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (authUser) {
+                      setShowListsModal(true);
+                      fetchLists();
+                    } else {
+                      setShowLoginModal(true);
+                    }
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
+                >
+                  <span className="flex items-center space-x-3">
+                    <ListIcon className="w-4 h-4 text-sky-400" />
+                    <span>リスト</span>
+                  </span>
+                  {lists.length > 0 && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-sky-500/20 text-sky-300 font-mono">
+                      {lists.length}
+                    </span>
+                  )}
+                </button>
+
+                {/* 📡 アンテナ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    openAntennaManageModal();
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
+                >
+                  <span className="flex items-center space-x-3">
+                    <Radio className="w-4 h-4 text-emerald-400" />
+                    <span>アンテナ</span>
+                  </span>
+                  {antennas.length > 0 && (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-300 font-mono">
+                      {antennas.length}
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"

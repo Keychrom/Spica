@@ -14,6 +14,14 @@ import {
   deliverActivity,
 } from '../activitypub.js';
 import { deleteUserAccount } from '../accountService.js';
+import {
+  getDeliveryQueueStats,
+  releasePendingDeliveries,
+  clearFailedDeliveries,
+  MAX_DELIVERY_ATTEMPTS,
+  RETRY_DELAYS_MS,
+} from '../deliveryQueue.js';
+import { processDeliveryQueue } from '../scheduler.js';
 
 const uploadImageFile = multer({
   storage: multer.memoryStorage(),
@@ -1333,6 +1341,74 @@ adminRouter.post('/reports/:id/resolve', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Admin Report Resolve Error]:', err);
     res.status(500).json({ error: '通報の更新に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 📮 配送再送キュー（ActivityPub の配送リトライ）
+// ==========================================
+
+// 再送キューの状況（待機中・直近の失敗・バックオフ設定）
+adminRouter.get('/delivery-queue', (_req: Request, res: Response) => {
+  try {
+    const stats = getDeliveryQueueStats();
+    const pending = db.prepare(`
+      SELECT id, activity_id, activity_type, inbox_url, attempts, next_attempt_at, last_status, last_error, created_at
+      FROM outbox_deliveries
+      WHERE status = 'pending'
+      ORDER BY next_attempt_at ASC
+      LIMIT 20
+    `).all();
+    const recentFailures = db.prepare(`
+      SELECT id, activity_id, activity_type, inbox_url, attempts, last_status, last_error, updated_at
+      FROM outbox_deliveries
+      WHERE status = 'failed'
+      ORDER BY updated_at DESC
+      LIMIT 20
+    `).all();
+
+    res.json({
+      stats,
+      pending,
+      recentFailures,
+      maxAttempts: MAX_DELIVERY_ATTEMPTS,
+      retryDelaysMs: RETRY_DELAYS_MS,
+    });
+  } catch (err: any) {
+    console.error('[Admin Delivery Queue Error]:', err);
+    res.status(500).json({ error: '配送キューの取得に失敗しました。' });
+  }
+});
+
+// 待機中の再送を今すぐ前倒しして実行する
+adminRouter.post('/delivery-queue/retry', (req: Request, res: Response) => {
+  try {
+    const released = releasePendingDeliveries();
+    console.log(`[Admin Delivery] 🔁 再送を前倒し (${released}件) by @${req.user!.id}`);
+    if (released > 0) {
+      // ワーカーを即時起動する（応答は待たない。1件ずつの配送は時間がかかるため）
+      processDeliveryQueue().catch((err) => console.error('[Admin Delivery] 再送ワーカーの起動に失敗:', err));
+    }
+    res.json({
+      success: true,
+      released,
+      message: released > 0 ? `${released} 件の再送を開始しました。` : '再送待ちの配送はありません。',
+    });
+  } catch (err: any) {
+    console.error('[Admin Delivery Retry Error]:', err);
+    res.status(500).json({ error: '再送の実行に失敗しました。' });
+  }
+});
+
+// 失敗が確定した配送をまとめて削除する
+adminRouter.post('/delivery-queue/clear-failed', (req: Request, res: Response) => {
+  try {
+    const removed = clearFailedDeliveries();
+    console.log(`[Admin Delivery] 🧹 失敗した配送を削除 (${removed}件) by @${req.user!.id}`);
+    res.json({ success: true, removed, message: `失敗した配送 ${removed} 件を削除しました。` });
+  } catch (err: any) {
+    console.error('[Admin Delivery Clear Error]:', err);
+    res.status(500).json({ error: '失敗した配送の削除に失敗しました。' });
   }
 });
 

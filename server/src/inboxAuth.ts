@@ -1,4 +1,4 @@
-import { Request } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { config } from './config.js';
 import { db, UserRow } from './db.js';
 import { fetchRemoteActor } from './activitypub.js';
@@ -90,7 +90,7 @@ function isAcceptedRelayActor(keyActorUrl: string): boolean {
 /**
  * keyId から公開鍵を解決する（自インスタンスの鍵はネットワーク取得せずに解決）
  */
-async function resolvePublicKey(keyActorUrl: string): Promise<{ publicKeyPem: string | null; error?: string }> {
+export async function resolvePublicKey(keyActorUrl: string): Promise<{ publicKeyPem: string | null; error?: string }> {
   let parsed: URL;
   try {
     parsed = new URL(keyActorUrl);
@@ -211,4 +211,142 @@ export async function verifyInboxSignature(req: Request, activityActorUrl?: stri
     forwarded,
     error: result.valid ? undefined : result.reason,
   };
+}
+
+// ==========================================
+// 🔒 Authorized Fetch（署名必須モード）
+// ==========================================
+
+export interface FetchAuthResult {
+  verified: boolean;
+  /** 署名したアクター（= 鍵の所有者）。取得要求ではこれが実質の「閲覧者」になる */
+  signerActorUrl?: string;
+  error?: string;
+}
+
+/** 検証結果をリクエストに紐付けて再利用する（多重検証を防ぐ） */
+const SIGNER_CACHE_KEY = '__spicaVerifiedSigner';
+
+/**
+ * ActivityPub の「取得（GET）」リクエストの署名を検証する
+ *  - 取得には Activity が無いため actor との照合は行わず、鍵の所有者を署名者とする
+ *  - ボディが無いため digest は要求しない（署名対象は (request-target) host date など）
+ */
+export async function verifyFetchSignature(req: Request): Promise<FetchAuthResult> {
+  const sigHeader = req.headers['signature'];
+  if (!sigHeader || typeof sigHeader !== 'string') {
+    return { verified: false, error: 'Signature header missing' };
+  }
+
+  const parsedHeader = parseSignatureHeader(sigHeader);
+  if (!parsedHeader) {
+    return { verified: false, error: 'Malformed Signature header' };
+  }
+
+  const keyActorUrl = parsedHeader.keyId.split('#')[0];
+  if (!keyActorUrl) {
+    return { verified: false, error: `keyId does not contain an actor URL: ${parsedHeader.keyId}` };
+  }
+
+  const key = await resolvePublicKey(keyActorUrl);
+  if (!key.publicKeyPem) {
+    return { verified: false, signerActorUrl: keyActorUrl, error: key.error || 'Public key not found' };
+  }
+
+  const result = verifyHttpSignatureDetailed({
+    method: req.method,
+    path: req.originalUrl,
+    headers: req.headers,
+    publicKeyPem: key.publicKeyPem,
+    requireDigest: false,
+    maxAgeSeconds: config.signatureMaxAgeSeconds,
+    extraHostCandidates: [config.domain],
+  });
+
+  return {
+    verified: result.valid,
+    signerActorUrl: keyActorUrl,
+    error: result.valid ? undefined : result.reason,
+  };
+}
+
+/** 署名を検証して結果を使い回す（既に検証済みならその結果を返す） */
+export async function getVerifiedSigner(req: Request): Promise<FetchAuthResult> {
+  const cached = (req as Request & { [SIGNER_CACHE_KEY]?: FetchAuthResult })[SIGNER_CACHE_KEY];
+  if (cached) {
+    return cached;
+  }
+  const result = await verifyFetchSignature(req);
+  (req as Request & { [SIGNER_CACHE_KEY]?: FetchAuthResult })[SIGNER_CACHE_KEY] = result;
+  return result;
+}
+
+/** 指定アクターがローカルユーザーの承認済みフォロワーかどうか */
+export function isAcceptedFollower(followerActorUrl: string, followedActorUrl: string): boolean {
+  if (!followerActorUrl || !followedActorUrl) return false;
+  try {
+    return Boolean(
+      db.prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'").get(
+        followerActorUrl,
+        followedActorUrl,
+      ),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Authorized Fetch の対象外にするパス（公開情報・静的配信・API） */
+function isPublicFetchPath(path: string): boolean {
+  return (
+    path === '/' ||
+    path.startsWith('/api/') ||
+    path.startsWith('/.well-known/') ||
+    path.startsWith('/nodeinfo') ||
+    path.startsWith('/uploads/') ||
+    path.startsWith('/assets/') ||
+    path === '/sw.js' ||
+    path === '/manifest.json' ||
+    path === '/manifest.webmanifest' ||
+    path === '/favicon.jpg' ||
+    path === '/logo.jpg'
+  );
+}
+
+/**
+ * Authorized Fetch ミドルウェア
+ *
+ * `AUTHORIZED_FETCH=true` のとき、ActivityPub の取得（GET/HEAD）に有効な
+ * HTTP Signature を必須にする。ブラウザ（Accept: text/html）からの画面表示や
+ * WebFinger / NodeInfo / API / 静的ファイルは対象外。
+ */
+export async function requireAuthorizedFetch(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!config.authorizedFetch) {
+    return next();
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return next();
+  }
+  if (isPublicFetchPath(req.path)) {
+    return next();
+  }
+
+  // ブラウザからの HTML 表示は署名を持たないため対象外（SPA / OGP 配信）
+  const accept = String(req.headers.accept || '');
+  if (accept.includes('text/html') && !accept.includes('activity+json') && !accept.includes('ld+json')) {
+    return next();
+  }
+
+  const result = await getVerifiedSigner(req);
+  if (!result.verified) {
+    console.log(`[Authorized Fetch] 🔒 署名が無効な取得を拒否: ${req.method} ${req.originalUrl} (${result.error})`);
+    res.status(401).json({
+      error: 'HTTP Signature is required for fetching this resource.',
+      reason: result.error,
+    });
+    return;
+  }
+
+  console.log(`[Authorized Fetch] ✅ 署名済みの取得: ${req.method} ${req.originalUrl} by ${result.signerActorUrl}`);
+  next();
 }

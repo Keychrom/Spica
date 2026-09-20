@@ -15,13 +15,17 @@ import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
 import { discoveryRouter } from './routes/discovery.js';
 import { rateLimit } from './rateLimit.js';
-import { startScheduler } from './scheduler.js';
+import { requireAuthorizedFetch } from './inboxAuth.js';
+import { startScheduler, startDeliveryQueueWorker } from './scheduler.js';
 
 // データベースの初期化
 initDatabase();
 
 // 予約投稿バックグラウンドワーカーの起動
 startScheduler();
+
+// 配送再送（指数バックオフ）ワーカーの起動
+startDeliveryQueueWorker();
 
 const app = express();
 
@@ -74,6 +78,8 @@ if (!config.rateLimitDisabled) {
 }
 
 // ActivityPub & Well-Known ルーティング
+//  - AUTHORIZED_FETCH=true のときは、AP の取得に署名を必須にする（WebFinger/NodeInfo/API/画面表示は対象外）
+app.use(requireAuthorizedFetch);
 app.use('/.well-known', webfingerRouter);
 app.use('/', nodeinfoRouter);
 app.use('/', actorRouter);
@@ -127,13 +133,19 @@ if (finalDistPath) {
 
   // 🔗 OGP メタの動的注入（SNS でシェアしたときにカードが表示されるようにする）
   //    express.static は `/` を index.html で返してしまうため、その前に登録する
+  //    ⚠️ index.html はハッシュ付きアセットを参照するため、再ビルド後は必ず読み直す
+  //       (起動時の内容を固定すると、削除済みアセットを参照する HTML を配信してしまう)
+  const indexHtmlPath = path.join(finalDistPath, 'index.html');
   let cachedIndexHtml: string | null = null;
+  let cachedIndexMtimeMs = 0;
   const readIndexHtml = (): string | null => {
-    if (cachedIndexHtml) {
-      return cachedIndexHtml;
-    }
     try {
-      cachedIndexHtml = fs.readFileSync(path.join(finalDistPath as string, 'index.html'), 'utf8');
+      const stat = fs.statSync(indexHtmlPath);
+      if (cachedIndexHtml !== null && stat.mtimeMs === cachedIndexMtimeMs) {
+        return cachedIndexHtml;
+      }
+      cachedIndexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+      cachedIndexMtimeMs = stat.mtimeMs;
       return cachedIndexHtml;
     } catch {
       return null;

@@ -49,6 +49,12 @@ export interface AppConfig {
   inboxForwardedPolicy: InboxForwardedPolicy;
   /** プライベートアドレスへの remote actor 取得を許可するか（開発時のみ true 推奨） */
   allowPrivateRemoteFetch: boolean;
+  /**
+   * Authorized Fetch（署名必須モード）。
+   * 有効にすると ActivityPub の取得（Actor 文書・コレクション・ノート）に有効な
+   * HTTP Signature を必須にし、こちらからの取得にも署名を付ける。
+   */
+  authorizedFetch: boolean;
   /** レート制限を無効化する（既定 false。テストや特殊な運用時のみ true） */
   rateLimitDisabled: boolean;
 }
@@ -96,6 +102,9 @@ const ALLOW_PRIVATE_REMOTE_FETCH = process.env.ALLOW_PRIVATE_REMOTE_FETCH
 // レート制限の無効化（既定は有効）
 const RATE_LIMIT_DISABLED = (process.env.RATE_LIMIT_DISABLED || 'false').trim().toLowerCase() === 'true';
 
+// Authorized Fetch（署名必須モード）。既定は無効（従来どおり未署名の取得も受け付ける）
+const AUTHORIZED_FETCH = (process.env.AUTHORIZED_FETCH || 'false').trim().toLowerCase() === 'true';
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -117,5 +126,6 @@ export const config: AppConfig = {
   signatureMaxAgeSeconds: SIGNATURE_MAX_AGE_SECONDS,
   inboxForwardedPolicy: INBOX_FORWARDED_POLICY,
   allowPrivateRemoteFetch: ALLOW_PRIVATE_REMOTE_FETCH,
+  authorizedFetch: AUTHORIZED_FETCH,
   rateLimitDisabled: RATE_LIMIT_DISABLED,
 };

@@ -594,6 +594,37 @@ export function initDatabase() {
     );`,
     "CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id, purpose);",
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
+    // 配送再送キュー（一時的な障害で失敗した ActivityPub 配送を指数バックオフで再送する）
+    `CREATE TABLE IF NOT EXISTS outbox_deliveries (
+      id TEXT PRIMARY KEY,
+      activity_id TEXT DEFAULT '',
+      activity_type TEXT DEFAULT '',
+      inbox_url TEXT NOT NULL,
+      activity TEXT NOT NULL,
+      sender_user_id TEXT DEFAULT NULL,
+      use_instance_actor INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 1,
+      next_attempt_at TEXT NOT NULL,
+      last_status INTEGER DEFAULT NULL,
+      last_error TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_due ON outbox_deliveries(status, next_attempt_at);",
+    "CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_target ON outbox_deliveries(activity_id, inbox_url);",
+    // 相手（リモート）がこちらをブロックした記録: 配送抑制と表示制御に使う
+    `CREATE TABLE IF NOT EXISTS remote_blocks (
+      blocker_actor_url TEXT NOT NULL,
+      blocked_actor_url TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (blocker_actor_url, blocked_actor_url)
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocked ON remote_blocks(blocked_actor_url);",
+    // 引っ越し（Move）: 移行先 / 移行元アカウントの記録
+    "ALTER TABLE remote_actors ADD COLUMN moved_to TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN moved_to TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN also_known_as TEXT DEFAULT '';",
   ];
 
   for (const sql of migrations) {
@@ -683,6 +714,10 @@ export interface UserRow {
   password_hash?: string;
   /** ユーザーディレクトリへの掲載可否（1 = 掲載） */
   discoverable?: number;
+  /** 引っ越し先アカウント（Actor URL）。設定されていれば Actor 文書に movedTo として出る */
+  moved_to?: string;
+  /** 引っ越し元アカウント（Actor URL）。連合先が Move を検証するために alsoKnownAs として公開する */
+  also_known_as?: string;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;
@@ -915,6 +950,75 @@ export function isDomainBlocked(domainOrUrl: string): boolean {
 }
 
 /**
+ * 相手（リモート）がローカルアクターをブロックしたことを記録する
+ */
+export function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): void {
+  try {
+    db.prepare(`
+      INSERT INTO remote_blocks (blocker_actor_url, blocked_actor_url, created_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(blocker_actor_url, blocked_actor_url) DO NOTHING
+    `).run(blockerActorUrl, blockedActorUrl, new Date().toISOString());
+  } catch (err) {
+    console.error('[Remote Block] ❌ 記録に失敗:', err);
+  }
+}
+
+/** 受信した Block を取り消す（Undo Block） */
+export function removeRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): boolean {
+  try {
+    const res = db.prepare('DELETE FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').run(blockerActorUrl, blockedActorUrl);
+    return Number(res.changes ?? 0) > 0;
+  } catch (err) {
+    console.error('[Remote Block] ❌ 削除に失敗:', err);
+    return false;
+  }
+}
+
+/** 指定のブロッカーがローカルアクターをブロックしているか */
+export function isBlockedByRemoteActor(blockerActorUrl: string, blockedActorUrl: string): boolean {
+  try {
+    return Boolean(
+      db.prepare('SELECT 1 FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').get(blockerActorUrl, blockedActorUrl),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 配送先 Inbox の持ち主が senderActorUrl をブロックしているか（配送抑制に使う）
+ * ※ remote_blocks のブロッカーは remote_actors.id（= Actor URL）で保持している
+ */
+export function isInboxBlockingSender(inboxUrl: string, senderActorUrl: string): boolean {
+  if (!inboxUrl || !senderActorUrl) return false;
+  try {
+    const row = db.prepare(`
+      SELECT 1 FROM remote_blocks rb
+      JOIN remote_actors ra ON ra.id = rb.blocker_actor_url
+      WHERE rb.blocked_actor_url = ? AND (ra.inbox_url = ? OR ra.shared_inbox_url = ?)
+      LIMIT 1
+    `).get(senderActorUrl, inboxUrl, inboxUrl);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+/** 受信した Block の一覧（管理・デバッグ用） */
+export function listRemoteBlocks(limit = 100): { blocker_actor_url: string; blocked_actor_url: string; created_at: string }[] {
+  try {
+    return db.prepare('SELECT * FROM remote_blocks ORDER BY created_at DESC LIMIT ?').all(limit) as {
+      blocker_actor_url: string;
+      blocked_actor_url: string;
+      created_at: string;
+    }[];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * ブロックされたドメインに関するリモート投稿、アクターキャッシュ、フォロー関係を一括パージ（消去）
  */
 export function purgeDomainData(domain: string): { posts: number; actors: number; follows: number; relays: number } {
@@ -964,7 +1068,7 @@ export function purgeDomainData(domain: string): { posts: number; actors: number
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -981,7 +1085,7 @@ export interface NotificationRow {
  */
 export function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
   actorId: string;
   actorName: string;
   actorHandle: string;

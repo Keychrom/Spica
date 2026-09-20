@@ -1,8 +1,9 @@
 import { config } from './config.js';
-import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked } from './db.js';
+import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked, isInboxBlockingSender } from './db.js';
 import { signHeaders } from './crypto.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
+import { enqueueDelivery, nextRetryDelayMs } from './deliveryQueue.js';
 import crypto from 'node:crypto';
 
 export const ACTIVITYSTREAMS_CONTEXT = [
@@ -43,6 +44,10 @@ export function buildPerson(user: UserRow) {
       url: user.banner_url,
     } : undefined,
     url: actorUrl,
+    // 引っ越し: 移行元アカウント（連合先が Move を検証するために参照する）
+    alsoKnownAs: user.also_known_as ? [user.also_known_as] : undefined,
+    // 引っ越し: 移行先アカウント（このアカウントが引っ越したことを示す）
+    movedTo: user.moved_to || undefined,
     endpoints: {
       sharedInbox: `${config.origin}/inbox`,
     },
@@ -376,6 +381,62 @@ export function buildUndoActivity(params: {
 }
 
 /**
+ * 引っ越し（Move）Activity を構築する
+ *   actor : 引っ越し元（このインスタンスのローカルユーザー）
+ *   object: 引っ越し元（Mastodon 互換のため同じ URL を入れる）
+ *   target: 引っ越し先アカウント
+ * 受信側は「引っ越し先アカウントの alsoKnownAs に引っ越し元が含まれるか」で検証する。
+ */
+export function buildMoveActivity(params: {
+  actorUrl: string;
+  targetActorUrl: string;
+}) {
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${params.actorUrl}#moves/${crypto.randomUUID()}`,
+    type: 'Move',
+    actor: params.actorUrl,
+    object: params.actorUrl,
+    target: params.targetActorUrl,
+    to: ['https://www.w3.org/ns/activitystreams#Public'],
+  };
+}
+
+/**
+ * リモート Actor 文書から alsoKnownAs（引っ越し元アカウントの URL 一覧）を取得する
+ * ※ Move のなりすまし防止のため、必ず移行先アカウントの文書で確認する
+ */
+export async function fetchActorAliases(actorUrl: string): Promise<string[]> {
+  try {
+    const safety = await assertFetchableRemoteUrl(actorUrl);
+    if (!safety.safe) {
+      console.log(`[Move] 🚫 alsoKnownAs の取得をスキップ（安全でない URL）: ${actorUrl}`);
+      return [];
+    }
+    const res = await fetch(actorUrl, {
+      headers: {
+        Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
+        'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+        ...signedFetchHeaders(actorUrl),
+      },
+    });
+    if (!res.ok) {
+      console.log(`[Move] ⚠️ alsoKnownAs の取得に失敗: ${actorUrl} (HTTP ${res.status})`);
+      return [];
+    }
+    const doc: any = await res.json();
+    const raw = doc?.alsoKnownAs;
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return list
+      .map((entry: any) => (typeof entry === 'string' ? entry : entry?.id))
+      .filter((value: any): value is string => typeof value === 'string' && value.length > 0);
+  } catch (err: any) {
+    console.log(`[Move] ⚠️ alsoKnownAs の取得でエラー: ${actorUrl} (${err?.message || err})`);
+    return [];
+  }
+}
+
+/**
  * 投稿削除用 Delete(Tombstone) Activity を構築
  */
 export function buildDeleteActivity(params: {
@@ -505,6 +566,8 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
     headers: {
       Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
       'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+      // Authorized Fetch 運用のサーバーからも取得できるよう、有効時は署名を付ける
+      ...signedFetchHeaders(actorUrl),
     },
   });
 
@@ -576,17 +639,68 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
 }
 
 /**
- * リモートの Inbox に署名付きで Activity を送信（配送）
+ * 一時的な失敗か（再送する価値があるか）を判定する
+ *  - ネットワークエラー / タイムアウト / 408 / 429 / 5xx → 再送する
+ *  - その他の 4xx（401・403・404・410 など）は恒久的な失敗として再送しない
  */
-export async function deliverActivity(params: {
+function isRetryableDeliveryStatus(status: number | null): boolean {
+  if (status === null) return true;
+  if (status === 408 || status === 429) return true;
+  return status >= 500;
+}
+
+export interface DeliveryAttemptResult {
+  ok: boolean;
+  status: number | null;
+  error: string;
+  retryable: boolean;
+}
+
+/**
+ * Authorized Fetch 対応: 取得（GET）にインスタンスアクターの署名ヘッダーを付ける
+ *  - AUTHORIZED_FETCH=true のときのみ付与する（無効時は従来どおり未署名で取得）
+ */
+export function signedFetchHeaders(url: string): Record<string, string> {
+  if (!config.authorizedFetch) {
+    return {};
+  }
+  try {
+    const pair = getInstanceActorKeyPair();
+    return signHeaders({
+      method: 'GET',
+      url,
+      keyId: `${config.origin}/actor#main-key`,
+      privateKeyPem: pair.privateKeyPem,
+    });
+  } catch (err) {
+    console.error('[Authorized Fetch] ❌ 取得用の署名生成に失敗:', err);
+    return {};
+  }
+}
+
+/**
+ * リモートの Inbox へ署名付きで「1回だけ」配送を試行する
+ * （再送キューの登録は行わない。再送ワーカーからも使う）
+ */
+export async function attemptDelivery(params: {
   inboxUrl: string;
   activity: any;
   senderUser?: UserRow;
   useInstanceActor?: boolean;
-}) {
+}): Promise<DeliveryAttemptResult> {
   if (isDomainBlocked(params.inboxUrl)) {
     console.log(`[Delivery Skipped] 🚫 Skipping delivery to blocked domain inbox: ${params.inboxUrl}`);
-    return false;
+    return { ok: false, status: null, error: 'ブロック済みドメイン', retryable: false };
+  }
+
+  // 相手がこちらをブロックしている場合は配送しない（受信した Block を尊重する）
+  const senderActorUrl =
+    params.useInstanceActor || !params.senderUser
+      ? `${config.origin}/actor`
+      : `${config.origin}/users/${params.senderUser.id}`;
+  if (isInboxBlockingSender(params.inboxUrl, senderActorUrl)) {
+    console.log(`[Delivery Skipped] 🚫 相手がブロックしているためスキップ: ${senderActorUrl} -> ${params.inboxUrl}`);
+    return { ok: false, status: null, error: '相手にブロックされています', retryable: false };
   }
 
   // SSRF 対策: 配送先はリモートの Actor 文書由来（外部入力）のため、
@@ -594,7 +708,7 @@ export async function deliverActivity(params: {
   const deliverySafety = await assertFetchableRemoteUrl(params.inboxUrl);
   if (!deliverySafety.safe) {
     console.log(`[Delivery Skipped] 🚫 安全でない配送先のためスキップ: ${params.inboxUrl} (${deliverySafety.reason})`);
-    return false;
+    return { ok: false, status: null, error: `安全でない配送先: ${deliverySafety.reason}`, retryable: false };
   }
 
   const body = JSON.stringify(params.activity);
@@ -633,12 +747,59 @@ export async function deliverActivity(params: {
     if (!res.ok) {
       const errText = await res.text();
       console.warn(`[Delivery Warning] ${params.inboxUrl} responded ${res.status}: ${errText.slice(0, 200)}`);
+      return {
+        ok: false,
+        status: res.status,
+        error: `HTTP ${res.status}${errText ? ': ' + errText.slice(0, 200) : ''}`,
+        retryable: isRetryableDeliveryStatus(res.status),
+      };
     }
-    return res.ok;
-  } catch (err) {
+    return { ok: true, status: res.status, error: '', retryable: false };
+  } catch (err: any) {
     console.error(`[Delivery Error] Failed to deliver to ${params.inboxUrl}:`, err);
+    return {
+      ok: false,
+      status: null,
+      error: err?.message || 'ネットワークエラー',
+      retryable: true,
+    };
+  }
+}
+
+/**
+ * リモートの Inbox に署名付きで Activity を送信（配送）
+ * 一時的な失敗は再送キューに積み、指数バックオフで再送する
+ */
+export async function deliverActivity(params: {
+  inboxUrl: string;
+  activity: any;
+  senderUser?: UserRow;
+  useInstanceActor?: boolean;
+}): Promise<boolean> {
+  const result = await attemptDelivery(params);
+  if (result.ok) {
+    return true;
+  }
+
+  if (!result.retryable) {
+    console.warn(`[Delivery] ⛔ 再送しない失敗: ${params.inboxUrl} (${result.error})`);
     return false;
   }
+
+  const queued = enqueueDelivery({
+    inboxUrl: params.inboxUrl,
+    activity: params.activity,
+    senderUserId: params.senderUser?.id ?? null,
+    useInstanceActor: params.useInstanceActor,
+    status: result.status,
+    error: result.error,
+  });
+  if (queued) {
+    console.log(
+      `[Delivery] 📮 再送キューに登録: ${params.activity?.type || 'Activity'} -> ${params.inboxUrl} (約${Math.round(nextRetryDelayMs(1) / 1000)}秒後に再送)`,
+    );
+  }
+  return false;
 }
 
 export interface CustomEmoji {

@@ -1,8 +1,25 @@
 ﻿import { db, UserRow, ScheduledPostRow, createNotification } from './db.js';
 import { executeCreatePost } from './postService.js';
+import { attemptDelivery } from './activitypub.js';
+import {
+  listDueDeliveries,
+  markDeliveryDelivered,
+  markDeliveryFailed,
+  markDeliveryDead,
+  pruneDeliveries,
+} from './deliveryQueue.js';
 
 let schedulerTimer: NodeJS.Timeout | null = null;
 let isRunning = false;
+
+let deliveryTimer: NodeJS.Timeout | null = null;
+let isDeliveryRunning = false;
+let lastPruneAt = 0;
+
+/** 1回の再送処理で扱う最大件数 */
+const DELIVERY_BATCH_LIMIT = 50;
+/** 古いキュー行を掃除する間隔 */
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * 期限に達した予約投稿を処理
@@ -107,6 +124,93 @@ export async function processScheduledPosts(): Promise<number> {
 }
 
 /**
+ * 📮 配送再送キューを処理する
+ *
+ * 一時的な失敗（ネットワークエラー / 5xx / 429 など）で溜まった配送を
+ * 指数バックオフの予定に従って再送する。成功したら配信済み、恒久的な失敗や
+ * 試行回数の上限に達したものは失敗として確定させる。
+ */
+export async function processDeliveryQueue(): Promise<number> {
+  if (isDeliveryRunning) return 0;
+  isDeliveryRunning = true;
+
+  let deliveredCount = 0;
+  try {
+    // 1時間に1回、古い行（配信済み・失敗確定）を掃除する
+    if (Date.now() - lastPruneAt > PRUNE_INTERVAL_MS) {
+      lastPruneAt = Date.now();
+      pruneDeliveries();
+    }
+
+    const due = listDueDeliveries(DELIVERY_BATCH_LIMIT);
+    if (due.length === 0) {
+      return 0;
+    }
+
+    console.log(`[Delivery Queue] 🔁 再送の期限が来た配送を処理します (${due.length}件)...`);
+
+    for (const row of due) {
+      try {
+        let activity: any;
+        try {
+          activity = JSON.parse(row.activity);
+        } catch {
+          markDeliveryDead(row, { error: '保存された Activity を解析できませんでした' });
+          continue;
+        }
+
+        // 送信元ユーザー（署名鍵）を解決する。インスタンスアクターなら不要
+        let senderUser: UserRow | undefined;
+        if (!row.use_instance_actor && row.sender_user_id) {
+          senderUser = db.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
+          if (!senderUser) {
+            markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
+            continue;
+          }
+        }
+
+        const result = await attemptDelivery({
+          inboxUrl: row.inbox_url,
+          activity,
+          senderUser,
+          useInstanceActor: Boolean(row.use_instance_actor),
+        });
+
+        if (result.ok) {
+          markDeliveryDelivered(row.id);
+          deliveredCount++;
+          console.log(`[Delivery Queue] ✅ 再送に成功: ${row.activity_type || 'Activity'} -> ${row.inbox_url}`);
+          continue;
+        }
+
+        if (!result.retryable) {
+          markDeliveryDead(row, { status: result.status, error: result.error });
+          console.warn(`[Delivery Queue] ⛔ 再送を断念（恒久的な失敗）: ${row.inbox_url} (${result.error})`);
+          continue;
+        }
+
+        const outcome = markDeliveryFailed(row, { status: result.status, error: result.error });
+        if (outcome.dead) {
+          console.warn(`[Delivery Queue] 💀 試行回数の上限に達したため断念: ${row.inbox_url} (${row.attempts + 1}回失敗)`);
+        } else {
+          console.log(
+            `[Delivery Queue] ⏳ 再送を予約: ${row.inbox_url} (${row.attempts + 1}回目の失敗 / 次回 ${outcome.nextAttemptAt})`,
+          );
+        }
+      } catch (err) {
+        console.error(`[Delivery Queue] 再送処理でエラー (${row.inbox_url}):`, err);
+      }
+    }
+  } catch (err) {
+    console.error('[Delivery Queue] Error in processDeliveryQueue:', err);
+  } finally {
+    isDeliveryRunning = false;
+  }
+
+  return deliveredCount;
+}
+
+/**
  * 予約投稿スケジューラの起動 (10秒間隔でポーリング)
  */
 export function startScheduler(intervalMs = 10000): void {
@@ -120,6 +224,19 @@ export function startScheduler(intervalMs = 10000): void {
 }
 
 /**
+ * 配送再送ワーカーの起動 (既定 60秒間隔でポーリング)
+ */
+export function startDeliveryQueueWorker(intervalMs = 60000): void {
+  if (deliveryTimer) return;
+  console.log(`[Delivery Queue] ⏱️ 配送再送ワーカーを開始しました (interval: ${intervalMs}ms)`);
+  deliveryTimer = setInterval(() => {
+    processDeliveryQueue().catch((err) => {
+      console.error('[Delivery Queue Interval Error]:', err);
+    });
+  }, intervalMs);
+}
+
+/**
  * スケジューラの停止
  */
 export function stopScheduler(): void {
@@ -127,5 +244,10 @@ export function stopScheduler(): void {
     clearInterval(schedulerTimer);
     schedulerTimer = null;
     console.log('[Scheduler] ⏹️ Scheduler stopped');
+  }
+  if (deliveryTimer) {
+    clearInterval(deliveryTimer);
+    deliveryTimer = null;
+    console.log('[Delivery Queue] ⏹️ 配送再送ワーカーを停止しました');
   }
 }

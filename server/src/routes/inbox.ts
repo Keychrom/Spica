@@ -1,9 +1,12 @@
 import { Router, Request, Response } from 'express';
-import { db, UserRow, PostRow, RelayRow, isDomainBlocked, createNotification } from '../db.js';
+import { db, UserRow, PostRow, RelayRow, FollowRow, isDomainBlocked, createNotification, addRemoteBlock, removeRemoteBlock } from '../db.js';
 import { config } from '../config.js';
 import {
   fetchRemoteActor,
   buildAcceptActivity,
+  buildFollowActivity,
+  buildMoveActivity,
+  fetchActorAliases,
   deliverActivity,
   extractCustomEmojis,
   replaceCustomEmojis,
@@ -17,6 +20,23 @@ import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 
 export const inboxRouter = Router();
+
+/** `${config.origin}/users/<id>` 形式のローカルアクター URL からユーザーIDを取り出す */
+function localUsernameFromActorUrl(actorUrl: string): string | null {
+  if (!actorUrl || !config.origin) return null;
+  const prefix = `${config.origin}/users/`;
+  if (!actorUrl.startsWith(prefix)) return null;
+  const id = actorUrl.slice(prefix.length).split(/[/?#]/)[0];
+  return id || null;
+}
+
+/** ローカルアクター（ユーザーまたはインスタンスアクター）かどうか */
+function isLocalActorUrl(actorUrl: string): boolean {
+  if (!actorUrl) return false;
+  if (actorUrl === `${config.origin}/actor`) return true;
+  const id = localUsernameFromActorUrl(actorUrl);
+  return Boolean(id && db.prepare('SELECT id FROM users WHERE id = ?').get(id));
+}
 
 /**
  * 共通の Activity 受信ハンドラ (User Inbox & Shared Inbox)
@@ -912,6 +932,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             db.prepare('DELETE FROM announces WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
             console.log(`[Inbox Undo] ❌ Boost removed: ${actorUrl} on ${targetObjId}`);
           }
+        } else if (innerType === 'Block') {
+          // ブロックの解除: 配送抑制をやめる
+          const blockedUrl = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id;
+          if (blockedUrl && removeRemoteBlock(actorUrl, blockedUrl)) {
+            console.log(`[Inbox Undo] ✅ ブロックを解除: ${actorUrl} -> ${blockedUrl}（配送を再開）`);
+          }
         }
         return res.status(200).json({ status: 'Undo processed' });
       }
@@ -948,6 +974,129 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId}`);
         }
         return res.status(200).json({ status: 'Delete processed' });
+      }
+
+      case 'Block': {
+        // 相手がこちら（ローカルユーザー / インスタンスアクター）をブロックした。
+        // 記録しておき、以後その相手への配送は行わない（受信した Block を尊重する）
+        const objectUrl = typeof activity.object === 'string' ? activity.object : activity.object?.id;
+        if (!objectUrl) {
+          return res.status(200).json({ status: 'Block ignored (no object)' });
+        }
+        if (!isLocalActorUrl(objectUrl)) {
+          console.log(`[Inbox Block] ℹ️ ローカルアクター以外への Block のため無視: ${actorUrl} -> ${objectUrl}`);
+          return res.status(200).json({ status: 'Block ignored (not a local actor)' });
+        }
+
+        // 配送抑制の判定で inbox_url を引けるよう、ブロッカーをキャッシュしておく
+        try {
+          await fetchRemoteActor(actorUrl);
+        } catch (e: any) {
+          console.warn(`[Inbox Block] ⚠️ ブロッカーの取得に失敗: ${actorUrl} (${e?.message || e})`);
+        }
+
+        addRemoteBlock(actorUrl, objectUrl);
+        console.log(`[Inbox Block] 🚫 受信したブロックを記録: ${actorUrl} が ${objectUrl} をブロック（以後の配送を停止）`);
+        return res.status(200).json({ status: 'Block recorded' });
+      }
+
+      case 'Move': {
+        // 引っ越し: actor = 引っ越し先アカウント / object = 引っ越し元アカウント
+        const newActorUrl = actorUrl;
+        const oldActorUrl = typeof activity.object === 'string' ? activity.object : activity.object?.id;
+        const targetUrl = typeof activity.target === 'string' ? activity.target : activity.target?.id;
+
+        if (!oldActorUrl) {
+          return res.status(400).json({ error: 'Move の object（引っ越し元）が不正です。' });
+        }
+        if (targetUrl && targetUrl !== newActorUrl) {
+          console.log(`[Inbox Move] ⚠️ Move の target が actor と一致しません: ${targetUrl} != ${newActorUrl}`);
+          return res.status(400).json({ error: 'Move の target が不正です。' });
+        }
+
+        // なりすまし防止: 引っ越し先が alsoKnownAs に引っ越し元を宣言しているか検証する
+        const aliases = await fetchActorAliases(newActorUrl);
+        if (!aliases.includes(oldActorUrl)) {
+          console.log(`[Inbox Move] ⛔ alsoKnownAs の検証に失敗（引っ越し元の宣言なし）: ${newActorUrl} !-> ${oldActorUrl}`);
+          return res.status(400).json({ error: 'Move の検証に失敗しました（alsoKnownAs に引っ越し元が含まれていません）。' });
+        }
+
+        // (1) 引っ越し元がローカルユーザー: 移行先を記録する
+        //     （フォロワーへの Move 配送は、本人が設定画面から実行したときに行う）
+        const localUserId = localUsernameFromActorUrl(oldActorUrl);
+        if (localUserId && db.prepare('SELECT id FROM users WHERE id = ?').get(localUserId)) {
+          db.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(newActorUrl, localUserId);
+          console.log(`[Inbox Move] 📦 ローカルユーザー @${localUserId} の引っ越し先を記録: ${newActorUrl}`);
+          try {
+            createNotification({
+              userId: localUserId,
+              type: 'move',
+              actorId: newActorUrl,
+              actorName: newActorUrl,
+              actorHandle: newActorUrl,
+              content: `引っ越し先アカウント（${newActorUrl}）を確認しました。設定画面の「アカウントの引っ越し」からフォロワーの移行を実行できます。`,
+            });
+          } catch {}
+          return res.status(200).json({ status: 'Move recorded for local user' });
+        }
+
+        // (2) リモートユーザーが引っ越した: こちらのフォロー関係を新アカウントへ移行する
+        const oldActor = db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(oldActorUrl) as any;
+        if (!oldActor) {
+          console.log(`[Inbox Move] ℹ️ 未知のアクターの Move のため無視: ${oldActorUrl}`);
+          return res.status(200).json({ status: 'Move ignored (unknown actor)' });
+        }
+
+        db.prepare('UPDATE remote_actors SET moved_to = ?, updated_at = ? WHERE id = ?').run(
+          newActorUrl,
+          new Date().toISOString(),
+          oldActorUrl,
+        );
+
+        const newActor = await fetchRemoteActor(newActorUrl).catch(() => null);
+        const followRows = db.prepare('SELECT * FROM follows WHERE following_url = ?').all(oldActorUrl) as unknown as FollowRow[];
+        let migrated = 0;
+
+        for (const row of followRows) {
+          db.prepare("UPDATE follows SET following_url = ?, inbox_url = ?, status = 'pending' WHERE id = ?").run(
+            newActorUrl,
+            newActor?.inbox_url || row.inbox_url,
+            row.id,
+          );
+          migrated++;
+
+          const followerId = localUsernameFromActorUrl(row.follower_url);
+          if (!followerId) continue;
+          const follower = db.prepare('SELECT * FROM users WHERE id = ?').get(followerId) as UserRow | undefined;
+          if (!follower) continue;
+
+          // 新しいアカウントへフォローを送り直す（受理されれば以降の投稿が届く）
+          if (newActor?.inbox_url) {
+            deliverActivity({
+              inboxUrl: newActor.inbox_url,
+              activity: buildFollowActivity({ actorUrl: row.follower_url, targetActorUrl: newActorUrl }),
+              senderUser: follower,
+            }).catch(() => {});
+          }
+
+          try {
+            const newHandle = newActor ? `@${newActor.username}@${newActor.domain}` : newActorUrl;
+            createNotification({
+              userId: follower.id,
+              type: 'move',
+              actorId: newActorUrl,
+              actorName: newActor?.name || newActor?.username || oldActor.name || oldActor.username || newActorUrl,
+              actorHandle: newHandle,
+              actorIcon: newActor?.icon_url || '',
+              content: `${oldActor.name || oldActor.username || oldActorUrl} さんが ${newHandle} へ引っ越しました。フォローを引き継ぎました。`,
+            });
+          } catch (e) {
+            console.warn('[Inbox Move] ⚠️ 通知の作成に失敗:', e);
+          }
+        }
+
+        console.log(`[Inbox Move] 📦 引っ越しを反映: ${oldActorUrl} -> ${newActorUrl}（フォロー移行 ${migrated}件）`);
+        return res.status(200).json({ status: 'Move processed', migrated });
       }
 
       case 'Flag': {

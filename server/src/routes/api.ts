@@ -64,6 +64,8 @@ import {
   deliverActivity,
   resolveWebFinger,
   fetchRemoteActor,
+  fetchActorAliases,
+  buildMoveActivity,
   federatePollUpdate,
 } from '../activitypub.js';
 
@@ -1917,7 +1919,150 @@ apiRouter.put('/user/profile', requireAuth, (req: Request, res: Response) => {
   });
 });
 
-// ユーザーデータのバックアップ・エクスポート (JSON / ZIP)
+// ==========================================
+// 📦 アカウントの引っ越し（Move / alsoKnownAs）
+// ==========================================
+
+// 引っ越しの状況（移行元・移行先・フォロワー数）
+apiRouter.get('/user/migration', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+  const followers = (
+    db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND follower_url != ?').get(myActorUrl, myActorUrl) as any
+  ).c;
+
+  res.json({
+    actorUrl: myActorUrl,
+    movedTo: (user as any).moved_to || '',
+    alsoKnownAs: (user as any).also_known_as || '',
+    followers,
+  });
+});
+
+// 引っ越し元アカウント（alsoKnownAs）の登録 — 他のサーバーからここへ引っ越す場合に必要
+apiRouter.post('/user/migration/alias', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const input = typeof req.body?.alias === 'string' ? req.body.alias.trim() : '';
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  // 空文字で解除
+  if (!input) {
+    db.prepare("UPDATE users SET also_known_as = '' WHERE id = ?").run(user.id);
+    console.log(`[Migration] 📦 @${user.id} の引っ越し元を解除`);
+    return res.json({ success: true, alsoKnownAs: '', message: '引っ越し元アカウントを解除しました。' });
+  }
+
+  try {
+    // ハンドル (@user@host) でも Actor URL でも受け付ける
+    let actorUrl = input;
+    if (!/^https?:\/\//i.test(input)) {
+      const handle = input.startsWith('@') ? input.slice(1) : input;
+      if (!handle.includes('@')) {
+        return res.status(400).json({ error: '@ユーザー名@サーバー の形式で入力してください。' });
+      }
+      const resolved = await resolveWebFinger(handle);
+      if (!resolved) {
+        return res.status(404).json({ error: '引っ越し元アカウントが見つかりませんでした。' });
+      }
+      actorUrl = resolved;
+    }
+
+    if (actorUrl === myActorUrl) {
+      return res.status(400).json({ error: '自分自身は引っ越し元に指定できません。' });
+    }
+
+    db.prepare('UPDATE users SET also_known_as = ? WHERE id = ?').run(actorUrl, user.id);
+    console.log(`[Migration] 📦 @${user.id} の引っ越し元を登録: ${actorUrl}`);
+    res.json({ success: true, alsoKnownAs: actorUrl, message: `引っ越し元アカウントを登録しました。Actor 文書の alsoKnownAs として公開されます。` });
+  } catch (err: any) {
+    console.error('[Migration] ❌ 引っ越し元の登録に失敗:', err);
+    res.status(500).json({ error: err.message || '引っ越し元の登録に失敗しました。' });
+  }
+});
+
+// フォロワーへ Move を配送して引っ越す
+apiRouter.post('/user/migration/move', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const target = typeof req.body?.target === 'string' ? req.body.target.trim() : '';
+  if (!target) {
+    return res.status(400).json({ error: '引っ越し先アカウント（@ユーザー名@サーバー または URL）を指定してください。' });
+  }
+
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+
+  try {
+    // 1. 引っ越し先アカウントを解決する
+    let targetActorUrl = target;
+    if (!/^https?:\/\//i.test(target)) {
+      const handle = target.startsWith('@') ? target.slice(1) : target;
+      if (!handle.includes('@')) {
+        return res.status(400).json({ error: '@ユーザー名@サーバー の形式で入力してください。' });
+      }
+      const resolved = await resolveWebFinger(handle);
+      if (!resolved) {
+        return res.status(404).json({ error: '引っ越し先アカウントが見つかりませんでした。' });
+      }
+      targetActorUrl = resolved;
+    }
+
+    if (targetActorUrl === myActorUrl) {
+      return res.status(400).json({ error: '自分自身へは引っ越せません。' });
+    }
+    if (isDomainBlocked(targetActorUrl)) {
+      return res.status(400).json({ error: 'このサーバーはブロック対象のため引っ越せません。' });
+    }
+
+    // 2. 引っ越し先が alsoKnownAs にこのアカウントを宣言しているか検証する
+    //    （連合先も同じ検証をするため、宣言が無いと Move は受理されない）
+    const aliases = await fetchActorAliases(targetActorUrl);
+    if (!aliases.includes(myActorUrl)) {
+      return res.status(400).json({
+        error: `引っ越し先（${targetActorUrl}）の alsoKnownAs にこのアカウント（${myActorUrl}）が含まれていません。先に引っ越し先アカウントで旧アカウントとして設定してください。`,
+      });
+    }
+
+    // 3. フォロワー全員へ Move を配送する
+    const followerRows = db.prepare('SELECT * FROM follows WHERE following_url = ? AND follower_url != ?').all(
+      myActorUrl,
+      myActorUrl,
+    ) as unknown as FollowRow[];
+    const moveActivity = buildMoveActivity({ actorUrl: myActorUrl, targetActorUrl });
+
+    let delivered = 0;
+    let failed = 0;
+    for (const row of followerRows) {
+      const ok = await deliverActivity({ inboxUrl: row.inbox_url, activity: moveActivity, senderUser: user });
+      if (ok) delivered++;
+      else failed++;
+    }
+
+    // 4. 移行先を記録する（Actor 文書の movedTo として公開される）
+    db.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(targetActorUrl, user.id);
+
+    console.log(
+      `[Migration] 📦 @${user.id} が ${targetActorUrl} へ引っ越し（フォロワー ${followerRows.length}件 / 成功 ${delivered} / 失敗 ${failed}）`,
+    );
+    res.json({
+      success: true,
+      targetActorUrl,
+      followers: followerRows.length,
+      delivered,
+      failed,
+      message: `引っ越しを実行しました。フォロワー ${followerRows.length} 件へ通知（成功 ${delivered} / 失敗 ${failed}）しました。`,
+    });
+  } catch (err: any) {
+    console.error('[Migration] ❌ 引っ越しに失敗:', err);
+    res.status(500).json({ error: err.message || '引っ越しに失敗しました。' });
+  }
+});
+
+// 引っ越し先の記録を解除する（配送済みの Move は取り消せない）
+apiRouter.post('/user/migration/cancel', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  db.prepare("UPDATE users SET moved_to = '' WHERE id = ?").run(user.id);
+  console.log(`[Migration] 📦 @${user.id} の引っ越し先を解除`);
+  res.json({ success: true, message: '引っ越し先の記録を解除しました（連合先へ配送済みの Move は取り消せません）。' });
+});
 apiRouter.get('/user/export', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const format = (req.query.format as string)?.toLowerCase();

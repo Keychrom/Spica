@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { db, UserRow, FollowRow, PostRow } from '../db.js';
 import { config } from '../config.js';
+import { getVerifiedSigner, isAcceptedFollower } from '../inboxAuth.js';
 import {
   buildPerson,
   buildNote,
@@ -10,6 +11,29 @@ import {
 } from '../activitypub.js';
 
 export const usersRouter = Router();
+
+/**
+ * フォロワー限定投稿を取得してよいか判定する。
+ * 署名済みリクエストで、署名者が投稿者本人か承認済みフォロワーの場合のみ許可する。
+ */
+async function canFetchFollowersOnlyPost(
+  req: Request,
+  post: PostRow,
+): Promise<boolean> {
+  try {
+    const signer = await getVerifiedSigner(req);
+    if (!signer.verified || !signer.signerActorUrl) {
+      return false;
+    }
+    if (signer.signerActorUrl === post.author_url) {
+      return true;
+    }
+    return isAcceptedFollower(signer.signerActorUrl, post.author_url);
+  } catch (err) {
+    console.warn('[Followers Only] 署名検証に失敗:', err);
+    return false;
+  }
+}
 
 /** 投稿の media_attachments（JSON文字列）を ActivityPub 用の配列に変換する */
 function parseMediaAttachments(raw: unknown): { url: string; mediaType?: string; name?: string }[] {
@@ -95,7 +119,7 @@ usersRouter.get('/:username/following', (req: Request, res: Response) => {
 });
 
 // Note (投稿) エンドポイント - Misskey / Mastodon からの個別ノート解決用
-usersRouter.get('/:username/posts/:postId', (req: Request, res: Response) => {
+usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response) => {
   const { username, postId } = req.params;
   const canonicalPostId = `${config.origin}/users/${username}/posts/${postId}`;
 
@@ -106,10 +130,13 @@ usersRouter.get('/:username/posts/:postId', (req: Request, res: Response) => {
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
-  // ローカル限定・フォロワー限定投稿の場合は外部 ActivityPub 解決を拒絶
-  // （フォロワー限定は配信時にフォロワーへ直接届くため、未認証の解決は許可しない）
-  if (post.visibility === 'local' || post.visibility === 'followers') {
-    return res.status(403).json({ error: 'この投稿は限定公開のため外部には公開されていません。' });
+  // ローカル限定の投稿は外部 ActivityPub 解決を拒絶
+  if (post.visibility === 'local') {
+    return res.status(403).json({ error: 'この投稿はローカル限定のため外部には公開されていません。' });
+  }
+  // フォロワー限定は、署名済みの本人 / 承認済みフォロワーのみ取得できる
+  if (post.visibility === 'followers' && !(await canFetchFollowersOnlyPost(req, post))) {
+    return res.status(403).json({ error: 'この投稿はフォロワー限定です。署名済みのフォロワーのみ取得できます。' });
   }
 
   const note = buildNote({
@@ -128,7 +155,7 @@ usersRouter.get('/:username/posts/:postId', (req: Request, res: Response) => {
 });
 
 // Create Activity エンドポイント
-usersRouter.get('/:username/posts/:postId/activity', (req: Request, res: Response) => {
+usersRouter.get('/:username/posts/:postId/activity', async (req: Request, res: Response) => {
   const { username, postId } = req.params;
   const canonicalPostId = `${config.origin}/users/${username}/posts/${postId}`;
 
@@ -137,8 +164,11 @@ usersRouter.get('/:username/posts/:postId/activity', (req: Request, res: Respons
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
-  if (post.visibility === 'local' || post.visibility === 'followers') {
-    return res.status(403).json({ error: 'この投稿は限定公開です。' });
+  if (post.visibility === 'local') {
+    return res.status(403).json({ error: 'この投稿はローカル限定です。' });
+  }
+  if (post.visibility === 'followers' && !(await canFetchFollowersOnlyPost(req, post))) {
+    return res.status(403).json({ error: 'この投稿はフォロワー限定です。署名済みのフォロワーのみ取得できます。' });
   }
 
   const actorUrl = `${config.origin}/users/${username}`;
