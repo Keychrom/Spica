@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { db, UserRow, FollowRow, PostRow } from '../db.js';
 import { config } from '../config.js';
 import {
@@ -22,7 +22,14 @@ function parseMediaAttachments(raw: unknown): { url: string; mediaType?: string;
 }
 
 // Actor (Person) エンドポイント
-usersRouter.get('/:username', (req: Request, res: Response) => {
+usersRouter.get('/:username', (req: Request, res: Response, next: NextFunction) => {
+  // ブラウザからのHTML要求（text/html）は SPA / OGP ハンドラに委ねる
+  // （Mastodon 等と同様に、Accept で HTML と ActivityPub JSON を切り替える）
+  const accept = String(req.headers.accept || '');
+  if (accept.includes('text/html')) {
+    return next();
+  }
+
   const username = req.params.username as string;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 

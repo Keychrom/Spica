@@ -26,7 +26,10 @@
     "test:import": "npx tsx scripts/test-import.ts",
     "test:lists": "npx tsx scripts/test-lists.ts",
     "test:media-video": "npx tsx scripts/test-media-video.ts",
-    "test:search-operators": "npx tsx scripts/test-search-operators.ts"
+    "test:search-operators": "npx tsx scripts/test-search-operators.ts",
+    "test:discovery": "npx tsx scripts/test-discovery.ts",
+    "test:roles": "npx tsx scripts/test-roles.ts",
+    "test:profile-fields": "npx tsx scripts/test-profile-fields.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

@@ -557,6 +557,26 @@ export function initDatabase() {
     );`,
     "CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_list_members_list ON list_members(list_id);",
+    // ロール（権限）とユーザーへの付与
+    `CREATE TABLE IF NOT EXISTS roles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT DEFAULT '#6366f1',
+      permissions TEXT NOT NULL DEFAULT '',
+      is_system INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    `CREATE TABLE IF NOT EXISTS user_roles (
+      user_id TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, role_id)
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);",
+    // プロフィール項目（リンク集など）とディレクトリ公開設定
+    "ALTER TABLE users ADD COLUMN fields TEXT DEFAULT '[]';",
+    "ALTER TABLE users ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 1;",
   ];
 
   for (const sql of migrations) {
@@ -636,6 +656,10 @@ export interface UserRow {
   is_frozen: number;
   /** 鍵アカウント（フォロー承認制）: 1 なら新規フォローを承認制にする */
   is_locked: number;
+  /** プロフィール項目（JSON 配列: [{ name, value }]） */
+  fields?: string;
+  /** ユーザーディレクトリへの掲載可否（1 = 掲載） */
+  discoverable?: number;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;

@@ -118,11 +118,59 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
+ * ユーザーが持つ権限の集合を解決する
+ *   - users.role が 'admin' の場合は admin 権限を持つ（既存の管理者）
+ *   - 付与されたロール（roles.permissions）の権限も加える
+ */
+export function getUserPermissions(user: { id: string; role: string }): Set<string> {
+  const permissions = new Set<string>();
+  if (user.role === 'admin') {
+    permissions.add('admin');
+  }
+  try {
+    const rows = db.prepare(`
+      SELECT r.permissions FROM user_roles ur
+      JOIN roles r ON ur.role_id = r.id
+      WHERE ur.user_id = ?
+    `).all(user.id) as { permissions: string }[];
+    for (const row of rows) {
+      for (const permission of String(row.permissions || '').split(',').map((p) => p.trim()).filter(Boolean)) {
+        permissions.add(permission);
+      }
+    }
+  } catch {
+    // テーブル未作成などは無視（権限なしとして扱う）
+  }
+  return permissions;
+}
+
+/** 指定権限を持つか（'admin' は全権限を包含する） */
+export function hasPermission(user: { id: string; role: string } | null | undefined, permission: string): boolean {
+  if (!user) {
+    return false;
+  }
+  const permissions = getUserPermissions(user);
+  return permissions.has(permission) || permissions.has('admin');
+}
+
+/**
  * 管理者（Admin）必須ミドルウェア
+ * 付与ロールに 'admin' 権限がある場合も許可する
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user || req.user.role !== 'admin') {
+  if (!hasPermission(req.user, 'admin')) {
     return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+  }
+  next();
+}
+
+/**
+ * モデレーター権限（通報対応・凍結・ドメインブロックなど）必須ミドルウェア
+ * 'moderate' 権限を持つロールを付与されたユーザーが利用できる
+ */
+export function requireModerator(req: Request, res: Response, next: NextFunction) {
+  if (!hasPermission(req.user, 'moderate')) {
+    return res.status(403).json({ error: 'この操作にはモデレーター権限が必要です。' });
   }
   next();
 }

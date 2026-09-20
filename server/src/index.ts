@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
 import { config } from './config.js';
-import { initDatabase } from './db.js';
+import { initDatabase, db } from './db.js';
 import { authenticate } from './auth.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
@@ -13,6 +13,7 @@ import { nodeinfoRouter } from './routes/nodeinfo.js';
 import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
+import { discoveryRouter } from './routes/discovery.js';
 import { rateLimit } from './rateLimit.js';
 import { startScheduler } from './scheduler.js';
 
@@ -79,6 +80,7 @@ app.use('/', actorRouter);
 app.use('/users', usersRouter);
 app.use('/users', outboxRouter);
 app.use('/', inboxRouter);
+app.use('/', discoveryRouter);
 
 // クライアント用 REST API ルーティング
 app.use('/api', apiRouter);
@@ -123,7 +125,120 @@ if (finalDistPath) {
     next();
   });
 
-  app.use(express.static(finalDistPath));
+  // 🔗 OGP メタの動的注入（SNS でシェアしたときにカードが表示されるようにする）
+  //    express.static は `/` を index.html で返してしまうため、その前に登録する
+  let cachedIndexHtml: string | null = null;
+  const readIndexHtml = (): string | null => {
+    if (cachedIndexHtml) {
+      return cachedIndexHtml;
+    }
+    try {
+      cachedIndexHtml = fs.readFileSync(path.join(finalDistPath as string, 'index.html'), 'utf8');
+      return cachedIndexHtml;
+    } catch {
+      return null;
+    }
+  };
+
+  const escapeHtml = (value: unknown): string =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const injectMeta = (html: string, meta: { title: string; description: string; image?: string | null; url: string }): string => {
+    const tags = [
+      `<meta property="og:type" content="website" />`,
+      `<meta property="og:site_name" content="${escapeHtml(config.instanceName)}" />`,
+      `<meta property="og:title" content="${escapeHtml(meta.title)}" />`,
+      `<meta property="og:description" content="${escapeHtml(meta.description)}" />`,
+      `<meta property="og:url" content="${escapeHtml(meta.url)}" />`,
+      meta.image ? `<meta property="og:image" content="${escapeHtml(meta.image)}" />` : '',
+      `<meta name="twitter:card" content="${meta.image ? 'summary_large_image' : 'summary'}" />`,
+      `<meta name="twitter:title" content="${escapeHtml(meta.title)}" />`,
+      `<meta name="twitter:description" content="${escapeHtml(meta.description)}" />`,
+      meta.image ? `<meta name="twitter:image" content="${escapeHtml(meta.image)}" />` : '',
+      `<title>${escapeHtml(meta.title)}</title>`,
+    ]
+      .filter(Boolean)
+      .join('\n    ');
+
+    return html.replace(/<title>[\s\S]*?<\/title>/i, '').replace(/<\/head>/i, `    ${tags}\n  </head>`);
+  };
+
+  app.get(['/users/:username', '/'], (req: Request, res: Response, next: NextFunction) => {
+    if (!req.headers.accept || !req.headers.accept.includes('text/html')) {
+      return next();
+    }
+    const html = readIndexHtml();
+    if (!html) {
+      return next();
+    }
+
+    try {
+      // 1. ユーザープロフィール
+      const usernameParam = (req.params as Record<string, string>).username;
+      if (usernameParam) {
+        const user = db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
+          | { id: string; name: string; summary: string; icon_url: string }
+          | undefined;
+        if (!user) {
+          return next();
+        }
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.send(injectMeta(html, {
+          title: `${user.name} (@${user.id}@${config.domain})`,
+          description: (user.summary || `${config.instanceName} のユーザー`).slice(0, 200),
+          image: user.icon_url ? new URL(user.icon_url, config.origin).toString() : `${config.origin}/logo.jpg`,
+          url: `${config.origin}/users/${user.id}`,
+        }));
+      }
+
+      // 2. 投稿（/?post=<id> または ?postId=<id>）
+      const postParam = (req.query.post || req.query.postId) as string | undefined;
+      if (postParam) {
+        const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(decodeURIComponent(postParam)) as
+          | { id: string; author_name: string; author_handle: string; content: string; cw: string | null; visibility: string | null; is_local: number; media_attachments: string }
+          | undefined;
+
+        if (post && post.is_local === 1 && (!post.visibility || post.visibility === 'public')) {
+          let image: string | null = null;
+          try {
+            const attachments = JSON.parse(post.media_attachments || '[]');
+            const firstImage = Array.isArray(attachments)
+              ? attachments.find((a: any) => String(a?.mediaType || '').startsWith('image/'))
+              : null;
+            image = firstImage?.url ? new URL(firstImage.url, config.origin).toString() : null;
+          } catch {}
+
+          const text = String(post.content || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.send(injectMeta(html, {
+            title: `${post.author_name} のノート`,
+            description: post.cw ? `[${post.cw}] ${text}` : text,
+            image,
+            url: `${config.origin}/?post=${encodeURIComponent(post.id)}`,
+          }));
+        }
+      }
+
+      // 3. それ以外はサイト既定のメタ情報
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(injectMeta(html, {
+        title: `${config.instanceName} - 分散型ソーシャルネットワーク`,
+        description: config.instanceDescription,
+        image: `${config.origin}/logo.jpg`,
+        url: config.origin,
+      }));
+    } catch (err) {
+      console.warn('[OGP] メタ情報の注入に失敗したため通常のHTMLを返します:', (err as Error).message);
+      return next();
+    }
+  });
+
+  // ビルド済みフロントエンドの静的配信（index.html は OGP 注入側で扱うため対象外）
+  app.use(express.static(finalDistPath, { index: false }));
 
   // SPA用のフォールバックルーティング (HTMLリクエストは常にindex.htmlへ)
   app.get('*', (req: Request, res: Response, next: NextFunction) => {

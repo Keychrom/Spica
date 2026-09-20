@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode } from '../db.js';
-import { requireAdmin } from '../auth.js';
+import { requireAdmin, hasPermission } from '../auth.js';
 import { config } from '../config.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
@@ -29,8 +29,24 @@ const uploadImageFile = multer({
 
 export const adminRouter = Router();
 
-// すべてのエンドポイントに requireAdmin を適用
-adminRouter.use(requireAdmin);
+// 管理 API のガード:
+//   - 管理者権限（users.role='admin' または 'admin' 権限のロール）は全許可
+//   - モデレーター権限（'moderate'）は通報・凍結・ドメインブロックのみ許可
+const MODERATOR_ALLOWED_PATHS = [
+  /^\/reports(\/|$)/,
+  /^\/users\/[^/]+\/freeze$/,
+  /^\/blocks(\/|$)/,
+];
+
+adminRouter.use((req: Request, res: Response, next) => {
+  if (hasPermission(req.user, 'admin')) {
+    return next();
+  }
+  if (hasPermission(req.user, 'moderate') && MODERATOR_ALLOWED_PATHS.some((pattern) => pattern.test(req.path))) {
+    return next();
+  }
+  return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+});
 
 // サーバー全体統計
 adminRouter.get('/stats', (req: Request, res: Response) => {
@@ -82,9 +98,20 @@ adminRouter.get('/users', (req: Request, res: Response) => {
       (SELECT COUNT(*) FROM follows WHERE following_url = '${config.origin}/users/' || u.id) as follower_count
     FROM users u
     ORDER BY u.created_at ASC
-  `).all();
+  `).all() as any[];
 
-  res.json(users);
+  // 各ユーザーに付与されているロールも返す（ロール管理UIで使用）
+  const enriched = users.map((user) => ({
+    ...user,
+    roles: db.prepare(`
+      SELECT r.id, r.name, r.color FROM user_roles ur
+      JOIN roles r ON ur.role_id = r.id
+      WHERE ur.user_id = ?
+      ORDER BY r.created_at ASC
+    `).all(user.id),
+  }));
+
+  res.json(enriched);
 });
 
 // ユーザーのロール変更 (admin / user)
@@ -1004,6 +1031,162 @@ adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Admin Announcement Delete Error]:', err);
     res.status(500).json({ error: 'お知らせの削除に失敗しました。' });
+  }
+});
+
+// ==========================================
+// 🎭 ロール（権限）管理
+// ==========================================
+
+// 利用可能な権限の一覧（クライアントのチェックボックスと揃える）
+const AVAILABLE_PERMISSIONS = [
+  { key: 'moderate', label: 'モデレーター（通報対応・凍結・ドメインブロック）' },
+  { key: 'announce', label: 'お知らせの投稿' },
+  { key: 'admin', label: '管理者（管理画面のすべての操作）' },
+];
+
+function normalizePermissions(raw: unknown): string {
+  const list = Array.isArray(raw)
+    ? raw
+    : String(raw ?? '').split(',');
+  const valid = new Set(AVAILABLE_PERMISSIONS.map((p) => p.key));
+  return Array.from(new Set(list.map((p) => String(p).trim()).filter((p) => valid.has(p)))).join(',');
+}
+
+adminRouter.get('/roles', (_req: Request, res: Response) => {
+  try {
+    const roles = db.prepare('SELECT * FROM roles ORDER BY created_at ASC').all() as any[];
+    const withCounts = roles.map((role) => ({
+      ...role,
+      member_count: (db.prepare('SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?').get(role.id) as { c: number }).c,
+    }));
+    res.json({ roles: withCounts, availablePermissions: AVAILABLE_PERMISSIONS });
+  } catch (err: any) {
+    console.error('[Admin Roles Error]:', err);
+    res.status(500).json({ error: 'ロール一覧の取得に失敗しました。' });
+  }
+});
+
+adminRouter.post('/roles', (req: Request, res: Response) => {
+  const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 40) : '';
+  const color = typeof req.body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(req.body.color) ? req.body.color : '#6366f1';
+  const permissions = normalizePermissions(req.body?.permissions);
+
+  if (!name) {
+    return res.status(400).json({ error: 'ロール名を入力してください。' });
+  }
+  if (!permissions) {
+    return res.status(400).json({ error: '権限を1つ以上選択してください。' });
+  }
+  const count = (db.prepare('SELECT COUNT(*) AS c FROM roles').get() as { c: number }).c;
+  if (count >= 30) {
+    return res.status(400).json({ error: '作成できるロールは 30 件までです。' });
+  }
+  if (db.prepare('SELECT id FROM roles WHERE name = ?').get(name)) {
+    return res.status(409).json({ error: '同じ名前のロールが既に存在します。' });
+  }
+
+  try {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO roles (id, name, color, permissions, is_system, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+      .run(id, name, color, permissions, now, now);
+    console.log(`[Role] 🎭 ロール「${name}」を作成 (${permissions}) by @${req.user!.id}`);
+    res.status(201).json({ success: true, id, name, color, permissions });
+  } catch (err: any) {
+    console.error('[Admin Role Create Error]:', err);
+    res.status(500).json({ error: 'ロールの作成に失敗しました。' });
+  }
+});
+
+adminRouter.put('/roles/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const existing = db.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
+    if (!existing) {
+      return res.status(404).json({ error: 'ロールが見つかりません。' });
+    }
+
+    const name = typeof req.body?.name === 'string' && req.body.name.trim() ? req.body.name.trim().slice(0, 40) : existing.name;
+    const color = typeof req.body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(req.body.color) ? req.body.color : existing.color;
+    const permissions = req.body?.permissions !== undefined ? normalizePermissions(req.body.permissions) : existing.permissions;
+
+    if (!permissions) {
+      return res.status(400).json({ error: '権限を1つ以上選択してください。' });
+    }
+    const duplicated = db.prepare('SELECT id FROM roles WHERE name = ? AND id != ?').get(name, id);
+    if (duplicated) {
+      return res.status(409).json({ error: '同じ名前のロールが既に存在します。' });
+    }
+
+    db.prepare('UPDATE roles SET name = ?, color = ?, permissions = ?, updated_at = ? WHERE id = ?')
+      .run(name, color, permissions, new Date().toISOString(), id);
+    console.log(`[Role] 🎭 ロール「${name}」を更新 (${permissions}) by @${req.user!.id}`);
+    res.json({ success: true, role: db.prepare('SELECT * FROM roles WHERE id = ?').get(id) });
+  } catch (err: any) {
+    console.error('[Admin Role Update Error]:', err);
+    res.status(500).json({ error: 'ロールの更新に失敗しました。' });
+  }
+});
+
+adminRouter.delete('/roles/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id);
+  try {
+    const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
+    if (!role) {
+      return res.status(404).json({ error: 'ロールが見つかりません。' });
+    }
+    db.prepare('DELETE FROM user_roles WHERE role_id = ?').run(id);
+    db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+    console.log(`[Role] 🗑️ ロール「${role.name}」を削除 by @${req.user!.id}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('[Admin Role Delete Error]:', err);
+    res.status(500).json({ error: 'ロールの削除に失敗しました。' });
+  }
+});
+
+// ユーザーへのロール付与（roleIds を渡して置き換える / 空配列で全部外す）
+adminRouter.post('/users/:id/roles', (req: Request, res: Response) => {
+  const targetUserId = String(req.params.id);
+  const roleIds = Array.isArray(req.body?.roleIds) ? req.body.roleIds.map((r: unknown) => String(r)) : null;
+
+  if (!roleIds) {
+    return res.status(400).json({ error: 'roleIds（配列）が必要です。' });
+  }
+  const targetUser = db.prepare('SELECT id, role FROM users WHERE id = ?').get(targetUserId) as { id: string; role: string } | undefined;
+  if (!targetUser) {
+    return res.status(404).json({ error: 'ユーザーが見つかりません。' });
+  }
+
+  // 管理者（users.role = 'admin'）から管理権限を外す操作は禁止（締め出し防止）
+  const assignsAdminPermission = roleIds.some((roleId: string) => {
+    const role = db.prepare('SELECT permissions FROM roles WHERE id = ?').get(roleId) as { permissions: string } | undefined;
+    return String(role?.permissions || '').split(',').map((p) => p.trim()).includes('admin');
+  });
+  if (targetUser.role === 'admin' && !assignsAdminPermission) {
+    const adminCount = (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as { c: number }).c;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: '最後の管理者から管理権限を外すことはできません。' });
+    }
+  }
+
+  try {
+    db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(targetUserId);
+    const now = new Date().toISOString();
+    const insert = db.prepare('INSERT INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)');
+    let applied = 0;
+    for (const roleId of roleIds) {
+      const exists = db.prepare('SELECT id FROM roles WHERE id = ?').get(roleId);
+      if (!exists) continue;
+      insert.run(targetUserId, roleId, now);
+      applied++;
+    }
+    console.log(`[Role] 🎭 @${targetUserId} に ${applied} 件のロールを付与 by @${req.user!.id}`);
+    res.json({ success: true, applied });
+  } catch (err: any) {
+    console.error('[Admin User Roles Error]:', err);
+    res.status(500).json({ error: 'ロールの付与に失敗しました。' });
   }
 });
 

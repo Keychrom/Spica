@@ -30,6 +30,8 @@ export function buildPerson(user: UserRow) {
     summary: user.summary || '',
     // 鍵アカウント（フォロー承認制）であることを連合先へ伝える
     manuallyApprovesFollowers: user.is_locked === 1,
+    // プロフィール項目（リンク集）を PropertyValue として公開する
+    attachment: parseProfileFields(user.fields),
     icon: user.icon_url ? {
       type: 'Image',
       mediaType: 'image/png',
@@ -62,6 +64,30 @@ export interface NotePoll {
   choices: string[];
   multiple?: boolean;
   expiresAt?: string | null;
+}
+
+/**
+ * users.fields（JSON）を ActivityPub の attachment (PropertyValue) に変換する
+ * ※ Mastodon / Misskey のプロフィール項目（リンク集）として表示される
+ */
+export function parseProfileFields(raw: unknown): { type: string; name: string; value: string }[] {
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw || '[]') : raw;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((field: any) => field && typeof field.name === 'string' && typeof field.value === 'string')
+      .slice(0, 4)
+      .map((field: any) => ({
+        type: 'PropertyValue',
+        name: field.name.slice(0, 40),
+        // 値はプレーンテキストとして扱う（HTMLを許すと XSS の温床になるため）
+        value: field.value.slice(0, 200),
+      }));
+  } catch {
+    return [];
+  }
 }
 
 /**

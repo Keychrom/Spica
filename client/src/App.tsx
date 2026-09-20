@@ -2373,7 +2373,7 @@ export default function App() {
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles'>('dashboard');
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
 
   // 🎨 カスタム絵文字管理ステート
@@ -2788,6 +2788,13 @@ export default function App() {
       setEditIconUrl(authUser.icon_url || '');
       setEditBannerUrl(authUser.banner_url || '');
       setProfileIsLocked(Boolean((authUser as any).is_locked));
+      setProfileDiscoverable((authUser as any).discoverable !== false);
+      try {
+        const parsed = JSON.parse((authUser as any).fields || '[]');
+        setEditFields(Array.isArray(parsed) ? parsed.map((f: any) => ({ name: String(f.name || ''), value: String(f.value || '') })) : []);
+      } catch {
+        setEditFields([]);
+      }
     }
     setSettingsTab(tab);
     setSettingsMessage(null);
@@ -2813,6 +2820,8 @@ export default function App() {
           icon_url: editIconUrl,
           banner_url: editBannerUrl,
           is_locked: profileIsLocked,
+          discoverable: profileDiscoverable,
+          fields: editFields.filter((f) => f.name.trim() && f.value.trim()),
         }),
       });
 
@@ -3634,6 +3643,7 @@ export default function App() {
       if (emRes.ok) setAdminEmojis(await emRes.json());
       if (invRes.ok) setAdminInvitations(await invRes.json());
       if (annRes.ok) setAdminAnnouncements(await annRes.json());
+      await fetchRoles();
       if (repRes.ok) {
         const repData = await repRes.json();
         setAdminReports(repData.reports || []);
@@ -4408,6 +4418,142 @@ export default function App() {
       console.error('リストタイムラインの取得エラー:', err);
     } finally {
       setIsLoadingListTimeline(false);
+    }
+  };
+
+  // 🎭 ロール（権限）管理
+  const [adminRoles, setAdminRoles] = useState<any[]>([]);
+  const [availablePermissions, setAvailablePermissions] = useState<{ key: string; label: string }[]>([]);
+  const [newRoleName, setNewRoleName] = useState<string>('');
+  const [newRoleColor, setNewRoleColor] = useState<string>('#6366f1');
+  const [newRolePermissions, setNewRolePermissions] = useState<string[]>([]);
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
+  const [roleActionMsg, setRoleActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // 👥 プロフィール項目 / バッジ / ユーザーディレクトリ
+  const [editFields, setEditFields] = useState<{ name: string; value: string }[]>([]);
+  const [profileDiscoverable, setProfileDiscoverable] = useState<boolean>(true);
+  const [showDirectoryModal, setShowDirectoryModal] = useState<boolean>(false);
+  const [directoryUsers, setDirectoryUsers] = useState<any[]>([]);
+  const [directorySearch, setDirectorySearch] = useState<string>('');
+  const [isLoadingDirectory, setIsLoadingDirectory] = useState<boolean>(false);
+
+  const fetchDirectory = async (query = '') => {
+    setIsLoadingDirectory(true);
+    try {
+      const res = await fetch(`/api/directory?limit=100${query ? `&q=${encodeURIComponent(query)}` : ''}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDirectoryUsers(data.users || []);
+      }
+    } catch (err) {
+      console.error('ディレクトリの取得エラー:', err);
+    } finally {
+      setIsLoadingDirectory(false);
+    }
+  };
+
+  const fetchRoles = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/admin/roles', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminRoles(data.roles || []);
+        setAvailablePermissions(data.availablePermissions || []);
+      }
+    } catch (err) {
+      console.error('ロールの取得エラー:', err);
+    }
+  };
+
+  const handleSaveRole = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newRoleName.trim() || newRolePermissions.length === 0) return;
+    const isEdit = Boolean(editingRoleId);
+    try {
+      const res = await fetch(isEdit ? `/api/admin/roles/${encodeURIComponent(editingRoleId as string)}` : '/api/admin/roles', {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ name: newRoleName.trim(), color: newRoleColor, permissions: newRolePermissions }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: isEdit ? 'ロールを更新しました。' : `ロール「${newRoleName.trim()}」を作成しました。` });
+        setNewRoleName('');
+        setNewRoleColor('#6366f1');
+        setNewRolePermissions([]);
+        setEditingRoleId(null);
+        await fetchRoles();
+        await fetchAdminData();
+      } else {
+        setRoleActionMsg({ type: 'error', text: data.error || 'ロールの保存に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRoleActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleEditRole = (role: any) => {
+    setEditingRoleId(role.id);
+    setNewRoleName(role.name);
+    setNewRoleColor(role.color || '#6366f1');
+    setNewRolePermissions(String(role.permissions || '').split(',').map((p) => p.trim()).filter(Boolean));
+    setRoleActionMsg(null);
+  };
+
+  const handleDeleteRole = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このロールを削除しますか？（付与済みのユーザーからも外れます）')) return;
+    try {
+      const res = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: 'ロールを削除しました。' });
+        if (editingRoleId === id) {
+          setEditingRoleId(null);
+          setNewRoleName('');
+          setNewRolePermissions([]);
+        }
+        await fetchRoles();
+        await fetchAdminData();
+      }
+    } catch (err) {
+      console.error('ロールの削除エラー:', err);
+    }
+  };
+
+  // ユーザーへのロール付与（チップのクリックで付け外し）
+  const handleToggleUserRole = async (userId: string, roleId: string) => {
+    if (!authToken) return;
+    const user = adminUsers.find((u: any) => u.id === userId);
+    if (!user) return;
+
+    const currentIds = new Set((user.roles || []).map((r: any) => r.id));
+    if (currentIds.has(roleId)) {
+      currentIds.delete(roleId);
+    } else {
+      currentIds.add(roleId);
+    }
+
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/roles`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ roleIds: Array.from(currentIds) }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: `@${userId} のロールを更新しました。` });
+        await fetchAdminData();
+        await fetchRoles();
+      } else {
+        setRoleActionMsg({ type: 'error', text: data.error || 'ロールの更新に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRoleActionMsg({ type: 'error', text: err.message });
     }
   };
 
@@ -7531,6 +7677,28 @@ export default function App() {
                     </span>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => { setAdminTab('roles'); fetchRoles(); }}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                    adminTab === 'roles'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <UserPlus className="w-4 h-4 text-violet-400" />
+                    <span>ロール</span>
+                  </div>
+                  {adminRoles.length > 0 && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                      adminTab === 'roles' ? 'bg-indigo-700 text-white' : 'bg-slate-800 text-violet-300'
+                    }`}>
+                      {adminRoles.length}
+                    </span>
+                  )}
+                </button>
               </div>
 
               {/* クイック操作 */}
@@ -8789,6 +8957,199 @@ export default function App() {
               )}
 
               {/* 🎟 招待コード & 登録モード管理タブ */}
+              {adminTab === 'roles' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
+                  <div>
+                    <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                      <UserPlus className="w-4 h-4 text-violet-400" />
+                      <span>ロール（権限）管理 ({adminRoles.length})</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                      ロールを作成し、ユーザーごとに付け外しできます。付与された権限は再ログイン不要で即時反映されます。
+                      「管理者」権限は管理画面のすべての操作、「モデレーター」は通報対応・凍結・ドメインブロックが対象です。
+                    </p>
+                  </div>
+
+                  <form onSubmit={handleSaveRole} className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800/80">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                          ロール名 <span className="text-rose-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={newRoleName}
+                          onChange={(e) => setNewRoleName(e.target.value)}
+                          maxLength={40}
+                          placeholder="例: モデレーター"
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-violet-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-300 mb-1">表示色</label>
+                        <input
+                          type="color"
+                          value={newRoleColor}
+                          onChange={(e) => setNewRoleColor(e.target.value)}
+                          className="w-full h-9 bg-slate-900 border border-slate-800 rounded-xl cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        権限 <span className="text-rose-400">*</span>
+                      </label>
+                      <div className="space-y-1.5">
+                        {availablePermissions.map((perm) => (
+                          <label key={perm.key} className="flex items-start space-x-2 cursor-pointer text-xs text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={newRolePermissions.includes(perm.key)}
+                              onChange={(e) => {
+                                setNewRolePermissions((prev) =>
+                                  e.target.checked ? [...prev, perm.key] : prev.filter((p) => p !== perm.key),
+                                );
+                              }}
+                              className="mt-0.5 w-3.5 h-3.5 accent-violet-500 cursor-pointer"
+                            />
+                            <span>{perm.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end space-x-2">
+                      {editingRoleId && (
+                        <button
+                          type="button"
+                          onClick={() => { setEditingRoleId(null); setNewRoleName(''); setNewRolePermissions([]); }}
+                          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition cursor-pointer"
+                        >
+                          新規作成に切り替え
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={!newRoleName.trim() || newRolePermissions.length === 0}
+                        className="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition flex items-center space-x-1.5 cursor-pointer"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>{editingRoleId ? 'ロールを更新' : 'ロールを作成'}</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {roleActionMsg && (
+                    <div
+                      className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                        roleActionMsg.type === 'success'
+                          ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      {roleActionMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                      <span>{roleActionMsg.text}</span>
+                    </div>
+                  )}
+
+                  {/* ロール一覧 */}
+                  {adminRoles.length === 0 ? (
+                    <div className="p-6 text-center bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                      まだロールがありません。上のフォームから作成してください。
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {adminRoles.map((role) => (
+                        <div key={role.id} className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/50 border border-slate-800 rounded-2xl px-3.5 py-2.5">
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: role.color || '#6366f1' }} />
+                            <span className="font-bold text-xs text-slate-100 truncate">{role.name}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{role.member_count} 人</span>
+                            <span className="text-[10px] text-slate-400 truncate">
+                              {String(role.permissions || '')
+                                .split(',')
+                                .filter(Boolean)
+                                .map((p: string) => availablePermissions.find((ap) => ap.key === p)?.label || p)
+                                .join(' / ')}
+                            </span>
+                          </div>
+                          <div className="flex items-center space-x-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleEditRole(role)}
+                              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                            >
+                              編集
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteRole(role.id)}
+                              className="px-3 py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                            >
+                              削除
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* ユーザーへのロール付与 */}
+                  <div className="space-y-2 pt-2 border-t border-slate-800">
+                    <h4 className="font-bold text-sm text-slate-100">ユーザーへの付与</h4>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      チップをクリックするとロールを付け外しできます（即時反映）。
+                    </p>
+                    {adminUsers.length === 0 ? (
+                      <div className="p-4 text-center bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                        ユーザーがいません。
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {adminUsers.map((user: any) => {
+                          const userRoleIds: string[] = (user.roles || []).map((r: any) => r.id);
+                          return (
+                            <div key={user.id} className="bg-slate-950/50 border border-slate-800 rounded-2xl px-3.5 py-3 space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-bold text-xs text-slate-100">@{user.id}</span>
+                                {user.role === 'admin' && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold">
+                                    管理者
+                                  </span>
+                                )}
+                                {user.is_frozen === 1 && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-bold">凍結中</span>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {adminRoles.map((role) => {
+                                  const active = userRoleIds.includes(role.id);
+                                  return (
+                                    <button
+                                      key={role.id}
+                                      type="button"
+                                      onClick={() => handleToggleUserRole(user.id, role.id)}
+                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                                        active
+                                          ? 'text-white border-transparent'
+                                          : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800'
+                                      }`}
+                                      style={active ? { backgroundColor: role.color || '#6366f1' } : undefined}
+                                    >
+                                      {role.name}
+                                    </button>
+                                  );
+                                })}
+                                {adminRoles.length === 0 && <span className="text-[11px] text-slate-500">ロール未作成</span>}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {adminTab === 'announcements' && (
                 <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-5 animate-in fade-in duration-150">
                   <div>
@@ -9671,6 +10032,69 @@ export default function App() {
                       placeholder="自己紹介を入力してください..."
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none leading-relaxed"
                     />
+                  </div>
+
+                  {/* 🔗 プロフィール項目（リンク集など） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs text-slate-100">🔗 プロフィール項目（最大4件）</span>
+                      {editFields.length < 4 && (
+                        <button
+                          type="button"
+                          onClick={() => setEditFields((prev) => [...prev, { name: '', value: '' }])}
+                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold transition cursor-pointer"
+                        >
+                          ＋ 追加
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      リンク集や肩書きなど。連合先（Mastodon / Misskey）のプロフィールにも項目として表示されます。
+                    </p>
+                    {editFields.length === 0 && (
+                      <p className="text-[11px] text-slate-500">項目がありません。「＋ 追加」から登録できます。</p>
+                    )}
+                    {editFields.map((field, index) => (
+                      <div key={index} className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={field.name}
+                          maxLength={40}
+                          placeholder="項目名（例: Webサイト）"
+                          onChange={(e) => setEditFields((prev) => prev.map((f, i) => (i === index ? { ...f, name: e.target.value } : f)))}
+                          className="sm:w-40 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          value={field.value}
+                          maxLength={200}
+                          placeholder="内容（例: https://example.com）"
+                          onChange={(e) => setEditFields((prev) => prev.map((f, i) => (i === index ? { ...f, value: e.target.value } : f)))}
+                          className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setEditFields((prev) => prev.filter((_, i) => i !== index))}
+                          className="px-3 py-2 bg-slate-800 hover:bg-rose-600/80 text-slate-300 hover:text-white rounded-xl text-xs font-bold transition cursor-pointer"
+                        >
+                          削除
+                        </button>
+                      </div>
+                    ))}
+                    <label className="flex items-start space-x-3 cursor-pointer pt-1">
+                      <input
+                        type="checkbox"
+                        checked={profileDiscoverable}
+                        onChange={(e) => setProfileDiscoverable(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-indigo-500 cursor-pointer"
+                      />
+                      <div>
+                        <span className="font-bold text-xs text-slate-100 block">👥 ユーザーディレクトリに掲載する</span>
+                        <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                          オフにすると、このサーバーのユーザー一覧（ディレクトリ）に表示されなくなります。
+                        </span>
+                      </div>
+                    </label>
                   </div>
 
                   {/* 🔒 鍵アカウント設定 */}
@@ -11386,6 +11810,18 @@ export default function App() {
                       {channels.length}
                     </span>
                   )}
+                </button>
+
+                {/* 👥 ユーザーディレクトリ */}
+                <button
+                  type="button"
+                  onClick={() => { setShowDirectoryModal(true); fetchDirectory(''); }}
+                  className="w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-900/60"
+                >
+                  <div className="flex items-center space-x-3">
+                    <Users className="w-5 h-5 text-cyan-400" />
+                    <span>ユーザー一覧</span>
+                  </div>
                 </button>
 
                 {/* 📋 リスト */}
@@ -14670,6 +15106,117 @@ export default function App() {
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 👥 ユーザーディレクトリ */}
+      {showDirectoryModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setShowDirectoryModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center">
+                  <Users className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">ユーザー一覧</h3>
+                  <span className="text-[11px] text-slate-400">このサーバーにいるユーザー（{directoryUsers.length} 人）</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDirectoryModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => { e.preventDefault(); fetchDirectory(directorySearch); }}
+              className="flex gap-2"
+            >
+              <input
+                type="text"
+                value={directorySearch}
+                onChange={(e) => setDirectorySearch(e.target.value)}
+                placeholder="ユーザーID・表示名で絞り込み"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+              <button
+                type="submit"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                検索
+              </button>
+            </form>
+
+            {isLoadingDirectory ? (
+              <div className="text-center py-10">
+                <RefreshCw className="w-6 h-6 animate-spin mx-auto text-cyan-400 mb-2" />
+                <p className="text-xs text-slate-400">読み込み中...</p>
+              </div>
+            ) : directoryUsers.length === 0 ? (
+              <div className="p-8 text-center bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                該当するユーザーが見つかりません。
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {directoryUsers.map((user) => (
+                  <div key={user.id} className="flex items-start space-x-3 bg-slate-950/50 border border-slate-800 rounded-2xl p-3.5">
+                    {user.icon_url ? (
+                      <img src={user.icon_url} alt="" className="w-11 h-11 rounded-full object-cover shrink-0" />
+                    ) : (
+                      <div className="w-11 h-11 rounded-full bg-slate-800 shrink-0" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => { setShowDirectoryModal(false); openUserProfile(user.id, false); }}
+                          className="font-bold text-sm text-slate-100 hover:text-cyan-300 transition cursor-pointer"
+                        >
+                          {user.name}
+                        </button>
+                        {(user.roles || []).map((role: any) => (
+                          <span
+                            key={role.id}
+                            className="text-[10px] px-2 py-0.5 rounded-full font-bold text-white"
+                            style={{ backgroundColor: role.color || '#6366f1' }}
+                          >
+                            {role.name}
+                          </span>
+                        ))}
+                      </div>
+                      <span className="text-[11px] text-slate-400 block truncate">{user.handle}</span>
+                      {user.summary && (
+                        <p className="text-[11px] text-slate-300 mt-1 line-clamp-2 whitespace-pre-wrap break-words">{user.summary}</p>
+                      )}
+                      {Array.isArray(user.fields) && user.fields.length > 0 && (
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                          {user.fields.map((field: any, index: number) => (
+                            <span key={index} className="text-[10px] text-slate-400">
+                              <span className="text-slate-500">{field.name}:</span> {field.value}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex items-center space-x-3 mt-1 text-[10px] text-slate-500 font-mono">
+                        <span>投稿 {user.post_count}</span>
+                        <span>フォロワー {user.follower_count}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

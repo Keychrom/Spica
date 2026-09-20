@@ -11,6 +11,7 @@ import { createReport, logNewReport } from '../reportService.js';
 import { getMutedWords, postMatchesMutedWords } from '../wordFilter.js';
 import { attachPreviewForContent } from '../linkPreview.js';
 import { parseArchive, importNotes } from '../importService.js';
+import { parseProfileFields } from '../activitypub.js';
 import { uploadMediaFile } from '../storage.js';
 import { executeCreatePost } from '../postService.js';
 import {
@@ -1817,7 +1818,7 @@ apiRouter.post('/unfollow', requireAuth, async (req: Request, res: Response) => 
 
 // 自プロフィール更新 (名前, bio, アイコンURL, ヘッダーURL, 鍵アカウント設定)
 apiRouter.put('/user/profile', requireAuth, (req: Request, res: Response) => {
-  const { name, summary, icon_url, banner_url, is_locked } = req.body;
+  const { name, summary, icon_url, banner_url, is_locked, fields, discoverable } = req.body;
   const user = req.rawUser!;
 
   const newName = typeof name === 'string' && name.trim() ? name.trim() : user.name;
@@ -1826,6 +1827,18 @@ apiRouter.put('/user/profile', requireAuth, (req: Request, res: Response) => {
   const newBannerUrl = typeof banner_url === 'string' ? banner_url.trim() : (user.banner_url || '');
   // 鍵アカウント（フォロー承認制）の切り替え。未指定なら現状維持
   const newIsLocked = typeof is_locked === 'boolean' ? (is_locked ? 1 : 0) : (user.is_locked ?? 0);
+  // ディレクトリ掲載の可否
+  const newDiscoverable = typeof discoverable === 'boolean' ? (discoverable ? 1 : 0) : ((user as any).discoverable ?? 1);
+  // プロフィール項目（最大4件・各40/200文字まで）
+  const newFields = Array.isArray(fields)
+    ? fields
+        .filter((f: any) => f && typeof f.name === 'string' && typeof f.value === 'string')
+        .slice(0, 4)
+        .map((f: any) => ({ name: f.name.trim().slice(0, 40), value: f.value.trim().slice(0, 200) }))
+        .filter((f: any) => f.name && f.value)
+    : (() => {
+        try { return JSON.parse((user as any).fields || '[]'); } catch { return []; }
+      })();
 
   db.prepare(`
     UPDATE users SET
@@ -1833,14 +1846,16 @@ apiRouter.put('/user/profile', requireAuth, (req: Request, res: Response) => {
       summary = ?,
       icon_url = ?,
       banner_url = ?,
-      is_locked = ?
+      is_locked = ?,
+      fields = ?,
+      discoverable = ?
     WHERE id = ?
-  `).run(newName, newSummary, newIconUrl, newBannerUrl, newIsLocked, user.id);
+  `).run(newName, newSummary, newIconUrl, newBannerUrl, newIsLocked, JSON.stringify(newFields), newDiscoverable, user.id);
 
   // 自身の過去投稿の author_name / author_icon も更新
   db.prepare(`UPDATE posts SET author_name = ?, author_icon = ? WHERE is_local = 1 AND user_id = ?`).run(newName, newIconUrl, user.id);
 
-  const updatedUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, created_at FROM users WHERE id = ?').get(user.id) as any;
+  const updatedUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(user.id) as any;
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
   const followingCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
@@ -1936,7 +1951,7 @@ apiRouter.get('/users/:identifier', async (req: Request, res: Response) => {
     cleanId = cleanId.replace(`@${config.domain}`, '');
   }
 
-  const localUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, created_at FROM users WHERE id = ?').get(cleanId) as any;
+  const localUser = db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(cleanId) as any;
   if (localUser) {
     const actorUrl = `${config.origin}/users/${localUser.id}`;
     const followerCount = (db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
@@ -1987,6 +2002,15 @@ apiRouter.get('/users/:identifier', async (req: Request, res: Response) => {
       domain: config.domain,
       is_local: true,
       is_locked: Number((localUser as any).is_locked ?? 0) === 1,
+      discoverable: Number((localUser as any).discoverable ?? 1) === 1,
+      // 🏅 プロフィール項目とバッジ（付与ロール）
+      fields: parseProfileFields((localUser as any).fields).map((f) => ({ name: f.name, value: f.value })),
+      roles: db.prepare(`
+        SELECT r.id, r.name, r.color FROM user_roles ur
+        JOIN roles r ON ur.role_id = r.id
+        WHERE ur.user_id = ?
+        ORDER BY r.created_at ASC
+      `).all(localUser.id),
       created_at: localUser.created_at,
       follower_count: followerCount,
       following_count: followingCount,
@@ -2936,6 +2960,51 @@ apiRouter.get('/announcements', (_req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Announcements Error]:', err);
     res.status(500).json({ error: 'お知らせの取得に失敗しました。' });
+  }
+});
+
+// 👥 ユーザーディレクトリ（公開プロフィールの一覧）
+apiRouter.get('/directory', (req: Request, res: Response) => {
+  const limit = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 100);
+  const q = String(req.query.q || '').trim();
+
+  try {
+    const rows = db.prepare(`
+      SELECT id, name, summary, icon_url, banner_url, created_at, fields, discoverable
+      FROM users
+      WHERE is_frozen = 0 AND COALESCE(discoverable, 1) = 1
+        AND (? = '' OR id LIKE ? OR name LIKE ?)
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(q, `%${q}%`, `%${q}%`, limit) as any[];
+
+    const users = rows.map((user) => {
+      const actorUrl = `${config.origin}/users/${user.id}`;
+      return {
+        id: user.id,
+        name: user.name,
+        summary: user.summary || '',
+        icon_url: user.icon_url || '',
+        banner_url: user.banner_url || '',
+        handle: `@${user.id}@${config.domain}`,
+        actor_url: actorUrl,
+        created_at: user.created_at,
+        post_count: (db.prepare('SELECT COUNT(*) AS c FROM posts WHERE user_id = ?').get(user.id) as { c: number }).c,
+        follower_count: (db.prepare("SELECT COUNT(*) AS c FROM follows WHERE following_url = ? AND status = 'accepted'").get(actorUrl) as { c: number }).c,
+        fields: parseProfileFields((user as any).fields).map((f) => ({ name: f.name, value: f.value })),
+        roles: db.prepare(`
+          SELECT r.id, r.name, r.color FROM user_roles ur
+          JOIN roles r ON ur.role_id = r.id
+          WHERE ur.user_id = ?
+          ORDER BY r.created_at ASC
+        `).all(user.id),
+      };
+    });
+
+    res.json({ users, total: users.length });
+  } catch (err: any) {
+    console.error('[Directory Error]:', err);
+    res.status(500).json({ error: 'ユーザーディレクトリの取得に失敗しました。' });
   }
 });
 
