@@ -133,3 +133,13 @@ cp data_astrabit.sqlite.bak_<日時> data_astrabit.sqlite
 # プロセス再起動
 pm2 restart spica
 ```
+
+---
+
+## ✅ アップデート後の確認
+
+1. **再起動が必要です。** DB のマイグレーションは起動時に実行されるため、新しい機能は再起動後に有効になります（新しいエンドポイントが 404 を返す場合は、まだ古いプロセスが動いています）。
+2. **本番ビルドを更新してください。** `npm run build` を実行してから再起動します（クライアントは `client/dist` から配信されます）。
+3. **DB の整理をときどき実行してください。** `npm run db:maintenance` でドライラン、問題なければ `--apply` で実行します（バックアップ・古いリモート投稿の削除・VACUUM）。詳しくは [SETUP.md](SETUP.md) を参照してください。
+4. **動画サムネイル（任意）**: ffmpeg をインストールすると動画のサムネイルが生成されます（未インストールでも動作に支障はありません）。
+5. 追加・変更された機能は [FEATURES.md](FEATURES.md)、環境変数は [CONFIGURATION.md](CONFIGURATION.md) にまとまっています。

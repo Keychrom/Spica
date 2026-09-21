@@ -269,6 +269,82 @@ S3_PUBLIC_URL=https://media.example.com
 
 ---
 
+## 🛠️ ステップ 7: 運用（バックアップと DB メンテナンス）
+
+Spica は SQLite 1 ファイルで動くため、運用は「バックアップ」と「定期的な整理」の 2 つが中心になります。どちらも `npm run db:maintenance` にまとまっています。
+
+### 7-1. まずはドライラン
+
+```bash
+cd /path/to/Spica
+npm run db:maintenance
+```
+
+削除対象の件数・孤立メディア・現在のサイズが表示されます。**この時点では何も削除されません。**
+
+### 7-2. 実行する
+
+```bash
+npm run db:maintenance -- --apply
+```
+
+実行の内容:
+
+| 手順 | 内容 |
+| :--- | :--- |
+| ① リモート投稿の整理 | 保持期間（既定 30 日 / `--days N`）を過ぎたリモート投稿を削除します。ブックマーク・ピン留め・ローカル投稿の返信先/引用元・ローカルのリアクション/ブースト・ローカル投稿への返信・フォロー中アクターの投稿は残します。 |
+| ② 孤立メディアの削除 | `data/uploads/` のうち、どの投稿からも参照されていないファイルを削除します（24時間以内のファイルは安全のため見送り）。S3 / R2 のオブジェクトは対象外です。 |
+| ③ FTS マージ + VACUUM | FTS5 の内部セグメントをマージしてから VACUUM し、空いたページを解放します。**投稿を消しただけでは容量が戻らない**ため、この手順が容量削減の要です。 |
+| ④ バックアップ | 削除の前に `VACUUM INTO` で一貫性のあるスナップショットを作成します（`server/data/backups/`、既定 3 世代）。 |
+
+> [!IMPORTANT]
+> VACUUM は DB の排他ロックを取るため、**サーバーを停止してから実行**してください。起動中でもバックアップと投稿の削除は動きますが、VACUUM だけが失敗します（その場合は終了コード 2 で知らせます）。
+
+> [!TIP]
+> リレーに参加していると 1 日で数万件のリモート投稿が届き、DB が急速に膨らみます。`--max-remote-posts 20000` のように**件数で上限を切る**方が効く場合もあります（保持期間だけでは足りないことがあります）。
+
+### 7-3. 定期実行（cron の例）
+
+サーバーを止めずにできる範囲（バックアップ＋整理）を毎日回し、VACUUM は週次のメンテナンス時間に行う例です。
+
+```bash
+# 毎日 04:00 にバックアップと削除（VACUUM なし）
+0 4 * * * cd /path/to/Spica && npm run db:maintenance -- --apply --no-vacuum >> logs/maintenance.log 2>&1
+```
+
+```bash
+# 毎週日曜 04:30 にサーバーを止めて VACUUM まで（PM2 の例）
+30 4 * * 0 cd /path/to/Spica && pm2 stop spica && npm run db:maintenance -- --apply && pm2 start spica
+```
+
+### 7-4. 復元する
+
+バックアップは通常の SQLite ファイルなので、置き換えるだけで復元できます。
+
+```bash
+pm2 stop spica                       # または systemctl stop spica
+cp server/data_astrabit.sqlite server/data_astrabit.sqlite.broken   # 念のため退避
+rm -f server/data_astrabit.sqlite-wal server/data_astrabit.sqlite-shm
+cp server/data/backups/data_astrabit-YYYYMMDD-HHMMSSmmm.sqlite server/data_astrabit.sqlite
+pm2 start spica
+```
+
+`DB_PATH` を別ファイルに向けて起動すれば、置き換えずに中身を確認することもできます。
+
+### 7-5. 動画サムネイルを使う（任意）
+
+ffmpeg を入れると、動画のサムネイルを自動生成してタイムライン表示が軽くなります。
+
+```bash
+sudo apt install ffmpeg      # Ubuntu / Debian
+brew install ffmpeg          # macOS
+winget install Gyan.FFmpeg   # Windows
+```
+
+未インストールでもアップロードは成功し、サムネイルが付かないだけです（機能が自動で無効になります）。実行ファイルの場所は `FFMPEG_PATH` / `FFPROBE_PATH` で指定できます。
+
+---
+
 ## ⚠️ 運営方針: DM（1対1のメッセージ）は実装されません
 
 Spica は、**ダイレクトメッセージ（DM / `specified` 公開範囲）を意図的に実装していません**。設定で有効化する項目もありません。
@@ -278,3 +354,5 @@ Spica は、**ダイレクトメッセージ（DM / `specified` 公開範囲）�
 - 利用者には、**「フォロワー限定」は DM ではない**（承認済みフォロワー全員が閲覧でき、連合先にも配信される）ことをあらかじめ案内してください。
 - 運営者（あなた）はデータベースを直接参照できる立場にあるため、その旨も利用者に伝えておくことをおすすめします。
 - 詳しい趣旨は [README の「DM を実装しない方針」](../README.md) を参照してください。
+
+---
