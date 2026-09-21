@@ -1,6 +1,7 @@
 ﻿import { db, UserRow, ScheduledPostRow, createNotification } from './db.js';
 import { executeCreatePost } from './postService.js';
 import { attemptDelivery } from './activitypub.js';
+import { maybeRunScheduledMaintenance } from './maintenanceService.js';
 import {
   listDueDeliveries,
   markDeliveryDelivered,
@@ -219,6 +220,10 @@ export function startScheduler(intervalMs = 10000): void {
   schedulerTimer = setInterval(() => {
     processScheduledPosts().catch((err) => {
       console.error('[Scheduler Interval Error]:', err);
+    });
+    // 予約時刻を過ぎていれば 1 日 1 回だけ自動整理を実行する（実行可否は内部で判定）
+    maybeRunScheduledMaintenance().catch((err) => {
+      console.error('[Auto Maintenance Error]:', err);
     });
   }, intervalMs);
 }

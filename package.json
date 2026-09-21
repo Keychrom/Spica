@@ -37,6 +37,7 @@
     "test:notification-prefs": "npx tsx scripts/test-notification-prefs.ts",
     "test:video-thumbnail": "npx tsx scripts/test-video-thumbnail.ts",
     "test:search-policy": "npx tsx scripts/test-search-policy.ts",
+    "test:ops-automation": "npx tsx scripts/test-ops-automation.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

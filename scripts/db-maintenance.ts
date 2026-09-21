@@ -38,6 +38,7 @@ interface CliArgs {
   keepRepliesToLocal: boolean;
   media: boolean;
   policy: boolean;
+  backupOnly: boolean;
   backup: boolean;
   vacuum: boolean;
   backupsKeep?: number;
@@ -52,6 +53,7 @@ function parseArgs(argv: string[]): CliArgs {
     keepRepliesToLocal: true,
     media: true,
     policy: true,
+    backupOnly: false,
     backup: true,
     vacuum: true,
     help: false,
@@ -73,6 +75,7 @@ function parseArgs(argv: string[]): CliArgs {
       case '--skip-media': args.media = false; break;
       case '--skip-policy': args.policy = false; break;
       case '--no-backup': args.backup = false; break;
+      case '--backup-only': args.backupOnly = true; break;
       case '--no-vacuum': args.vacuum = false; break;
       case '--backups-keep': args.backupsKeep = parseInt(next(), 10); break;
       case '--db': args.dbPath = next(); break;
@@ -100,6 +103,7 @@ Spica DB メンテナンス
   --no-keep-replies-to-local  ローカル投稿への返信も保持対象から外す（既定は保持）
   --skip-media            孤立メディアの削除を行わない
   --skip-policy           保存・索引の方針（FTS スコープ / リモートブースト）を既存データへ適用しない
+  --backup-only           バックアップ（VACUUM INTO）だけを行って終了する（cron 向け）
   --no-backup             実行前のバックアップ（VACUUM INTO）を省略（非推奨）
   --no-vacuum             wal_checkpoint + VACUUM を行わない
   --backups-keep N        バックアップの保持世代数（既定 3）
@@ -128,7 +132,7 @@ function resolveServerDir(): string {
   return cwd;
 }
 
-function main(): number {
+async function main(): Promise<number> {
   let args: CliArgs;
   try {
     args = parseArgs(process.argv.slice(2));
@@ -210,6 +214,26 @@ function main(): number {
   }
   console.log('');
 
+  if (args.backupOnly) {
+    const started = Date.now();
+    console.log('④ VACUUM INTO でバックアップを作成しています...');
+    const { backupDatabase, rotateBackups } = await import('../server/src/dbMaintenance.js');
+    const conn = openMaintenanceDb(dbPath);
+    try {
+      const result = backupDatabase(conn, dbPath, backupDir);
+      const removed = rotateBackups(backupDir, args.backupsKeep ?? 3);
+      console.log(`   バックアップ: ${result.path} (${formatBytes(result.bytes)})`);
+      if (removed.length > 0) console.log(`   古い世代を削除: ${removed.join(', ')}`);
+      console.log(`✅ 完了 (${((Date.now() - started) / 1000).toFixed(1)} 秒)`);
+      return 0;
+    } catch (err: any) {
+      console.error(`❌ バックアップに失敗しました: ${err?.message || err}`);
+      return 1;
+    } finally {
+      conn.close();
+    }
+  }
+
   const report = runMaintenance({
     dbPath,
     uploadsDir,
@@ -284,4 +308,9 @@ function main(): number {
   return 0;
 }
 
-process.exit(main());
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    console.error('❌ 予期しないエラー:', err);
+    process.exit(1);
+  });

@@ -2498,6 +2498,10 @@ export default function App() {
   });
   const [isSavingContentPolicy, setIsSavingContentPolicy] = useState<boolean>(false);
   const [contentPolicyMsg, setContentPolicyMsg] = useState<string | null>(null);
+  // 🧹 容量・メンテナンス状況
+  const [maintenanceStats, setMaintenanceStats] = useState<any | null>(null);
+  const [isRunningMaintenance, setIsRunningMaintenance] = useState<boolean>(false);
+  const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
   const [adminRequireRulesAgreement, setAdminRequireRulesAgreement] = useState<boolean>(true);
   const [isUploadingServerIcon, setIsUploadingServerIcon] = useState<boolean>(false);
   const [isUploadingServerBanner, setIsUploadingServerBanner] = useState<boolean>(false);
@@ -3699,7 +3703,7 @@ export default function App() {
     setIsLoadingAdmin(true);
     try {
       const headers = { Authorization: `Bearer ${authToken}` };
-      const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes, repRes, annRes] = await Promise.all([
+      const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes, repRes, annRes, mtRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/users', { headers }),
         fetch('/api/admin/federation', { headers }),
@@ -3711,7 +3715,9 @@ export default function App() {
         fetch('/api/admin/invitations', { headers }),
         fetch('/api/admin/reports?status=all', { headers }),
         fetch('/api/admin/announcements', { headers }),
+        fetch('/api/admin/maintenance', { headers }),
       ]);
+      if (mtRes.ok) setMaintenanceStats(await mtRes.json());
       if (sRes.ok) setAdminStats(await sRes.json());
       if (uRes.ok) setAdminUsers(await uRes.json());
       if (fRes.ok) setAdminFederation(await fRes.json());
@@ -3795,6 +3801,49 @@ export default function App() {
       setContentPolicyMsg(err.message);
     } finally {
       setIsSavingContentPolicy(false);
+    }
+  };
+
+  // 🧹 定期メンテナンスを今すぐ実行（バックアップ＋方針適用＋保持期間削除。VACUUM はしません）
+  const handleRunMaintenance = async () => {
+    if (!authToken) return;
+    if (!confirm('定期メンテナンスを実行しますか？（バックアップ → 方針適用 → 保持期間を超えたリモート投稿の削除）')) return;
+    setIsRunningMaintenance(true);
+    setMaintenanceMsg(null);
+    try {
+      const res = await fetch('/api/admin/maintenance/run', { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } });
+      const data = await res.json();
+      if (!res.ok) {
+        setMaintenanceMsg(data.error || '実行に失敗しました。');
+        return;
+      }
+      setMaintenanceMsg(data.message || '実行しました。');
+      if (data.stats) setMaintenanceStats(data.stats);
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
+    } finally {
+      setIsRunningMaintenance(false);
+    }
+  };
+
+  // 🧹 自動整理の ON/OFF と実行時刻
+  const handleSaveMaintenanceSettings = async (next: { autoMaintenance?: boolean; hour?: number }) => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/admin/maintenance/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(next),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMaintenanceMsg(data.error || '設定の保存に失敗しました。');
+        return;
+      }
+      setMaintenanceMsg(data.message || '設定を保存しました。');
+      if (data.stats) setMaintenanceStats(data.stats);
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
     }
   };
 
@@ -8588,6 +8637,110 @@ export default function App() {
                   {/* サーバー概要 & モデレーター一覧 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {/* サーバー基本情報 */}
+                    {/* 🧹 容量とメンテナンス */}
+                    {maintenanceStats && (
+                      <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-lg space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                            <HardDrive className="w-4 h-4 text-emerald-400" />
+                            <span>容量とメンテナンス</span>
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={handleRunMaintenance}
+                            disabled={isRunningMaintenance}
+                            className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-[11px] font-bold transition cursor-pointer flex items-center space-x-1.5"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isRunningMaintenance ? 'animate-spin' : ''}`} />
+                            <span>{isRunningMaintenance ? '実行中...' : 'いますぐ整理を実行'}</span>
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                            <div className="text-[10px] text-slate-500">DB サイズ</div>
+                            <div className="font-bold text-slate-100">{(maintenanceStats.db.sizeBytes / 1024 / 1024).toFixed(1)} MB</div>
+                            <div className="text-[10px] text-slate-500">WAL {(maintenanceStats.db.walBytes / 1024 / 1024).toFixed(1)} MB</div>
+                          </div>
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                            <div className="text-[10px] text-slate-500">投稿</div>
+                            <div className="font-bold text-slate-100">{maintenanceStats.posts.total.toLocaleString()} 件</div>
+                            <div className="text-[10px] text-slate-500">
+                              ローカル {maintenanceStats.posts.local} / リモート {maintenanceStats.posts.remote.toLocaleString()}
+                            </div>
+                          </div>
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                            <div className="text-[10px] text-slate-500">検索索引</div>
+                            <div className="font-bold text-slate-100">{maintenanceStats.posts.ftsRows.toLocaleString()} 行</div>
+                            <div className="text-[10px] text-slate-500">範囲: {maintenanceStats.policy.ftsIndexScope}</div>
+                          </div>
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3">
+                            <div className="text-[10px] text-slate-500">ドライブ</div>
+                            <div className="font-bold text-slate-100">
+                              {(maintenanceStats.media.bytes / 1024 / 1024).toFixed(1)} MB
+                              {maintenanceStats.media.quotaBytes > 0 && (
+                                <span className="text-slate-500 font-normal"> / {(maintenanceStats.media.quotaBytes / 1024 / 1024).toFixed(0)} MB</span>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500">{maintenanceStats.media.count} ファイル</div>
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] text-slate-400 space-y-1">
+                          <p>
+                            保持期間（{maintenanceStats.policy.retentionDays} 日）を超えたリモート投稿:{' '}
+                            <strong className="text-slate-200">{maintenanceStats.posts.prunableRemote.toLocaleString()}</strong> 件
+                            {maintenanceStats.posts.prunableRemote > 0 && <span className="text-slate-500">（次回の自動整理で削除されます）</span>}
+                          </p>
+                          <p>
+                            リモートのブースト: <strong className="text-slate-200">{maintenanceStats.announces.toLocaleString()}</strong> 件
+                            <span className="text-slate-500">（保存方針: {maintenanceStats.policy.remoteAnnouncePolicy}）</span>
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-slate-800/60 text-[11px]">
+                          <label className="flex items-center space-x-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={maintenanceStats.automation.enabled}
+                              onChange={(e) => handleSaveMaintenanceSettings({ autoMaintenance: e.target.checked })}
+                              className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                            />
+                            <span className="text-slate-300">毎日 {String(maintenanceStats.automation.hour).padStart(2, '0')}:00 に自動整理</span>
+                          </label>
+                          <label className="flex items-center space-x-1.5 text-slate-400">
+                            <span>実行時刻</span>
+                            <select
+                              value={maintenanceStats.automation.hour}
+                              onChange={(e) => handleSaveMaintenanceSettings({ hour: parseInt(e.target.value, 10) })}
+                              className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-[11px] text-slate-200 focus:outline-none"
+                            >
+                              {Array.from({ length: 24 }, (_, h) => (
+                                <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+                              ))}
+                            </select>
+                          </label>
+                          <span className="text-slate-500">
+                            バックアップ {maintenanceStats.automation.backupEnabled ? '有効' : '無効'}（{maintenanceStats.backups.count} 世代
+                            {maintenanceStats.backups.latestAt && <span> / 最新 {new Date(maintenanceStats.backups.latestAt).toLocaleString('ja-JP')}</span>}）
+                          </span>
+                          {maintenanceStats.automation.lastRunAt && (
+                            <span className="text-slate-500">前回: {new Date(maintenanceStats.automation.lastRunAt).toLocaleString('ja-JP')}</span>
+                          )}
+                        </div>
+
+                        {maintenanceMsg && (
+                          <div className="p-2.5 rounded-xl text-[11px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-200">{maintenanceMsg}</div>
+                        )}
+
+                        <p className="text-[10px] text-slate-500 leading-relaxed">
+                          ※ 自動整理は「バックアップ → 保持期間を超えたリモート投稿の削除」までを行います。空いた領域を実際に解放するには、サーバーを停止して
+                          <code className="mx-1 px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono">npm run db:maintenance -- --apply</code>
+                          を実行してください（FTS のマージと VACUUM）。
+                        </p>
+                      </div>
+                    )}
+
                     <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-lg space-y-3">
                       <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
                         <Server className="w-4 h-4 text-indigo-400" />

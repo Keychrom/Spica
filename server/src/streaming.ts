@@ -142,3 +142,18 @@ export function sendNotificationToUser(targetUserId: string, notification: any):
     }
   }
 }
+
+/** 終了時に SSE 接続をすべて閉じる（グレースフルシャットダウン用） */
+export function closeAllStreams(): number {
+  const count = clients.size;
+  for (const [id, client] of clients.entries()) {
+    try {
+      client.res.end();
+    } catch {
+      // 既に切断済みなら無視
+    }
+    clients.delete(id);
+  }
+  if (count > 0) console.log(`[Streaming] 🔌 終了に伴い ${count} 件の SSE 接続を閉じました`);
+  return count;
+}

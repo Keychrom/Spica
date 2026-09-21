@@ -8,6 +8,7 @@ import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
+import { getMaintenanceStats, runScheduledMaintenance, setAutoMaintenanceEnabled } from '../maintenanceService.js';
 import { getStorageConfig, saveStorageConfig, isS3Configured, testStorageConnection, uploadMediaFile } from '../storage.js';
 import {
   buildFollowActivity,
@@ -696,6 +697,52 @@ adminRouter.post('/server-settings', (req: Request, res: Response) => {
     message: 'サーバー設定を保存しました。',
     settings: updated,
   });
+});
+
+// 容量・件数・メンテナンス状況（管理ダッシュボード用）
+adminRouter.get('/maintenance', (req: Request, res: Response) => {
+  try {
+    res.json(getMaintenanceStats());
+  } catch (err: any) {
+    console.error('[Admin Maintenance Stats Error]:', err);
+    res.status(500).json({ error: err.message || 'メンテナンス情報の取得に失敗しました。' });
+  }
+});
+
+// 自動整理の ON/OFF と実行時刻
+adminRouter.post('/maintenance/settings', (req: Request, res: Response) => {
+  try {
+    const { autoMaintenance, hour } = req.body || {};
+    if (typeof autoMaintenance === 'boolean') setAutoMaintenanceEnabled(autoMaintenance);
+    if (hour !== undefined) {
+      const parsed = parseInt(String(hour), 10);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 23) {
+        return res.status(400).json({ error: '実行時刻は 0〜23 の整数で指定してください。' });
+      }
+      setServerSetting('auto_maintenance_hour', String(parsed));
+    }
+    console.log(`[Admin] 🧹 自動メンテナンス設定を更新 by @${(req.rawUser || req.user)?.id}`);
+    res.json({ success: true, message: '自動メンテナンスの設定を保存しました。', stats: getMaintenanceStats() });
+  } catch (err: any) {
+    console.error('[Admin Maintenance Settings Error]:', err);
+    res.status(400).json({ error: err.message || '設定の保存に失敗しました。' });
+  }
+});
+
+// いますぐ自動整理を実行する（バックアップ＋方針適用＋保持期間削除。VACUUM は行いません）
+adminRouter.post('/maintenance/run', async (req: Request, res: Response) => {
+  try {
+    const result = await runScheduledMaintenance();
+    res.json({
+      success: true,
+      message: `定期メンテナンスを実行しました（リモート投稿 ${result.removedPosts} 件を削除）。`,
+      result,
+      stats: getMaintenanceStats(),
+    });
+  } catch (err: any) {
+    console.error('[Admin Maintenance Run Error]:', err);
+    res.status(500).json({ error: err.message || 'メンテナンスの実行に失敗しました。' });
+  }
 });
 
 // リモートコンテンツの保存・索引ポリシーの更新

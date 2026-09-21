@@ -75,6 +75,14 @@ export interface AppConfig {
   ftsIndexScope: string;
   /** リモートのブースト（announces）の保存方針（既定 'follows' = フォロー中のみ） */
   remoteAnnouncePolicy: string;
+  /** 毎日 1 回の自動整理（古いリモート投稿の削除）を行うか。既定 true */
+  autoMaintenance: boolean;
+  /** 自動整理を実行する時刻（0-23・ローカル時刻）。既定 4 */
+  autoMaintenanceHour: number;
+  /** 自動整理の前に VACUUM INTO でバックアップを取るか。既定 true */
+  autoBackup: boolean;
+  /** バックアップの保持世代数。既定 3 */
+  backupsKeep: number;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -142,6 +150,18 @@ const MEDIA_QUOTA_MB = (() => {
 const FTS_INDEX_SCOPE = (process.env.FTS_INDEX_SCOPE || 'local').trim().toLowerCase();
 const REMOTE_ANNOUNCE_POLICY = (process.env.REMOTE_ANNOUNCE_POLICY || 'follows').trim().toLowerCase();
 
+// 運用の自動化（毎日 1 回のリモート投稿整理とバックアップ）
+const AUTO_MAINTENANCE = (process.env.AUTO_MAINTENANCE || 'true').trim().toLowerCase() !== 'false';
+const AUTO_MAINTENANCE_HOUR = (() => {
+  const parsed = parseInt(process.env.AUTO_MAINTENANCE_HOUR || '4', 10);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 23 ? parsed : 4;
+})();
+const AUTO_BACKUP = (process.env.AUTO_BACKUP || 'true').trim().toLowerCase() !== 'false';
+const BACKUPS_KEEP = (() => {
+  const parsed = parseInt(process.env.BACKUPS_KEEP || '3', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : 3;
+})();
+
 // 動画サムネイル生成に使う ffmpeg / ffprobe（未インストールなら機能だけ無効になる）
 const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
 const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
@@ -175,4 +195,8 @@ export const config: AppConfig = {
   ffprobePath: FFPROBE_PATH,
   ftsIndexScope: FTS_INDEX_SCOPE,
   remoteAnnouncePolicy: REMOTE_ANNOUNCE_POLICY,
+  autoMaintenance: AUTO_MAINTENANCE,
+  autoMaintenanceHour: AUTO_MAINTENANCE_HOUR,
+  autoBackup: AUTO_BACKUP,
+  backupsKeep: BACKUPS_KEEP,
 };

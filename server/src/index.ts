@@ -17,6 +17,9 @@ import { discoveryRouter } from './routes/discovery.js';
 import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
 import { startScheduler, startDeliveryQueueWorker } from './scheduler.js';
+import { registerGracefulShutdown } from './shutdown.js';
+import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
+import { getDeliveryQueueStats } from './deliveryQueue.js';
 
 // データベースの初期化
 initDatabase();
@@ -87,6 +90,51 @@ app.use('/users', usersRouter);
 app.use('/users', outboxRouter);
 app.use('/', inboxRouter);
 app.use('/', discoveryRouter);
+
+
+// ==========================================
+// ❤️ ヘルスチェック（外形監視用）
+//   /health        … 監視ツール向け（最小限の情報）
+//   /api/health    … 同内容（API 配下）
+//   認証ヘッダー（有効なセッション）を付けると DB・配送キューの詳細も返す
+// ==========================================
+const healthHandler = (req: Request, res: Response) => {
+  const startedAt = Date.now();
+  let dbOk = true;
+  try {
+    db.prepare('SELECT 1 AS ok').get();
+  } catch {
+    dbOk = false;
+  }
+
+  const base = {
+    status: dbOk ? 'ok' : 'degraded',
+    uptimeSeconds: Math.round(process.uptime()),
+    db: { ok: dbOk, latencyMs: Date.now() - startedAt },
+  };
+
+  // 認証済みなら運用の詳細も返す（監視ツールはヘッダーなしで叩ける）
+  const hasAuth = Boolean(req.headers['authorization']);
+  if (hasAuth && req.user) {
+    try {
+      const stats = getMaintenanceStats();
+      const queue = getDeliveryQueueStats();
+      return res.status(dbOk ? 200 : 503).json({
+        ...base,
+        db: { ...base.db, sizeBytes: stats.db.sizeBytes, walBytes: stats.db.walBytes },
+        posts: stats.posts,
+        deliveryQueue: queue,
+        automation: stats.automation,
+        backups: stats.backups,
+      });
+    } catch {
+      // 詳細が取れなくても最小限は返す
+    }
+  }
+  res.status(dbOk ? 200 : 503).json(base);
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // クライアント用 REST API ルーティング
 app.use('/api', apiRouter);
@@ -296,6 +344,8 @@ const server = app.listen(config.port, config.bindHost, () => {
 =====================================================
   `);
 
+    logAutomationSettings();
+
     if (config.inboxSignatureMode === 'log') {
       console.warn(`
 ⚠️  [SECURITY WARNING] INBOX_SIGNATURE_MODE=log
@@ -306,3 +356,11 @@ const server = app.listen(config.port, config.bindHost, () => {
 });
 
 export default app;
+
+// ==========================================
+// 🛑 グレースフルシャットダウン
+//   SIGTERM / SIGINT で新規接続を止め、SSE を閉じ、WAL をチェックポイントして終了する
+//   （POSIX 環境でのみシグナルが配送される。Windows は強制終了だが WAL なので壊れない）
+// ==========================================
+registerGracefulShutdown({ server });
+

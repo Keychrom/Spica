@@ -300,6 +300,7 @@ export function isAcceptedFollower(followerActorUrl: string, followedActorUrl: s
 function isPublicFetchPath(path: string): boolean {
   return (
     path === '/' ||
+    path === '/health' ||
     path.startsWith('/api/') ||
     path.startsWith('/.well-known/') ||
     path.startsWith('/nodeinfo') ||
