@@ -2491,6 +2491,13 @@ export default function App() {
   const [adminRepositoryUrl, setAdminRepositoryUrl] = useState<string>('');
   const [adminOperatorUrl, setAdminOperatorUrl] = useState<string>('');
   const [adminServerRulesText, setAdminServerRulesText] = useState<string>('');
+  // 🔎 リモートコンテンツの保存・索引ポリシー
+  const [contentPolicy, setContentPolicy] = useState<{ ftsIndexScope: string; remoteAnnouncePolicy: string }>({
+    ftsIndexScope: 'local',
+    remoteAnnouncePolicy: 'follows',
+  });
+  const [isSavingContentPolicy, setIsSavingContentPolicy] = useState<boolean>(false);
+  const [contentPolicyMsg, setContentPolicyMsg] = useState<string | null>(null);
   const [adminRequireRulesAgreement, setAdminRequireRulesAgreement] = useState<boolean>(true);
   const [isUploadingServerIcon, setIsUploadingServerIcon] = useState<boolean>(false);
   const [isUploadingServerBanner, setIsUploadingServerBanner] = useState<boolean>(false);
@@ -3745,6 +3752,10 @@ export default function App() {
         const rulesArr = Array.isArray(setData.server_rules) ? setData.server_rules : [];
         setAdminServerRulesText(rulesArr.join('\n'));
         setAdminRequireRulesAgreement(setData.require_rules_agreement !== false);
+        setContentPolicy({
+          ftsIndexScope: setData.fts_index_scope || 'local',
+          remoteAnnouncePolicy: setData.remote_announce_policy || 'follows',
+        });
       }
     } catch (err) {
       console.error('管理者データ取得エラー:', err);
@@ -3754,6 +3765,39 @@ export default function App() {
   };
 
   // サーバー基本設定の保存
+  // 🔎 リモートコンテンツの保存・索引ポリシーを保存
+  const handleSaveContentPolicy = async (next: { ftsIndexScope?: string; remoteAnnouncePolicy?: string }) => {
+    if (!authToken) return;
+    const previous = contentPolicy;
+    const updated = { ...contentPolicy, ...next };
+    setContentPolicy(updated);
+    setIsSavingContentPolicy(true);
+    setContentPolicyMsg(null);
+    try {
+      const res = await fetch('/api/admin/content-policy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(next),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setContentPolicy(previous);
+        setContentPolicyMsg(data.error || '保存に失敗しました。');
+        return;
+      }
+      setContentPolicy({
+        ftsIndexScope: data.fts_index_scope || updated.ftsIndexScope,
+        remoteAnnouncePolicy: data.remote_announce_policy || updated.remoteAnnouncePolicy,
+      });
+      setContentPolicyMsg(data.message || '保存しました。');
+    } catch (err: any) {
+      setContentPolicy(previous);
+      setContentPolicyMsg(err.message);
+    } finally {
+      setIsSavingContentPolicy(false);
+    }
+  };
+
   const handleSaveServerSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authToken) return;
@@ -9532,6 +9576,69 @@ export default function App() {
                       </button>
                     </div>
                   </form>
+
+                  {/* 🔎 リモートコンテンツの保存・索引（Mastodon / Misskey 相当が既定） */}
+                  <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                        <Search className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h2 className="text-base font-bold text-slate-100">検索とリモート投稿の保存</h2>
+                        <p className="text-xs text-slate-400">
+                          リレー経由で流入するリモート投稿は DB を大きく膨らませます。Mastodon / Misskey と同じく、既定では<b>リモート投稿の本文を検索索引に入れず</b>、<b>フォロー外のブーストも保存しません</b>。
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-semibold text-slate-300">検索索引の範囲</label>
+                        <select
+                          value={contentPolicy.ftsIndexScope}
+                          disabled={isSavingContentPolicy}
+                          onChange={(e) => handleSaveContentPolicy({ ftsIndexScope: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+                        >
+                          <option value="local">ローカル投稿のみ（Mastodon / Misskey 相当・推奨）</option>
+                          <option value="follows">ローカル＋フォロー中のアクター＋自分宛の返信</option>
+                          <option value="all">すべての投稿（旧来の挙動・容量を大きく使います）</option>
+                        </select>
+                        <p className="text-[10px] text-slate-500">
+                          狭めるほど DB が小さくなります。タイムラインの表示内容は変わりません（変わるのは検索だけです）。
+                        </p>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-semibold text-slate-300">リモートのブースト（リノート）</label>
+                        <select
+                          value={contentPolicy.remoteAnnouncePolicy}
+                          disabled={isSavingContentPolicy}
+                          onChange={(e) => handleSaveContentPolicy({ remoteAnnouncePolicy: e.target.value })}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+                        >
+                          <option value="follows">フォロー中アクターのものだけ保存（推奨）</option>
+                          <option value="all">すべて保存（旧来の挙動）</option>
+                          <option value="none">リモートのブーストは保存しない</option>
+                        </select>
+                        <p className="text-[10px] text-slate-500">
+                          フォローしていない相手のブーストは、リレー経由で大量に届き DB の約 1/4 を占めます。
+                        </p>
+                      </div>
+                    </div>
+
+                    {contentPolicyMsg && (
+                      <div className="p-3 rounded-xl text-xs bg-cyan-500/10 border border-cyan-500/30 text-cyan-200">
+                        {contentPolicyMsg}
+                      </div>
+                    )}
+
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      ※ 設定は<b>これ以降に届く投稿</b>に適用されます。既に保存済みの投稿・ブーストへ遡って適用するには、サーバーを停止して
+                      <code className="mx-1 px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 font-mono">npm run db:maintenance -- --apply</code>
+                      を実行してください（先にバックアップを取ります）。
+                    </p>
+                  </div>
                 </div>
               )}
 

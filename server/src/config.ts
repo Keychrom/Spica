@@ -68,6 +68,13 @@ export interface AppConfig {
   ffmpegPath: string;
   /** ffprobe の実行ファイルパス（動画の長さ・解像度取得用。既定 'ffprobe'） */
   ffprobePath: string;
+  /**
+   * FTS 索引のスコープ（既定 'local' = ローカル投稿のみ。Mastodon / Misskey 相当）
+   * 管理画面で変更でき、その場合はそちらが優先される。
+   */
+  ftsIndexScope: string;
+  /** リモートのブースト（announces）の保存方針（既定 'follows' = フォロー中のみ） */
+  remoteAnnouncePolicy: string;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -130,6 +137,11 @@ const MEDIA_QUOTA_MB = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 })();
 
+// リモートコンテンツの保存・索引ポリシー（既定は Mastodon / Misskey 相当）
+//   管理画面（server_settings）で変更された場合はそちらが優先される（searchPolicy.ts）
+const FTS_INDEX_SCOPE = (process.env.FTS_INDEX_SCOPE || 'local').trim().toLowerCase();
+const REMOTE_ANNOUNCE_POLICY = (process.env.REMOTE_ANNOUNCE_POLICY || 'follows').trim().toLowerCase();
+
 // 動画サムネイル生成に使う ffmpeg / ffprobe（未インストールなら機能だけ無効になる）
 const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
 const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
@@ -161,4 +173,6 @@ export const config: AppConfig = {
   mediaQuotaMb: MEDIA_QUOTA_MB,
   ffmpegPath: FFMPEG_PATH,
   ffprobePath: FFPROBE_PATH,
+  ftsIndexScope: FTS_INDEX_SCOPE,
+  remoteAnnouncePolicy: REMOTE_ANNOUNCE_POLICY,
 };

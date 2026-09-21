@@ -647,6 +647,21 @@ export function initDatabase() {
     "CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);",
     // 通知の種類別設定（JSON: { reaction: false, ... } 無効にする種類だけ false で保存）
     "ALTER TABLE users ADD COLUMN notification_prefs TEXT DEFAULT '{}';",
+    // FTS 索引の方針（リモート投稿を索引するか）を行ごとに持つ。方針は searchPolicy.ts が決める。
+    "ALTER TABLE posts ADD COLUMN fts_indexed INTEGER NOT NULL DEFAULT 1;",
+    // FTS 同期トリガは fts_indexed = 1 の行だけを索引する（リレー経由の投稿で索引が膨らむのを防ぐ）
+    "DROP TRIGGER IF EXISTS posts_ai;",
+    "DROP TRIGGER IF EXISTS posts_au;",
+    `CREATE TRIGGER posts_ai AFTER INSERT ON posts WHEN new.fts_indexed = 1 BEGIN
+      INSERT INTO posts_fts(post_id, content) VALUES (new.id, new.content);
+    END;`,
+    `CREATE TRIGGER posts_au AFTER UPDATE ON posts WHEN new.fts_indexed = 1 BEGIN
+      DELETE FROM posts_fts WHERE post_id = old.id;
+      INSERT INTO posts_fts(post_id, content) VALUES (new.id, new.content);
+    END;`,
+    `CREATE TRIGGER posts_ad AFTER DELETE ON posts BEGIN
+      DELETE FROM posts_fts WHERE post_id = old.id;
+    END;`,
   ];
 
   for (const sql of migrations) {
@@ -666,7 +681,7 @@ export function initDatabase() {
       db.prepare(`
         INSERT INTO posts_fts(post_id, content)
         SELECT id, content FROM posts
-        WHERE id NOT IN (SELECT post_id FROM posts_fts)
+        WHERE fts_indexed = 1 AND id NOT IN (SELECT post_id FROM posts_fts)
       `).run();
       console.log('[FTS5] ✅ Posts FTS initial sync completed.');
     }

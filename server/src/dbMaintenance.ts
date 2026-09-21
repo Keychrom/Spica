@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy } from './searchPolicy.js';
 
 /**
  * DB メンテナンス（1人運用向け）
@@ -31,6 +32,8 @@ export interface MaintenanceOptions {
   keepRepliesToLocal: boolean;
   /** 孤立メディアの削除を行うか */
   pruneMedia: boolean;
+  /** 保存・索引の方針（FTS スコープ / リモートブースト）を既存データへ遡及適用するか */
+  applyPolicy: boolean;
   /** 孤立とみなす前に必要なファイルの経過時間（ミリ秒）。アップロード直後のファイルを守る */
   mediaMinAgeMs: number;
 }
@@ -41,6 +44,7 @@ export const DEFAULT_MAINTENANCE_OPTIONS: MaintenanceOptions = {
   keepFollowed: true,
   keepRepliesToLocal: true,
   pruneMedia: true,
+  applyPolicy: true,
   mediaMinAgeMs: 24 * 60 * 60 * 1000,
 };
 
@@ -576,12 +580,20 @@ export function rotateBackups(backupDir: string, keep: number): string[] {
 // まとめ
 // ---------------------------------------------------------------------------
 
+export interface PolicyApplyResult {
+  /** FTS 索引から外した件数 / 索引に入れ直した件数 / 適用後の索引行数 */
+  fts: { toUnindex: number; toIndex: number; ftsRowsAfter: number; scope: string };
+  /** 方針に反して保存されていたリモートブーストの削除件数 / 残件数 */
+  announces: { toRemove: number; remaining: number; policy: string };
+}
+
 export interface MaintenanceReport {
   before: DbSizeInfo;
   after: DbSizeInfo;
   targets: RemotePostTargets;
   removed: RemovalCounts;
   media: MediaCleanupResult;
+  policy?: PolicyApplyResult;
   backup?: BackupResult;
   optimize?: OptimizeResult;
   applied: boolean;
@@ -620,6 +632,7 @@ export function runMaintenance(params: {
     };
     let backupResult: BackupResult | undefined;
     let optimize: OptimizeResult | undefined;
+    let policyResult: PolicyApplyResult | undefined;
 
     if (params.apply) {
       if (params.backup) {
@@ -635,6 +648,17 @@ export function runMaintenance(params: {
       if (params.options.pruneMedia) {
         log('② 孤立メディアを確認しています...');
         media = cleanupOrphanMedia(db, params.uploadsDir, params.options, true, params.remoteStorageConfigured);
+      }
+      if (params.options.applyPolicy) {
+        log('⑤ 保存・索引の方針を既存データへ適用しています...');
+        const ftsResult = applyFtsPolicy(db);
+        const announceResult = applyAnnouncePolicy(db);
+        policyResult = {
+          fts: { ...ftsResult, scope: getFtsIndexScope(db) },
+          announces: { ...announceResult, policy: getRemoteAnnouncePolicy(db) },
+        };
+        log(`   索引: ${ftsResult.toUnindex} 件を索引から外し、${ftsResult.toIndex} 件を入れ直しました（残り ${ftsResult.ftsRowsAfter} 行）`);
+        log(`   ブースト: ${announceResult.toRemove} 件を削除しました（残り ${announceResult.remaining} 件）`);
       }
       if (params.vacuum) {
         log('③ wal_checkpoint + VACUUM を実行しています（サーバー停止推奨）...');
@@ -652,6 +676,7 @@ export function runMaintenance(params: {
       targets,
       removed,
       media,
+      policy: policyResult,
       backup: backupResult,
       optimize,
       applied: params.apply,

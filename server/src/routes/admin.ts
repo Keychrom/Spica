@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
+import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
 import { getStorageConfig, saveStorageConfig, isS3Configured, testStorageConnection, uploadMediaFile } from '../storage.js';
 import {
   buildFollowActivity,
@@ -647,6 +648,9 @@ adminRouter.get('/server-settings', (req: Request, res: Response) => {
     operator_url: info.operator_url,
     server_rules: info.server_rules,
     require_rules_agreement: info.require_rules_agreement,
+    // リモートコンテンツの保存・索引ポリシー
+    fts_index_scope: getFtsIndexScope(),
+    remote_announce_policy: getRemoteAnnouncePolicy(),
   });
 });
 
@@ -692,6 +696,30 @@ adminRouter.post('/server-settings', (req: Request, res: Response) => {
     message: 'サーバー設定を保存しました。',
     settings: updated,
   });
+});
+
+// リモートコンテンツの保存・索引ポリシーの更新
+adminRouter.post('/content-policy', (req: Request, res: Response) => {
+  try {
+    const { ftsIndexScope, remoteAnnouncePolicy } = req.body || {};
+    const updated: Record<string, string> = {};
+    if (ftsIndexScope !== undefined) updated.fts_index_scope = setFtsIndexScope(ftsIndexScope);
+    if (remoteAnnouncePolicy !== undefined) updated.remote_announce_policy = setRemoteAnnouncePolicy(remoteAnnouncePolicy);
+    if (Object.keys(updated).length === 0) {
+      return res.status(400).json({ error: '変更する項目が指定されていません。' });
+    }
+    console.log(`[Admin] 🔎 Content policy updated by @${(req.rawUser || req.user)?.id}: ${JSON.stringify(updated)}`);
+    res.json({
+      success: true,
+      message:
+        '設定を保存しました。既存の投稿・ブーストへ遡って適用するには `npm run db:maintenance -- --apply` を実行してください。',
+      fts_index_scope: getFtsIndexScope(),
+      remote_announce_policy: getRemoteAnnouncePolicy(),
+    });
+  } catch (err: any) {
+    console.error('[Admin Content Policy Error]:', err);
+    res.status(500).json({ error: err.message || '設定の保存に失敗しました。' });
+  }
 });
 
 // サーバーアイコンのアップロード

@@ -13,6 +13,7 @@ import {
   federatePollUpdate,
 } from '../activitypub.js';
 import { verifyInboxSignature } from '../inboxAuth.js';
+import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolicy.js';
 import { isPublicPost } from '../postVisibility.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
@@ -458,9 +459,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           return res.status(202).json({ status: 'ignored', reason: 'direct messages are not supported by this instance' });
         }
 
+        // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）
+        const noteFtsIndexed = shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+
         db.prepare(`
-          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             author_icon = CASE WHEN excluded.author_icon != '' THEN excluded.author_icon ELSE posts.author_icon END,
@@ -486,7 +490,8 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           quoteId,
           isSensitive,
           attachmentsJson,
-          publishedAt
+          publishedAt,
+          noteFtsIndexed
         );
 
         // 📊 アンケート (Poll / Question: oneOf / anyOf) の抽出と保存
@@ -682,9 +687,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           const relayIsSensitive = Boolean(note.sensitive || cw) ? 1 : 0;
           const relayQuoteId = typeof note._misskey_quote === 'string' ? note._misskey_quote : (typeof note.quoteUrl === 'string' ? note.quoteUrl : null);
 
+          // リレー経由の投稿は既定では索引しない（索引の肥大化を防ぐ）
+          const relayFtsIndexed = shouldIndexRemotePost({ authorUrl: noteAuthorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+
           db.prepare(`
-            INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               content = excluded.content,
               author_icon = CASE WHEN excluded.author_icon != '' THEN excluded.author_icon ELSE posts.author_icon END,
@@ -708,7 +716,8 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             relayQuoteId,
             relayIsSensitive,
             relayAttachmentsJson,
-            publishedAt
+            publishedAt,
+            relayFtsIndexed
           );
 
           console.log(`[Inbox Relay Announce] 🚀 Saved relay note from ${authorHandle}: ${content.slice(0, 40)}...`);
@@ -724,6 +733,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             } catch {
               const u = new URL(actorUrl);
               boosterActor = { username: u.pathname.split('/').pop() || 'user', domain: u.host, name: 'Remote User', icon_url: '' };
+            }
+
+            // リモートのブーストは方針で保存可否を決める（既定はフォロー中アクターのみ）
+            if (!shouldStoreRemoteAnnounce(actorUrl)) {
+              console.log(`[Inbox] 🔇 フォロー外のリモートブーストを保存しません: ${actorUrl}`);
+              return res.status(202).json({ status: 'ignored', reason: 'remote boost policy' });
             }
 
             const announceId = activity.id || `${actorUrl}/announces/${Date.now()}`;

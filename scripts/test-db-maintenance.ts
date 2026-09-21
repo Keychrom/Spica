@@ -59,9 +59,9 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
     CREATE TABLE posts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, author_name TEXT, author_url TEXT, author_handle TEXT,
       author_icon TEXT DEFAULT '', content TEXT, is_local INTEGER DEFAULT 1, visibility TEXT DEFAULT 'public',
       emojis TEXT DEFAULT '[]', cw TEXT, in_reply_to TEXT, quote_id TEXT, is_sensitive INTEGER DEFAULT 0,
-      media_attachments TEXT DEFAULT '[]', published_at TEXT NOT NULL);
+      media_attachments TEXT DEFAULT '[]', published_at TEXT NOT NULL, fts_indexed INTEGER NOT NULL DEFAULT 1);
     CREATE VIRTUAL TABLE posts_fts USING fts5(post_id UNINDEXED, content, tokenize='trigram');
-    CREATE TRIGGER posts_ai AFTER INSERT ON posts BEGIN
+    CREATE TRIGGER posts_ai AFTER INSERT ON posts WHEN new.fts_indexed = 1 BEGIN
       INSERT INTO posts_fts(post_id, content) VALUES (new.id, new.content);
     END;
     CREATE TRIGGER posts_ad AFTER DELETE ON posts BEGIN

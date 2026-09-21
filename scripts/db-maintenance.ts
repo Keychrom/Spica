@@ -19,6 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../server/src/config.js';
+import { getFtsIndexScope, getRemoteAnnouncePolicy } from '../server/src/searchPolicy.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   MaintenanceOptions,
@@ -36,6 +37,7 @@ interface CliArgs {
   keepFollowed: boolean;
   keepRepliesToLocal: boolean;
   media: boolean;
+  policy: boolean;
   backup: boolean;
   vacuum: boolean;
   backupsKeep?: number;
@@ -49,6 +51,7 @@ function parseArgs(argv: string[]): CliArgs {
     keepFollowed: true,
     keepRepliesToLocal: true,
     media: true,
+    policy: true,
     backup: true,
     vacuum: true,
     help: false,
@@ -68,6 +71,7 @@ function parseArgs(argv: string[]): CliArgs {
       case '--no-keep-followed': args.keepFollowed = false; break;
       case '--no-keep-replies-to-local': args.keepRepliesToLocal = false; break;
       case '--skip-media': args.media = false; break;
+      case '--skip-policy': args.policy = false; break;
       case '--no-backup': args.backup = false; break;
       case '--no-vacuum': args.vacuum = false; break;
       case '--backups-keep': args.backupsKeep = parseInt(next(), 10); break;
@@ -95,6 +99,7 @@ Spica DB メンテナンス
   --no-keep-followed      フォロー中アクターの投稿も保持対象から外す（既定は保持）
   --no-keep-replies-to-local  ローカル投稿への返信も保持対象から外す（既定は保持）
   --skip-media            孤立メディアの削除を行わない
+  --skip-policy           保存・索引の方針（FTS スコープ / リモートブースト）を既存データへ適用しない
   --no-backup             実行前のバックアップ（VACUUM INTO）を省略（非推奨）
   --no-vacuum             wal_checkpoint + VACUUM を行わない
   --backups-keep N        バックアップの保持世代数（既定 3）
@@ -154,6 +159,7 @@ function main(): number {
     keepFollowed: args.keepFollowed,
     keepRepliesToLocal: args.keepRepliesToLocal,
     pruneMedia: args.media,
+    applyPolicy: args.policy,
   };
 
   // uploads とバックアップは DB と同じサーバーディレクトリ配下に置く（cwd に依存しない）
@@ -177,8 +183,13 @@ function main(): number {
   const db = openMaintenanceDb(dbPath);
   const before = getDbSizeInfo(dbPath, db);
   let plan;
+  let policyScope = 'local';
+  let policyAnnounce = 'follows';
   try {
     plan = planRemotePostRemoval(db, options);
+    // 方針の表示にも同じ接続を使う（サーバーの共有接続を開かないため）
+    policyScope = getFtsIndexScope(db);
+    policyAnnounce = getRemoteAnnouncePolicy(db);
   } finally {
     db.close();
   }
@@ -186,6 +197,10 @@ function main(): number {
   console.log('■ 現在のサイズ');
   console.log(`  DB 本体: ${formatBytes(before.dbBytes)} / WAL: ${formatBytes(before.walBytes)} / 合計: ${formatBytes(before.dbBytes + before.walBytes)}`);
   console.log(`  ページ: ${before.pageCount} (空き ${before.freelistCount}) × ${before.pageSize} バイト`);
+  console.log('');
+  console.log('■ ⑤ 保存・索引の方針（設定値）');
+  console.log(`  FTS 索引スコープ: ${policyScope} / リモートブースト: ${policyAnnounce}`);
+  console.log('  （既存データへの適用は --apply 時に実行されます。管理画面から変更できます）');
   console.log('');
   console.log('■ ① リモート投稿の削除予定');
   console.log(`  削除対象: ${plan.total} 件（保持期間によるもの ${plan.byAge} 件 / 件数上限によるもの ${plan.byCount} 件）`);
@@ -226,6 +241,12 @@ function main(): number {
     console.log(`  リアクション: ${r.reactions} 件 / ブースト: ${r.announces} 件 / 通知: ${r.notifications} 件`);
     console.log(`  ブックマーク: ${r.bookmarks} 件 / アンケート: ${r.polls} 件`);
     console.log('');
+    if (report.policy) {
+      console.log('■ ⑤ 保存・索引の方針を適用');
+      console.log(`  FTS 索引スコープ: ${report.policy.fts.scope}（索引から除外 ${report.policy.fts.toUnindex} 件 / 追加 ${report.policy.fts.toIndex} 件 / 残り ${report.policy.fts.ftsRowsAfter} 行）`);
+      console.log(`  リモートブースト: ${report.policy.announces.policy}（削除 ${report.policy.announces.toRemove} 件 / 残り ${report.policy.announces.remaining} 件）`);
+      console.log('');
+    }
     if (report.optimize) {
       console.log('■ ③ FTS マージ + wal_checkpoint + VACUUM');
       console.log(
