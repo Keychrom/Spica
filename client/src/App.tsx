@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import DOMPurify from 'dompurify';
 import {
   Globe,
@@ -286,7 +286,7 @@ function PostMediaGrid({
         <div className="rounded-2xl overflow-hidden border border-slate-800/80 bg-slate-950 max-h-96 w-fit max-w-full">
           <img
             src={att.url}
-            alt={att.name || '投稿画像'}
+            alt={att.description || att.name || '投稿画像'}
             className="w-auto h-auto max-h-96 object-contain cursor-pointer hover:opacity-95 transition"
             loading="lazy"
             onClick={() => onImageClick?.(att.url)}
@@ -302,7 +302,7 @@ function PostMediaGrid({
             <div key={idx} className="relative overflow-hidden h-full group bg-slate-900">
               <img
                 src={att.url}
-                alt={att.name || `投稿画像 ${idx + 1}`}
+                alt={att.description || att.name || `投稿画像 ${idx + 1}`}
                 className="w-full h-full object-cover cursor-pointer group-hover:scale-105 transition duration-200"
                 loading="lazy"
                 onClick={() => onImageClick?.(att.url)}
@@ -319,7 +319,7 @@ function PostMediaGrid({
           <div className="relative overflow-hidden h-full group bg-slate-900">
             <img
               src={attachments[0].url}
-              alt={attachments[0].name || '投稿画像 1'}
+              alt={attachments[0].description || attachments[0].name || '投稿画像 1'}
               className="w-full h-full object-cover cursor-pointer group-hover:scale-105 transition duration-200"
               loading="lazy"
               onClick={() => onImageClick?.(attachments[0].url)}
@@ -330,7 +330,7 @@ function PostMediaGrid({
               <div key={idx} className="relative overflow-hidden h-full group bg-slate-900">
                 <img
                   src={att.url}
-                  alt={att.name || `投稿画像 ${idx + 2}`}
+                  alt={att.description || att.name || `投稿画像 ${idx + 2}`}
                   className="w-full h-full object-cover cursor-pointer group-hover:scale-105 transition duration-200"
                   loading="lazy"
                   onClick={() => onImageClick?.(att.url)}
@@ -575,6 +575,8 @@ export interface MediaAttachment {
   url: string;
   mediaType: string;
   name?: string;
+  /** 代替テキスト（alt）。連合先には添付の name として届く */
+  description?: string;
   size?: number;
   width?: number;
   height?: number;
@@ -1944,6 +1946,8 @@ export default function App() {
 
   // 通知ステート
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  // 「3人がリアクション」のようにまとめた通知を個別表示に切り替えたもの
+  const [expandedNotifGroups, setExpandedNotifGroups] = useState<Set<string>>(new Set());
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState<number>(0);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState<boolean>(false);
   const [notificationFilter, setNotificationFilter] = useState<'all' | 'reply' | 'reaction' | 'follow'>('all');
@@ -2500,6 +2504,7 @@ export default function App() {
   const [contentPolicyMsg, setContentPolicyMsg] = useState<string | null>(null);
   // 🧹 容量・メンテナンス状況
   const [maintenanceStats, setMaintenanceStats] = useState<any | null>(null);
+  const [isClearingProxyCache, setIsClearingProxyCache] = useState<boolean>(false);
   const [isRunningMaintenance, setIsRunningMaintenance] = useState<boolean>(false);
   const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
   const [adminRequireRulesAgreement, setAdminRequireRulesAgreement] = useState<boolean>(true);
@@ -2522,6 +2527,8 @@ export default function App() {
   const [adminBlockedDomains, setAdminBlockedDomains] = useState<any[]>([]);
   const [blockInputDomain, setBlockInputDomain] = useState<string>('');
   const [blockInputReason, setBlockInputReason] = useState<string>('');
+  // 'suspend' = 完全ブロック（通信遮断・データ削除）/ 'silence' = サイレンス（タイムラインから隠すだけ）
+  const [blockInputSeverity, setBlockInputSeverity] = useState<'suspend' | 'silence'>('suspend');
   const [isBlockingDomain, setIsBlockingDomain] = useState<boolean>(false);
   const [blockMessage, setBlockMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -3827,7 +3834,7 @@ export default function App() {
   };
 
   // 🧹 自動整理の ON/OFF と実行時刻
-  const handleSaveMaintenanceSettings = async (next: { autoMaintenance?: boolean; hour?: number }) => {
+  const handleSaveMaintenanceSettings = async (next: { autoMaintenance?: boolean; hour?: number; imageProxy?: boolean; imageProxyMaxMb?: number }) => {
     if (!authToken) return;
     try {
       const res = await fetch('/api/admin/maintenance/settings', {
@@ -3844,6 +3851,56 @@ export default function App() {
       if (data.stats) setMaintenanceStats(data.stats);
     } catch (err: any) {
       setMaintenanceMsg(err.message);
+    }
+  };
+
+  // 🖼️ 画像プロキシのキャッシュ整理
+  const handleClearProxyCache = async () => {
+    if (!authToken) return;
+    setIsClearingProxyCache(true);
+    try {
+      const res = await fetch('/api/admin/image-proxy/cache', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMaintenanceMsg(data.message || 'キャッシュを整理しました。');
+        if (data.stats) {
+          setMaintenanceStats((prev: any) => (prev ? { ...prev, imageProxy: data.stats } : prev));
+          fetchAdminData();
+        }
+      } else {
+        setMaintenanceMsg(data.error || 'キャッシュの整理に失敗しました。');
+      }
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
+    } finally {
+      setIsClearingProxyCache(false);
+    }
+  };
+
+  // ✉️ メール通知の ON/OFF
+  const handleToggleEmailNotification = async (enabled: boolean) => {
+    if (!authToken) return;
+    setIsSavingNotifPrefs(true);
+    try {
+      const res = await fetch('/api/notifications/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'メール通知の設定に失敗しました。');
+        return;
+      }
+      setEmailNotification(data.email || null);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSavingNotifPrefs(false);
     }
   };
 
@@ -4214,6 +4271,43 @@ export default function App() {
     }
   };
 
+  /**
+   * 通知のグルーピング（同じ種類・同じ投稿の連続した通知をまとめる）
+   * 例: 「3人がリアクションしました」
+   * メンションや返信、予約公開など「1 件ずつ読む意味がある」ものはまとめません。
+   */
+  const notifGroups = useMemo(() => {
+    const GROUPABLE = new Set(['reaction', 'announce', 'renote', 'follow']);
+    const groups: { key: string; items: AppNotification[] }[] = [];
+    for (const notif of notifications) {
+      const last = groups[groups.length - 1];
+      const sameKind = last
+        && GROUPABLE.has(notif.type)
+        && last.items[0].type === notif.type
+        && (last.items[0].post_id || '') === (notif.post_id || '');
+      if (sameKind) {
+        last!.items.push(notif);
+      } else {
+        groups.push({ key: notif.id, items: [notif] });
+      }
+    }
+    return groups;
+  }, [notifications]);
+
+  const groupByFirstId = useMemo(() => {
+    const map = new Map<string, { key: string; items: AppNotification[] }>();
+    for (const group of notifGroups) map.set(group.items[0].id, group);
+    return map;
+  }, [notifGroups]);
+
+  const groupedAwayIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const group of notifGroups) {
+      if (group.items.length > 1) for (const item of group.items.slice(1)) ids.add(item.id);
+    }
+    return ids;
+  }, [notifGroups]);
+
   // ブックマーク一覧取得
   const fetchBookmarks = async () => {
     if (!authToken) return;
@@ -4479,6 +4573,8 @@ export default function App() {
 
   // 🔔 通知の種類別設定
   const [notificationPrefs, setNotificationPrefs] = useState<Record<string, boolean> | null>(null);
+  // ✉️ メール通知（SMTP 設定時のみ。オプトイン）
+  const [emailNotification, setEmailNotification] = useState<{ available: boolean; enabled: boolean; email: string; verified: boolean } | null>(null);
   const [notificationTypes, setNotificationTypes] = useState<{ type: string; label: string }[]>([]);
   const [isSavingNotifPrefs, setIsSavingNotifPrefs] = useState<boolean>(false);
 
@@ -4554,6 +4650,7 @@ export default function App() {
       const data = await res.json();
       setNotificationPrefs(data.prefs || {});
       setNotificationTypes(Array.isArray(data.types) ? data.types : []);
+      setEmailNotification(data.email || null);
     } catch (err) {
       console.error('通知設定の取得エラー:', err);
     }
@@ -7368,7 +7465,7 @@ export default function App() {
   };
 
   // ドメインブロック実行ハンドラ
-  const executeBlockDomain = async (domain: string, reason = '') => {
+  const executeBlockDomain = async (domain: string, reason = '', severity: 'suspend' | 'silence' = 'suspend') => {
     if (!authToken) return;
     setIsBlockingDomain(true);
     setBlockMessage(null);
@@ -7379,13 +7476,15 @@ export default function App() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ domain, reason, purgeData: true }),
+        body: JSON.stringify({ domain, reason, severity, purgeData: severity === 'suspend' }),
       });
       const data = await res.json();
       if (res.ok) {
         setBlockMessage({
           type: 'success',
-          text: `ドメイン "${data.domain}" をブロックしました。（投稿 ${data.purgeStats?.posts ?? 0}件, Actor ${data.purgeStats?.actors ?? 0}件をパージ）`,
+          text: severity === 'silence'
+            ? `ドメイン "${data.domain}" をサイレンスにしました。（タイムライン・検索・通知から非表示 / 配送とフォロー関係は維持）`
+            : `ドメイン "${data.domain}" をブロックしました。（投稿 ${data.purgeStats?.posts ?? 0}件, Actor ${data.purgeStats?.actors ?? 0}件をパージ）`,
         });
         setBlockInputDomain('');
         setBlockInputReason('');
@@ -7413,7 +7512,7 @@ export default function App() {
   const handleManualBlockDomain = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!blockInputDomain.trim()) return;
-    await executeBlockDomain(blockInputDomain.trim(), blockInputReason.trim());
+    await executeBlockDomain(blockInputDomain.trim(), blockInputReason.trim(), blockInputSeverity);
   };
 
   // ブロック解除ハンドラ
@@ -8698,6 +8797,38 @@ export default function App() {
                           </p>
                         </div>
 
+                        {/* 🖼️ 画像プロキシ（リモート画像の直リンク解消） */}
+                        {maintenanceStats.imageProxy && (
+                          <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <label className="flex items-center space-x-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={maintenanceStats.imageProxy.enabled}
+                                  onChange={(e) => handleSaveMaintenanceSettings({ imageProxy: e.target.checked })}
+                                  className="w-4 h-4 accent-indigo-500 cursor-pointer"
+                                />
+                                <span className="text-[11px] font-semibold text-slate-300">🖼️ 画像プロキシ（リモート画像をこのノード経由で配信）</span>
+                              </label>
+                              <button
+                                type="button"
+                                disabled={isClearingProxyCache}
+                                onClick={handleClearProxyCache}
+                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold transition whitespace-nowrap"
+                              >
+                                {isClearingProxyCache ? '削除中...' : 'キャッシュを整理'}
+                              </button>
+                            </div>
+                            <div className="text-[10px] text-slate-500 leading-relaxed">
+                              キャッシュ: <span className="text-slate-300 font-semibold">{maintenanceStats.imageProxy.files.toLocaleString()}</span> 件 /{' '}
+                              <span className="text-slate-300 font-semibold">{(maintenanceStats.imageProxy.bytes / 1024 / 1024).toFixed(1)} MB</span>
+                              （上限 {(maintenanceStats.imageProxy.maxBytes / 1024 / 1024).toFixed(0)} MB・{maintenanceStats.imageProxy.ttlDays} 日で期限切れ）
+                              <br />
+                              有効にすると、リモートのアイコンや添付画像を相手サーバーから直接読まず、このノードが取得して配信します（閲覧者の IP や User-Agent が相手に渡りません）。毎日の自動整理で期限切れ分を削除します。
+                            </div>
+                          </div>
+                        )}
+
                         <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-slate-800/60 text-[11px]">
                           <label className="flex items-center space-x-2 cursor-pointer">
                             <input
@@ -9098,7 +9229,9 @@ export default function App() {
                       <span>サーバー（ドメイン）ブロック管理 ({adminBlockedDomains.length})</span>
                     </h3>
                     <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                      指定した外部 Fediverse サーバーからの通信（Inbox）を 403 で遮断し、配送（Delivery）や WebFinger 検索も停止します。ブロック実行時、該当サーバーの過去のキャッシュ投稿・アクター情報も自動消去されます。
+                      <span className="text-rose-300 font-semibold">🚫 ブロック（suspend）</span>: 通信（Inbox）を 403 で遮断し、配送・WebFinger も停止、該当サーバーの過去のキャッシュ投稿・アクター情報も自動消去します。
+                      <br />
+                      <span className="text-amber-300 font-semibold">🔇 サイレンス（silence）</span>: 通信とフォロー関係は維持したまま、そのサーバーの投稿をホーム・ローカル・検索・通知から隠します。データは消しません（後から戻せます）。
                     </p>
                   </div>
 
@@ -9107,7 +9240,7 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div className="sm:col-span-1">
                         <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                          ブロックするドメイン名 <span className="text-rose-400">*</span>
+                          対象ドメイン名 <span className="text-rose-400">*</span>
                         </label>
                         <input
                           type="text"
@@ -9120,7 +9253,7 @@ export default function App() {
                       </div>
                       <div className="sm:col-span-2">
                         <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                          ブロック理由（管理者メモ・任意）
+                          理由（管理者メモ・任意）
                         </label>
                         <div className="flex gap-2">
                           <input
@@ -9133,13 +9266,63 @@ export default function App() {
                           <button
                             type="submit"
                             disabled={!blockInputDomain.trim() || isBlockingDomain}
-                            className="px-4 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap flex items-center space-x-1 shrink-0"
+                            className={`px-4 py-2 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition whitespace-nowrap flex items-center space-x-1 shrink-0 ${
+                              blockInputSeverity === 'silence'
+                                ? 'bg-amber-600 hover:bg-amber-500'
+                                : 'bg-rose-600 hover:bg-rose-500'
+                            }`}
                           >
-                            <ShieldAlert className="w-3.5 h-3.5" />
-                            <span>{isBlockingDomain ? '処理中...' : 'ブロック実行'}</span>
+                            {blockInputSeverity === 'silence' ? <EyeOff className="w-3.5 h-3.5" /> : <ShieldAlert className="w-3.5 h-3.5" />}
+                            <span>{isBlockingDomain ? '処理中...' : blockInputSeverity === 'silence' ? 'サイレンスにする' : 'ブロック実行'}</span>
                           </button>
                         </div>
                       </div>
+                    </div>
+
+                    {/* 強度の選択 */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <label
+                        className={`flex items-start space-x-2 p-3 rounded-xl border cursor-pointer transition ${
+                          blockInputSeverity === 'suspend'
+                            ? 'bg-rose-500/10 border-rose-500/40'
+                            : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="blockSeverity"
+                          className="mt-0.5 accent-rose-500"
+                          checked={blockInputSeverity === 'suspend'}
+                          onChange={() => setBlockInputSeverity('suspend')}
+                        />
+                        <span className="text-xs">
+                          <span className="font-bold text-rose-300">🚫 ブロック（既定）</span>
+                          <span className="block text-slate-400 mt-0.5 leading-relaxed">
+                            通信を遮断し、そのサーバーの投稿・アクター情報を削除します。荒らし・スパム向け。
+                          </span>
+                        </span>
+                      </label>
+                      <label
+                        className={`flex items-start space-x-2 p-3 rounded-xl border cursor-pointer transition ${
+                          blockInputSeverity === 'silence'
+                            ? 'bg-amber-500/10 border-amber-500/40'
+                            : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="blockSeverity"
+                          className="mt-0.5 accent-amber-500"
+                          checked={blockInputSeverity === 'silence'}
+                          onChange={() => setBlockInputSeverity('silence')}
+                        />
+                        <span className="text-xs">
+                          <span className="font-bold text-amber-300">🔇 サイレンス</span>
+                          <span className="block text-slate-400 mt-0.5 leading-relaxed">
+                            表示から隠すだけで、通信・フォロー・投稿データは維持します。様子見や一時的な措置向け。
+                          </span>
+                        </span>
+                      </label>
                     </div>
 
                     {blockMessage && (
@@ -9166,7 +9349,8 @@ export default function App() {
                       <table className="w-full text-left text-xs">
                         <thead>
                           <tr className="border-b border-slate-800 text-slate-400">
-                            <th className="pb-3 font-semibold">ブロック中ドメイン</th>
+                            <th className="pb-3 font-semibold">対象ドメイン</th>
+                            <th className="pb-3 font-semibold">強度</th>
                             <th className="pb-3 font-semibold">理由</th>
                             <th className="pb-3 font-semibold">登録日</th>
                             <th className="pb-3 font-semibold">登録者</th>
@@ -9177,7 +9361,24 @@ export default function App() {
                           {adminBlockedDomains.map((b) => (
                             <tr key={b.domain} className="hover:bg-slate-800/20 transition">
                               <td className="py-3 font-mono font-bold text-rose-300">
-                                🚫 {b.domain}
+                                {b.severity === 'silence' ? '🔇' : '🚫'} {b.domain}
+                              </td>
+                              <td className="py-3 whitespace-nowrap">
+                                {b.severity === 'silence' ? (
+                                  <span
+                                    className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold"
+                                    title="通信は維持し、表示から隠すだけ（データは削除していません）"
+                                  >
+                                    サイレンス
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px] font-bold"
+                                    title="通信を遮断し、キャッシュも削除済み"
+                                  >
+                                    ブロック
+                                  </span>
+                                )}
                               </td>
                               <td className="py-3 text-slate-300 max-w-xs truncate">
                                 {b.reason || <span className="text-slate-500 italic">(理由記載なし)</span>}
@@ -9194,7 +9395,7 @@ export default function App() {
                                   onClick={() => handleUnblockDomain(b.domain)}
                                   className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition"
                                 >
-                                  ブロック解除
+                                  {b.severity === 'silence' ? 'サイレンス解除' : 'ブロック解除'}
                                 </button>
                               </td>
                             </tr>
@@ -11824,6 +12025,36 @@ export default function App() {
                     </p>
                   </div>
 
+                  {/* ✉️ メール通知（SMTP 設定時のみ） */}
+                  {emailNotification?.available && (
+                    <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2">
+                      <label className="flex items-center justify-between cursor-pointer">
+                        <span className="flex items-center space-x-2">
+                          <Mail className="w-4 h-4 text-sky-400" />
+                          <span className="text-sm font-bold text-slate-100">メールでも通知を受け取る</span>
+                        </span>
+                        <span className="flex items-center space-x-2">
+                          <span className={`text-[10px] font-bold ${emailNotification.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {emailNotification.enabled ? 'ON' : 'OFF'}
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={emailNotification.enabled}
+                            onChange={(e) => handleToggleEmailNotification(e.target.checked)}
+                            className="w-4 h-4 accent-sky-500 cursor-pointer"
+                          />
+                        </span>
+                      </label>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        {emailNotification.verified
+                          ? `${emailNotification.email} 宛に、上の種類のうち ON の通知をまとめて送ります。`
+                          : 'メールアドレスの確認が済むと有効にできます（設定 → アカウント → メールアドレス）。'}
+                        <br />
+                        短時間に複数届いた通知は 1 通にまとめ、同じ人へ連続で送らないよう間隔を空けます。切った種類の通知はメールも届きません。
+                      </p>
+                    </div>
+                  )}
+
                   {/* 保存ボタン */}
                   <div className="pt-3 flex justify-end">
                     <button
@@ -12925,6 +13156,137 @@ export default function App() {
             <div className="space-y-3">
               {notifications.map((notif) => {
                 const isUnread = notif.is_read === 0;
+
+                // まとめた通知の 2 件目以降は、グループカード側で描画する
+                if (groupedAwayIds.has(notif.id)) return null;
+
+                // まとめられる通知は、まずグループカードとして描画する
+                const group = groupByFirstId.get(notif.id);
+                if (group && group.items.length > 1 && !expandedNotifGroups.has(group.key)) {
+                  const members = group.items;
+                  const anyUnread = members.some((m) => m.is_read === 0);
+                  const kindLabel = notif.type === 'follow' ? 'フォロー' : notif.type === 'reaction' ? 'リアクション' : 'リノート';
+                  // リアクションは絵文字ごとの内訳も出す（「❤️ ×2  ⭐ ×1」）
+                  const reactionSummary = notif.type === 'reaction'
+                    ? Array.from(
+                        members.reduce((acc, m) => {
+                          const key = m.content || '❤️';
+                          acc.set(key, (acc.get(key) || 0) + 1);
+                          return acc;
+                        }, new Map<string, number>()),
+                      ).slice(0, 6)
+                    : [];
+
+                  return (
+                    <div
+                      key={`group_${group.key}`}
+                      onClick={() => handleNotificationClick(members[0])}
+                      className={`p-4 rounded-2xl border transition cursor-pointer relative ${
+                        anyUnread
+                          ? 'bg-slate-900/95 border-indigo-500/40 shadow-lg shadow-indigo-500/5 hover:border-indigo-500/70'
+                          : 'bg-slate-900/60 border-slate-800/80 hover:bg-slate-900/90 hover:border-slate-700/80'
+                      }`}
+                    >
+                      {anyUnread && (
+                        <span className="absolute top-4 right-4 w-2.5 h-2.5 rounded-full bg-indigo-500 ring-4 ring-indigo-500/20" />
+                      )}
+                      <div className="flex items-start space-x-3.5">
+                        {/* まとまった人数分のアイコンを重ねて表示 */}
+                        <div className="relative shrink-0 w-14 h-11">
+                          {members.slice(0, 3).map((m, index) => (
+                            <button
+                              key={m.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openUserProfile(m.actor_id);
+                              }}
+                              title={m.actor_name}
+                              style={{ left: `${index * 14}px`, zIndex: 10 - index }}
+                              className="absolute top-0 w-11 h-11 rounded-2xl overflow-hidden bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center font-bold text-white shadow-md border-2 border-slate-900 hover:scale-105 transition"
+                            >
+                              {m.actor_icon ? (
+                                <img
+                                  src={m.actor_icon}
+                                  alt={m.actor_name}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => {
+                                    (e.target as HTMLElement).style.display = 'none';
+                                  }}
+                                />
+                              ) : (
+                                m.actor_name.slice(0, 1).toUpperCase()
+                              )}
+                            </button>
+                          ))}
+                          {members.length > 3 && (
+                            <span
+                              style={{ left: '42px' }}
+                              className="absolute top-0 w-11 h-11 rounded-2xl bg-slate-800 border-2 border-slate-900 text-slate-300 text-xs font-bold flex items-center justify-center"
+                            >
+                              +{members.length - 3}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0 pr-6">
+                          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                            <span className="font-bold text-sm text-slate-200">
+                              {members.length}人が{kindLabel}しました
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              （{members.map((m) => m.actor_name).slice(0, 3).join('、')}
+                              {members.length > 3 ? ' ほか' : ''}）
+                            </span>
+                          </div>
+
+                          {reactionSummary.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                              {reactionSummary.map(([emoji, count]) => (
+                                <span key={emoji} className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-lg bg-slate-800 text-sm border border-slate-700">
+                                  <span>{emoji}</span>
+                                  <span className="text-[10px] text-slate-400">×{count}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {members[0].post_content && (
+                            <div className="mt-1.5 px-3 py-1.5 rounded-xl bg-slate-950/40 border-l-2 border-indigo-500/50 text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                              「{members[0].post_content}」
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-slate-800/40 text-[10px] text-slate-500">
+                            <span>{new Date(members[0].created_at).toLocaleString('ja-JP')}</span>
+                            <div className="flex items-center space-x-3">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedNotifGroups((prev) => new Set(prev).add(group.key));
+                                }}
+                                className="text-slate-400 hover:text-slate-200 hover:underline transition"
+                              >
+                                個別に表示
+                              </button>
+                              {anyUnread && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    members.filter((m) => m.is_read === 0).forEach((m) => handleMarkNotificationRead(m.id));
+                                  }}
+                                  className="text-indigo-400 hover:text-indigo-300 hover:underline flex items-center space-x-1 transition"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  <span>既読にする</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
 
                 // タイプに応じたアイコン・ラベル・バッジ色
                 let typeIcon = <Bell className="w-4 h-4 text-indigo-400" />;
@@ -14525,22 +14887,52 @@ export default function App() {
                         />
                       )}
 
-                      {/* 添付画像プレビュー */}
+                      {/* 添付画像プレビュー（ALT = 代替テキストも設定できる） */}
                       {postAttachments.length > 0 && (
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {postAttachments.map((att, idx) => (
-                            <div key={idx} className="relative group w-20 h-20 rounded-xl overflow-hidden border border-slate-700 bg-slate-950 shadow-md">
-                              <img src={att.url} alt={`添付画像 ${idx + 1}`} className="w-full h-full object-cover" />
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveAttachment(idx)}
-                                className="absolute top-1 right-1 p-1 bg-black/70 hover:bg-rose-600 rounded-full text-white transition shadow"
-                                title="削除"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ))}
+                        <div className="space-y-2 pt-1">
+                          <div className="flex flex-wrap gap-2">
+                            {postAttachments.map((att, idx) => (
+                              <div key={idx} className="relative group w-20 h-20 rounded-xl overflow-hidden border border-slate-700 bg-slate-950 shadow-md">
+                                <img
+                                  src={att.thumbnailUrl || att.url}
+                                  alt={att.description || `添付画像 ${idx + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
+                                {att.description ? (
+                                  <span className="absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/70 text-[9px] font-bold text-emerald-300 text-center" title={att.description}>
+                                    ALT
+                                  </span>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveAttachment(idx)}
+                                  className="absolute top-1 right-1 p-1 bg-black/70 hover:bg-rose-600 rounded-full text-white transition shadow"
+                                  title="削除"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                          {/* 各添付の代替テキスト（スクリーンリーダー・連合先の alt として使われる） */}
+                          <div className="space-y-1">
+                            {postAttachments.map((att, idx) => (
+                              <div key={`alt-${idx}`} className="flex items-center space-x-2">
+                                <span className="text-[10px] font-bold text-slate-500 shrink-0 w-10">ALT {idx + 1}</span>
+                                <input
+                                  type="text"
+                                  value={att.description || ''}
+                                  maxLength={1500}
+                                  placeholder="画像の説明（任意・空でも投稿できます）"
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    setPostAttachments((prev) => prev.map((a, i) => (i === idx ? { ...a, description: value } : a)));
+                                  }}
+                                  className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-200 placeholder-slate-600 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                                />
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
 

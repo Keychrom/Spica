@@ -19,7 +19,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../server/src/config.js';
-import { getFtsIndexScope, getRemoteAnnouncePolicy } from '../server/src/searchPolicy.js';
+import { getFtsIndexScope, getRemoteAnnouncePolicy, readSetting } from '../server/src/searchPolicy.js';
+import { pruneProxyCacheOn } from '../server/src/imageProxy.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   MaintenanceOptions,
@@ -38,6 +39,7 @@ interface CliArgs {
   keepRepliesToLocal: boolean;
   media: boolean;
   policy: boolean;
+  proxyCache: boolean;
   backupOnly: boolean;
   backup: boolean;
   vacuum: boolean;
@@ -53,6 +55,7 @@ function parseArgs(argv: string[]): CliArgs {
     keepRepliesToLocal: true,
     media: true,
     policy: true,
+    proxyCache: true,
     backupOnly: false,
     backup: true,
     vacuum: true,
@@ -74,6 +77,7 @@ function parseArgs(argv: string[]): CliArgs {
       case '--no-keep-replies-to-local': args.keepRepliesToLocal = false; break;
       case '--skip-media': args.media = false; break;
       case '--skip-policy': args.policy = false; break;
+      case '--skip-proxy-cache': args.proxyCache = false; break;
       case '--no-backup': args.backup = false; break;
       case '--backup-only': args.backupOnly = true; break;
       case '--no-vacuum': args.vacuum = false; break;
@@ -103,6 +107,7 @@ Spica DB メンテナンス
   --no-keep-replies-to-local  ローカル投稿への返信も保持対象から外す（既定は保持）
   --skip-media            孤立メディアの削除を行わない
   --skip-policy           保存・索引の方針（FTS スコープ / リモートブースト）を既存データへ適用しない
+  --skip-proxy-cache      画像プロキシのキャッシュ整理を行わない
   --backup-only           バックアップ（VACUUM INTO）だけを行って終了する（cron 向け）
   --no-backup             実行前のバックアップ（VACUUM INTO）を省略（非推奨）
   --no-vacuum             wal_checkpoint + VACUUM を行わない
@@ -189,11 +194,21 @@ async function main(): Promise<number> {
   let plan;
   let policyScope = 'local';
   let policyAnnounce = 'follows';
+  let proxyPlan: { removed: number; freedBytes: number; scanned: number; totalBytes: number } | null = null;
   try {
     plan = planRemotePostRemoval(db, options);
     // 方針の表示にも同じ接続を使う（サーバーの共有接続を開かないため）
     policyScope = getFtsIndexScope(db);
     policyAnnounce = getRemoteAnnouncePolicy(db);
+
+    // ⑥ 画像プロキシのキャッシュ: まず削除予定だけ数える
+    if (args.proxyCache) {
+      const ttlStored = parseInt(readSetting(db, 'image_proxy_ttl_days'), 10);
+      const ttlDays = Number.isFinite(ttlStored) && ttlStored > 0 ? ttlStored : config.imageProxyTtlDays;
+      const maxStored = parseInt(readSetting(db, 'image_proxy_max_mb'), 10);
+      const maxMb = Number.isFinite(maxStored) && maxStored > 0 ? maxStored : config.imageProxyMaxMb;
+      proxyPlan = pruneProxyCacheOn(db, dbPath, ttlDays, maxMb * 1024 * 1024, false);
+    }
   } finally {
     db.close();
   }
@@ -211,6 +226,12 @@ async function main(): Promise<number> {
   console.log(`  残す投稿: ${plan.kept} 件`);
   for (const [reason, count] of Object.entries(plan.keptByReason)) {
     if (count > 0) console.log(`    ・${reason} で保持: ${count} 件`);
+  }
+  if (proxyPlan) {
+    console.log('');
+    console.log('■ ⑥ 画像プロキシのキャッシュ');
+    console.log(`  保持: ${proxyPlan.scanned} 件 / ${formatBytes(proxyPlan.totalBytes)}`);
+    console.log(`  削除予定: ${proxyPlan.removed} 件 / ${formatBytes(proxyPlan.freedBytes)}（期限切れ・容量超過）`);
   }
   console.log('');
 
@@ -244,6 +265,7 @@ async function main(): Promise<number> {
     vacuum: args.vacuum,
     backupsKeep: args.backupsKeep ?? 3,
     remoteStorageConfigured,
+    pruneProxyCache: args.proxyCache,
     log: (line) => console.log(line),
   });
 

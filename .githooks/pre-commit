@@ -1,0 +1,16 @@
+#!/bin/sh
+# コミット前に秘密情報（鍵・トークン・.env・SQLite など）をスキャンする。
+# 導入: npm install（prepare で自動）または npm run hooks:install
+# 一時的に外す場合: git commit --no-verify
+npx --no-install tsx scripts/check-secrets.ts --staged
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "❌ 秘密情報が検出されたためコミットを中止しました。"
+  echo "   対処: 検出された値を SN-SNS 側（.env / server_settings）へ移し、"
+  echo "         公開ツリーには .env.example のプレースホルダだけを置いてください。"
+  echo "   どうしても今コミットする場合: git commit --no-verify"
+fi
+
+exit $status

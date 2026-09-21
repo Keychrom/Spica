@@ -9,6 +9,13 @@ import { listReports, resolveReport, countOpenReports } from '../reportService.j
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
 import { getMaintenanceStats, runScheduledMaintenance, setAutoMaintenanceEnabled } from '../maintenanceService.js';
+import { formatBytes } from '../dbMaintenance.js';
+import {
+  getProxyStats,
+  pruneProxyCache,
+  clearProxyCache,
+  setImageProxyEnabled,
+} from '../imageProxy.js';
 import { getStorageConfig, saveStorageConfig, isS3Configured, testStorageConnection, uploadMediaFile } from '../storage.js';
 import {
   buildFollowActivity,
@@ -464,7 +471,7 @@ adminRouter.post('/cache/clear', (req: Request, res: Response) => {
 // ブロック中ドメイン一覧の取得
 adminRouter.get('/blocks', (req: Request, res: Response) => {
   try {
-    const blocks = db.prepare('SELECT domain, reason, created_at, created_by FROM blocked_domains ORDER BY created_at DESC').all() as unknown as BlockedDomainRow[];
+    const blocks = db.prepare('SELECT domain, reason, created_at, created_by, severity FROM blocked_domains ORDER BY created_at DESC').all() as unknown as BlockedDomainRow[];
     res.json(blocks);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -474,7 +481,7 @@ adminRouter.get('/blocks', (req: Request, res: Response) => {
 // 新規ドメインのブロック登録（および過去データのパージ）
 adminRouter.post('/blocks', (req: Request, res: Response) => {
   try {
-    const { domain, reason, purgeData } = req.body;
+    const { domain, reason, purgeData, severity } = req.body;
     if (!domain || typeof domain !== 'string') {
       return res.status(400).json({ error: 'ブロック対象のドメイン名を入力してください。' });
     }
@@ -500,24 +507,31 @@ adminRouter.post('/blocks', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const adminId = (req.rawUser || req.user)!.id;
     const cleanReason = typeof reason === 'string' ? reason.trim() : '';
+    // silence = タイムライン等から隠すだけ（配送・フォローは維持）。既定は suspend（完全遮断）
+    const cleanSeverity = severity === 'silence' ? 'silence' : 'suspend';
 
     db.prepare(`
-      INSERT INTO blocked_domains (domain, reason, created_at, created_by)
-      VALUES (?, ?, ?, ?)
-    `).run(cleanDomain, cleanReason, now, adminId);
+      INSERT INTO blocked_domains (domain, reason, created_at, created_by, severity)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(cleanDomain, cleanReason, now, adminId, cleanSeverity);
 
-    // 過去の外部投稿・アクターキャッシュ・フォロー関係のパージ（デフォルト: 有効）
+    // 過去の外部投稿・アクターキャッシュ・フォロー関係のパージ
+    // （既定で有効。ただし silence は「隠すだけ」なので、データは残す）
     let purgeStats = null;
-    if (purgeData !== false) {
+    if (purgeData !== false && cleanSeverity === 'suspend') {
       purgeStats = purgeDomainData(cleanDomain);
     }
 
-    console.log(`[Admin] 🚫 Domain "${cleanDomain}" blocked by @${adminId}. Reason: "${cleanReason}". Purged:`, purgeStats);
+    console.log(
+      `[Admin] ${cleanSeverity === 'silence' ? '🔇' : '🚫'} Domain "${cleanDomain}" ${cleanSeverity === 'silence' ? 'silenced' : 'blocked'} by @${adminId}. Reason: "${cleanReason}". Purged:`,
+      purgeStats,
+    );
 
     res.status(201).json({
       success: true,
       domain: cleanDomain,
       reason: cleanReason,
+      severity: cleanSeverity,
       createdAt: now,
       createdBy: adminId,
       purgeStats,
@@ -712,7 +726,7 @@ adminRouter.get('/maintenance', (req: Request, res: Response) => {
 // 自動整理の ON/OFF と実行時刻
 adminRouter.post('/maintenance/settings', (req: Request, res: Response) => {
   try {
-    const { autoMaintenance, hour } = req.body || {};
+    const { autoMaintenance, hour, imageProxy, imageProxyMaxMb } = req.body || {};
     if (typeof autoMaintenance === 'boolean') setAutoMaintenanceEnabled(autoMaintenance);
     if (hour !== undefined) {
       const parsed = parseInt(String(hour), 10);
@@ -721,11 +735,39 @@ adminRouter.post('/maintenance/settings', (req: Request, res: Response) => {
       }
       setServerSetting('auto_maintenance_hour', String(parsed));
     }
+    if (typeof imageProxy === 'boolean') setImageProxyEnabled(imageProxy);
+    if (imageProxyMaxMb !== undefined) {
+      const parsed = parseInt(String(imageProxyMaxMb), 10);
+      if (!Number.isFinite(parsed) || parsed < 16 || parsed > 10240) {
+        return res.status(400).json({ error: '画像プロキシの上限は 16〜10240 MB で指定してください。' });
+      }
+      setServerSetting('image_proxy_max_mb', String(parsed));
+    }
     console.log(`[Admin] 🧹 自動メンテナンス設定を更新 by @${(req.rawUser || req.user)?.id}`);
     res.json({ success: true, message: '自動メンテナンスの設定を保存しました。', stats: getMaintenanceStats() });
   } catch (err: any) {
     console.error('[Admin Maintenance Settings Error]:', err);
     res.status(400).json({ error: err.message || '設定の保存に失敗しました。' });
+  }
+});
+
+// 画像プロキシのキャッシュ整理（期限切れ + 容量超過分。clear=true で全削除）
+adminRouter.post('/image-proxy/cache', (req: Request, res: Response) => {
+  try {
+    const clear = req.body?.clear === true;
+    const result = clear ? clearProxyCache() : pruneProxyCache();
+    console.log(
+      `[Admin] 🖼️ 画像プロキシのキャッシュを${clear ? '全削除' : '整理'}しました: ${result.removed} 件 by @${(req.rawUser || req.user)?.id}`,
+    );
+    res.json({
+      success: true,
+      message: `${result.removed} 件（${formatBytes(result.freedBytes)}）を削除しました。`,
+      result,
+      stats: getProxyStats(),
+    });
+  } catch (err: any) {
+    console.error('[Admin Image Proxy Cache Error]:', err);
+    res.status(400).json({ error: err.message || 'キャッシュの整理に失敗しました。' });
   }
 });
 

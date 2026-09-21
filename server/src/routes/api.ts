@@ -1,7 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting } from '../db.js';
+import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, isDomainHidden, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting } from '../db.js';
+import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
 import { config } from '../config.js';
 import { generateKeyPair } from '../crypto.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
@@ -752,8 +753,9 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
       }
     }
     if (item.is_local === 1) return true;
-    if (isDomainBlocked(item.author_url) || isDomainBlocked(item.author_handle)) return false;
-    if (item.renote && (isDomainBlocked(item.renote.url) || isDomainBlocked(item.renote.handle))) return false;
+    // 表示の絞り込みは suspend / silence のどちらでも隠す
+    if (isDomainHidden(item.author_url) || isDomainHidden(item.author_handle)) return false;
+    if (item.renote && (isDomainHidden(item.renote.url) || isDomainHidden(item.renote.handle))) return false;
     return true;
   });
 
@@ -2624,6 +2626,10 @@ apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
     const filtered = pageRows.filter((n) => {
       if (n.actor_id && excludeIds.has(n.actor_id.toLowerCase())) return false;
       if (n.actor_handle && excludeIds.has(n.actor_handle.toLowerCase())) return false;
+      // サイレンス / ブロックしたサーバーからの通知は一覧に出さない
+      if (n.actor_id && isDomainHidden(n.actor_id)) return false;
+      if (n.actor_handle && isDomainHidden(n.actor_handle)) return false;
+      if ((n as any).origin_url && isDomainHidden((n as any).origin_url)) return false;
       return true;
     });
 
@@ -2641,6 +2647,8 @@ apiRouter.get('/notifications/settings', requireAuth, (req: Request, res: Respon
     res.json({
       prefs: getNotificationPrefs(user.id),
       types: NOTIFICATION_TYPES.map((type) => ({ type, label: NOTIFICATION_TYPE_LABELS[type] ?? type })),
+      // メール通知（SMTP 設定時のみ利用可能。オプトイン）
+      email: getEmailNotificationStatus(user.id),
     });
   } catch (err: any) {
     console.error('[API Notification Settings Error]:', err);
@@ -2659,6 +2667,30 @@ apiRouter.post('/notifications/settings', requireAuth, (req: Request, res: Respo
   } catch (err: any) {
     console.error('[API Notification Settings Save Error]:', err);
     res.status(500).json({ error: err.message || '通知設定の保存に失敗しました。' });
+  }
+});
+
+// メール通知の ON/OFF（SMTP 未設定なら 400）
+apiRouter.post('/notifications/email', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const enabled = req.body?.enabled === true;
+    const status = getEmailNotificationStatus(user.id);
+    if (!status.available) {
+      return res.status(400).json({ error: 'このサーバーではメール通知が利用できません（SMTP 未設定）。' });
+    }
+    if (enabled && !status.email) {
+      return res.status(400).json({ error: 'メールアドレスを設定してから有効にしてください。' });
+    }
+    if (enabled && !status.verified) {
+      return res.status(400).json({ error: 'メールアドレスの確認が済んでいません。設定 → メールアドレスから確認してください。' });
+    }
+    setEmailNotificationEnabled(user.id, enabled);
+    console.log(`[Notification] ✉️ @${user.id} のメール通知: ${enabled ? 'ON' : 'OFF'}`);
+    res.json({ success: true, email: getEmailNotificationStatus(user.id) });
+  } catch (err: any) {
+    console.error('[API Notification Email Error]:', err);
+    res.status(500).json({ error: err.message || 'メール通知の設定に失敗しました。' });
   }
 });
 

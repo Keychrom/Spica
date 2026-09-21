@@ -269,6 +269,18 @@ S3_PUBLIC_URL=https://media.example.com
 
 ---
 
+## 🔒 ステップ 6.5: コミット前の秘密スキャン（公開リポジトリを使う場合）
+
+`npm install` を実行すると、git フック（`.githooks/pre-commit`）が自動で有効になります。コミット前に `npm run check:secrets -- --staged` が走り、秘密鍵・API トークン・`.env`・SQLite・鍵素材が混ざっていればコミットを中止します。
+
+```bash
+npm run check:secrets            # 追跡ファイルを一括チェック
+npm run check:secrets -- --all   # 作業ツリー全体（未追跡も含む）
+git config --unset core.hooksPath   # フックを外す
+```
+
+---
+
 ## 🛠️ ステップ 7: 運用（バックアップと DB メンテナンス）
 
 Spica は SQLite 1 ファイルで動くため、運用は「バックアップ」と「定期的な整理」の 2 つが中心になります。どちらも `npm run db:maintenance` にまとまっています。
@@ -297,6 +309,7 @@ npm run db:maintenance -- --apply
 | ③ FTS マージ + VACUUM | FTS5 の内部セグメントをマージしてから VACUUM し、空いたページを解放します。**投稿を消しただけでは容量が戻らない**ため、この手順が容量削減の要です。 |
 | ④ バックアップ | 削除の前に `VACUUM INTO` で一貫性のあるスナップショットを作成します（`server/data/backups/`、既定 3 世代）。 |
 | ⑤ 保存・索引の方針を適用 | 管理画面で設定した「検索索引の範囲」「リモートブーストの保存範囲」を既存データへ遡って適用します（既定はローカル投稿のみ索引・フォロー中のブーストのみ保存）。`--skip-policy` で省略できます。 |
+| ⑥ 画像プロキシのキャッシュ整理 | `server/data/proxy-cache/` の期限切れ（既定 30 日）と容量超過分（既定 512MB）を削除します。`--skip-proxy-cache` で省略できます。 |
 
 > [!IMPORTANT]
 > VACUUM は DB の排他ロックを取るため、**サーバーを停止してから実行**してください。起動中でもバックアップと投稿の削除は動きますが、VACUUM だけが失敗します（その場合は終了コード 2 で知らせます）。

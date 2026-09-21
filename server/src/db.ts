@@ -645,8 +645,22 @@ export function initDatabase() {
     "CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);",
     "CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);",
+    // 画像プロキシのキャッシュ台帳（実体は data/proxy-cache/ に置く）
+    `CREATE TABLE IF NOT EXISTS proxy_cache (
+      url_hash TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT '',
+      size INTEGER NOT NULL DEFAULT 0,
+      fetched_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at);",
     // 通知の種類別設定（JSON: { reaction: false, ... } 無効にする種類だけ false で保存）
     "ALTER TABLE users ADD COLUMN notification_prefs TEXT DEFAULT '{}';",
+    // ドメインブロックの強さ（suspend = 完全遮断 / silence = 表示から除外のみ・配送は継続）
+    "ALTER TABLE blocked_domains ADD COLUMN severity TEXT NOT NULL DEFAULT 'suspend';",
+    // メール通知のオプトイン（既定 OFF。SMTP 未設定なら機能ごと無効）
+    "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 0;",
     // FTS 索引の方針（リモート投稿を索引するか）を行ごとに持つ。方針は searchPolicy.ts が決める。
     "ALTER TABLE posts ADD COLUMN fts_indexed INTEGER NOT NULL DEFAULT 1;",
     // FTS 同期トリガは fts_indexed = 1 の行だけを索引する（リレー経由の投稿で索引が膨らむのを防ぐ）
@@ -966,24 +980,45 @@ export function extractDomain(input: string): string {
 /**
  * 指定ドメインまたはURLがブロックリストに登録されているかを判定
  * (完全一致、またはサブドメイン一致: 例 'bad.com' がブロックされていれば 'sub.bad.com' もブロック)
+ *
+ * severity:
+ *   suspend（既定）… 配送・受信・表示のすべてを遮断する（従来の挙動）
+ *   silence        … ローカルのタイムライン等からは隠すが、フォロー関係と配送は維持する
  */
-export function isDomainBlocked(domainOrUrl: string): boolean {
+export type DomainBlockSeverity = 'suspend' | 'silence';
+
+function findDomainBlock(domainOrUrl: string): { domain: string; severity: DomainBlockSeverity } | null {
   const domain = extractDomain(domainOrUrl);
-  if (!domain) return false;
+  if (!domain) return null;
 
   try {
-    const rows = db.prepare('SELECT domain FROM blocked_domains').all() as { domain: string }[];
+    const rows = db.prepare('SELECT domain, severity FROM blocked_domains').all() as { domain: string; severity?: string }[];
     for (const row of rows) {
-      const blocked = row.domain.toLowerCase();
+      const blocked = String(row.domain || '').toLowerCase();
       if (domain === blocked || domain.endsWith(`.${blocked}`)) {
-        return true;
+        return { domain: blocked, severity: row.severity === 'silence' ? 'silence' : 'suspend' };
       }
     }
   } catch {
     // テーブル未作成時の安全フォールバック
-    return false;
+    return null;
   }
-  return false;
+  return null;
+}
+
+/** 完全遮断（suspend）されているか。配送・受信・フォローを止める判定に使う */
+export function isDomainBlocked(domainOrUrl: string): boolean {
+  return findDomainBlock(domainOrUrl)?.severity === 'suspend';
+}
+
+/** 表示から除外すべきか（suspend と silence の両方）。タイムライン・検索の絞り込みに使う */
+export function isDomainHidden(domainOrUrl: string): boolean {
+  return findDomainBlock(domainOrUrl) !== null;
+}
+
+/** 指定ドメインの遮断の強さ（未登録なら null） */
+export function getDomainBlockSeverity(domainOrUrl: string): DomainBlockSeverity | null {
+  return findDomainBlock(domainOrUrl)?.severity ?? null;
 }
 
 /**
@@ -1307,6 +1342,21 @@ export function createNotification(params: {
         })
         .catch(() => {});
     } catch {}
+
+    // ✉️ メール通知（SMTP 設定 + ユーザーがオプトインしている場合のみ）
+    import('./emailNotifier.js')
+      .then(({ queueNotificationEmail }) => {
+        queueNotificationEmail({
+          userId: params.userId,
+          type: params.type,
+          actorName: params.actorName,
+          actorHandle: params.actorHandle,
+          postId: params.postId || null,
+          postContent: postSnippet,
+          content: contentSnippet,
+        });
+      })
+      .catch(() => {});
 
     return true;
   } catch (err) {

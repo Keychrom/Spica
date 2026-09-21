@@ -21,6 +21,10 @@ data/*.sqlite*
 data/uploads/
 uploads/
 
+# 画像プロキシのキャッシュ
+proxy-cache/
+data/proxy-cache/
+
 # Build artifacts
 dist/
 build/

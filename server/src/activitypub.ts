@@ -26,6 +26,8 @@ export function buildPerson(user: UserRow) {
     followers: `${actorUrl}/followers`,
     inbox: `${actorUrl}/inbox`,
     outbox: `${actorUrl}/outbox`,
+    // ピン留め投稿のコレクション（Mastodon はここを読んで「固定投稿」を表示する）
+    featured: `${actorUrl}/collections/featured`,
     preferredUsername: user.id,
     name: user.name,
     summary: user.summary || '',
@@ -62,7 +64,9 @@ export function buildPerson(user: UserRow) {
 export interface NoteAttachment {
   url: string;
   mediaType?: string;
+  /** 代替テキスト（alt）。連合先では添付の name として届く */
   name?: string;
+  description?: string;
 }
 
 export interface NotePoll {
@@ -117,7 +121,8 @@ export function buildNote(params: {
     type: 'Document',
     mediaType: att.mediaType || 'image/jpeg',
     url: att.url,
-    name: att.name || undefined,
+    // 代替テキスト（alt）を優先して name に載せる（無ければファイル名）
+    name: (att.description && att.description.trim()) || att.name || undefined,
   }));
 
   const hasSummary = Boolean(params.summary && params.summary.trim());

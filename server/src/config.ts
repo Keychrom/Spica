@@ -83,6 +83,18 @@ export interface AppConfig {
   autoBackup: boolean;
   /** バックアップの保持世代数。既定 3 */
   backupsKeep: number;
+  /** 画像プロキシ（リモート画像の直リンクを避け、このノード経由で配信する）既定 true */
+  imageProxy: boolean;
+  /** 画像プロキシのキャッシュ上限（MB）既定 512 */
+  imageProxyMaxMb: number;
+  /** 画像プロキシのキャッシュ保持日数 既定 30 */
+  imageProxyTtlDays: number;
+  /** メール通知（SMTP 設定時のみ。ユーザーごとにオプトイン）既定 true */
+  emailNotifications: boolean;
+  /** メール通知をまとめて送るまでの待ち時間（秒）既定 60 */
+  emailBatchSeconds: number;
+  /** 同じユーザーへメールを送る最短間隔（分）既定 5 */
+  emailThrottleMinutes: number;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -145,6 +157,28 @@ const MEDIA_QUOTA_MB = (() => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 })();
 
+// 画像プロキシ（リモート画像をこのノード経由で配信し、直リンクを避ける）。既定は有効
+const IMAGE_PROXY = (process.env.IMAGE_PROXY || 'true').trim().toLowerCase() !== 'false';
+const IMAGE_PROXY_MAX_MB = (() => {
+  const parsed = parseInt(process.env.IMAGE_PROXY_MAX_MB || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 512;
+})();
+// メール通知（SMTP 設定時のみ有効。ユーザーごとのオプトイン）
+const EMAIL_NOTIFICATIONS = (process.env.EMAIL_NOTIFICATIONS || 'true').trim().toLowerCase() !== 'false';
+const EMAIL_BATCH_SECONDS = (() => {
+  const parsed = parseInt(process.env.EMAIL_BATCH_SECONDS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60;
+})();
+const EMAIL_THROTTLE_MINUTES = (() => {
+  const parsed = parseInt(process.env.EMAIL_THROTTLE_MINUTES || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+})();
+
+const IMAGE_PROXY_TTL_DAYS = (() => {
+  const parsed = parseInt(process.env.IMAGE_PROXY_TTL_DAYS || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
+})();
+
 // リモートコンテンツの保存・索引ポリシー（既定は Mastodon / Misskey 相当）
 //   管理画面（server_settings）で変更された場合はそちらが優先される（searchPolicy.ts）
 const FTS_INDEX_SCOPE = (process.env.FTS_INDEX_SCOPE || 'local').trim().toLowerCase();
@@ -199,4 +233,10 @@ export const config: AppConfig = {
   autoMaintenanceHour: AUTO_MAINTENANCE_HOUR,
   autoBackup: AUTO_BACKUP,
   backupsKeep: BACKUPS_KEEP,
+  imageProxy: IMAGE_PROXY,
+  imageProxyMaxMb: IMAGE_PROXY_MAX_MB,
+  imageProxyTtlDays: IMAGE_PROXY_TTL_DAYS,
+  emailNotifications: EMAIL_NOTIFICATIONS,
+  emailBatchSeconds: EMAIL_BATCH_SECONDS,
+  emailThrottleMinutes: EMAIL_THROTTLE_MINUTES,
 };

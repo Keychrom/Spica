@@ -118,6 +118,38 @@ usersRouter.get('/:username/following', (req: Request, res: Response) => {
   res.json(collection);
 });
 
+// ピン留め投稿のコレクション（Misskey 互換。Mastodon 等は Actor の featured から辿る）
+usersRouter.get('/:username/collections/featured', (req: Request, res: Response) => {
+  const username = req.params.username as string;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+
+  if (!user) {
+    return res.status(404).json({ error: 'ユーザーが見つかりません。' });
+  }
+
+  const actorUrl = `${config.origin}/users/${user.id}`;
+
+  // 公開ノートのみ掲載する（outbox と同じ基準。フォロワー限定は署名が要るため含めない）
+  const rows = db.prepare(`
+    SELECT p.id FROM pinned_posts pp
+    JOIN posts p ON p.id = pp.post_id
+    WHERE pp.user_id = ? AND p.is_local = 1 AND (p.visibility = 'public' OR p.visibility IS NULL)
+    ORDER BY pp.created_at DESC
+    LIMIT 20
+  `).all(user.id) as unknown as { id: string }[];
+
+  const collection = {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${actorUrl}/collections/featured`,
+    type: 'OrderedCollection',
+    totalItems: rows.length,
+    orderedItems: rows.map((r) => r.id),
+  };
+
+  res.setHeader('Content-Type', `${ACTIVITY_CONTENT_TYPE}; charset=utf-8`);
+  res.json(collection);
+});
+
 // Note (投稿) エンドポイント - Misskey / Mastodon からの個別ノート解決用
 usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response) => {
   const { username, postId } = req.params;

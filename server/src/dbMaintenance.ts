@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy } from './searchPolicy.js';
+import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy, readSetting } from './searchPolicy.js';
+import { pruneProxyCacheOn } from './imageProxy.js';
+import { config } from './config.js';
 
 /**
  * DB メンテナンス（1人運用向け）
@@ -594,6 +596,8 @@ export interface MaintenanceReport {
   removed: RemovalCounts;
   media: MediaCleanupResult;
   policy?: PolicyApplyResult;
+  /** ⑥ 画像プロキシのキャッシュ整理の結果 */
+  proxyCache?: { removed: number; freedBytes: number; scanned: number; totalBytes: number };
   backup?: BackupResult;
   optimize?: OptimizeResult;
   applied: boolean;
@@ -611,6 +615,8 @@ export function runMaintenance(params: {
   vacuum: boolean;
   backupsKeep: number;
   remoteStorageConfigured?: boolean;
+  /** ⑥ 画像プロキシのキャッシュ整理を行うか（既定 true） */
+  pruneProxyCache?: boolean;
   log?: (line: string) => void;
 }): MaintenanceReport {
   const log = params.log ?? (() => {});
@@ -633,6 +639,7 @@ export function runMaintenance(params: {
     let backupResult: BackupResult | undefined;
     let optimize: OptimizeResult | undefined;
     let policyResult: PolicyApplyResult | undefined;
+    let proxyCache = { removed: 0, freedBytes: 0, scanned: 0, totalBytes: 0 };
 
     if (params.apply) {
       if (params.backup) {
@@ -660,6 +667,15 @@ export function runMaintenance(params: {
         log(`   索引: ${ftsResult.toUnindex} 件を索引から外し、${ftsResult.toIndex} 件を入れ直しました（残り ${ftsResult.ftsRowsAfter} 行）`);
         log(`   ブースト: ${announceResult.toRemove} 件を削除しました（残り ${announceResult.remaining} 件）`);
       }
+      if (params.pruneProxyCache !== false) {
+        const ttlStored = parseInt(readSetting(db, 'image_proxy_ttl_days'), 10);
+        const ttlDays = Number.isFinite(ttlStored) && ttlStored > 0 ? ttlStored : config.imageProxyTtlDays;
+        const maxStored = parseInt(readSetting(db, 'image_proxy_max_mb'), 10);
+        const maxMb = Number.isFinite(maxStored) && maxStored > 0 ? maxStored : config.imageProxyMaxMb;
+        log('⑥ 画像プロキシのキャッシュを整理しています...');
+        proxyCache = pruneProxyCacheOn(db, params.dbPath, ttlDays, maxMb * 1024 * 1024, true);
+        log(`   ${proxyCache.removed} 件を削除しました（残り ${proxyCache.scanned - proxyCache.removed} 件 / ${formatBytes(proxyCache.totalBytes - proxyCache.freedBytes)}）`);
+      }
       if (params.vacuum) {
         log('③ wal_checkpoint + VACUUM を実行しています（サーバー停止推奨）...');
         optimize = optimizeDatabase(db);
@@ -677,6 +693,7 @@ export function runMaintenance(params: {
       removed,
       media,
       policy: policyResult,
+      proxyCache,
       backup: backupResult,
       optimize,
       applied: params.apply,

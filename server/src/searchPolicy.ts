@@ -54,7 +54,8 @@ function normalizeAnnouncePolicy(raw: unknown): RemoteAnnouncePolicy {
  * 設定の読み出し。接続を渡すとその接続から読む（メンテナンス CLI 用。
  * サーバーの共有接続を開かずに済ませるため）。
  */
-function readSetting(conn: DatabaseSync | undefined, key: string): string {
+/** server_settings から値を読む（接続を渡せばその接続を使う）。CLI からも使う */
+export function readSetting(conn: DatabaseSync | undefined, key: string): string {
   if (!conn) return getServerSetting(key as any, '') || '';
   try {
     const row = conn.prepare('SELECT value FROM server_settings WHERE key = ?').get(key) as { value?: string } | undefined;

@@ -38,6 +38,13 @@
     "test:video-thumbnail": "npx tsx scripts/test-video-thumbnail.ts",
     "test:search-policy": "npx tsx scripts/test-search-policy.ts",
     "test:ops-automation": "npx tsx scripts/test-ops-automation.ts",
+    "check:secrets": "npx tsx scripts/check-secrets.ts",
+    "test:secret-scan": "npx tsx scripts/test-secret-scan.ts",
+    "test:silence-featured": "npx tsx scripts/test-silence-featured.ts",
+    "test:image-proxy": "npx tsx scripts/test-image-proxy.ts",
+    "test:email-notify": "npx tsx scripts/test-email-notify.ts",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "prepare": "node scripts/install-hooks.mjs",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

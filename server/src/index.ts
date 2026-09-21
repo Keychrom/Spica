@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { config } from './config.js';
 import { initDatabase, db } from './db.js';
 import { authenticate } from './auth.js';
@@ -20,6 +21,12 @@ import { startScheduler, startDeliveryQueueWorker } from './scheduler.js';
 import { registerGracefulShutdown } from './shutdown.js';
 import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
 import { getDeliveryQueueStats } from './deliveryQueue.js';
+import {
+  mediaProxyMiddleware,
+  isImageProxyEnabled,
+  verifyProxySignature,
+  fetchProxiedImage,
+} from './imageProxy.js';
 
 // データベースの初期化
 initDatabase();
@@ -137,8 +144,64 @@ app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
 
 // クライアント用 REST API ルーティング
+// 画像プロキシ: タイムライン等の応答に含まれるリモート画像 URL を
+// 署名付きプロキシ URL へ置き換える（閲覧者の IP を相手サーバーに渡さない）
+app.use(mediaProxyMiddleware());
 app.use('/api', apiRouter);
 app.use('/api/admin', adminRouter);
+
+/**
+ * 画像プロキシ本体。署名付き URL のみ受け付ける（開放プロキシにしない）。
+ *   /proxy?url=<encoded>&s=<signature>
+ */
+app.get('/proxy', async (req: Request, res: Response) => {
+  const rawUrl = String(req.query.url || '');
+  const signature = String(req.query.s || '');
+
+  if (!isImageProxyEnabled()) {
+    return res.status(404).json({ error: '画像プロキシは無効です。' });
+  }
+  if (!rawUrl) {
+    return res.status(400).json({ error: 'url パラメータが必要です。' });
+  }
+  if (!verifyProxySignature(rawUrl, signature)) {
+    return res.status(403).json({ error: '署名が無効です。' });
+  }
+
+  let target: URL;
+  try {
+    target = new URL(rawUrl);
+  } catch {
+    return res.status(400).json({ error: 'URL の形式が不正です。' });
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    return res.status(400).json({ error: 'http(s) の URL のみ対応しています。' });
+  }
+
+  try {
+    const image = await fetchProxiedImage(rawUrl);
+    const etag = `"${crypto.createHash('sha1').update(rawUrl).digest('hex')}"`;
+
+    res.setHeader('Content-Type', image.contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    // SVG 等を直接開かれてもスクリプトが動かないようにする
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    res.setHeader('ETag', etag);
+    res.setHeader('X-Proxy-Cache', image.fromCache ? 'HIT' : 'MISS');
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+    res.send(image.body);
+  } catch (err: any) {
+    const message = err?.message || '取得に失敗しました。';
+    console.warn(`[ImageProxy] ${rawUrl} → ${message}`);
+    // 失敗を長くキャッシュさせない（相手側の一時障害から回復できるように）
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.status(502).json({ error: message });
+  }
+});
 
 // アップロードされたローカル静的メディアの配信
 const uploadsDir = path.resolve(process.cwd(), 'data/uploads');

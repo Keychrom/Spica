@@ -11,6 +11,7 @@ import {
   rotateBackups,
 } from './dbMaintenance.js';
 import { getMediaQuotaBytes } from './mediaService.js';
+import { getProxyStats, pruneProxyCache } from './imageProxy.js';
 import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy } from './searchPolicy.js';
 
 /**
@@ -44,6 +45,14 @@ export interface MaintenanceStats {
     count: number;
     bytes: number;
     quotaBytes: number;
+  };
+  /** 画像プロキシのキャッシュ（リモート画像の直リンク解消） */
+  imageProxy: {
+    enabled: boolean;
+    files: number;
+    bytes: number;
+    maxBytes: number;
+    ttlDays: number;
   };
   policy: {
     ftsIndexScope: string;
@@ -138,6 +147,7 @@ export async function runScheduledMaintenance(): Promise<{
   removedPosts: number;
   fts: { toUnindex: number; toIndex: number };
   announces: { toRemove: number };
+  proxyCache: { removed: number; freedBytes: number };
 }> {
   const started = Date.now();
   const options = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: config.remotePostRetentionDays, applyPolicy: true };
@@ -191,12 +201,23 @@ export async function runScheduledMaintenance(): Promise<{
     console.error('[Auto Maintenance] リモート投稿の削除に失敗しました:', err?.message || err);
   }
 
+  // ④ 画像プロキシのキャッシュ整理（期限切れ + 容量超過分）
+  let proxyCache = { removed: 0, freedBytes: 0 };
+  try {
+    proxyCache = pruneProxyCache();
+    if (proxyCache.removed > 0) {
+      console.log(`[Auto Maintenance] 🖼️ 画像プロキシのキャッシュを削除: ${proxyCache.removed} 件（${(proxyCache.freedBytes / 1024 / 1024).toFixed(1)}MB）`);
+    }
+  } catch (err: any) {
+    console.error('[Auto Maintenance] 画像プロキシの整理に失敗しました:', err?.message || err);
+  }
+
   const size = getDbSizeInfo(config.dbPath, db);
   console.log(
     `[Auto Maintenance] ✅ 完了 (${((Date.now() - started) / 1000).toFixed(1)}s) / DB ${(size.dbBytes / 1024 / 1024).toFixed(1)}MB + WAL ${(size.walBytes / 1024 / 1024).toFixed(1)}MB` +
       ' / ※ 領域の解放（VACUUM）はサーバー停止時に npm run db:maintenance -- --apply で',
   );
-  return { backup, removedPosts, fts, announces };
+  return { backup, removedPosts, fts, announces, proxyCache };
 }
 
 /** 管理画面向け: 容量・件数・メンテナンス状況をまとめて返す */
@@ -230,6 +251,10 @@ export function getMaintenanceStats(): MaintenanceStats {
     },
     announces: one('SELECT COUNT(*) AS c FROM announces'),
     media: { count: Number(mediaRow?.c ?? 0), bytes: Number(mediaRow?.b ?? 0), quotaBytes: getMediaQuotaBytes() },
+    imageProxy: (() => {
+      const stats = getProxyStats();
+      return { enabled: stats.enabled, files: stats.files, bytes: stats.bytes, maxBytes: stats.maxBytes, ttlDays: stats.ttlDays };
+    })(),
     policy: {
       ftsIndexScope: getFtsIndexScope(),
       remoteAnnouncePolicy: getRemoteAnnouncePolicy(),
