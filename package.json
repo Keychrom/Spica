@@ -31,7 +31,9 @@
     "test:roles": "npx tsx scripts/test-roles.ts",
     "test:profile-fields": "npx tsx scripts/test-profile-fields.ts",
     "test:mail-recovery": "npx tsx scripts/test-mail-recovery.ts",
-    "test:password-auth": "npx tsx scripts/test-password-auth.ts"
+    "test:password-auth": "npx tsx scripts/test-password-auth.ts",
+    "db:maintenance": "npx tsx scripts/db-maintenance.ts",
+    "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

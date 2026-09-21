@@ -57,6 +57,11 @@ export interface AppConfig {
   authorizedFetch: boolean;
   /** レート制限を無効化する（既定 false。テストや特殊な運用時のみ true） */
   rateLimitDisabled: boolean;
+  /**
+   * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
+   * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
+   */
+  remotePostRetentionDays: number;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -105,6 +110,14 @@ const RATE_LIMIT_DISABLED = (process.env.RATE_LIMIT_DISABLED || 'false').trim().
 // Authorized Fetch（署名必須モード）。既定は無効（従来どおり未署名の取得も受け付ける）
 const AUTHORIZED_FETCH = (process.env.AUTHORIZED_FETCH || 'false').trim().toLowerCase() === 'true';
 
+// リモート投稿の保持日数（DB メンテナンス用。既定 30 日、0 で期間による削除を行わない）
+const REMOTE_POST_RETENTION_DAYS = (() => {
+  const raw = process.env.REMOTE_POST_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === '') return 30;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30;
+})();
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -128,4 +141,5 @@ export const config: AppConfig = {
   allowPrivateRemoteFetch: ALLOW_PRIVATE_REMOTE_FETCH,
   authorizedFetch: AUTHORIZED_FETCH,
   rateLimitDisabled: RATE_LIMIT_DISABLED,
+  remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
 };
