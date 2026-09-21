@@ -32,6 +32,7 @@
     "test:profile-fields": "npx tsx scripts/test-profile-fields.ts",
     "test:mail-recovery": "npx tsx scripts/test-mail-recovery.ts",
     "test:password-auth": "npx tsx scripts/test-password-auth.ts",
+    "test:dm-policy": "npx tsx scripts/test-dm-policy.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

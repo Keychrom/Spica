@@ -444,6 +444,20 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const noteIsPublic = !hasAddressing || addressing.includes('https://www.w3.org/ns/activitystreams#Public');
         const noteVisibility = noteIsPublic ? 'public' : 'followers';
 
+        // 🚫 DM（1対1のメッセージ）は方針として扱わない。
+        //    Public もフォロワーコレクションも含まず、特定の相手だけが宛先の
+        //    ノートは DM とみなして保存しない（フォロワー限定として保存すると、
+        //    送信者が意図していない相手にも見えてしまうため）。
+        //    詳細は README「DM（1対1のメッセージ機能）を実装しない方針」を参照。
+        const isDirectMessage =
+          hasAddressing &&
+          !noteIsPublic &&
+          !addressing.some((target: any) => typeof target === 'string' && /\/followers\/?$/.test(target));
+        if (isDirectMessage) {
+          console.log(`[Inbox] 🚫 DM（1対1メッセージ）のため保存しません: ${noteId} from ${actorUrl}`);
+          return res.status(202).json({ status: 'ignored', reason: 'direct messages are not supported by this instance' });
+        }
+
         db.prepare(`
           INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
