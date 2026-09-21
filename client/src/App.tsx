@@ -45,6 +45,10 @@ import {
   Image as ImageIcon,
   X,
   Cloud,
+  HardDrive,
+  FolderOpen,
+  FileVideo,
+  BellOff,
   Zap,
   LayoutDashboard,
   Search,
@@ -204,6 +208,8 @@ function PostMediaGrid({
   isSensitive?: boolean;
 }) {
   const [revealed, setRevealed] = useState(false);
+  // サムネイル表示から実際の再生に切り替えたか（動画）
+  const [videoPlaying, setVideoPlaying] = useState(false);
   if (!attachments || attachments.length === 0) return null;
 
   const count = attachments.length;
@@ -213,15 +219,47 @@ function PostMediaGrid({
       const att = attachments[0];
       const mediaType = String(att.mediaType || '');
 
-      // 🎬 動画
+      // 🎬 動画（サムネイルがあれば画像＋再生ボタンで表示し、タップで再生する）
       if (mediaType.startsWith('video/')) {
+        if (att.thumbnailUrl && !videoPlaying) {
+          return (
+            <div className="relative rounded-2xl overflow-hidden border border-slate-800/80 bg-black max-w-full">
+              <img
+                src={att.thumbnailUrl}
+                alt={att.name || '動画のサムネイル'}
+                className="w-full max-h-96 object-contain cursor-pointer"
+                loading="lazy"
+                onClick={(e) => { e.stopPropagation(); setVideoPlaying(true); }}
+              />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setVideoPlaying(true); }}
+                className="absolute inset-0 flex items-center justify-center cursor-pointer group"
+                aria-label="動画を再生"
+              >
+                <span className="w-14 h-14 rounded-full bg-black/60 border border-white/30 backdrop-blur-sm flex items-center justify-center group-hover:bg-black/75 transition">
+                  <svg viewBox="0 0 24 24" className="w-6 h-6 text-white translate-x-[1px]" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </span>
+              </button>
+              {att.duration ? (
+                <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded-md bg-black/70 text-white text-[10px] font-mono">
+                  {Math.floor(att.duration / 60)}:{String(Math.floor(att.duration % 60)).padStart(2, '0')}
+                </span>
+              ) : null}
+            </div>
+          );
+        }
         return (
           <div className="rounded-2xl overflow-hidden border border-slate-800/80 bg-black max-w-full">
             <video
               src={att.url}
               controls
+              autoPlay={videoPlaying}
               preload="metadata"
               playsInline
+              poster={att.thumbnailUrl || undefined}
               className="w-full max-h-96 bg-black"
               onClick={(e) => e.stopPropagation()}
             />
@@ -540,6 +578,12 @@ export interface MediaAttachment {
   size?: number;
   width?: number;
   height?: number;
+  /** 動画のサムネイル（ffmpeg がある時のみ） */
+  thumbnailUrl?: string;
+  /** 動画の再生時間（秒） */
+  duration?: number;
+  /** ドライブのメディア ID（アップロード時に付与） */
+  id?: string;
 }
 
 export interface PollChoice {
@@ -4332,6 +4376,123 @@ export default function App() {
   const [newListMember, setNewListMember] = useState<string>('');
   const [listActionMsg, setListActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // 🗂️ ドライブ（自分のアップロード管理）
+  const [showDriveModal, setShowDriveModal] = useState<boolean>(false);
+  const [driveItems, setDriveItems] = useState<any[]>([]);
+  const [driveStats, setDriveStats] = useState<{ count: number; bytes: number; quotaBytes: number }>({ count: 0, bytes: 0, quotaBytes: 0 });
+  const [isLoadingDrive, setIsLoadingDrive] = useState<boolean>(false);
+  const [isUploadingToDrive, setIsUploadingToDrive] = useState<boolean>(false);
+  const [driveMsg, setDriveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // 🔔 通知の種類別設定
+  const [notificationPrefs, setNotificationPrefs] = useState<Record<string, boolean> | null>(null);
+  const [notificationTypes, setNotificationTypes] = useState<{ type: string; label: string }[]>([]);
+  const [isSavingNotifPrefs, setIsSavingNotifPrefs] = useState<boolean>(false);
+
+  // 🗂️ ドライブ: 一覧と使用量を取得
+  const fetchDrive = async () => {
+    if (!authToken) return;
+    setIsLoadingDrive(true);
+    try {
+      const res = await fetch('/api/drive', { headers: { Authorization: `Bearer ${authToken}` } });
+      const data = await res.json();
+      if (res.ok) {
+        setDriveItems(Array.isArray(data.items) ? data.items : []);
+        if (data.stats) setDriveStats(data.stats);
+        setDriveMsg(null);
+      } else {
+        setDriveMsg({ type: 'error', text: data.error || 'ドライブの取得に失敗しました。' });
+      }
+    } catch (err: any) {
+      setDriveMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsLoadingDrive(false);
+    }
+  };
+
+  // 🗂️ ドライブ: メディアを削除（投稿で使用中のものはサーバーが拒否する）
+  const handleDeleteDriveMedia = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このファイルを削除しますか？（元に戻せません）')) return;
+    try {
+      const res = await fetch(`/api/drive/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
+      const data = await res.json();
+      if (!res.ok) {
+        setDriveMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
+        return;
+      }
+      setDriveItems((prev) => prev.filter((item) => item.id !== id));
+      if (data.stats) setDriveStats(data.stats);
+      setDriveMsg({ type: 'success', text: 'ファイルを削除しました。' });
+    } catch (err: any) {
+      setDriveMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  // 🗂️ ドライブ: ファイルを追加アップロード（投稿には添付せずドライブに置く）
+  const handleDriveUpload = async (files: FileList | null) => {
+    if (!authToken || !files || files.length === 0) return;
+    setIsUploadingToDrive(true);
+    setDriveMsg(null);
+    try {
+      const form = new FormData();
+      Array.from(files).slice(0, 4).forEach((file) => form.append('file', file));
+      const res = await fetch('/api/media/upload', { method: 'POST', headers: { Authorization: `Bearer ${authToken}` }, body: form });
+      const data = await res.json();
+      if (!res.ok) {
+        setDriveMsg({ type: 'error', text: data.error || 'アップロードに失敗しました。' });
+        return;
+      }
+      setDriveMsg({ type: 'success', text: `${data.media?.length ?? 0} 件アップロードしました。` });
+      await fetchDrive();
+    } catch (err: any) {
+      setDriveMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsUploadingToDrive(false);
+    }
+  };
+
+  // 🔔 通知の種類別設定を取得
+  const fetchNotificationSettings = async () => {
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/notifications/settings', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (!res.ok) return;
+      const data = await res.json();
+      setNotificationPrefs(data.prefs || {});
+      setNotificationTypes(Array.isArray(data.types) ? data.types : []);
+    } catch (err) {
+      console.error('通知設定の取得エラー:', err);
+    }
+  };
+
+  // 🔔 通知の種類別設定を保存（切り替えた種類だけ送る）
+  const handleToggleNotificationPref = async (type: string, enabled: boolean) => {
+    if (!authToken || !notificationPrefs) return;
+    const next = { ...notificationPrefs, [type]: enabled };
+    setNotificationPrefs(next);
+    setIsSavingNotifPrefs(true);
+    try {
+      const res = await fetch('/api/notifications/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ prefs: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotificationPrefs(notificationPrefs);
+        alert(data.error || '通知設定の保存に失敗しました。');
+        return;
+      }
+      setNotificationPrefs(data.prefs || next);
+    } catch (err: any) {
+      setNotificationPrefs(notificationPrefs);
+      alert(err.message);
+    } finally {
+      setIsSavingNotifPrefs(false);
+    }
+  };
+
   const fetchLists = async () => {
     if (!authToken) return;
     try {
@@ -5439,6 +5600,8 @@ export default function App() {
       fetchFollowRequests();
     } else if (currentView === 'settings' && settingsTab === 'account') {
       fetchMigrationInfo();
+    } else if (currentView === 'settings' && settingsTab === 'preferences') {
+      fetchNotificationSettings();
     }
   }, [currentView, notificationFilter, settingsTab]);
 
@@ -11342,6 +11505,65 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* 🔔 通知の種類別設定 */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
+                        <Bell className="w-4 h-4 text-amber-400" />
+                        <span>通知の種類</span>
+                        {isSavingNotifPrefs && <span className="text-[10px] text-slate-500 font-normal">保存中...</span>}
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        受け取る通知の種類を選べます。ここで切った種類は、アプリ内の通知・プッシュ通知のどちらも届かなくなります（切っている間に起きた通知は作成されません）。
+                      </p>
+                    </div>
+                    {notificationPrefs === null ? (
+                      <p className="text-[11px] text-slate-500">読み込み中...</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {(notificationTypes.length > 0
+                          ? notificationTypes
+                          : [
+                              { type: 'follow', label: 'フォロー' },
+                              { type: 'reply', label: '返信' },
+                              { type: 'mention', label: 'メンション' },
+                              { type: 'reaction', label: 'リアクション' },
+                              { type: 'renote', label: 'リノート / ブースト' },
+                              { type: 'antenna', label: 'アンテナ' },
+                              { type: 'move', label: '引っ越し（Move）' },
+                            ]
+                        ).map((item) => {
+                          const enabled = notificationPrefs[item.type] !== false;
+                          return (
+                            <label
+                              key={item.type}
+                              className="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/60 border border-slate-800 cursor-pointer hover:border-slate-700 transition"
+                            >
+                              <span className="flex items-center space-x-2 text-xs text-slate-200">
+                                {enabled ? <Bell className="w-3.5 h-3.5 text-amber-400" /> : <BellOff className="w-3.5 h-3.5 text-slate-500" />}
+                                <span className={enabled ? '' : 'text-slate-500'}>{item.label}</span>
+                              </span>
+                              <span className="flex items-center space-x-2">
+                                <span className={`text-[10px] font-bold ${enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                  {enabled ? 'ON' : 'OFF'}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={enabled}
+                                  onChange={(e) => handleToggleNotificationPref(item.type, e.target.checked)}
+                                  className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                                />
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-500">
+                      ※ 予約投稿の公開通知は自分の操作の控えのため、常に届きます。
+                    </p>
+                  </div>
+
                   {/* 保存ボタン */}
                   <div className="pt-3 flex justify-end">
                     <button
@@ -13081,6 +13303,25 @@ export default function App() {
                       {antennas.length}
                     </span>
                   )}
+                </button>
+
+                {/* 🗂️ ドライブ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (authUser) {
+                      setShowDriveModal(true);
+                      fetchDrive();
+                    } else {
+                      setShowLoginModal(true);
+                    }
+                  }}
+                  className="w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-900/60"
+                >
+                  <div className="flex items-center space-x-3">
+                    <HardDrive className="w-5 h-5 text-emerald-400" />
+                    <span>ドライブ</span>
+                  </div>
                 </button>
 
                 {/* マイページ */}
@@ -16592,6 +16833,161 @@ export default function App() {
         </div>
       )}
 
+      {/* 🗂️ ドライブ（自分のアップロード管理） */}
+      {showDriveModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setShowDriveModal(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-3xl max-w-3xl w-full max-h-[85vh] overflow-y-auto p-5 sm:p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+                  <HardDrive className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">ドライブ</h3>
+                  <p className="text-[11px] text-slate-400">アップロードした画像・動画・音声の管理</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDriveModal(false)}
+                className="p-2 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                aria-label="閉じる"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 使用量 */}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+              <span className="flex items-center space-x-1.5">
+                <span className="text-slate-500">使用量</span>
+                <strong className="text-slate-200">{driveStats.count}</strong> 件
+                <strong className="text-slate-200">{(driveStats.bytes / 1024 / 1024).toFixed(1)}</strong> MB
+                {driveStats.quotaBytes > 0 && (
+                  <span className="text-slate-500">/ {(driveStats.quotaBytes / 1024 / 1024).toFixed(0)} MB</span>
+                )}
+              </span>
+              {driveStats.quotaBytes > 0 && (
+                <span className="flex-1 min-w-[120px] h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                  <span
+                    className="block h-full bg-gradient-to-r from-emerald-500 to-teal-400"
+                    style={{ width: `${Math.min(100, (driveStats.bytes / driveStats.quotaBytes) * 100).toFixed(1)}%` }}
+                  />
+                </span>
+              )}
+              <span className="text-slate-500">※ 投稿で使用中のファイルは削除できません</span>
+            </div>
+
+            {driveMsg && (
+              <div className={`p-2.5 rounded-xl text-xs flex items-center space-x-2 ${
+                driveMsg.type === 'success'
+                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+              }`}>
+                {driveMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                <span>{driveMsg.text}</span>
+              </div>
+            )}
+
+            {/* アップロード */}
+            <label className="flex items-center justify-center space-x-2 px-4 py-3 rounded-2xl border border-dashed border-slate-700 hover:border-emerald-500/60 hover:bg-emerald-500/5 transition cursor-pointer">
+              <FolderOpen className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-bold text-slate-300">
+                {isUploadingToDrive ? 'アップロード中...' : 'ファイルを追加（画像は最大4件まで / 動画・音声は1件）'}
+              </span>
+              <input
+                type="file"
+                multiple
+                accept="image/*,video/*,audio/*"
+                className="hidden"
+                disabled={isUploadingToDrive}
+                onChange={(e) => {
+                  void handleDriveUpload(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+
+            {isLoadingDrive ? (
+              <p className="text-center text-xs text-slate-500 py-8">読み込み中...</p>
+            ) : driveItems.length === 0 ? (
+              <p className="text-center text-xs text-slate-500 py-8">
+                アップロードしたファイルはまだありません。
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {driveItems.map((item) => {
+                  const isVideo = String(item.mediaType || '').startsWith('video/');
+                  const isAudio = String(item.mediaType || '').startsWith('audio/');
+                  const preview = item.thumbnailUrl || (isAudio ? '' : item.url);
+                  return (
+                    <div key={item.id} className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden flex flex-col">
+                      <div className="relative aspect-video bg-black/40 flex items-center justify-center overflow-hidden">
+                        {preview ? (
+                          <img src={preview} alt={item.name || 'メディア'} className="w-full h-full object-cover" loading="lazy" />
+                        ) : (
+                          <FileVideo className="w-8 h-8 text-slate-600" />
+                        )}
+                        {isVideo && (
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-white text-[10px] font-bold">
+                            動画{item.duration ? ` ${Math.floor(item.duration / 60)}:${String(Math.floor(item.duration % 60)).padStart(2, '0')}` : ''}
+                          </span>
+                        )}
+                        {isAudio && (
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-white text-[10px] font-bold">音声</span>
+                        )}
+                        {item.postId && (
+                          <span className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-amber-500/80 text-white text-[10px] font-bold">使用中</span>
+                        )}
+                      </div>
+                      <div className="p-2.5 space-y-1.5 flex-1 flex flex-col">
+                        <p className="text-[11px] text-slate-300 truncate" title={item.name || item.url}>
+                          {item.name || '(名前なし)'}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {(Number(item.size || 0) / 1024).toFixed(0)} KB ・ {new Date(item.createdAt).toLocaleDateString('ja-JP')}
+                        </p>
+                        {item.postExcerpt && (
+                          <p className="text-[10px] text-slate-500 truncate" title={item.postExcerpt}>投稿: {item.postExcerpt}</p>
+                        )}
+                        <div className="flex items-center space-x-1.5 pt-1 mt-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.url);
+                              setDriveMsg({ type: 'success', text: 'URL をコピーしました。' });
+                            }}
+                            className="flex-1 px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold transition cursor-pointer flex items-center justify-center space-x-1"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>URL</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteDriveMedia(item.id)}
+                            disabled={Boolean(item.postId)}
+                            title={item.postId ? '投稿で使用中のため削除できません' : '削除'}
+                            className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-600/80 text-slate-300 hover:text-white disabled:opacity-40 disabled:hover:bg-slate-800 text-[10px] font-bold transition cursor-pointer flex items-center justify-center"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 📋 リスト（管理 + 専用タイムライン） */}
       {showListsModal && (
         <div
@@ -17661,6 +18057,25 @@ export default function App() {
                       {antennas.length}
                     </span>
                   )}
+                </button>
+                {/* 🗂️ ドライブ */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (authUser) {
+                      setShowDriveModal(true);
+                      fetchDrive();
+                    } else {
+                      setShowLoginModal(true);
+                    }
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-emerald-400 transition cursor-pointer"
+                >
+                  <span className="flex items-center space-x-3">
+                    <HardDrive className="w-4 h-4 text-emerald-400" />
+                    <span>ドライブ</span>
+                  </span>
                 </button>
                 <button
                   type="button"

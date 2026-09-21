@@ -373,6 +373,15 @@ function collectReferencedUploadPaths(db: DatabaseSync): Set<string> {
   for (const row of db.prepare('SELECT media_attachments FROM posts').all() as any[]) {
     scanJson(row.media_attachments);
   }
+  // ドライブ（投稿に添付されていないアップロードも保護する）
+  try {
+    for (const row of db.prepare("SELECT url, thumbnail_url FROM media").all() as any[]) {
+      add(row.url);
+      add(row.thumbnail_url);
+    }
+  } catch {
+    // media テーブルが無い環境でも動くようにする
+  }
   for (const row of db.prepare('SELECT icon_url, banner_url FROM users').all() as any[]) {
     add(row.icon_url);
     add(row.banner_url);

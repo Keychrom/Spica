@@ -62,6 +62,12 @@ export interface AppConfig {
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
    */
   remotePostRetentionDays: number;
+  /** ドライブ（自分のアップロード）の容量上限（MB）。0 は無制限 */
+  mediaQuotaMb: number;
+  /** ffmpeg の実行ファイルパス（動画サムネイル生成用。既定 'ffmpeg'） */
+  ffmpegPath: string;
+  /** ffprobe の実行ファイルパス（動画の長さ・解像度取得用。既定 'ffprobe'） */
+  ffprobePath: string;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -118,6 +124,16 @@ const REMOTE_POST_RETENTION_DAYS = (() => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30;
 })();
 
+// ドライブの容量上限（MB）。0 または未設定で無制限
+const MEDIA_QUOTA_MB = (() => {
+  const parsed = parseInt(process.env.MEDIA_QUOTA_MB || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+})();
+
+// 動画サムネイル生成に使う ffmpeg / ffprobe（未インストールなら機能だけ無効になる）
+const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
+const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -142,4 +158,7 @@ export const config: AppConfig = {
   authorizedFetch: AUTHORIZED_FETCH,
   rateLimitDisabled: RATE_LIMIT_DISABLED,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
+  mediaQuotaMb: MEDIA_QUOTA_MB,
+  ffmpegPath: FFMPEG_PATH,
+  ffprobePath: FFPROBE_PATH,
 };

@@ -625,6 +625,28 @@ export function initDatabase() {
     "ALTER TABLE remote_actors ADD COLUMN moved_to TEXT DEFAULT '';",
     "ALTER TABLE users ADD COLUMN moved_to TEXT DEFAULT '';",
     "ALTER TABLE users ADD COLUMN also_known_as TEXT DEFAULT '';",
+    // ドライブ: アップロードしたメディアの台帳（投稿に紐づかないものも管理できるようにする）
+    `CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      key TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0,
+      name TEXT DEFAULT '',
+      thumbnail_url TEXT DEFAULT '',
+      thumbnail_key TEXT DEFAULT '',
+      width INTEGER,
+      height INTEGER,
+      duration REAL,
+      post_id TEXT,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);",
+    "CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);",
+    // 通知の種類別設定（JSON: { reaction: false, ... } 無効にする種類だけ false で保存）
+    "ALTER TABLE users ADD COLUMN notification_prefs TEXT DEFAULT '{}';",
   ];
 
   for (const sql of migrations) {
@@ -1081,6 +1103,75 @@ export interface NotificationRow {
 }
 
 /**
+ * 通知の種類別設定
+ *
+ * users.notification_prefs に JSON で保存する（無効にした種類だけ false）。
+ * 未設定・不正な JSON は「すべて有効」として扱う。
+ * scheduled_published（予約投稿の公開）は自分の操作に対する控えなので常に有効。
+ */
+export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move'] as const;
+export type NotificationPrefType = (typeof NOTIFICATION_TYPES)[number];
+
+/** UI 表示用のラベル（クライアントと揃える） */
+export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  follow: 'フォロー',
+  reply: '返信',
+  mention: 'メンション',
+  reaction: 'リアクション',
+  renote: 'リノート / ブースト',
+  antenna: 'アンテナ',
+  move: '引っ越し（Move）',
+};
+
+export function getNotificationPrefs(userId: string): Record<string, boolean> {
+  const row = db.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
+  const prefs: Record<string, boolean> = {};
+  for (const type of NOTIFICATION_TYPES) prefs[type] = true;
+  if (!row?.notification_prefs) return prefs;
+  try {
+    const parsed = JSON.parse(row.notification_prefs);
+    if (parsed && typeof parsed === 'object') {
+      for (const type of NOTIFICATION_TYPES) {
+        if (typeof (parsed as any)[type] === 'boolean') prefs[type] = Boolean((parsed as any)[type]);
+      }
+    }
+  } catch {
+    // 壊れた設定は既定（すべて有効）に戻す
+  }
+  return prefs;
+}
+
+export function saveNotificationPrefs(userId: string, prefs: Record<string, unknown>): Record<string, boolean> {
+  const clean: Record<string, boolean> = {};
+  for (const type of NOTIFICATION_TYPES) {
+    if (typeof prefs[type] === 'boolean') clean[type] = prefs[type] as boolean;
+  }
+  db.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(JSON.stringify(clean), userId);
+  return getNotificationPrefs(userId);
+}
+
+/** 生の JSON 値から、その種類の通知が有効かを判定する（createNotification 用） */
+export function isNotificationTypeEnabled(rawPrefs: string | null | undefined, type: string): boolean {
+  if (type === 'scheduled_published') return true;
+  if (!rawPrefs) return true;
+  try {
+    const parsed = JSON.parse(rawPrefs);
+    if (parsed && typeof parsed === 'object' && typeof (parsed as any)[type] === 'boolean') {
+      return Boolean((parsed as any)[type]);
+    }
+  } catch {
+    // 壊れた設定は有効扱い
+  }
+  return true;
+}
+
+/** 無効にされている通知の種類（通知一覧のフィルタ用） */
+export function getDisabledNotificationTypes(userId: string): string[] {
+  const prefs = getNotificationPrefs(userId);
+  return NOTIFICATION_TYPES.filter((type) => !prefs[type]);
+}
+
+/**
  * 通知を作成して DB に保存
  */
 export function createNotification(params: {
@@ -1100,8 +1191,15 @@ export function createNotification(params: {
   }
 
   // 受信者がローカルユーザーとして存在するか
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(params.userId);
+  const user = db.prepare('SELECT id, notification_prefs FROM users WHERE id = ?').get(params.userId) as
+    | { id: string; notification_prefs?: string | null }
+    | undefined;
   if (!user) return false;
+
+  // 種類別の通知設定で無効にされている場合は生成しない（SSE / Web Push も同時に止まる）
+  if (!isNotificationTypeEnabled(user.notification_prefs, params.type)) {
+    return false;
+  }
 
   // 重複防止（フォロー通知は同じ人から未読が既にあれば二重生成しない）
   if (params.type === 'follow') {

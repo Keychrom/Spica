@@ -2,6 +2,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client
 import { getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import { convertImageToWebp } from './imageProcessor.js';
+import { generateVideoPoster } from './videoProcessor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -22,6 +23,13 @@ export interface UploadedMedia {
   mediaType: string;
   size: number;
   name?: string;
+  /** 動画のサムネイル（ffmpeg がある場合のみ生成） */
+  thumbnailUrl?: string;
+  thumbnailKey?: string;
+  /** 動画の幅・高さ・再生時間（ffprobe がある場合のみ） */
+  width?: number | null;
+  height?: number | null;
+  duration?: number | null;
 }
 
 /**
@@ -177,6 +185,17 @@ export async function uploadMediaFile(params: {
   const filename = `${Date.now()}_${randomStr}.${ext}`;
   const key = `media/${params.userId}/${filename}`;
 
+  // 動画は ffmpeg があればサムネイル（1秒地点の WebP）を作る。無ければ生成しない。
+  const poster = mimetype.startsWith('video/')
+    ? await generateVideoPoster({ buffer, originalname: params.originalname })
+    : null;
+
+  const buildUrl = (targetKey: string): string => {
+    if (cfg.publicUrl) return `${cfg.publicUrl}/${targetKey}`;
+    const cleanEndpoint = cfg.endpoint.replace(/\/+$/, '');
+    return `${cleanEndpoint}/${cfg.bucket}/${targetKey}`;
+  };
+
   // S3 / R2 が設定されている場合
   if (isS3Configured(cfg)) {
     const client = createS3Client(cfg);
@@ -190,13 +209,20 @@ export async function uploadMediaFile(params: {
       })
     );
 
-    // 公開URLの決定 (PublicUrl が設定されていればそれを優先、なければ endpoint + bucket)
-    let publicUrl = '';
-    if (cfg.publicUrl) {
-      publicUrl = `${cfg.publicUrl}/${key}`;
-    } else {
-      const cleanEndpoint = cfg.endpoint.replace(/\/+$/, '');
-      publicUrl = `${cleanEndpoint}/${cfg.bucket}/${key}`;
+    const publicUrl = buildUrl(key);
+    let thumbnailUrl: string | undefined;
+    let thumbnailKey: string | undefined;
+    if (poster) {
+      thumbnailKey = `media/${params.userId}/${Date.now()}_${randomStr}_thumb.webp`;
+      await client.send(
+        new PutObjectCommand({
+          Bucket: cfg.bucket,
+          Key: thumbnailKey,
+          Body: poster.buffer,
+          ContentType: poster.mediaType,
+        })
+      );
+      thumbnailUrl = buildUrl(thumbnailKey);
     }
 
     console.log(`[Storage] ☁️ Uploaded media to S3/R2: ${key} -> ${publicUrl}`);
@@ -206,6 +232,11 @@ export async function uploadMediaFile(params: {
       mediaType: mimetype,
       size,
       name: params.originalname,
+      thumbnailUrl,
+      thumbnailKey,
+      width: poster?.width ?? null,
+      height: poster?.height ?? null,
+      duration: poster?.duration ?? null,
     };
   }
 
@@ -219,13 +250,66 @@ export async function uploadMediaFile(params: {
   fs.writeFileSync(filePath, buffer);
 
   const localUrl = `${config.origin}/uploads/${params.userId}/${filename}`;
-  console.log(`[Storage] 💾 Saved media to local storage: ${filePath} -> ${localUrl}`);
+  let thumbnailUrl: string | undefined;
+  let thumbnailKey: string | undefined;
+  if (poster) {
+    const thumbFilename = `${Date.now()}_${randomStr}_thumb.webp`;
+    fs.writeFileSync(path.join(uploadDir, thumbFilename), poster.buffer);
+    thumbnailUrl = `${config.origin}/uploads/${params.userId}/${thumbFilename}`;
+    thumbnailKey = `media/${params.userId}/${thumbFilename}`;
+  }
 
+  console.log(`[Storage] 💾 Saved media to local storage: ${filePath} -> ${localUrl}`);
   return {
     url: localUrl,
     key,
     mediaType: mimetype,
     size,
     name: params.originalname,
+    thumbnailUrl,
+    thumbnailKey,
+    width: poster?.width ?? null,
+    height: poster?.height ?? null,
+    duration: poster?.duration ?? null,
   };
+}
+
+/**
+ * メディアファイルを削除する（ドライブからの削除・アカウント削除で使う）
+ *
+ * S3/R2 ならキーで、ローカル保存なら URL（/uploads/<user>/<file>）からパスを復元して消す。
+ * 消せなかった場合は false を返す（呼び出し側は台帳から外すだけで続行してよい）。
+ */
+export async function deleteMediaFile(params: { key?: string; url?: string }): Promise<boolean> {
+  const cfg = getStorageConfig();
+
+  if (isS3Configured(cfg) && params.key) {
+    try {
+      const client = createS3Client(cfg);
+      await client.send(new DeleteObjectCommand({ Bucket: cfg.bucket, Key: params.key }));
+      console.log(`[Storage] 🗑️ Deleted media from S3/R2: ${params.key}`);
+      return true;
+    } catch (err: any) {
+      console.warn(`[Storage] S3/R2 の削除に失敗しました (${params.key}):`, err?.message || err);
+      return false;
+    }
+  }
+
+  if (!params.url) return false;
+  try {
+    const marker = '/uploads/';
+    const idx = params.url.indexOf(marker);
+    if (idx === -1) return false;
+    const relative = decodeURIComponent(params.url.slice(idx + marker.length).split(/[?#]/)[0]);
+    // ディレクトリ抜けを防ぐ（../ などを含む URL は拒否）
+    if (!relative || relative.includes('..') || relative.includes('\\')) return false;
+    const filePath = path.resolve(process.cwd(), 'data', 'uploads', relative);
+    if (!fs.existsSync(filePath)) return true;
+    fs.unlinkSync(filePath);
+    console.log(`[Storage] 🗑️ Deleted local media: ${filePath}`);
+    return true;
+  } catch (err: any) {
+    console.warn('[Storage] ローカルメディアの削除に失敗しました:', err?.message || err);
+    return false;
+  }
 }

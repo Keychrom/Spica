@@ -10,6 +10,7 @@ import {
 } from './activitypub.js';
 import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibility.js';
 import { queueLinkPreviewFetch } from './linkPreview.js';
+import { linkMediaToPost } from './mediaService.js';
 
 export interface CreatePostParams {
   user: UserRow;
@@ -99,6 +100,9 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at, channel_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now, channelId);
+
+  // 添付メディアをドライブの台帳へ紐づける（自分がアップロードしたメディアのみ）
+  linkMediaToPost(user.id, postId, parsedAttachments);
 
   // チャンネルの投稿数をインクリメント
   let channelData: any = null;

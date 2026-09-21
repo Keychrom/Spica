@@ -33,6 +33,9 @@
     "test:mail-recovery": "npx tsx scripts/test-mail-recovery.ts",
     "test:password-auth": "npx tsx scripts/test-password-auth.ts",
     "test:dm-policy": "npx tsx scripts/test-dm-policy.ts",
+    "test:drive": "npx tsx scripts/test-drive.ts",
+    "test:notification-prefs": "npx tsx scripts/test-notification-prefs.ts",
+    "test:video-thumbnail": "npx tsx scripts/test-video-thumbnail.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

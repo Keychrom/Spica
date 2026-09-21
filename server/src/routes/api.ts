@@ -15,6 +15,8 @@ import { parseProfileFields } from '../activitypub.js';
 import { isMailConfigured, sendMail, generateVerificationCode, issueVerificationCode, verifyCode, getMailConfig, saveMailConfig, verifyMailConnection } from '../mailService.js';
 
 import { uploadMediaFile } from '../storage.js';
+import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
+import { NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
 import { executeCreatePost } from '../postService.js';
 import {
   createWebAuthnRegistrationOptions,
@@ -1203,6 +1205,13 @@ apiRouter.post(
     }
 
     try {
+      // ドライブの容量上限（MEDIA_QUOTA_MB。0 なら無制限）
+      const incomingBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+      const quota = checkMediaQuota(user.id, incomingBytes);
+      if (!quota.ok) {
+        return res.status(413).json({ error: quota.error });
+      }
+
       const uploaded = await Promise.all(
         files.map((file) =>
           uploadMediaFile({
@@ -1215,10 +1224,27 @@ apiRouter.post(
         )
       );
 
+      // ドライブの台帳に記録する（投稿に添付されなくても一覧・削除できるようにする）
+      const mediaRows = uploaded.map((item) =>
+        toClientMedia(recordMedia({
+          userId: user.id,
+          url: item.url,
+          key: item.key,
+          mediaType: item.mediaType,
+          size: item.size,
+          name: item.name,
+          thumbnailUrl: item.thumbnailUrl,
+          thumbnailKey: item.thumbnailKey,
+          width: item.width,
+          height: item.height,
+          duration: item.duration,
+        }))
+      );
+
       res.json({
         success: true,
-        media: uploaded,
-        attachment: uploaded[0], // 1ファイルアップロード時の互換性
+        media: mediaRows,
+        attachment: mediaRows[0], // 1ファイルアップロード時の互換性
       });
     } catch (err: any) {
       console.error('[Media Upload Error]:', err);
@@ -1226,6 +1252,52 @@ apiRouter.post(
     }
   }
 );
+
+// ==========================================
+// 🗂️ ドライブ（自分のアップロード管理）
+// ==========================================
+
+// 自分のメディア一覧（使用量つき・新しい順）
+apiRouter.get('/drive', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const page = parsePageQuery(req, 40);
+  if (page.error) {
+    return res.status(400).json({ error: page.error });
+  }
+  try {
+    const items = listMedia({ userId: user.id, limit: page.limit + 1, cursor: page.cursor });
+    const pageRows = applyPageHeaders(res, items, page.limit, 'created_at', 'id');
+    res.json({
+      items: pageRows.map(toClientMedia),
+      stats: getMediaStats(user.id),
+    });
+  } catch (err: any) {
+    console.error('[API Drive Error]:', err);
+    res.status(500).json({ error: err.message || 'ドライブの取得に失敗しました。' });
+  }
+});
+
+// 使用量のみ（軽量）
+apiRouter.get('/drive/stats', requireAuth, (req: Request, res: Response) => {
+  res.json(getMediaStats(req.rawUser!.id));
+});
+
+// メディアの削除（投稿で使用中のものは拒否）
+apiRouter.delete('/drive/:id', requireAuth, async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const mediaId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const result = deleteMedia(user.id, mediaId);
+    if (!result.ok) {
+      return res.status(result.inUse ? 409 : 404).json({ error: result.error, inUse: Boolean(result.inUse) });
+    }
+    console.log(`[Drive] 🗑️ @${user.id} がメディアを削除しました: ${mediaId}`);
+    res.json({ success: true, stats: getMediaStats(user.id) });
+  } catch (err: any) {
+    console.error('[API Drive Delete Error]:', err);
+    res.status(500).json({ error: err.message || 'メディアの削除に失敗しました。' });
+  }
+});
 
 // 新規投稿作成（認証必須・公開範囲選択・返信・画像添付・アンケート・引用・センシティブ対応）
 apiRouter.post('/posts', requireAuth, async (req: Request, res: Response) => {
@@ -1276,6 +1348,9 @@ apiRouter.delete('/posts/:id', requireAuth, async (req: Request, res: Response) 
   try {
     db.prepare('DELETE FROM polls WHERE post_id = ?').run(postId);
   } catch {}
+
+  // ドライブの紐づけを解除する（ファイル自体はドライブに残す）
+  unlinkMediaFromPost(postId);
 
   console.log(`[Post Delete] Post ${postId} deleted by @${user.id}`);
 
@@ -2514,6 +2589,13 @@ apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
     filterClause = ` AND type = 'follow'`;
   }
 
+  // 種類別設定で無効にした通知は一覧にも出さない（過去に生成済みのものも隠す）
+  const disabled = getDisabledNotificationTypes(user.id);
+  if (disabled.length > 0) {
+    filterClause += ` AND type NOT IN (${disabled.map(() => '?').join(', ')})`;
+    params.push(...disabled);
+  }
+
   // 続きの読み込み（カーソル）：ORDER BY と同じ組で比較する
   const cursorClause = page.cursor ? ` AND ${cursorPredicate('created_at', 'id')}` : '';
   if (page.cursor) {
@@ -2552,14 +2634,44 @@ apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
   }
 });
 
+// 通知の種類別設定（フォロー・返信・メンション・リアクション・リノート・アンテナ・引っ越し）
+apiRouter.get('/notifications/settings', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    res.json({
+      prefs: getNotificationPrefs(user.id),
+      types: NOTIFICATION_TYPES.map((type) => ({ type, label: NOTIFICATION_TYPE_LABELS[type] ?? type })),
+    });
+  } catch (err: any) {
+    console.error('[API Notification Settings Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post('/notifications/settings', requireAuth, (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  try {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const source = body.prefs && typeof body.prefs === 'object' ? body.prefs : body;
+    const prefs = saveNotificationPrefs(user.id, source as Record<string, unknown>);
+    console.log(`[Notification] ⚙️ @${user.id} が通知設定を更新: ${JSON.stringify(prefs)}`);
+    res.json({ success: true, prefs });
+  } catch (err: any) {
+    console.error('[API Notification Settings Save Error]:', err);
+    res.status(500).json({ error: err.message || '通知設定の保存に失敗しました。' });
+  }
+});
+
 // 未読通知数の取得 (軽量)
 apiRouter.get('/notifications/unread-count', requireAuth, (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
+    const disabled = getDisabledNotificationTypes(user.id);
+    const exclude = disabled.length > 0 ? ` AND type NOT IN (${disabled.map(() => '?').join(', ')})` : '';
     const row = db.prepare(`
       SELECT COUNT(*) as c FROM notifications
-      WHERE user_id = ? AND is_read = 0
-    `).get(user.id) as { c: number } | undefined;
+      WHERE user_id = ? AND is_read = 0${exclude}
+    `).get(user.id, ...disabled) as { c: number } | undefined;
 
     res.json({ unreadCount: row ? Number(row.c) : 0 });
   } catch (err: any) {

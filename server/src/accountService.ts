@@ -4,6 +4,7 @@ import { db, UserRow } from './db.js';
 import { config } from './config.js';
 import { broadcastDeletePost } from './streaming.js';
 import { buildDeleteActorActivity, deliverActivity } from './activitypub.js';
+import { deleteAllMediaForUser } from './mediaService.js';
 
 export interface DeleteUserAccountResult {
   success: boolean;
@@ -137,6 +138,12 @@ export async function deleteUserAccount(userId: string): Promise<DeleteUserAccou
 
     // 投稿本体
     db.prepare('DELETE FROM posts WHERE user_id = ?').run(cleanId);
+
+    // ドライブ（アップロード済みメディア）を台帳とストレージから削除
+    const deletedMedia = deleteAllMediaForUser(cleanId);
+    if (deletedMedia > 0) {
+      console.log(`[Account Delete] 🗂️ ${deletedMedia} 件のドライブのメディアを削除しました (@${cleanId})`);
+    }
 
     // セッション
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(cleanId);
