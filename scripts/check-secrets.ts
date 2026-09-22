@@ -76,7 +76,7 @@ function isExampleConnectionString(value: string): boolean {
   const host = match[3].split('/')[0].replace(/^\[|\]$/g, '').split(':')[0].toLowerCase();
   const exampleHosts = new Set(['localhost', '127.0.0.1', '::1', 'example.com', 'host', 'hostname', 'db', 'postgres', 'database']);
   const exampleHost = exampleHosts.has(host) || host.endsWith('.example.com') || host.endsWith('.local');
-  const examplePassword = /^(password|pass|passwd|your[-_ ]?password|change[-_]?me|secret|placeholder|x+|\.\.\.|\$\{[^}]*\})$/i.test(password);
+  const examplePassword = /^(password|pass|passwd|your[-_ ]?password|change[-_]?me|secret|placeholder|x+|\.{2,}|…+|\$\{[^}]*\})$/i.test(password);
   return exampleHost && examplePassword;
 }
 

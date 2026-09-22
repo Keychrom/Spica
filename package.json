@@ -47,6 +47,10 @@
     "hooks:install": "node scripts/install-hooks.mjs",
     "prepare": "node scripts/install-hooks.mjs",
     "db:port-report": "npx tsx scripts/db-port-report.ts",
+    "db:pg:schema": "npx tsx scripts/pg-schema.ts",
+    "db:pg:init": "npx tsx scripts/pg-init.ts",
+    "db:pg:migrate": "npx tsx scripts/pg-migrate.ts",
+    "test:pg-port": "npx tsx scripts/test-pg-port.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

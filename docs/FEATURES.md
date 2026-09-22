@@ -134,7 +134,7 @@
 | **リモート投稿の保持期間** | `REMOTE_POST_RETENTION_DAYS`（既定 30 日）。ブックマーク・ピン留め・ローカル投稿の返信先/引用元・ローカルのリアクション/ブースト・ローカル投稿への返信・フォロー中アクターの投稿は残します。 |
 | **バックアップ** | `db:maintenance` が削除前に `VACUUM INTO` でスナップショットを作成し、`server/data/backups/` に世代管理（既定3世代）します。 |
 | **複数人での運営** | 管理者を複数置けます（ロールで `admin` / `moderate` を付与）。監査ログで操作の履歴が残り、通報は運営全員に通知されるため、担当を決めて交代で見られます。DM が無い（方針）ため、運営同士の連絡はノード外の手段を使ってください。 |
-| **将来の PostgreSQL 対応** | いまは SQLite で動きますが、大規模化したときのために設計と移行手順を [POSTGRESQL.md](POSTGRESQL.md) に、移植コストの計測を `npm run db:port-report` に用意しています（本体は未実装）。 |
+| **将来の PostgreSQL 対応** | いまは SQLite で動きます。大規模化したときのために、**スキーマ生成・データ移送・検証までを実装済み**（`npm run db:pg:schema` / `db:pg:init` / `db:pg:migrate --verify`、検証は `npm run test:pg-port`）。アプリ本体が PostgreSQL で動く部分（ドライバ）は未実装で、設計と移行手順は [POSTGRESQL.md](POSTGRESQL.md) に、移植コストの計測は `npm run db:port-report` にあります。 |
 | **検証スクリプト** | 連合・署名検証・配送・ページネーション・ドライブ・通知設定・動画サムネイルなど、`npm run test:*` で機能ごとの検証を実行できます。 |
 
 ## 9. 実装していないもの（方針）
