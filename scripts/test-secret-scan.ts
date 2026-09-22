@@ -131,6 +131,16 @@ try {
   // ── .env.example は許可 ────────────────────────────────
   writeFixture('.env.example', 'S3_SECRET_ACCESS_KEY=your-secret-here\n');
   check('.env.example は検出しない', scanForSecrets({ mode: 'all', includeIgnored: true }).findings.some((f) => f.file.includes('.env.example')), false);
+
+  // ── 例示用の接続文字列（ドキュメントのサンプル）───────
+  writeFixture('docs/db.md', [
+    'DATABASE_URL=postgres://spica:password@127.0.0.1:5432/spica',
+    'REDIS_URL=redis://user:password@localhost:6379/0',
+  ].join('\n'));
+  check('例示用の接続文字列は検出しない', findingsFor('db.md').length, 0);
+
+  writeFixture('docs/leak.md', 'DATABASE_URL=postgres://spica:Xk9dP2mQ7wZ4@db.internal:5432/spica\n');
+  check('本物らしい接続文字列は検出する', findingsFor('leak.md').some((f) => f.rule === 'assigned-secret'), true);
 } finally {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
 }

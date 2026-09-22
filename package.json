@@ -46,6 +46,7 @@
     "test:admin-audit": "npx tsx scripts/test-admin-audit.ts",
     "hooks:install": "node scripts/install-hooks.mjs",
     "prepare": "node scripts/install-hooks.mjs",
+    "db:port-report": "npx tsx scripts/db-port-report.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

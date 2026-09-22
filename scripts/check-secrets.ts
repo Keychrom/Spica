@@ -63,6 +63,23 @@ const SECRET_KEYS = [
 /** プレースホルダ（これらが値なら検出しない） */
 const PLACEHOLDER_RE = /^(?:x+|\*+|\.+|-+|<[^>]*>|\$\{[^}]*\}|your[-_ ]|change[-_]?me|placeholder|example|dummy|sample|test|none|null|undefined|true|false|yes|no|todo|ここに|未設定|ダミー|例)/i;
 
+/**
+ * 例示用の接続文字列かどうか（ドキュメントや .env.example のサンプル）。
+ * ホストが例示用（localhost / 127.0.0.1 / example.com / host など）で、
+ * かつパスワード部分がプレースホルダ語のときだけ「例示」とみなす。
+ * どちらか一方でも本物らしければ検出対象のまま（実パスワードを見逃さない）。
+ */
+function isExampleConnectionString(value: string): boolean {
+  const match = /^[a-z][a-z0-9+.-]*:\/\/([^:@/]+):([^@]*)@(.+)$/i.exec(value);
+  if (!match) return false;
+  const password = match[2];
+  const host = match[3].split('/')[0].replace(/^\[|\]$/g, '').split(':')[0].toLowerCase();
+  const exampleHosts = new Set(['localhost', '127.0.0.1', '::1', 'example.com', 'host', 'hostname', 'db', 'postgres', 'database']);
+  const exampleHost = exampleHosts.has(host) || host.endsWith('.example.com') || host.endsWith('.local');
+  const examplePassword = /^(password|pass|passwd|your[-_ ]?password|change[-_]?me|secret|placeholder|x+|\.\.\.|\$\{[^}]*\})$/i.test(password);
+  return exampleHost && examplePassword;
+}
+
 /** 検出ルール本体 */
 interface Rule {
   id: string;
@@ -362,7 +379,13 @@ export function scanForSecrets(options: ScanOptions = {}): ScanResult {
       }
 
       const keyed = keyedRule(line);
-      if (keyed && keyed.value.trim().length >= 12 && !PLACEHOLDER_RE.test(keyed.value.trim())) {
+      const keyedValue = keyed ? keyed.value.trim() : '';
+      if (
+        keyed
+        && keyedValue.length >= 12
+        && !PLACEHOLDER_RE.test(keyedValue)
+        && !isExampleConnectionString(keyedValue)
+      ) {
         findings.push({
           file: rel,
           line: i + 1,
