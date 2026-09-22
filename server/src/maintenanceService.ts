@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
@@ -155,9 +156,10 @@ export async function runScheduledMaintenance(): Promise<{
 
   // ① バックアップ（既定で有効）
   let backup: { path: string; bytes: number } | null = null;
-  if (config.autoBackup !== false) {
+  // バックアップは SQLite 専用（PostgreSQL は pg_dump を使う。docs/POSTGRESQL.md）
+  if (config.autoBackup !== false && db.kind === 'sqlite') {
     try {
-      const result = backupDatabase(db, config.dbPath, backupDir());
+      const result = backupDatabase(db as unknown as DatabaseSync, config.dbPath, backupDir());
       const removed = rotateBackups(backupDir(), config.backupsKeep);
       backup = { path: result.path, bytes: result.bytes };
       console.log(

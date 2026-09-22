@@ -80,6 +80,18 @@ function isExampleConnectionString(value: string): boolean {
   return exampleHost && examplePassword;
 }
 
+/**
+ * 値が「参照」かどうか（秘密そのものではなく、別の場所から読んでいるだけ）。
+ *
+ * 環境変数の展開（`$DATABASE_URL` / `${DATABASE_URL}` / `$(cat ...)`）、
+ * コードからの読み出し（`process.env.X` / `import.meta.env.X`）、
+ * 設定ファイルの参照（`{{ ... }}`）は、ファイル自体に秘密が入っていないので検出しない。
+ * 実値が書かれていれば参照の形にならないため、ここで見逃すことはない。
+ */
+function isReferenceValue(value: string): boolean {
+  return /^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|\$\(|<[^>]*>|\{\{[^}]*\}\}|process\.env\.|import\.meta\.env\.|Deno\.env|os\.environ)/.test(value);
+}
+
 /** 検出ルール本体 */
 interface Rule {
   id: string;
@@ -386,6 +398,7 @@ export function scanForSecrets(options: ScanOptions = {}): ScanResult {
         keyed
         && keyedValue.length >= 12
         && !PLACEHOLDER_RE.test(keyedValue)
+        && !isReferenceValue(keyedValue)
         && !isExampleConnectionString(keyedValue)
       ) {
         findings.push({

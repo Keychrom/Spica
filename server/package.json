@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').mkdirSync('dist/db',{recursive:true});require('node:fs').copyFileSync('src/db/schema.pg.sql','dist/db/schema.pg.sql')\"",
     "start": "node dist/index.js"
   },
   "dependencies": {

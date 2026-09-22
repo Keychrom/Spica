@@ -83,6 +83,10 @@ export interface AppConfig {
   autoBackup: boolean;
   /** バックアップの保持世代数。既定 3 */
   backupsKeep: number;
+  /** データベースの種類。'sqlite'（既定）または 'postgres'（DB_DRIVER で指定） */
+  dbDriver: 'sqlite' | 'postgres';
+  /** PostgreSQL の接続文字列（DB_DRIVER=postgres のとき必須。DATABASE_URL） */
+  databaseUrl: string;
   /** 画像プロキシ（リモート画像の直リンクを避け、このノード経由で配信する）既定 true */
   imageProxy: boolean;
   /** 画像プロキシのキャッシュ上限（MB）既定 512 */
@@ -109,6 +113,13 @@ const PROTOCOL = process.env.PROTOCOL || (DOMAIN.includes('localhost') || DOMAIN
 const ORIGIN = `${PROTOCOL}://${DOMAIN}`;
 
 const DB_PATH = process.env.DB_PATH || path.resolve(process.cwd(), 'data_astrabit.sqlite');
+
+// データベースの種類。既定は SQLite（追加ミドルウェア不要）。
+// 'postgres' を選ぶと DATABASE_URL に接続する（アプリ本体の対応は実験的。docs/POSTGRESQL.md）
+const rawDriver = (process.env.DB_DRIVER || 'sqlite').trim().toLowerCase();
+const DB_DRIVER: 'sqlite' | 'postgres' =
+  rawDriver === 'postgres' || rawDriver === 'postgresql' || rawDriver === 'pg' ? 'postgres' : 'sqlite';
+const DATABASE_URL = process.env.DATABASE_URL || '';
 const INSTANCE_NAME = process.env.INSTANCE_NAME || 'Spica';
 const INSTANCE_DESCRIPTION = process.env.INSTANCE_DESCRIPTION || 'Spica - A decentralized, sovereign social network node built from scratch with ActivityPub.';
 
@@ -233,6 +244,8 @@ export const config: AppConfig = {
   autoMaintenanceHour: AUTO_MAINTENANCE_HOUR,
   autoBackup: AUTO_BACKUP,
   backupsKeep: BACKUPS_KEEP,
+  dbDriver: DB_DRIVER,
+  databaseUrl: DATABASE_URL,
   imageProxy: IMAGE_PROXY,
   imageProxyMaxMb: IMAGE_PROXY_MAX_MB,
   imageProxyTtlDays: IMAGE_PROXY_TTL_DAYS,

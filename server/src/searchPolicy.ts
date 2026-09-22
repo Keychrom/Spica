@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { SpicaDatabase } from './db/driver.js';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 
@@ -55,7 +56,7 @@ function normalizeAnnouncePolicy(raw: unknown): RemoteAnnouncePolicy {
  * サーバーの共有接続を開かずに済ませるため）。
  */
 /** server_settings から値を読む（接続を渡せばその接続を使う）。CLI からも使う */
-export function readSetting(conn: DatabaseSync | undefined, key: string): string {
+export function readSetting(conn: SpicaDatabase | undefined, key: string): string {
   if (!conn) return getServerSetting(key as any, '') || '';
   try {
     const row = conn.prepare('SELECT value FROM server_settings WHERE key = ?').get(key) as { value?: string } | undefined;
@@ -65,7 +66,7 @@ export function readSetting(conn: DatabaseSync | undefined, key: string): string
   }
 }
 
-export function getFtsIndexScope(conn?: DatabaseSync): FtsIndexScope {
+export function getFtsIndexScope(conn?: SpicaDatabase): FtsIndexScope {
   const stored = readSetting(conn, 'fts_index_scope');
   if (stored) return normalizeScope(stored);
   return normalizeScope(process.env.FTS_INDEX_SCOPE || config.ftsIndexScope);
@@ -77,7 +78,7 @@ export function setFtsIndexScope(scope: unknown): FtsIndexScope {
   return value;
 }
 
-export function getRemoteAnnouncePolicy(conn?: DatabaseSync): RemoteAnnouncePolicy {
+export function getRemoteAnnouncePolicy(conn?: SpicaDatabase): RemoteAnnouncePolicy {
   const stored = readSetting(conn, 'remote_announce_policy');
   if (stored) return normalizeAnnouncePolicy(stored);
   return normalizeAnnouncePolicy(process.env.REMOTE_ANNOUNCE_POLICY || config.remoteAnnouncePolicy);
@@ -152,7 +153,7 @@ export interface FtsPolicyResult {
 }
 
 /** 方針を既存データへ遡及適用する（db:maintenance から呼ぶ。接続は呼び出し側が渡す） */
-export function applyFtsPolicy(conn: DatabaseSync): FtsPolicyResult {
+export function applyFtsPolicy(conn: SpicaDatabase): FtsPolicyResult {
   const scope = getFtsIndexScope(conn);
   const keepCondition = `
     is_local = 1 OR (
@@ -192,7 +193,7 @@ export function applyFtsPolicy(conn: DatabaseSync): FtsPolicyResult {
 }
 
 /** 方針に反して保存されているリモートのブーストを削除する */
-export function applyAnnouncePolicy(conn: DatabaseSync): { toRemove: number; remaining: number } {
+export function applyAnnouncePolicy(conn: SpicaDatabase): { toRemove: number; remaining: number } {
   const policy = getRemoteAnnouncePolicy(conn);
   let toRemove = 0;
   if (policy === 'none') {

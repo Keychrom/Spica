@@ -101,7 +101,7 @@ async function main(): Promise<number> {
     console.log('');
     console.log('次の手順:');
     console.log('  既存データを移す場合: npm run db:pg:migrate -- --from data_astrabit.sqlite --verify');
-    console.log('  ※ アプリ本体の PostgreSQL 対応（ドライバ）は未実装です。今はデータの移送と検証までが使えます。');
+    console.log('  起動する場合: DB_DRIVER=postgres DATABASE_URL=... npm start（既定は SQLite のまま）');
     return 0;
   } finally {
     await client.end();

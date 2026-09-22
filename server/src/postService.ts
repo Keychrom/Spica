@@ -31,7 +31,21 @@ export interface CreatePostParams {
 export async function executeCreatePost(params: CreatePostParams): Promise<{ post: any; federatedTo: number }> {
   const { user, in_reply_to, attachments, cw, poll, quote_id, is_sensitive } = params;
   const visibility: PostVisibility = normalizeVisibility(params.visibility);
-  const parsedAttachments = Array.isArray(attachments) ? attachments : [];
+  const parsedAttachments = (Array.isArray(attachments) ? attachments : [])
+    .filter((att: any) => att && typeof att.url === 'string' && att.url.length > 0)
+    .slice(0, 4)
+    .map((att: any) => ({
+      url: String(att.url),
+      mediaType: typeof att.mediaType === 'string' ? att.mediaType : 'image/jpeg',
+      name: typeof att.name === 'string' ? att.name.slice(0, 300) : '',
+      // 代替テキスト（alt）。連合先には添付の name として届く
+      description: typeof att.description === 'string' ? att.description.slice(0, 1500) : '',
+      size: typeof att.size === 'number' ? att.size : undefined,
+      width: typeof att.width === 'number' ? att.width : undefined,
+      height: typeof att.height === 'number' ? att.height : undefined,
+      thumbnailUrl: typeof att.thumbnailUrl === 'string' ? att.thumbnailUrl : undefined,
+      duration: typeof att.duration === 'number' ? att.duration : undefined,
+    }));
   const channelId = typeof params.channel_id === 'string' && params.channel_id.trim() ? params.channel_id.trim() : null;
 
   const postText = params.content ? params.content.trim() : '';

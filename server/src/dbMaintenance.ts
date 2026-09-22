@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { wrapSqliteDatabase, type SpicaDatabase } from './db/driver.js';
 import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy, readSetting } from './searchPolicy.js';
 import { pruneProxyCacheOn } from './imageProxy.js';
 import { config } from './config.js';
@@ -121,13 +122,14 @@ const FALLBACK_POSTS_AD_TRIGGER = `
  */
 export function openMaintenanceDb(dbPath: string): DatabaseSync {
   const db = new DatabaseSync(dbPath);
+  void db;
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 10000;');
   return db;
 }
 
-export function getDbSizeInfo(dbPath: string, db?: DatabaseSync): DbSizeInfo {
+export function getDbSizeInfo(dbPath: string, db?: SpicaDatabase): DbSizeInfo {
   const stat = (file: string): number => {
     try {
       return fs.statSync(file).size;
@@ -135,6 +137,25 @@ export function getDbSizeInfo(dbPath: string, db?: DatabaseSync): DbSizeInfo {
       return 0;
     }
   };
+
+  // PostgreSQL ではファイルサイズではなく DB の実サイズを問い合わせる
+  if (db && db.kind === 'postgres') {
+    let bytes = 0;
+    try {
+      bytes = Number((db.prepare('SELECT pg_database_size(current_database()) AS size').get() as any)?.size ?? 0);
+    } catch {
+      bytes = 0;
+    }
+    return {
+      dbBytes: bytes,
+      walBytes: 0,
+      shmBytes: 0,
+      pageCount: 0,
+      freelistCount: 0,
+      pageSize: 0,
+    };
+  }
+
   const pageSize = db ? (db.prepare('PRAGMA page_size').get() as any)?.page_size ?? 0 : 0;
   const pageCount = db ? (db.prepare('PRAGMA page_count').get() as any)?.page_count ?? 0 : 0;
   const freelistCount = db ? (db.prepare('PRAGMA freelist_count').get() as any)?.freelist_count ?? 0 : 0;
@@ -186,7 +207,7 @@ function keepConditions(opts: MaintenanceOptions): { sql: string; reasons: strin
 }
 
 /** 削除対象になるリモート投稿 ID を一時テーブルに固定する（件数はここで確定する） */
-function materializeTargets(db: DatabaseSync, opts: MaintenanceOptions): number {
+function materializeTargets(db: SpicaDatabase, opts: MaintenanceOptions): number {
   const { sql: keepSql } = keepConditions(opts);
   db.exec('DROP TABLE IF EXISTS temp._maintenance_targets');
   db.exec('CREATE TEMP TABLE _maintenance_targets (id TEXT PRIMARY KEY)');
@@ -221,7 +242,7 @@ function materializeTargets(db: DatabaseSync, opts: MaintenanceOptions): number 
 }
 
 /** 削除対象の内訳（保持ルールで何がどれだけ残るか）を調べる */
-export function planRemotePostRemoval(db: DatabaseSync, opts: MaintenanceOptions): RemotePostTargets {
+export function planRemotePostRemoval(db: SpicaDatabase, opts: MaintenanceOptions): RemotePostTargets {
   const { sql: keepSql, reasons } = keepConditions(opts);
   const one = (sql: string): number => Number((db.prepare(sql).get() as any)?.c ?? 0);
 
@@ -274,7 +295,7 @@ export function planRemotePostRemoval(db: DatabaseSync, opts: MaintenanceOptions
  * 数万件の削除では現実的な時間で終わらない。削除の間だけトリガを外し、
  * あとから対象 ID をまとめて FTS から消して整合させる（1 回の走査で済む）。
  */
-export function applyRemotePostRemoval(db: DatabaseSync, opts: MaintenanceOptions): RemovalCounts {
+export function applyRemotePostRemoval(db: SpicaDatabase, opts: MaintenanceOptions): RemovalCounts {
   const total = materializeTargets(db, opts);
   const counts: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, polls: 0, fts: 0 };
   if (total === 0) {
@@ -284,10 +305,15 @@ export function applyRemotePostRemoval(db: DatabaseSync, opts: MaintenanceOption
 
   db.exec('CREATE TEMP TABLE IF NOT EXISTS _target_batch (id TEXT PRIMARY KEY)');
 
-  const triggerSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_ad'").get() as any)?.sql as string | undefined;
+  // SQLite は FTS 同期トリガが post_id を全走査するため、削除の間だけ外す。
+  // PostgreSQL は posts_fts.post_id が主キーで索引が効くので、そのままトリガに任せる。
+  const isPostgres = db.kind === 'postgres';
+  const triggerSql = isPostgres
+    ? undefined
+    : ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_ad'").get() as any)?.sql as string | undefined);
 
   const selectIds = db.prepare('SELECT id FROM temp._maintenance_targets LIMIT ?');
-  const batchDeletes: Array<[keyof RemovalCounts, ReturnType<DatabaseSync['prepare']>]> = [
+  const batchDeletes: Array<[keyof RemovalCounts, ReturnType<SpicaDatabase['prepare']>]> = [
     ['reactions', db.prepare('DELETE FROM reactions WHERE post_id IN (SELECT id FROM _target_batch)')],
     ['announces', db.prepare('DELETE FROM announces WHERE post_id IN (SELECT id FROM _target_batch)')],
     ['notifications', db.prepare('DELETE FROM notifications WHERE post_id IN (SELECT id FROM _target_batch)')],
@@ -346,7 +372,7 @@ export function applyRemotePostRemoval(db: DatabaseSync, opts: MaintenanceOption
 // ---------------------------------------------------------------------------
 
 /** DB に記録されたローカル保存メディアの参照パス（/uploads/... 形式）を集める */
-function collectReferencedUploadPaths(db: DatabaseSync): Set<string> {
+function collectReferencedUploadPaths(db: SpicaDatabase): Set<string> {
   const refs = new Set<string>();
   const add = (value: unknown): void => {
     if (typeof value !== 'string' || !value) return;
@@ -414,7 +440,7 @@ function collectReferencedUploadPaths(db: DatabaseSync): Set<string> {
  * どの投稿・プロフィールからも参照されていないファイルだけを対象にする。
  */
 export function cleanupOrphanMedia(
-  db: DatabaseSync,
+  db: SpicaDatabase,
   uploadsDir: string,
   opts: MaintenanceOptions,
   apply: boolean,
@@ -621,7 +647,8 @@ export function runMaintenance(params: {
 }): MaintenanceReport {
   const log = params.log ?? (() => {});
   const started = Date.now();
-  const db = openMaintenanceDb(params.dbPath);
+  const conn = openMaintenanceDb(params.dbPath);
+  const db = wrapSqliteDatabase(conn);
   try {
     const before = getDbSizeInfo(params.dbPath, db);
     const targets = planRemotePostRemoval(db, params.options);
@@ -644,7 +671,7 @@ export function runMaintenance(params: {
     if (params.apply) {
       if (params.backup) {
         log('④ VACUUM INTO でバックアップを作成しています...');
-        backupResult = backupDatabase(db, params.dbPath, params.backupDir);
+        backupResult = backupDatabase(conn, params.dbPath, params.backupDir);
         backupResult.removed = rotateBackups(params.backupDir, params.backupsKeep);
         log(`   バックアップ: ${backupResult.path} (${formatBytes(backupResult.bytes)})`);
       }
@@ -658,6 +685,7 @@ export function runMaintenance(params: {
       }
       if (params.options.applyPolicy) {
         log('⑤ 保存・索引の方針を既存データへ適用しています...');
+        // 方針適用はどちらの DB でも動く（PostgreSQL でも同じ SQL が通る）
         const ftsResult = applyFtsPolicy(db);
         const announceResult = applyAnnouncePolicy(db);
         policyResult = {
@@ -673,12 +701,12 @@ export function runMaintenance(params: {
         const maxStored = parseInt(readSetting(db, 'image_proxy_max_mb'), 10);
         const maxMb = Number.isFinite(maxStored) && maxStored > 0 ? maxStored : config.imageProxyMaxMb;
         log('⑥ 画像プロキシのキャッシュを整理しています...');
-        proxyCache = pruneProxyCacheOn(db, params.dbPath, ttlDays, maxMb * 1024 * 1024, true);
+        proxyCache = pruneProxyCacheOn(db as unknown as import('node:sqlite').DatabaseSync, params.dbPath, ttlDays, maxMb * 1024 * 1024, true);
         log(`   ${proxyCache.removed} 件を削除しました（残り ${proxyCache.scanned - proxyCache.removed} 件 / ${formatBytes(proxyCache.totalBytes - proxyCache.freedBytes)}）`);
       }
       if (params.vacuum) {
         log('③ wal_checkpoint + VACUUM を実行しています（サーバー停止推奨）...');
-        optimize = optimizeDatabase(db);
+        optimize = optimizeDatabase(conn);
       }
     } else {
       // ドライラン: 削除はせず、孤立メディアの調査だけ行う
@@ -700,6 +728,6 @@ export function runMaintenance(params: {
       elapsedMs: Date.now() - started,
     };
   } finally {
-    db.close();
+    conn.close();
   }
 }

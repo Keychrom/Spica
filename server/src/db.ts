@@ -1,24 +1,85 @@
-import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
+import { createDatabase } from './db/driver.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sendNotificationToUser } from './streaming.js';
+import { fileURLToPath } from 'node:url';
 
-// データベースディレクトリが存在することを確認
-const dbDir = path.dirname(config.dbPath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+// データベースディレクトリが存在することを確認（SQLite のときだけ必要）
+if (config.dbDriver === 'sqlite') {
+  const dbDir = path.dirname(config.dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
 }
 
-export const db = new DatabaseSync(config.dbPath);
+/**
+ * データベース接続。
+ * 既定は SQLite（同期 API をそのまま使う）。`DB_DRIVER=postgres` のときは
+ * 同期ファサード経由で PostgreSQL に繋ぐ（server/src/db/driver.ts を参照）。
+ */
+export const db = createDatabase({
+  driver: config.dbDriver,
+  dbPath: config.dbPath,
+  connectionString: config.databaseUrl,
+});
 
-// WALモード等のPRAGMA設定
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
+// SQLite のときだけ PRAGMA を設定する（PostgreSQL では不要）
+if (db.kind === 'sqlite') {
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+}
 
 // テーブル初期化＆マイグレーション
+/**
+ * PostgreSQL にスキーマを適用する。
+ * `npm run db:pg:schema` が生成した server/src/db/schema.pg.sql を読み込んで流す。
+ * 生成物は CREATE ... IF NOT EXISTS / CREATE OR REPLACE FUNCTION なので繰り返し実行できる。
+ */
+function initPostgresSchema(): void {
+  // 開発時は src/db/schema.pg.sql、ビルド後は dist/db/schema.pg.sql（build でコピーされる）
+  const schemaPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'db', 'schema.pg.sql');
+  if (!fs.existsSync(schemaPath)) {
+    throw new Error(
+      `PostgreSQL のスキーマが見つかりません: ${schemaPath}
+` +
+        '  npm run db:pg:schema で生成してから起動してください。',
+    );
+  }
+  const sql = fs.readFileSync(schemaPath, 'utf8');
+  try {
+    db.exec(sql);
+    console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+  } catch (err: any) {
+    throw new Error(`PostgreSQL スキーマの適用に失敗しました: ${err?.message || err}`);
+  }
+
+  // 索引に入っていない投稿を同期する（SQLite 側と同じ処理）
+  try {
+    const ftsCount = Number((db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c);
+    const postsCount = Number((db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c);
+    if (ftsCount < postsCount) {
+      db.prepare(`
+        INSERT INTO posts_fts(post_id, content)
+        SELECT id, content FROM posts
+        WHERE fts_indexed = 1 AND NOT EXISTS (SELECT 1 FROM posts_fts f WHERE f.post_id = posts.id)
+      `).run();
+      console.log(`[FTS] 🔄 posts_fts を同期しました（${ftsCount} → ${postsCount}）`);
+    }
+  } catch (ftsSyncErr) {
+    console.warn('[FTS Sync Warning]:', ftsSyncErr);
+  }
+}
+
 export function initDatabase() {
+  // PostgreSQL では、SQLite の migrations ではなく生成済みスキーマを適用する
+  // （スキーマの正は db.ts の migrations 側。npm run db:pg:schema で生成する）
+  if (db.kind === 'postgres') {
+    initPostgresSchema();
+    return;
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,

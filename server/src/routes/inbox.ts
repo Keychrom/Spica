@@ -1172,7 +1172,7 @@ inboxRouter.post('/inbox', async (req: Request, res: Response) => {
 /**
  * Note オブジェクトから attachment (画像など) を抽出
  */
-function extractAttachments(note: any): Array<{ url: string; mediaType: string; name?: string; width?: number; height?: number }> {
+function extractAttachments(note: any): Array<{ url: string; mediaType: string; name?: string; description?: string; width?: number; height?: number }> {
   if (!note || !note.attachment) return [];
   const list = Array.isArray(note.attachment) ? note.attachment : [note.attachment];
   return list
@@ -1180,10 +1180,13 @@ function extractAttachments(note: any): Array<{ url: string; mediaType: string; 
     .map((a: any) => {
       const url = typeof a.url === 'string' ? a.url : (a.url?.href || a.href || '');
       const mediaType = a.mediaType || a.mimeType || (a.url && typeof a.url === 'object' ? a.url.mediaType : 'image/jpeg');
+      const altText = typeof (a.name || a.summary) === 'string' ? String(a.name || a.summary).slice(0, 1500) : '';
       return {
         url,
         mediaType: mediaType || 'image/jpeg',
-        name: a.name || a.summary || '',
+        name: altText,
+        // 代替テキストは description にも入れて、ローカル/連合で同じ項目として扱えるようにする
+        description: altText,
         width: a.width,
         height: a.height,
       };

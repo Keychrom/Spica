@@ -117,6 +117,31 @@ try {
   ].join('\n'));
   check('プレースホルダや env 参照は検出しない', findingsFor('example.ts').length, 0);
 
+  // 参照（実値ではない）は、たとえ同じ行に代入の形で現れても検出しない。
+  // 実値が書かれていれば参照の形にならないので、ここは見逃しにならない。
+  writeFixture('src/references.ts', [
+    `const DATABASE_URL = process.env.DATABASE_URL || '';`,
+    `const other = import.meta.env.SMTP_PASS;`,
+    `const fromConfig = Deno.env.get('MASTER_KEY');`,
+  ].join('\n'));
+  check('コードからの参照は検出しない', findingsFor('references.ts').length, 0);
+
+  writeFixture('docs/shell.md', [
+    '```bash',
+    'DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica npm start',
+    '```',
+    '起動時に `DATABASE_URL="$DATABASE_URL"` として渡しても構いません。',
+    '`TEST_DATABASE_URL=$TEST_DATABASE_URL` のように別名でも動きます。',
+  ].join('\n'));
+  check('シェル例の変数展開・例示用 DSN は検出しない', findingsFor('shell.md').length, 0);
+
+  // 逆方向の確認: 参照と実値が同じファイルにあれば、実値のほうは検出される
+  writeFixture('src/mixed.ts', [
+    `const DATABASE_URL = process.env.DATABASE_URL || '';`,
+    `${FAKE.env}`,
+  ].join('\n'));
+  check('参照と実値が同居しても実値は検出する', findingsFor('mixed.ts').length, 1);
+
   writeFixture('src/normal.ts', [
     `export function add(a: number, b: number) { return a + b; }`,
     `const ratio = 0.5;`,
