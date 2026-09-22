@@ -58,14 +58,14 @@ async function runTest() {
     auth: 'tBHItJI5svbp5pwh6hG4nA==',
   };
 
-  savePushSubscription(testSub);
-  if (!isUserSubscribed('testuser')) {
+  await savePushSubscription(testSub);
+  if (!(await isUserSubscribed('testuser'))) {
     throw new Error('PushSubscription の登録確認に失敗しました');
   }
   console.log('✅ PushSubscription の登録と確認成功');
 
-  removePushSubscription(testSub.endpoint);
-  if (isUserSubscribed('testuser')) {
+  await removePushSubscription(testSub.endpoint);
+  if (await isUserSubscribed('testuser')) {
     throw new Error('PushSubscription の解除確認に失敗しました');
   }
   console.log('✅ PushSubscription の解除成功');

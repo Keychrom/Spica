@@ -1466,14 +1466,14 @@ adminRouter.post('/users/:id/roles', (req: Request, res: Response) => {
 // ==========================================
 
 // 通報一覧（?status=open|resolved|rejected|all）
-adminRouter.get('/reports', (req: Request, res: Response) => {
+adminRouter.get('/reports', async (req: Request, res: Response) => {
   try {
     const status = (req.query.status as string) || 'all';
-    const reports = listReports(status === 'all' ? undefined : status);
+    const reports = await listReports(status === 'all' ? undefined : status);
     res.json({
       reports,
       counts: {
-        open: countOpenReports(),
+        open: await countOpenReports(),
         total: (db.prepare('SELECT COUNT(*) AS c FROM reports').get() as { c: number }).c,
       },
     });
@@ -1484,23 +1484,23 @@ adminRouter.get('/reports', (req: Request, res: Response) => {
 });
 
 // 未対応の通報件数（バッジ用）
-adminRouter.get('/reports/count', (_req: Request, res: Response) => {
+adminRouter.get('/reports/count', async (_req: Request, res: Response) => {
   try {
-    res.json({ open: countOpenReports() });
+    res.json({ open: await countOpenReports() });
   } catch (err: any) {
     res.status(500).json({ error: '通報件数の取得に失敗しました。' });
   }
 });
 
 // 通報への対応（action: resolve=対応済み / reject=却下 / reopen=再オープン）
-adminRouter.post('/reports/:id/resolve', (req: Request, res: Response) => {
+adminRouter.post('/reports/:id/resolve', async (req: Request, res: Response) => {
   const { action, note } = req.body;
   if (!['resolve', 'reject', 'reopen'].includes(String(action))) {
     return res.status(400).json({ error: 'action は resolve / reject / reopen のいずれかを指定してください。' });
   }
 
   try {
-    const updated = resolveReport(String(req.params.id), action, req.user!.id, typeof note === 'string' ? note : undefined);
+    const updated = await resolveReport(String(req.params.id), action, req.user!.id, typeof note === 'string' ? note : undefined);
     if (!updated) {
       return res.status(404).json({ error: '通報が見つかりません。' });
     }

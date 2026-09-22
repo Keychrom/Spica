@@ -1,5 +1,5 @@
 import webpush from 'web-push';
-import { db, getServerSetting, setServerSetting, PushSubscriptionRow } from './db.js';
+import { adb, getServerSetting, setServerSetting, PushSubscriptionRow } from './db.js';
 import { config } from './config.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
 
@@ -39,14 +39,14 @@ export function getVapidPublicKey(): string {
 /**
  * 端末の PushSubscription を登録/更新
  */
-export function savePushSubscription(params: {
+export async function savePushSubscription(params: {
   userId: string;
   endpoint: string;
   p256dh: string;
   auth: string;
-}): void {
+}): Promise<void> {
   const now = new Date().toISOString();
-  db.prepare(`
+  await adb.prepare(`
     INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth, created_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(endpoint) DO UPDATE SET
@@ -62,16 +62,16 @@ export function savePushSubscription(params: {
 /**
  * 端末の PushSubscription を解除
  */
-export function removePushSubscription(endpoint: string): void {
-  db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
+export async function removePushSubscription(endpoint: string): Promise<void> {
+  await adb.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(endpoint);
   console.log(`[WebPush] 🔌 Removed push subscription (${endpoint.slice(0, 35)}...)`);
 }
 
 /**
  * ユーザーが有効な PushSubscription を持っているか
  */
-export function isUserSubscribed(userId: string): boolean {
-  const row = db.prepare('SELECT COUNT(*) as c FROM push_subscriptions WHERE user_id = ?').get(userId) as any;
+export async function isUserSubscribed(userId: string): Promise<boolean> {
+  const row = await adb.prepare('SELECT COUNT(*) as c FROM push_subscriptions WHERE user_id = ?').get(userId) as any;
   return row ? row.c > 0 : false;
 }
 
@@ -92,7 +92,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
     getOrCreateVapidKeys(); // VAPID詳細の初期化を確実に実行
 
     const cleanUserId = userId.toLowerCase();
-    const subs = db.prepare('SELECT * FROM push_subscriptions WHERE LOWER(user_id) = ?').all(cleanUserId) as unknown as PushSubscriptionRow[];
+    const subs = await adb.prepare('SELECT * FROM push_subscriptions WHERE LOWER(user_id) = ?').all(cleanUserId) as unknown as PushSubscriptionRow[];
 
     if (subs.length === 0) {
       return;
@@ -134,7 +134,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
           // 410 (Gone) または 404 (Not Found) の場合は端末側でアンインストールまたは権限拒否されたため削除
           if (err.statusCode === 410 || err.statusCode === 404) {
             console.log(`[WebPush] 🧹 Expired subscription removed: ${sub.endpoint.slice(0, 35)}...`);
-            removePushSubscription(sub.endpoint);
+            void removePushSubscription(sub.endpoint);
           } else {
             console.warn(`[WebPush Warning] Failed to push to ${sub.endpoint.slice(0, 35)}:`, err.message);
           }

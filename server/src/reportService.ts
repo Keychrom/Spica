@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db, UserRow, createNotification, listStaffUserIds } from './db.js';
+import { adb, UserRow, createNotification, listStaffUserIds } from './db.js';
 import { config } from './config.js';
 import { deliverActivity, fetchRemoteActor, ACTIVITYSTREAMS_CONTEXT } from './activitypub.js';
 
@@ -68,7 +68,7 @@ function isLocalActor(actorUrl: string): boolean {
 }
 
 /** 通報レコードを作成する（配送は行わない） */
-export function insertReport(params: CreateReportParams): ReportRow {
+export async function insertReport(params: CreateReportParams): Promise<ReportRow> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const category = normalizeCategory(params.category);
@@ -77,7 +77,7 @@ export function insertReport(params: CreateReportParams): ReportRow {
     ? params.targetPostContent.replace(/<[^>]+>/g, '').trim().slice(0, 300)
     : null;
 
-  db.prepare(`
+  await adb.prepare(`
     INSERT INTO reports (
       id, reporter_actor_url, reporter_user_id, reporter_handle,
       target_actor_url, target_user_id, target_handle,
@@ -100,13 +100,13 @@ export function insertReport(params: CreateReportParams): ReportRow {
     now,
   );
 
-  const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+  const report = await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
 
   // 運営メンバー（admin / moderate）へ通知する
   //   ・種類別設定で「通報」を切っている人には届かない（createNotification が弾く）
   //   ・通報者自身が運営の場合も通知されない（自分の操作は通知しない仕様）
   try {
-    notifyStaffOfReport(report);
+    await notifyStaffOfReport(report);
   } catch (err: any) {
     console.warn('[Report] 運営への通知に失敗しました:', err?.message || err);
   }
@@ -115,7 +115,7 @@ export function insertReport(params: CreateReportParams): ReportRow {
 }
 
 /** 通報を運営メンバー全員に通知する */
-export function notifyStaffOfReport(report: ReportRow): number {
+export async function notifyStaffOfReport(report: ReportRow): Promise<number> {
   const staffIds = listStaffUserIds();
   if (staffIds.length === 0) return 0;
 
@@ -177,7 +177,7 @@ export async function forwardReport(report: ReportRow, actorUrl: string, userId?
     };
 
     const senderUser = userId
-      ? (db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined)
+      ? (await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined)
       : undefined;
 
     const delivered = await deliverActivity({
@@ -188,7 +188,7 @@ export async function forwardReport(report: ReportRow, actorUrl: string, userId?
     });
 
     if (delivered) {
-      db.prepare('UPDATE reports SET forwarded = 1 WHERE id = ?').run(report.id);
+      await adb.prepare('UPDATE reports SET forwarded = 1 WHERE id = ?').run(report.id);
       console.log(`[Report] 📤 Forwarded Flag for ${report.target_actor_url} to ${remote.inbox_url}`);
     }
     return delivered;
@@ -200,7 +200,7 @@ export async function forwardReport(report: ReportRow, actorUrl: string, userId?
 
 /** 通報を作成し、必要なら対象サーバーへ転送する */
 export async function createReport(params: CreateReportParams): Promise<{ report: ReportRow; forwarded: boolean }> {
-  const report = insertReport(params);
+  const report = await insertReport(params);
 
   let forwarded = false;
   if (params.forward !== false) {
@@ -211,11 +211,11 @@ export async function createReport(params: CreateReportParams): Promise<{ report
 }
 
 /** 他サーバーから届いた Flag を取り込む */
-export function ingestRemoteFlag(params: {
+export async function ingestRemoteFlag(params: {
   actorUrl: string;
   objects: string[];
   content?: string;
-}): ReportRow | null {
+}): Promise<ReportRow | null> {
   const postUrl = params.objects.find((o) => o.includes('/posts/') || o.includes('/notes/') || o.includes('/statuses/'));
   const actorTarget = params.objects.find((o) => !postUrl || o !== postUrl) ?? params.actorUrl;
 
@@ -226,7 +226,7 @@ export function ingestRemoteFlag(params: {
   let targetPostContent: string | null = null;
 
   if (postUrl) {
-    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postUrl) as
+    const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postUrl) as
       | { id: string; user_id: string; author_url: string; content: string }
       | undefined;
     if (post) {
@@ -239,12 +239,12 @@ export function ingestRemoteFlag(params: {
     }
   }
 
-  const localUser = db.prepare('SELECT id FROM users WHERE id = ?').get(targetActorUrl.split('/').pop() || '');
+  const localUser = await adb.prepare('SELECT id FROM users WHERE id = ?').get(targetActorUrl.split('/').pop() || '');
   if (localUser) {
     targetUserId = (localUser as { id: string }).id;
   }
 
-  const report = insertReport({
+  const report = await insertReport({
     reporterActorUrl: params.actorUrl,
     targetActorUrl,
     targetUserId,
@@ -261,40 +261,40 @@ export function ingestRemoteFlag(params: {
 }
 
 /** 管理画面用: 通報一覧 */
-export function listReports(status?: string): ReportRow[] {
+export async function listReports(status?: string): Promise<ReportRow[]> {
   const valid: ReportStatus[] = ['open', 'resolved', 'rejected'];
   if (status && valid.includes(status as ReportStatus)) {
-    return db.prepare('SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC LIMIT 300').all(status) as unknown as ReportRow[];
+    return await adb.prepare('SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC LIMIT 300').all(status) as unknown as ReportRow[];
   }
-  return db.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT 300').all() as unknown as ReportRow[];
+  return await adb.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT 300').all() as unknown as ReportRow[];
 }
 
-export function countOpenReports(): number {
-  const row = db.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get() as { c: number };
+export async function countOpenReports(): Promise<number> {
+  const row = await adb.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get() as { c: number };
   return row?.c ?? 0;
 }
 
 /** 管理画面用: 通報の対応（対応済み / 却下 / 再オープン） */
-export function resolveReport(
+export async function resolveReport(
   id: string,
   action: 'resolve' | 'reject' | 'reopen',
   adminUserId: string,
   note?: string,
-): ReportRow | null {
-  const existing = db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow | undefined;
+): Promise<ReportRow | null> {
+  const existing = await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow | undefined;
   if (!existing) {
     return null;
   }
 
   if (action === 'reopen') {
-    db.prepare("UPDATE reports SET status = 'open', resolved_by = NULL, resolved_at = NULL, resolution_note = NULL WHERE id = ?").run(id);
+    await adb.prepare("UPDATE reports SET status = 'open', resolved_by = NULL, resolved_at = NULL, resolution_note = NULL WHERE id = ?").run(id);
   } else {
     const status: ReportStatus = action === 'resolve' ? 'resolved' : 'rejected';
-    db.prepare('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ? WHERE id = ?')
+    await adb.prepare('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ? WHERE id = ?')
       .run(status, adminUserId, new Date().toISOString(), note ?? null, id);
   }
 
-  return db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+  return await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
 }
 
 /**

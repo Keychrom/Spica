@@ -1,4 +1,4 @@
-import { db } from './db.js';
+import { adb } from './db.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
 
 /**
@@ -91,14 +91,14 @@ export function parseOpenGraph(html: string, baseUrl: string): {
 }
 
 /** キャッシュから取得（TTL 内のみ）。複数 URL をまとめて引くための一括取得にも使う */
-export function getCachedPreviews(urls: string[]): Map<string, LinkPreview> {
+export async function getCachedPreviews(urls: string[]): Promise<Map<string, LinkPreview>> {
   const result = new Map<string, LinkPreview>();
   if (urls.length === 0) {
     return result;
   }
   try {
     const placeholders = urls.map(() => '?').join(',');
-    const rows = db.prepare(`SELECT * FROM link_previews WHERE url IN (${placeholders})`).all(...urls) as unknown as LinkPreview[];
+    const rows = await adb.prepare(`SELECT * FROM link_previews WHERE url IN (${placeholders})`).all(...urls) as unknown as LinkPreview[];
     const cutoff = Date.now() - CACHE_TTL_MS;
     for (const row of rows) {
       if (row.status === 'ok' && Date.parse(row.fetched_at) > cutoff) {
@@ -111,9 +111,9 @@ export function getCachedPreviews(urls: string[]): Map<string, LinkPreview> {
   return result;
 }
 
-function hasRecentFailure(url: string): boolean {
+async function hasRecentFailure(url: string): Promise<boolean> {
   try {
-    const row = db.prepare('SELECT fetched_at, status FROM link_previews WHERE url = ?').get(url) as
+    const row = await adb.prepare('SELECT fetched_at, status FROM link_previews WHERE url = ?').get(url) as
       | { fetched_at: string; status: string }
       | undefined;
     if (!row) {
@@ -125,9 +125,9 @@ function hasRecentFailure(url: string): boolean {
   }
 }
 
-function savePreview(preview: LinkPreview): void {
+async function savePreview(preview: LinkPreview): Promise<void> {
   try {
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO link_previews (url, title, description, image_url, site_name, status, fetched_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(url) DO UPDATE SET
@@ -180,10 +180,10 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
     return null;
   }
 
-  if (hasRecentFailure(url)) {
+  if (await hasRecentFailure(url)) {
     return null;
   }
-  const cached = getCachedPreviews([url]).get(url);
+  const cached = (await getCachedPreviews([url])).get(url);
   if (cached) {
     return cached;
   }
@@ -191,7 +191,7 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
   // SSRF 対策: 内部アドレスや解決できないホストへは取得しない
   const safety = await assertFetchableRemoteUrl(url);
   if (!safety.safe) {
-    savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'unsafe', fetched_at: new Date().toISOString() });
+    await savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'unsafe', fetched_at: new Date().toISOString() });
     return null;
   }
 
@@ -210,7 +210,7 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
     const contentType = String(res.headers.get('content-type') || '');
     const contentLength = parseInt(String(res.headers.get('content-length') || '0'), 10);
     if (!res.ok || (!contentType.includes('text/html') && !contentType.includes('xhtml')) || contentLength > MAX_BYTES) {
-      savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'skipped', fetched_at: new Date().toISOString() });
+      await savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'skipped', fetched_at: new Date().toISOString() });
       return null;
     }
 
@@ -225,14 +225,14 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
       status: og.title || og.description || og.imageUrl ? 'ok' : 'empty',
       fetched_at: new Date().toISOString(),
     };
-    savePreview(preview);
+    await savePreview(preview);
     if (preview.status === 'ok') {
       console.log(`[LinkPreview] 🔗 ${url} → ${preview.title || '(no title)'}`);
       return preview;
     }
     return null;
   } catch {
-    savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'error', fetched_at: new Date().toISOString() });
+    await savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'error', fetched_at: new Date().toISOString() });
     return null;
   } finally {
     clearTimeout(timer);
@@ -249,10 +249,10 @@ export function queueLinkPreviewFetch(content: string | null | undefined): void 
 }
 
 /** 本文に含まれる URL のキャッシュ済みプレビューを返す */
-export function attachPreviewForContent(content: string | null | undefined): LinkPreview | null {
+export async function attachPreviewForContent(content: string | null | undefined): Promise<LinkPreview | null> {
   const url = extractFirstUrl(content);
   if (!url) {
     return null;
   }
-  return getCachedPreviews([url]).get(url) ?? null;
+  return (await getCachedPreviews([url])).get(url) ?? null;
 }

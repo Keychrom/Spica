@@ -17,7 +17,7 @@
 > | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
 > | 既存テストスイートの PG 対応 | 🚧 一部 | 監査ログ・メール通知・画像プロキシ・自動運用・通報・サイレンスは PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（3.8%） | 恒久対応。手順は下の「案A の進め方」 |
+> | データ層の非同期化（案A） | 🚧 進行中（7.0% / 43 箇所） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -120,11 +120,19 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | 段階 | 内容 |
 | :--- | :--- |
 | ✅ 土台 | 非同期ドライバ、契約テスト（`npm run test:db-async`）、進捗の可視化 |
-| ✅ 最初の葉 | `auditLog`（監査ログ）/ `emailNotifier`（メール通知）/ `imageProxy`（画像プロキシのキャッシュ）/ `maintenanceService`（統計・自動整理）— SQLite と PostgreSQL の両方でスイート緑 |
-| ⬜ 残りの葉 | `pushService` / `linkPreview` / `mediaService` / `deliveryQueue` / `reportService` / `accountService` など |
+| ✅ 最初の葉 | `auditLog` / `emailNotifier` / `imageProxy` / `maintenanceService` / `pushService` / `linkPreview` / `reportService` — SQLite と PostgreSQL の両方でスイート緑 |
+| ✅ 読み取りの要 | `routes/api.ts` のタイムライン整形（`enrichAndFilterPosts`）。リンクプレビューは行ごとではなく 1 回のクエリでまとめて取る |
+| ⬜ 残りの葉 | `mediaService` / `deliveryQueue` / `accountService` / `webauthnService` / `scheduler` など |
 | ⬜ ルート | `routes/*.ts`（api 231 / admin 67 / inbox 50 箇所。await の伝播が中心） |
 | ⬜ 中核 | `db.ts`（32 箇所）。ここを変換すると全呼び出し元に波及するので最後 |
 | ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
+
+> [!IMPORTANT]
+> 非同期にした関数は、**呼び出し側にも `await` を伝播させる**こと。付け忘れると
+> `Promise` がそのまま返り、API の応答が壊れる（例: 通報一覧が `reports: {}` になる）。
+> `tsc` は `res.json(...)` の中身までは見ないので、**目視とスイートの両方**で確認する。
+> Express のハンドラを async にしたら `asyncHandler()`（server/src/asyncHandler.ts）で包む。
+> Express 4 は非同期の失敗を拾わず、包まないとプロセスが落ちる。
 
 > [!NOTE]
 > 移行中は PostgreSQL の接続が 2 本（同期ファサードと非同期クライアント）になる。

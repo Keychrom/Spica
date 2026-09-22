@@ -1,3 +1,4 @@
+import { asyncHandler } from '../asyncHandler.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
@@ -11,7 +12,7 @@ import { applyPageHeaders, cursorPredicate, parsePageQuery } from '../pagination
 import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } from '../postVisibility.js';
 import { createReport, logNewReport } from '../reportService.js';
 import { getMutedWords, postMatchesMutedWords } from '../wordFilter.js';
-import { attachPreviewForContent } from '../linkPreview.js';
+import { extractFirstUrl, getCachedPreviews } from '../linkPreview.js';
 import { parseArchive, importNotes } from '../importService.js';
 import { parseProfileFields } from '../activitypub.js';
 import { isMailConfigured, sendMail, generateVerificationCode, issueVerificationCode, verifyCode, getMailConfig, saveMailConfig, verifyMailConnection } from '../mailService.js';
@@ -482,7 +483,7 @@ export function getPollDataForPost(postId: string, currentUserId?: string | null
 // ==========================================
 
 // 投稿リストにリアクション・RT・返信情報を付与し、ブロック済みドメインを除外する共通ヘルパー
-function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, currentUserId?: string | null) {
+async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, currentUserId?: string | null) {
   if (rows.length === 0) return [];
 
   const postIds = Array.from(new Set(rows.map((r) => r.post_id || r.id)));
@@ -695,6 +696,12 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
     }
   }
 
+  // 🔗 リンクプレビューは 1 回のクエリでまとめて取る（行ごとに問い合わせない）
+  const previewUrls = Array.from(
+    new Set(rows.map((r) => extractFirstUrl(r.content)).filter((url): url is string => Boolean(url))),
+  );
+  const linkPreviews = await getCachedPreviews(previewUrls);
+
   const enrichedItems = rows.map((r) => {
     const pid = r.post_id || r.id;
     const cid = r.channel_id || null;
@@ -727,7 +734,10 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
       published_at: r.published_at,
       timeline_at: r.timeline_at || r.published_at,
       // 🔗 リンクプレビュー（OGP カード）: キャッシュ済みのものだけ添付する
-      link_preview: attachPreviewForContent(r.content),
+      link_preview: (() => {
+        const url = extractFirstUrl(r.content);
+        return url ? linkPreviews.get(url) ?? null : null;
+      })(),
       renote: r.announce_id ? {
         id: r.announce_id,
         name: r.renoted_by_name || '誰か',
@@ -774,7 +784,7 @@ function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, curre
 }
 
 // タイムライン取得（ローカル / ホーム / 連合 / タグ別）- リノート（RT）・リアクション・返信集計付き
-apiRouter.get('/timeline', (req: Request, res: Response) => {
+apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   const mode = req.query.mode as string; // 'local', 'home', 'all', 'tag'
   const tag = (req.query.tag as string || '').trim().replace(/^#/, '');
   const page = parsePageQuery(req, 50);
@@ -898,10 +908,10 @@ apiRouter.get('/timeline', (req: Request, res: Response) => {
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-  const enriched = enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
 
   res.json(enriched);
-});
+}));
 
 // 人気・トレンドハッシュタグ一覧
 apiRouter.get('/tags/popular', (_req: Request, res: Response) => {
@@ -1156,7 +1166,7 @@ apiRouter.get('/search', async (req: Request, res: Response) => {
     `).all(postPattern, postPattern, ...extraParams) as any[];
   }
 
-  const posts = enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);
+  const posts = await enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);
 
   res.json({
     remoteUser,
@@ -1832,7 +1842,7 @@ apiRouter.get('/posts/:id/thread', async (req: Request, res: Response) => {
   if (parent) allRows.push(parent);
   allRows.push(...replies);
 
-  const enrichedList = enrichAndFilterPosts(allRows, currentActorUrl, req.user?.id);
+  const enrichedList = await enrichAndFilterPosts(allRows, currentActorUrl, req.user?.id);
   const enrichedMap = new Map<string, any>(enrichedList.map((p) => [p.id, p]));
 
   res.json({
@@ -2342,7 +2352,7 @@ apiRouter.get('/users/:identifier', async (req: Request, res: Response) => {
       WHERE pp.user_id = ?
       ORDER BY pp.created_at DESC
     `).all(localUser.id) as any[];
-    const pinnedPosts = enrichAndFilterPosts(pinnedRows, myActorUrl, req.user?.id);
+    const pinnedPosts = await enrichAndFilterPosts(pinnedRows, myActorUrl, req.user?.id);
 
     return res.json({
       id: localUser.id,
@@ -2433,7 +2443,7 @@ apiRouter.get('/users/:identifier', async (req: Request, res: Response) => {
 });
 
 // ユーザー投稿一覧取得
-apiRouter.get('/users/:identifier/posts', (req: Request, res: Response) => {
+apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res: Response) => {
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
   const page = parsePageQuery(req, 50);
   if (page.error) {
@@ -2484,9 +2494,9 @@ apiRouter.get('/users/:identifier/posts', (req: Request, res: Response) => {
 
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   const pageRows = applyPageHeaders(res, posts, page.limit, 'published_at', 'id');
-  const enriched = enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
   res.json(enriched);
-});
+}));
 
 // フォロー中リスト
 apiRouter.get('/following', (req: Request, res: Response) => {
@@ -2834,7 +2844,7 @@ apiRouter.post('/posts/:id/bookmark', requireAuth, (req: Request, res: Response)
 });
 
 // ブックマーク一覧取得
-apiRouter.get('/bookmarks', requireAuth, (req: Request, res: Response) => {
+apiRouter.get('/bookmarks', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const page = parsePageQuery(req, 50);
   if (page.error) {
@@ -2862,7 +2872,7 @@ apiRouter.get('/bookmarks', requireAuth, (req: Request, res: Response) => {
     const rows = db.prepare(query).all(user.id, ...cursorParams, page.limit + 1) as any[];
     const currentActorUrl = `${config.origin}/users/${user.id}`;
     const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-    const enriched = enrichAndFilterPosts(pageRows, currentActorUrl, user.id);
+    const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, user.id);
     res.json(enriched);
   } catch (err: any) {
     console.error('[Get Bookmarks Error]:', err);
@@ -3674,7 +3684,7 @@ apiRouter.delete('/lists/:id/members/:memberId', requireAuth, (req: Request, res
 });
 
 // リストのタイムライン（メンバーの投稿のみ / 公開範囲とミュートワードを尊重）
-apiRouter.get('/lists/:id/timeline', requireAuth, (req: Request, res: Response) => {
+apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
   const list = db.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id) as any;
@@ -3726,10 +3736,10 @@ apiRouter.get('/lists/:id/timeline', requireAuth, (req: Request, res: Response) 
   const viewerActor = `${config.origin}/users/${user.id}`;
   const visible = filterVisiblePosts(pageRows, viewerActor)
     .filter((post) => !postMatchesMutedWords(post, getMutedWords(user.id)));
-  const enriched = enrichAndFilterPosts(visible, viewerActor, user.id);
+  const enriched = await enrichAndFilterPosts(visible, viewerActor, user.id);
 
   res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
-});
+}));
 
 // 📥 アカウント移行インポート（Mastodon の outbox.json / Misskey の notes.json）
 const archiveUpload = multer({
@@ -4145,7 +4155,7 @@ apiRouter.post('/push/subscribe', requireAuth, async (req: Request, res: Respons
   }
 
   try {
-    savePushSubscription({
+    await savePushSubscription({
       userId: req.user!.id,
       endpoint: subscription.endpoint,
       p256dh: subscription.keys.p256dh,
@@ -4160,17 +4170,17 @@ apiRouter.post('/push/subscribe', requireAuth, async (req: Request, res: Respons
 });
 
 // 端末の PushSubscription 解除
-apiRouter.post('/push/unsubscribe', requireAuth, (req: Request, res: Response) => {
+apiRouter.post('/push/unsubscribe', requireAuth, async (req: Request, res: Response) => {
   const { endpoint } = req.body;
   if (endpoint && typeof endpoint === 'string') {
-    removePushSubscription(endpoint);
+    await removePushSubscription(endpoint);
   }
   res.json({ success: true, message: 'Web Push 通知の登録を解除しました。' });
 });
 
 // プッシュ通知登録状況の確認
-apiRouter.get('/push/status', requireAuth, (req: Request, res: Response) => {
-  const isSubscribed = isUserSubscribed(req.user!.id);
+apiRouter.get('/push/status', requireAuth, async (req: Request, res: Response) => {
+  const isSubscribed = await isUserSubscribed(req.user!.id);
   res.json({ isSubscribed });
 });
 
@@ -4965,7 +4975,7 @@ apiRouter.post('/channels/:id/follow', requireAuth, (req: Request, res: Response
 });
 
 // チャンネル内タイムライン取得
-apiRouter.get('/channels/:id/timeline', (req: Request, res: Response) => {
+apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: Response) => {
   const chId = String(req.params.id);
   const page = parsePageQuery(req, 50);
   if (page.error) {
@@ -5018,7 +5028,7 @@ apiRouter.get('/channels/:id/timeline', (req: Request, res: Response) => {
   const rows = db.prepare(query).all(chId, ...cursorParams, page.limit + 1) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-  const enriched = enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
 
   res.json({
     channel: {
@@ -5027,5 +5037,5 @@ apiRouter.get('/channels/:id/timeline', (req: Request, res: Response) => {
     },
     posts: enriched,
   });
-});
+}));
 

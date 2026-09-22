@@ -1139,13 +1139,13 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           return res.status(400).json({ error: 'Flag の object が不正です。' });
         }
 
-        const report = ingestRemoteFlag({
+        const report = await ingestRemoteFlag({
           actorUrl,
           objects,
           content: typeof activity.content === 'string' ? activity.content : '',
         });
         if (report) {
-          logNewReport(report);
+          await logNewReport(report);
         }
         return res.status(200).json({ status: 'Flag received' });
       }

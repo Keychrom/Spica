@@ -121,6 +121,10 @@ async function run() {
         PROTOCOL: 'http',
         DB_PATH: path.resolve(ROOT_DIR, 'server', TEST_DB),
         INSTANCE_NAME: 'Differentiation Test',
+        // この検査は OGP の解析結果（絶対 URL への解決）を見る。
+        // 画像プロキシが有効だと応答の画像 URL が /proxy?url=... に置き換わるため、
+        // ここでは無効にして素の OGP を見る（プロキシ自体は test:image-proxy が見る）
+        IMAGE_PROXY: 'false',
       },
       stdio: 'pipe',
       shell: true,
