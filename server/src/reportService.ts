@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db, UserRow } from './db.js';
+import { db, UserRow, createNotification, listStaffUserIds } from './db.js';
 import { config } from './config.js';
 import { deliverActivity, fetchRemoteActor, ACTIVITYSTREAMS_CONTEXT } from './activitypub.js';
 
@@ -100,7 +100,53 @@ export function insertReport(params: CreateReportParams): ReportRow {
     now,
   );
 
-  return db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+  const report = db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+
+  // 運営メンバー（admin / moderate）へ通知する
+  //   ・種類別設定で「通報」を切っている人には届かない（createNotification が弾く）
+  //   ・通報者自身が運営の場合も通知されない（自分の操作は通知しない仕様）
+  try {
+    notifyStaffOfReport(report);
+  } catch (err: any) {
+    console.warn('[Report] 運営への通知に失敗しました:', err?.message || err);
+  }
+
+  return report;
+}
+
+/** 通報を運営メンバー全員に通知する */
+export function notifyStaffOfReport(report: ReportRow): number {
+  const staffIds = listStaffUserIds();
+  if (staffIds.length === 0) return 0;
+
+  const categoryLabels: Record<string, string> = {
+    spam: 'スパム',
+    abuse: '嫌がらせ・誹謗中傷',
+    sensitive: 'センシティブ',
+    impersonation: 'なりすまし',
+    other: 'その他',
+  };
+  const target = report.target_handle || report.target_actor_url || '不明';
+  const reason = report.comment ? `「${report.comment.slice(0, 120)}」` : '（コメントなし）';
+
+  let created = 0;
+  for (const staffId of staffIds) {
+    const ok = createNotification({
+      userId: staffId,
+      type: 'report',
+      actorId: report.reporter_user_id || report.reporter_actor_url,
+      actorName: report.reporter_handle || '通報者',
+      actorHandle: report.reporter_handle || '',
+      postId: report.target_post_id || undefined,
+      postContent: report.target_post_content || '',
+      content: `${categoryLabels[report.category] || report.category}: ${target} ${reason}`,
+    });
+    if (ok) created++;
+  }
+  if (created > 0) {
+    console.log(`[Report] 🚩 通報を運営 ${created} 名へ通知しました（${report.id}）`);
+  }
+  return created;
 }
 
 /** リモートサーバーへ通報を転送する（Flag Activity） */

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import multer from 'multer';
 import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, isDomainHidden, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting } from '../db.js';
 import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
+import { getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
 import { generateKeyPair } from '../crypto.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
@@ -310,6 +311,7 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
       email: registerEmail,
       email_verified: registerEmailVerified,
       hasPassword: Boolean(passwordHash),
+      permissions: Array.from(getUserPermissions({ id: cleanId, role })),
     },
     masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
     sessionToken: session.token,
@@ -374,6 +376,7 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
       email: user.email || '',
       email_verified: Number((user as any).email_verified) || 0,
       hasPassword: Boolean((user as any).password_hash),
+      permissions: Array.from(getUserPermissions({ id: user.id, role: user.role })),
     },
     sessionToken: session.token,
     sessionExpiresAt: session.expiresAt,
@@ -410,6 +413,8 @@ apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
     email: raw?.email || '',
     email_verified: Number(raw?.email_verified) || 0,
     hasPassword: Boolean(raw?.password_hash),
+    // 権限の一覧（'admin' / 'moderate' など）。画面の出し分けはこの配列で判断する
+    permissions: Array.from(getUserPermissions(user)),
   });
 });
 

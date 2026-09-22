@@ -645,6 +645,22 @@ export function initDatabase() {
     "CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);",
     "CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);",
+    // 管理操作の監査ログ（複数人運用で「誰が何をしたか」を追う）
+    `CREATE TABLE IF NOT EXISTS admin_actions (
+      id TEXT PRIMARY KEY,
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      method TEXT DEFAULT '',
+      path TEXT DEFAULT '',
+      target_type TEXT DEFAULT '',
+      target_id TEXT DEFAULT '',
+      detail TEXT DEFAULT '',
+      status INTEGER NOT NULL DEFAULT 200,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_admin_actions_created ON admin_actions(created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_admin_actions_actor ON admin_actions(actor_id, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_admin_actions_target ON admin_actions(target_id);",
     // 画像プロキシのキャッシュ台帳（実体は data/proxy-cache/ に置く）
     `CREATE TABLE IF NOT EXISTS proxy_cache (
       url_hash TEXT PRIMARY KEY,
@@ -1140,7 +1156,7 @@ export function purgeDomainData(domain: string): { posts: number; actors: number
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -1159,7 +1175,7 @@ export interface NotificationRow {
  * 未設定・不正な JSON は「すべて有効」として扱う。
  * scheduled_published（予約投稿の公開）は自分の操作に対する控えなので常に有効。
  */
-export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move'] as const;
+export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move', 'report'] as const;
 export type NotificationPrefType = (typeof NOTIFICATION_TYPES)[number];
 
 /** UI 表示用のラベル（クライアントと揃える） */
@@ -1171,7 +1187,36 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   renote: 'リノート / ブースト',
   antenna: 'アンテナ',
   move: '引っ越し（Move）',
+  report: '通報（運営向け）',
 };
+
+/**
+ * 運営メンバー（admin / moderate 権限を持つローカルユーザー）の ID 一覧。
+ * 通報の通知など、管理者向けの配布先として使う。
+ */
+export function listStaffUserIds(): string[] {
+  try {
+    const users = db.prepare('SELECT id, role FROM users').all() as unknown as { id: string; role: string }[];
+    const roleRows = db.prepare(`
+      SELECT ur.user_id AS user_id, r.permissions AS permissions
+      FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+    `).all() as unknown as { user_id: string; permissions: string }[];
+
+    const staff = new Set<string>();
+    for (const user of users) {
+      if (user.role === 'admin') staff.add(user.id);
+    }
+    for (const row of roleRows) {
+      const permissions = String(row.permissions || '').split(',').map((p) => p.trim());
+      if (permissions.includes('admin') || permissions.includes('moderate')) {
+        staff.add(row.user_id);
+      }
+    }
+    return Array.from(staff);
+  } catch {
+    return [];
+  }
+}
 
 export function getNotificationPrefs(userId: string): Record<string, boolean> {
   const row = db.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
@@ -1226,7 +1271,7 @@ export function getDisabledNotificationTypes(userId: string): string[] {
  */
 export function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
   actorId: string;
   actorName: string;
   actorHandle: string;

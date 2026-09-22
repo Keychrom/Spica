@@ -43,6 +43,7 @@
     "test:silence-featured": "npx tsx scripts/test-silence-featured.ts",
     "test:image-proxy": "npx tsx scripts/test-image-proxy.ts",
     "test:email-notify": "npx tsx scripts/test-email-notify.ts",
+    "test:admin-audit": "npx tsx scripts/test-admin-audit.ts",
     "hooks:install": "node scripts/install-hooks.mjs",
     "prepare": "node scripts/install-hooks.mjs",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",

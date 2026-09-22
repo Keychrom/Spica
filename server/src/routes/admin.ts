@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode, getServerSetting, setServerSetting } from '../db.js';
-import { requireAdmin, hasPermission } from '../auth.js';
+import { requireAdmin, hasPermission, getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
@@ -10,6 +10,7 @@ import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection }
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
 import { getMaintenanceStats, runScheduledMaintenance, setAutoMaintenanceEnabled } from '../maintenanceService.js';
 import { formatBytes } from '../dbMaintenance.js';
+import { auditMiddleware, listAdminActions, pruneAdminActions, listActionKinds, recordAdminAction } from '../auditLog.js';
 import {
   getProxyStats,
   pruneProxyCache,
@@ -64,6 +65,56 @@ adminRouter.use((req: Request, res: Response, next) => {
     return next();
   }
   return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+});
+
+// 権限チェックを通過した変更操作を監査ログに記録する（拒否された操作は記録しない）
+adminRouter.use(auditMiddleware());
+
+// 管理操作の監査ログ（管理者のみ。モデレーターには開放しない）
+adminRouter.get('/audit', (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(String(req.query.limit ?? '50'), 10);
+    const before = typeof req.query.before === 'string' ? req.query.before : undefined;
+    const action = typeof req.query.action === 'string' && req.query.action ? req.query.action : undefined;
+    const actorId = typeof req.query.actorId === 'string' && req.query.actorId ? req.query.actorId : undefined;
+    const targetId = typeof req.query.targetId === 'string' && req.query.targetId ? req.query.targetId : undefined;
+
+    const result = listAdminActions({ limit, before, action, actorId, targetId });
+    res.json({
+      actions: result.actions,
+      nextCursor: result.nextCursor,
+      total: result.total,
+      kinds: listActionKinds(),
+    });
+  } catch (err: any) {
+    console.error('[Admin Audit Error]:', err);
+    res.status(500).json({ error: err.message || '監査ログの取得に失敗しました。' });
+  }
+});
+
+// 監査ログの削除（指定日数より古いもの）
+adminRouter.post('/audit/prune', (req: Request, res: Response) => {
+  try {
+    const days = parseInt(String(req.body?.days ?? '180'), 10);
+    if (!Number.isFinite(days) || days < 1 || days > 3650) {
+      return res.status(400).json({ error: '保持日数は 1〜3650 で指定してください。' });
+    }
+    const removed = pruneAdminActions(days);
+    const actorId = String((req.rawUser || req.user)!.id);
+    console.log(`[Admin] 🧾 監査ログを削除: ${removed} 件（${days} 日より前） by @${actorId}`);
+    recordAdminAction({
+      actorId,
+      action: 'audit_prune',
+      method: 'POST',
+      path: '/audit/prune',
+      targetType: 'server',
+      detail: `監査ログの削除（${days} 日より前） | ${JSON.stringify({ days, removed })}`,
+    });
+    res.json({ success: true, removed, message: `${removed} 件の監査ログを削除しました。` });
+  } catch (err: any) {
+    console.error('[Admin Audit Prune Error]:', err);
+    res.status(400).json({ error: err.message || '監査ログの削除に失敗しました。' });
+  }
 });
 
 // サーバー全体統計

@@ -75,6 +75,7 @@ import {
   Download,
   FileText,
   ClipboardCheck,
+  ClipboardList,
   ChevronDown,
   ChevronUp,
   FolderArchive,
@@ -685,7 +686,7 @@ export interface WebAuthnCredential {
 export interface AppNotification {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -1994,6 +1995,12 @@ export default function App() {
 
   // 認証ステート
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  // 権限（サーバーの /auth/me が返す permissions）。画面の出し分けはこれで判断する。
+  //   'admin'    … すべての管理操作
+  //   'moderate' … 通報・凍結・ドメイン制限のみ
+  const myPermissions: string[] = Array.isArray((authUser as any)?.permissions) ? (authUser as any).permissions : [];
+  const canAdmin = authUser?.role === 'admin' || myPermissions.includes('admin');
+  const canModerate = canAdmin || myPermissions.includes('moderate');
   const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('spica_token') || localStorage.getItem('astrabit_token'));
 
   // 認証ポータル (Misskey風ウェルカム・ログイン・登録画面: 未ログイン時は初期起動で自動表示)
@@ -2447,7 +2454,7 @@ export default function App() {
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
-  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail' | 'delivery'>('dashboard');
+  const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail' | 'delivery' | 'audit'>('dashboard');
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
 
   // 🎨 カスタム絵文字管理ステート
@@ -2504,6 +2511,14 @@ export default function App() {
   const [contentPolicyMsg, setContentPolicyMsg] = useState<string | null>(null);
   // 🧹 容量・メンテナンス状況
   const [maintenanceStats, setMaintenanceStats] = useState<any | null>(null);
+  // 🧾 監査ログ（管理操作の履歴）
+  const [auditLog, setAuditLog] = useState<any[]>([]);
+  const [auditKinds, setAuditKinds] = useState<any[]>([]);
+  const [auditFilter, setAuditFilter] = useState<string>('');
+  const [auditTotal, setAuditTotal] = useState<number>(0);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+  const [isLoadingAudit, setIsLoadingAudit] = useState<boolean>(false);
+  const [auditMsg, setAuditMsg] = useState<string | null>(null);
   const [isClearingProxyCache, setIsClearingProxyCache] = useState<boolean>(false);
   const [isRunningMaintenance, setIsRunningMaintenance] = useState<boolean>(false);
   const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
@@ -2585,6 +2600,15 @@ export default function App() {
   const [isUploadingBanner, setIsUploadingBanner] = useState<boolean>(false);
 
   // =========================================================================
+  // モデレーター（admin 権限なし）は管理者専用タブに入れないよう、通報タブへ寄せる
+  useEffect(() => {
+    if (!canModerate || canAdmin) return;
+    const adminOnlyTabs = ['dashboard', 'users', 'federation', 'storage', 'settings', 'emojis', 'invites', 'announcements', 'roles', 'mail', 'delivery', 'audit'];
+    if (adminOnlyTabs.includes(adminTab)) {
+      setAdminTab('reports');
+    }
+  }, [canAdmin, canModerate, adminTab]);
+
   // 🧭 SPA ナビゲーション & ブラウザ戻る/進む・スマホ戻る操作 (History API 連動)
   // =========================================================================
   const authTokenRef = useRef(authToken);
@@ -3705,11 +3729,77 @@ export default function App() {
   };
 
   // 管理者データの取得
+  // 🧾 監査ログの取得（管理者のみ）
+  const fetchAuditLog = async (opts: { before?: string | null; action?: string } = {}) => {
+    if (!authToken || !canAdmin) return;
+    setIsLoadingAudit(true);
+    try {
+      const params = new URLSearchParams({ limit: '60' });
+      if (opts.before) params.set('before', opts.before);
+      const action = opts.action !== undefined ? opts.action : auditFilter;
+      if (action) params.set('action', action);
+      const res = await fetch(`/api/admin/audit?${params.toString()}`, { headers: { Authorization: `Bearer ${authToken}` } });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuditMsg(data.error || '監査ログの取得に失敗しました。');
+        return;
+      }
+      const rows: any[] = Array.isArray(data.actions) ? data.actions : [];
+      setAuditLog(opts.before ? [...auditLog, ...rows] : rows);
+      setAuditCursor(data.nextCursor || null);
+      setAuditTotal(Number(data.total) || 0);
+      setAuditKinds(Array.isArray(data.kinds) ? data.kinds : []);
+      setAuditMsg(null);
+    } catch (err: any) {
+      setAuditMsg(err.message);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  // 🧾 古い監査ログの削除
+  const handlePruneAuditLog = async () => {
+    if (!authToken || !canAdmin) return;
+    if (!confirm('180 日より古い監査ログを削除しますか？')) return;
+    try {
+      const res = await fetch('/api/admin/audit/prune', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ days: 180 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuditMsg(data.error || '削除に失敗しました。');
+        return;
+      }
+      setAuditMsg(data.message || '削除しました。');
+      await fetchAuditLog();
+    } catch (err: any) {
+      setAuditMsg(err.message);
+    }
+  };
+
   const fetchAdminData = async () => {
-    if (!authToken || authUser?.role !== 'admin') return;
+    if (!authToken || !canModerate) return;
     setIsLoadingAdmin(true);
     try {
       const headers = { Authorization: `Bearer ${authToken}` };
+
+      // モデレーターは通報とドメイン制限だけを取得する（それ以外は 403 になる）
+      if (!canAdmin) {
+        const [bRes, repRes] = await Promise.all([
+          fetch('/api/admin/blocks', { headers }),
+          fetch('/api/admin/reports?status=all', { headers }),
+        ]);
+        if (bRes.ok) setAdminBlockedDomains(await bRes.json());
+        if (repRes.ok) {
+          const repData = await repRes.json();
+          setAdminReports(repData.reports || []);
+          setAdminReportCounts(repData.counts || { open: 0, total: 0 });
+        }
+        return;
+      }
+
       const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes, repRes, annRes, mtRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/users', { headers }),
@@ -4263,6 +4353,15 @@ export default function App() {
   const handleNotificationClick = async (notif: AppNotification) => {
     if (!notif.is_read) {
       handleMarkNotificationRead(notif.id);
+    }
+    // 運営向けの通報通知は管理パネルの「通報」タブを開く
+    if (notif.type === 'report') {
+      if (canModerate) {
+        setAdminTab('reports');
+        fetchReports(reportStatusFilter);
+        navigateToView('admin');
+      }
+      return;
     }
     if (notif.type === 'follow') {
       openUserProfile(notif.actor_id);
@@ -8167,7 +8266,7 @@ export default function App() {
           <div className="flex items-center space-x-2 shrink-0">
             {authUser ? (
               <div className="flex items-center space-x-2">
-                {authUser.role === 'admin' && (
+                {canModerate && (
                   <button
                     onClick={() => navigateToView(currentView === 'admin' ? 'timeline' : 'admin')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-xl transition flex items-center space-x-1.5 ${
@@ -8404,7 +8503,9 @@ export default function App() {
                   管理
                 </span>
 
-                {/* ダッシュボード */}
+                {canAdmin && (
+  <>
+{/* ダッシュボード */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('dashboard')}
@@ -8420,7 +8521,11 @@ export default function App() {
                   </div>
                 </button>
 
-                {/* ユーザー */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* ユーザー */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('users')}
@@ -8443,7 +8548,11 @@ export default function App() {
                   )}
                 </button>
 
-                {/* 連合・リレー */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* 連合・リレー */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('federation')}
@@ -8466,7 +8575,11 @@ export default function App() {
                   )}
                 </button>
 
-                {/* サーバーブロック */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* サーバーブロック */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('blocks')}
@@ -8489,7 +8602,11 @@ export default function App() {
                   )}
                 </button>
 
-                {/* メディアストレージ */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* メディアストレージ */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('storage')}
@@ -8510,7 +8627,11 @@ export default function App() {
                   </span>
                 </button>
 
-                {/* ⚙️ サーバー設定 */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* ⚙️ サーバー設定 */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('settings')}
@@ -8526,7 +8647,11 @@ export default function App() {
                   </div>
                 </button>
 
-                {/* 🎨 カスタム絵文字 */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* 🎨 カスタム絵文字 */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('emojis')}
@@ -8545,7 +8670,11 @@ export default function App() {
                   </span>
                 </button>
 
-                {/* 🎟 招待コード */}
+</>
+)}
+                {canAdmin && (
+  <>
+{/* 🎟 招待コード */}
                 <button
                   type="button"
                   onClick={() => setAdminTab('invites')}
@@ -8566,6 +8695,8 @@ export default function App() {
                   </span>
                 </button>
 
+</>
+)}
                 <button
                   type="button"
                   onClick={() => { setAdminTab('reports'); fetchReports(reportStatusFilter); }}
@@ -8588,7 +8719,9 @@ export default function App() {
                   )}
                 </button>
 
-                <button
+                {canAdmin && (
+<>
+<button
                   type="button"
                   onClick={() => { setAdminTab('announcements'); fetchAdminAnnouncements(); }}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
@@ -8609,8 +8742,12 @@ export default function App() {
                     </span>
                   )}
                 </button>
+</>
+)}
 
-                <button
+                {canAdmin && (
+<>
+<button
                   type="button"
                   onClick={() => { setAdminTab('roles'); fetchRoles(); }}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
@@ -8631,8 +8768,12 @@ export default function App() {
                     </span>
                   )}
                 </button>
+</>
+)}
 
-                <button
+                {canAdmin && (
+<>
+<button
                   type="button"
                   onClick={() => { setAdminTab('mail'); fetchMailSettings(); }}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
@@ -8651,8 +8792,12 @@ export default function App() {
                     {mailSettings.configured ? '設定済' : '未設定'}
                   </span>
                 </button>
+</>
+)}
 
-                <button
+                {canAdmin && (
+<>
+<button
                   type="button"
                   onClick={() => { setAdminTab('delivery'); setDeliveryQueueMsg(null); fetchDeliveryQueue(); }}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
@@ -8673,6 +8818,27 @@ export default function App() {
                     {deliveryQueue.stats?.pending || 0}
                   </span>
                 </button>
+</>
+)}
+
+                {canAdmin && (
+<>
+<button
+                type="button"
+                onClick={() => { setAdminTab('audit'); fetchAuditLog({ before: null }); }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs font-bold transition cursor-pointer ${
+                  adminTab === 'audit'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <div className="flex items-center space-x-2.5">
+                  <ClipboardList className="w-4 h-4 text-amber-400" />
+                  <span>監査ログ</span>
+                </div>
+              </button>
+</>
+)}
               </div>
 
               {/* クイック操作 */}
@@ -8680,6 +8846,7 @@ export default function App() {
                 <span className="text-[10px] font-bold text-slate-500 px-3 uppercase tracking-wider block mb-1">
                   システム
                 </span>
+                {canAdmin && (
                 <button
                   type="button"
                   onClick={handleAdminClearCache}
@@ -8689,6 +8856,7 @@ export default function App() {
                   <Database className="w-4 h-4 text-slate-400" />
                   <span>キャッシュ消去</span>
                 </button>
+                )}
                 <button
                   type="button"
                   onClick={() => navigateToView('timeline')}
@@ -10497,6 +10665,106 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* 🧾 監査ログ（誰が・いつ・何をしたか） */}
+              {adminTab === 'audit' && (
+                <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4 animate-in fade-in duration-150">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                        <ClipboardList className="w-4 h-4 text-amber-400" />
+                        <span>監査ログ（管理操作の履歴）</span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                        管理パネルからの変更操作を記録しています（誰が・いつ・何を・どの対象に）。表示のみの操作は記録しません。
+                        パスワードやトークン類は記録時に伏せられます。合計 {auditTotal.toLocaleString()} 件。
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={auditFilter}
+                        onChange={(e) => { setAuditFilter(e.target.value); fetchAuditLog({ before: null, action: e.target.value }); }}
+                        className="bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-[11px] text-slate-200 focus:outline-none"
+                      >
+                        <option value="">すべての操作</option>
+                        {auditKinds.map((k) => (
+                          <option key={k.action} value={k.action}>{k.label}（{k.count}）</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => fetchAuditLog({ before: null })}
+                        disabled={isLoadingAudit}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-[11px] font-bold rounded-xl border border-slate-700 transition cursor-pointer flex items-center space-x-1.5"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isLoadingAudit ? 'animate-spin' : ''}`} />
+                        <span>更新</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePruneAuditLog}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-rose-300 text-[11px] font-bold rounded-xl border border-rose-500/30 transition cursor-pointer"
+                      >
+                        古いログを削除
+                      </button>
+                    </div>
+                  </div>
+
+                  {auditMsg && (
+                    <div className="p-2.5 rounded-xl text-[11px] bg-slate-950/70 border border-slate-800 text-slate-300">{auditMsg}</div>
+                  )}
+
+                  {auditLog.length === 0 ? (
+                    <div className="text-center py-10 bg-slate-950/40 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                      記録された管理操作はまだありません。
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-400">
+                            <th className="pb-2.5 font-semibold whitespace-nowrap">日時</th>
+                            <th className="pb-2.5 font-semibold whitespace-nowrap">実行者</th>
+                            <th className="pb-2.5 font-semibold">操作</th>
+                            <th className="pb-2.5 font-semibold">対象</th>
+                            <th className="pb-2.5 font-semibold">内容</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60">
+                          {auditLog.map((row) => (
+                            <tr key={row.id} className="hover:bg-slate-800/20 transition align-top">
+                              <td className="py-2.5 text-slate-400 whitespace-nowrap font-mono text-[11px]">
+                                {new Date(row.created_at).toLocaleString('ja-JP')}
+                              </td>
+                              <td className="py-2.5 font-mono text-[11px] text-indigo-300 whitespace-nowrap">@{row.actor_id}</td>
+                              <td className="py-2.5 text-slate-200 font-semibold whitespace-nowrap">{row.label}</td>
+                              <td className="py-2.5 font-mono text-[11px] text-rose-300 break-all">
+                                {row.target_id || <span className="text-slate-600">—</span>}
+                              </td>
+                              <td className="py-2.5 text-slate-400 break-all text-[11px] max-w-md">
+                                {row.detail_json || <span className="text-slate-600">—</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {auditCursor && (
+                    <div className="flex justify-center pt-1">
+                      <button
+                        type="button"
+                        onClick={() => fetchAuditLog({ before: auditCursor })}
+                        disabled={isLoadingAudit}
+                        className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer"
+                      >
+                        {isLoadingAudit ? '読み込み中...' : 'もっと見る'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -13325,6 +13593,10 @@ export default function App() {
                   typeIcon = <Send className="w-4 h-4 text-sky-400" />;
                   typeBadgeBg = 'bg-sky-500/15 text-sky-300 border-sky-500/30';
                   typeLabel = '引っ越し';
+                } else if (notif.type === 'report') {
+                  typeIcon = <ShieldAlert className="w-4 h-4 text-rose-400" />;
+                  typeBadgeBg = 'bg-rose-500/15 text-rose-300 border-rose-500/30';
+                  typeLabel = '通報';
                 }
 
                 return (
@@ -13415,6 +13687,9 @@ export default function App() {
                           )}
                           {notif.type === 'scheduled_published' && (
                             <span className="text-amber-300">予約投稿が正常に公開されました</span>
+                          )}
+                          {notif.type === 'report' && (
+                            <span className="text-rose-300">新しい通報が届きました: {notif.content}</span>
                           )}
                         </div>
 
@@ -13963,7 +14238,9 @@ export default function App() {
                   <span>マイページ</span>
                 </button>
 
-                {/* 設定 */}
+                {canAdmin && (
+  <>
+{/* 設定 */}
                 <button
                   type="button"
                   onClick={() => openSettings('profile')}
@@ -13977,6 +14254,8 @@ export default function App() {
                   <span>設定</span>
                 </button>
 
+</>
+)}
                 {/* 管理者用コントロールパネル */}
                 {authUser?.role === 'admin' && (
                   <button
