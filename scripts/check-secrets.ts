@@ -197,8 +197,10 @@ function shouldScanFile(relPath: string): boolean {
   if (parts.some((p) => SKIP_DIRS.has(p))) return false;
   if (SKIP_EXT.has(path.extname(relPath).toLowerCase())) return false;
   if (relPath.endsWith('package-lock.json')) return false;
-  if (path.basename(relPath) === 'check-secrets.ts') return false; // ルール定義自身
-  if (path.basename(relPath) === 'test-secret-scan.ts') return false; // 検出テストの偽の秘密
+  // ルール定義自身は、ルールの正規表現ソースが自分のルールに一致してしまうため除く
+  // （検出テスト側の「偽の秘密」は実行時に組み立てるようにしたので除外しない。
+  //   GitHub の push protection が本物と誤判定するのを避けるためでもある）
+  if (path.basename(relPath) === 'check-secrets.ts') return false;
   if (path.basename(relPath) === 'LICENSE') return false;
   return true;
 }

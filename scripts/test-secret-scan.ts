@@ -43,6 +43,24 @@ function scanRepo() {
   return scanForSecrets({ mode: 'all' });
 }
 
+/**
+ * 検出テスト用の「偽の秘密」。ソースに実在の形で残すと GitHub の push protection が
+ * 本物と誤判定して push を拒否するため、実行時に組み立てる。
+ * （このファイル自体も npm run check:secrets の走査対象なので、実在させない意味もある）
+ */
+const FAKE = {
+  awsKey: ['AKIA', 'IOSFODNN7', 'EXAMPLE'].join(''),
+  privateKeyHeader: ['-----BEGIN', ' RSA PRIVATE KEY-----'].join(''),
+  session: ['spica', 'sess', '0123456789abcdef0123456789abcdef'].join('_'),
+  github: ['ghp', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('_'),
+  slack: ['xoxb', '123456789012', 'abcdefghijklmnop'].join('-'),
+  basicAuthUrl: ['https://admin:', 'p4ssw0rd', '@example.com/api'].join(''),
+  env: ['S3_SECRET_ACCESS_KEY', 'AbCdEf0123456789XyZ'].join('='),
+  smtp: ['SMTP_PASS', 'sup3r-s3cret-pass'].join('='),
+  masterKey: ['MASTER_KEY', '0123456789abcdef0123456789abcdef'].join('='),
+  realLookingDsn: ['DATABASE_URL', ['postgres://spica:', 'Xk9dP2mQ7wZ4', '@db.internal:5432/spica'].join('')].join('='),
+};
+
 console.log('秘密情報スキャンのテスト');
 console.log('');
 
@@ -61,12 +79,12 @@ try {
 
   // ── 中身の検出 ──────────────────────────────────────────
   writeFixture('src/config.ts', [
-    `export const a = '${["AKIA","IOSFODNN7","EXAMPLE"].join("")}';`,
-    `export const b = '${["-----BEGIN"," RSA PRIVATE KEY-----"].join("")}';`,
-    `const t = '${["spica","sess","0123456789abcdef0123456789abcdef"].join("_")}';`,
-    `const k = '${["ghp","abcdefghijklmnopqrstuvwxyz0123456789"].join("_")}';`,
-    `const s = '${["xoxb","123456789012","abcdefghijklmnop"].join("-")}';`,
-    `const url = '${["https://admin:","p4ssw0rd","@example.com/api"].join("")}';`,
+    `export const a = '${FAKE.awsKey}';`,
+    `export const b = '${FAKE.privateKeyHeader}';`,
+    `const t = '${FAKE.session}';`,
+    `const k = '${FAKE.github}';`,
+    `const s = '${FAKE.slack}';`,
+    `const url = '${FAKE.basicAuthUrl}';`,
   ].join('\n'));
 
   const config = findingsFor('config.ts');
@@ -80,10 +98,11 @@ try {
   check('抜粋はマスクされる（生の値が出ない）', config.some((f) => f.excerpt.includes('***')), true);
 
   // ── 代入の検出 ─────────────────────────────────────────
+  // 値はソースに実在させず、実行時に組み立てる（下の template literal 内で展開される）
   writeFixture('.env.production', [
-    '${["S3_SECRET_ACCESS_KEY","AbCdEf0123456789XyZ"].join("=")}',
-    '${["SMTP_PASS","sup3r-s3cret-pass"].join("=")}',
-    '${["MASTER_KEY","0123456789abcdef0123456789abcdef"].join("=")}',
+    `${FAKE.env}`,
+    `${FAKE.smtp}`,
+    `${FAKE.masterKey}`,
   ].join('\n'));
   const envFile = findingsFor('.env.production');
   check('.env 系ファイルを検出', envFile.some((f) => f.rule === 'dotenv-file'), true);
@@ -140,7 +159,8 @@ try {
   ].join('\n'));
   check('例示用の接続文字列は検出しない', findingsFor('db.md').length, 0);
 
-  writeFixture('docs/leak.md', 'DATABASE_URL=postgres://spica:Xk9dP2mQ7wZ4@db.internal:5432/spica\n');
+  // 本物らしい接続文字列も、ソースに実在の形で残らないよう実行時に組み立てる
+  writeFixture('docs/leak.md', `${FAKE.realLookingDsn}\n`);
   check('本物らしい接続文字列は検出する', findingsFor('leak.md').some((f) => f.rule === 'assigned-secret'), true);
 } finally {
   fs.rmSync(TEMP_DIR, { recursive: true, force: true });
