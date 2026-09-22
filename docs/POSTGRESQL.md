@@ -16,8 +16,8 @@
 > | SQL 翻訳の単体検証 | ✅ 実装済み | `npm run test:pg-translate`（PG 不要） |
 > | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
-> | 既存テストスイートの PG 対応 | 🚧 一部 | 監査ログ・メール通知・ページネーション・お知らせは PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（1.3%） | 恒久対応。手順は下の「案A の進め方」 |
+> | 既存テストスイートの PG 対応 | 🚧 一部 | 監査ログ・メール通知・画像プロキシ・自動運用・通報・サイレンスは PG でも全項目緑（下記に個別の状態） |
+> | データ層の非同期化（案A） | 🚧 進行中（3.8%） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -39,6 +39,11 @@
 | `VACUUM` / `wal_checkpoint` | 5 | **設計変更**（運用が変わる） |
 | `IFNULL` | 2 | 置換（`COALESCE` へ。通報の重複判定で使っていた） |
 | `LIKE` | 41 | 置換（`ILIKE` へ。SQLite の LIKE は ASCII で大文字小文字を区別しないため） |
+| `BEGIN IMMEDIATE` | 1 | 置換（`BEGIN` へ。保持期間の削除で使っていた。PostgreSQL には IMMEDIATE が無い） |
+
+> [!IMPORTANT]
+> `db.exec(...)` も `prepare` と同じ翻訳を通します（`BEGIN IMMEDIATE` や `temp.` は exec 側で使われるため）。
+> 文ごとに分割してから翻訳し、`PRAGMA` だけを落とします。
 
 実データ（ライブノードのスナップショット）での移送結果:
 
@@ -115,11 +120,15 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | 段階 | 内容 |
 | :--- | :--- |
 | ✅ 土台 | 非同期ドライバ、契約テスト（`npm run test:db-async`）、進捗の可視化 |
-| ✅ 最初の葉 | `auditLog.ts`（監査ログ）/ `emailNotifier.ts`（メール通知）— SQLite と PostgreSQL の両方でスイート緑 |
-| ⬜ 残りの葉 | `imageProxy` / `pushService` / `linkPreview` / `mediaService` / `deliveryQueue` / `accountService` など |
+| ✅ 最初の葉 | `auditLog`（監査ログ）/ `emailNotifier`（メール通知）/ `imageProxy`（画像プロキシのキャッシュ）/ `maintenanceService`（統計・自動整理）— SQLite と PostgreSQL の両方でスイート緑 |
+| ⬜ 残りの葉 | `pushService` / `linkPreview` / `mediaService` / `deliveryQueue` / `reportService` / `accountService` など |
 | ⬜ ルート | `routes/*.ts`（api 231 / admin 67 / inbox 50 箇所。await の伝播が中心） |
 | ⬜ 中核 | `db.ts`（32 箇所）。ここを変換すると全呼び出し元に波及するので最後 |
 | ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
+
+> [!NOTE]
+> 移行中は PostgreSQL の接続が 2 本（同期ファサードと非同期クライアント）になる。
+> **1 つのトランザクションを両者にまたがらせないこと。** トランザクションのある範囲はまとめて変換する。
 
 ---
 
@@ -267,7 +276,8 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **書き込みが直列** | worker も接続も 1 本。同時リクエストはクエリ単位で並ぶ | 読み取り中心のノードでは SQLite より遅くなりうる（1 クエリごとにスレッド間往復が入る） |
 | **大きな結果** | 結果は JSON でコピーする | 巨大な `BLOB` を大量に読む処理は苦手。投稿やユーザーの一覧は問題なし |
 | **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump` を使う。アプリ内の自動バックアップは PG では動かない（スキップする） |
-| **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する |
+| **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する（下記） |
+| **自動メンテナンス** | 保持期間の削除・方針適用はどちらの DB でも動く | PG では削除のときに FTS 同期トリガを外さない（SQLite のトリガ定義を流すと構文エラーになるため修正済み） |
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
 | **短い検索語** | trigram 索引は 3 文字未満だと効きにくい | 1〜2 文字の検索は全走査になる。機能は同じで遅いだけ |
 | **バイナリ列** | SQLite は `Uint8Array`、PG は `Buffer` で返る | 現在のスキーマにバイナリ列は無い（鍵や画像は TEXT の base64）。増やすときは注意 |
@@ -287,7 +297,7 @@ DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| `test-admin-audit` / `test-email-notify` | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
+| `test-admin-audit` / `test-email-notify` / `test-image-proxy` / `test-ops-automation` / `test-reports` / `test-silence-featured` | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-pagination` / `test-announcements` | ✅ そのまま通る |
 | `test-password-auth` | 🚧 HTTP の検査（登録・ログイン・マスターキー・拒否）は全部通る。最後の「平文で保存されない」検査だけが **SQLite ファイルを直接開く**ため PG では開けずに失敗する |
 | `test-federation` | ❌ 2 つのノードが別々の SQLite ファイルを消して回る作り。PG ではノードごとに DB を分ける改造が要る |

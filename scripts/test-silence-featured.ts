@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // サイレンス（silence）と featured コレクションの検証
@@ -33,6 +33,13 @@ const PUBLIC = 'https://www.w3.org/ns/activitystreams#Public';
 });
 
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/** seed 用の接続（アプリと同じドライバ。PostgreSQL でも同じ検査が流せる） */
+const seedDb = createAsyncDatabase({
+  driver: process.env.DB_DRIVER,
+  connectionString: process.env.DATABASE_URL,
+  dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+});
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let failures = 0;
@@ -144,9 +151,8 @@ async function run(): Promise<void> {
     const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
     const keys = generateTestKeyPair();
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
-    db.prepare(
+    await seedDb.exec('PRAGMA busy_timeout = 10000');
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', 'remote.test', 'eve', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
@@ -180,10 +186,10 @@ async function run(): Promise<void> {
       const res = await fetch(url, { headers: { Accept: 'application/activity+json' } });
       return { status: res.status, body: await res.json() };
     };
-    const postExists = (id: string) => Number((db.prepare('SELECT COUNT(*) AS c FROM posts WHERE id = ?').get(id) as any).c);
+    const postExists = async (id: string) => Number((await seedDb.prepare('SELECT COUNT(*) AS c FROM posts WHERE id = ?').get(id) as any).c);
 
     // alice が eve をフォロー（ホームタイムラインに出る状態にしておく）
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
        VALUES ('f-eve', ?, ?, ?, 1, 'accepted', ?)
        ON CONFLICT(follower_url, following_url) DO UPDATE SET status = 'accepted'`,
@@ -262,7 +268,7 @@ async function run(): Promise<void> {
     const deliver1 = await deliverNote(`${REMOTE_ACTOR}/notes/s1`, 'サイレンス対象の投稿');
     check('サイレンス中でも受信は 2xx（配送は継続）', deliver1.status >= 200 && deliver1.status < 300, true);
     await sleep(600);
-    check('投稿データは残る', postExists(`${REMOTE_ACTOR}/notes/s1`), 1);
+    check('投稿データは残る', await postExists(`${REMOTE_ACTOR}/notes/s1`), 1);
 
     const homeIds = await home();
     check('既存の投稿もホームから消える', homeIds.includes(`${REMOTE_ACTOR}/notes/s0`), false);
@@ -288,7 +294,7 @@ async function run(): Promise<void> {
     const likeRes = await fetch(`${BASE}/inbox`, { method: 'POST', headers: signInboxRequest(likeBody, `${REMOTE_ACTOR}#main-key`, keys.privateKeyPem), body: likeBody });
     check('サイレンス中でもリアクションは受理される', likeRes.status >= 200 && likeRes.status < 300, true);
     await sleep(600);
-    const reactionNotifCount = Number((db.prepare("SELECT COUNT(*) AS c FROM notifications WHERE type = 'reaction'").get() as any).c);
+    const reactionNotifCount = Number((await seedDb.prepare("SELECT COUNT(*) AS c FROM notifications WHERE type = 'reaction'").get() as any).c);
     check('通知としては記録される', reactionNotifCount >= 1, true);
     const notifList = await (await fetch(`${BASE}/api/notifications`, { headers: auth })).json();
     const reactionNotifs = (Array.isArray(notifList) ? notifList : notifList.notifications || []).filter((n: any) => n.type === 'reaction');
@@ -308,19 +314,19 @@ async function run(): Promise<void> {
     check('強度が suspend で返る', suspendBody.severity, 'suspend');
     check('ブロックではキャッシュを削除する', (suspendBody.purgeStats?.posts ?? 0) >= 1, true);
     await sleep(300);
-    check('投稿データが消える', postExists(`${REMOTE_ACTOR}/notes/s1`), 0);
+    check('投稿データが消える', await postExists(`${REMOTE_ACTOR}/notes/s1`), 0);
 
     const deliver2 = await deliverNote(`${REMOTE_ACTOR}/notes/s2`, 'ブロック対象の投稿');
     check('ブロック中は 403 で拒否', deliver2.status, 403);
     await sleep(300);
-    check('ブロック中の投稿は保存されない', postExists(`${REMOTE_ACTOR}/notes/s2`), 0);
+    check('ブロック中の投稿は保存されない', await postExists(`${REMOTE_ACTOR}/notes/s2`), 0);
 
     console.log('\n🔁 [6] 解除後は元に戻る');
     const unblock = await fetch(`${BASE}/api/admin/blocks/remote.test`, { method: 'DELETE', headers: auth });
     check('解除できる', unblock.status, 200);
     await sleep(200);
     // ブロック時にアクターキャッシュも消えているため、再取得された状態を再現する
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', 'remote.test', 'eve', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
@@ -328,11 +334,12 @@ async function run(): Promise<void> {
     const deliver3 = await deliverNote(`${REMOTE_ACTOR}/notes/s3`, '解除後の投稿');
     await sleep(500);
     check('解除後は受信できる', deliver3.status >= 200 && deliver3.status < 300, true);
-    check('解除後の投稿は保存される', postExists(`${REMOTE_ACTOR}/notes/s3`), 1);
+    check('解除後の投稿は保存される', await postExists(`${REMOTE_ACTOR}/notes/s3`), 1);
   } finally {
     try { server?.kill('SIGTERM'); } catch {}
     await sleep(800);
     try { server?.kill('SIGKILL'); } catch {}
+    await seedDb.close().catch(() => {});
   }
 
   console.log('');

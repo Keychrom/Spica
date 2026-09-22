@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, getServerSetting, setServerSetting } from './db.js';
+import { adb, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
@@ -215,10 +215,10 @@ interface CacheRow {
 }
 
 /** キャッシュ済みエントリ（TTL 内のもの）を返す */
-function readCache(url: string): { file: string; contentType: string; size: number; fetchedAt: string } | null {
+async function readCache(url: string): Promise<{ file: string; contentType: string; size: number; fetchedAt: string } | null> {
   try {
     const hash = urlHash(url);
-    const row = db.prepare('SELECT * FROM proxy_cache WHERE url_hash = ?').get(hash) as unknown as CacheRow | undefined;
+    const row = await adb.prepare('SELECT * FROM proxy_cache WHERE url_hash = ?').get(hash) as unknown as CacheRow | undefined;
     if (!row) return null;
 
     const ageMs = Date.now() - new Date(row.fetched_at).getTime();
@@ -226,16 +226,16 @@ function readCache(url: string): { file: string; contentType: string; size: numb
     const file = path.join(getProxyCacheDir(), hash);
 
     if (!fs.existsSync(file)) {
-      db.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(hash);
+      await adb.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(hash);
       return null;
     }
     if (ageMs > ttlMs) {
-      db.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(hash);
+      await adb.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(hash);
       try { fs.unlinkSync(file); } catch {}
       return null;
     }
 
-    db.prepare('UPDATE proxy_cache SET last_used_at = ? WHERE url_hash = ?').run(new Date().toISOString(), hash);
+    await adb.prepare('UPDATE proxy_cache SET last_used_at = ? WHERE url_hash = ?').run(new Date().toISOString(), hash);
     return { file, contentType: row.content_type, size: row.size, fetchedAt: row.fetched_at };
   } catch {
     return null;
@@ -254,7 +254,7 @@ export interface ProxyFetchResult {
 
 /** 画像を取得（キャッシュがあればそれを使う） */
 export async function fetchProxiedImage(url: string): Promise<ProxyFetchResult> {
-  const cached = readCache(url);
+  const cached = await readCache(url);
   if (cached) {
     return { body: fs.readFileSync(cached.file), contentType: cached.contentType, fromCache: true };
   }
@@ -334,7 +334,7 @@ export async function fetchProxiedImage(url: string): Promise<ProxyFetchResult> 
       const body = Buffer.concat(chunks);
       if (body.length === 0) throw new Error('空のレスポンスでした。');
 
-      writeCache(url, contentType, body);
+      await writeCache(url, contentType, body);
       return { body, contentType };
     } finally {
       activeFetches--;
@@ -351,7 +351,7 @@ export async function fetchProxiedImage(url: string): Promise<ProxyFetchResult> 
 }
 
 /** キャッシュへ書き込む（容量を超えたら古いものから消す） */
-function writeCache(url: string, contentType: string, body: Buffer): void {
+async function writeCache(url: string, contentType: string, body: Buffer): Promise<void> {
   const dir = ensureCacheDir();
   const hash = urlHash(url);
   const file = path.join(dir, hash);
@@ -359,7 +359,7 @@ function writeCache(url: string, contentType: string, body: Buffer): void {
 
   try {
     fs.writeFileSync(file, body);
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO proxy_cache (url_hash, url, content_type, size, fetched_at, last_used_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(url_hash) DO UPDATE SET
@@ -373,23 +373,23 @@ function writeCache(url: string, contentType: string, body: Buffer): void {
     return;
   }
 
-  enforceCacheLimit();
+  await enforceCacheLimit();
 }
 
 /** キャッシュ容量を超えていたら、最終使用が古いものから削除する */
-export function enforceCacheLimit(): { removed: number; freedBytes: number } {
+export async function enforceCacheLimit(): Promise<{ removed: number; freedBytes: number }> {
   const maxBytes = getProxyMaxBytes();
   let removed = 0;
   let freedBytes = 0;
   try {
-    let total = Number((db.prepare('SELECT COALESCE(SUM(size), 0) AS t FROM proxy_cache').get() as any).t);
+    let total = Number((await adb.prepare('SELECT COALESCE(SUM(size), 0) AS t FROM proxy_cache').get() as any).t);
     if (total <= maxBytes) return { removed, freedBytes };
 
-    const rows = db.prepare('SELECT url_hash, size FROM proxy_cache ORDER BY last_used_at ASC').all() as unknown as { url_hash: string; size: number }[];
+    const rows = await adb.prepare('SELECT url_hash, size FROM proxy_cache ORDER BY last_used_at ASC').all() as unknown as { url_hash: string; size: number }[];
     const dir = getProxyCacheDir();
     for (const row of rows) {
       if (total <= maxBytes * 0.9) break; // 少し余裕を残して止める
-      db.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(row.url_hash);
+      await adb.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(row.url_hash);
       try { fs.unlinkSync(path.join(dir, row.url_hash)); } catch {}
       total -= row.size;
       freedBytes += row.size;
@@ -402,21 +402,21 @@ export function enforceCacheLimit(): { removed: number; freedBytes: number } {
 }
 
 /** TTL を過ぎたキャッシュを削除する */
-export function pruneProxyCache(): { removed: number; freedBytes: number } {
+export async function pruneProxyCache(): Promise<{ removed: number; freedBytes: number }> {
   let removed = 0;
   let freedBytes = 0;
   try {
     const ttlMs = getProxyTtlDays() * 24 * 60 * 60 * 1000;
     const threshold = new Date(Date.now() - ttlMs).toISOString();
-    const rows = db.prepare('SELECT url_hash, size FROM proxy_cache WHERE last_used_at < ?').all(threshold) as unknown as { url_hash: string; size: number }[];
+    const rows = await adb.prepare('SELECT url_hash, size FROM proxy_cache WHERE last_used_at < ?').all(threshold) as unknown as { url_hash: string; size: number }[];
     const dir = getProxyCacheDir();
     for (const row of rows) {
-      db.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(row.url_hash);
+      await adb.prepare('DELETE FROM proxy_cache WHERE url_hash = ?').run(row.url_hash);
       try { fs.unlinkSync(path.join(dir, row.url_hash)); } catch {}
       freedBytes += row.size;
       removed++;
     }
-    const limit = enforceCacheLimit();
+    const limit = await enforceCacheLimit();
     removed += limit.removed;
     freedBytes += limit.freedBytes;
   } catch (err) {
@@ -426,18 +426,18 @@ export function pruneProxyCache(): { removed: number; freedBytes: number } {
 }
 
 /** キャッシュをすべて削除する */
-export function clearProxyCache(): { removed: number; freedBytes: number } {
+export async function clearProxyCache(): Promise<{ removed: number; freedBytes: number }> {
   let removed = 0;
   let freedBytes = 0;
   try {
-    const rows = db.prepare('SELECT url_hash, size FROM proxy_cache').all() as unknown as { url_hash: string; size: number }[];
+    const rows = await adb.prepare('SELECT url_hash, size FROM proxy_cache').all() as unknown as { url_hash: string; size: number }[];
     const dir = getProxyCacheDir();
     for (const row of rows) {
       freedBytes += row.size;
       removed++;
       try { fs.unlinkSync(path.join(dir, row.url_hash)); } catch {}
     }
-    db.prepare('DELETE FROM proxy_cache').run();
+    await adb.prepare('DELETE FROM proxy_cache').run();
   } catch (err) {
     console.warn('[ImageProxy] キャッシュ削除に失敗:', err);
   }
@@ -502,11 +502,11 @@ export function pruneProxyCacheOn(
 }
 
 /** 管理画面用の統計 */
-export function getProxyStats(): ProxyStats {
+export async function getProxyStats(): Promise<ProxyStats> {
   let files = 0;
   let bytes = 0;
   try {
-    const row = db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS t FROM proxy_cache').get() as any;
+    const row = await adb.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS t FROM proxy_cache').get() as any;
     files = Number(row?.c || 0);
     bytes = Number(row?.t || 0);
   } catch {

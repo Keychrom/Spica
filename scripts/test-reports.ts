@@ -4,6 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // 通報（Report / Flag）とレート制限の検証テスト
@@ -134,6 +135,7 @@ async function run() {
 
   let server: ChildProcess | null = null;
   let capture: http.Server | null = null;
+  let seedDb: ReturnType<typeof createAsyncDatabase> | null = null;
 
   try {
     await assertPortFree(PORT);
@@ -175,14 +177,18 @@ async function run() {
 
     // リモートアクターをシード（Flag の配送先を捕捉サーバーに向ける）
     const daveKeys = generateTestKeyPair();
-    const { DatabaseSync } = await import('node:sqlite');
-    const seedDb = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    const seed = (sql: string, ...args: any[]) => {
+    // seed はアプリと同じドライバで行う（PostgreSQL でも同じ検査が流せるように）
+    seedDb = createAsyncDatabase({
+      driver: process.env.DB_DRIVER,
+      connectionString: process.env.DATABASE_URL,
+      dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+    });
+    const seed = async (sql: string, ...args: any[]): Promise<void> => {
       for (let i = 0; i < 10; i++) {
-        try { seedDb.prepare(sql).run(...args); return; } catch (e) { if (i === 9) throw e; }
+        try { await seedDb!.prepare(sql).run(...args); return; } catch (e) { if (i === 9) throw e; }
       }
     };
-    seed(
+    await seed(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'dave', 'remote.test', 'Dave', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET inbox_url = excluded.inbox_url, public_key_pem = excluded.public_key_pem`,
@@ -353,6 +359,7 @@ async function run() {
       try { spawn('taskkill', ['/pid', server.pid.toString(), '/f', '/t'], { shell: true }); } catch {}
     }
     if (capture) capture.close();
+    await seedDb?.close().catch(() => {});
   }
 }
 

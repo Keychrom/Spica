@@ -765,9 +765,9 @@ adminRouter.post('/server-settings', (req: Request, res: Response) => {
 });
 
 // 容量・件数・メンテナンス状況（管理ダッシュボード用）
-adminRouter.get('/maintenance', (req: Request, res: Response) => {
+adminRouter.get('/maintenance', async (req: Request, res: Response) => {
   try {
-    res.json(getMaintenanceStats());
+    res.json(await getMaintenanceStats());
   } catch (err: any) {
     console.error('[Admin Maintenance Stats Error]:', err);
     res.status(500).json({ error: err.message || 'メンテナンス情報の取得に失敗しました。' });
@@ -775,7 +775,7 @@ adminRouter.get('/maintenance', (req: Request, res: Response) => {
 });
 
 // 自動整理の ON/OFF と実行時刻
-adminRouter.post('/maintenance/settings', (req: Request, res: Response) => {
+adminRouter.post('/maintenance/settings', async (req: Request, res: Response) => {
   try {
     const { autoMaintenance, hour, imageProxy, imageProxyMaxMb } = req.body || {};
     if (typeof autoMaintenance === 'boolean') setAutoMaintenanceEnabled(autoMaintenance);
@@ -803,10 +803,10 @@ adminRouter.post('/maintenance/settings', (req: Request, res: Response) => {
 });
 
 // 画像プロキシのキャッシュ整理（期限切れ + 容量超過分。clear=true で全削除）
-adminRouter.post('/image-proxy/cache', (req: Request, res: Response) => {
+adminRouter.post('/image-proxy/cache', async (req: Request, res: Response) => {
   try {
     const clear = req.body?.clear === true;
-    const result = clear ? clearProxyCache() : pruneProxyCache();
+    const result = clear ? await clearProxyCache() : await pruneProxyCache();
     console.log(
       `[Admin] 🖼️ 画像プロキシのキャッシュを${clear ? '全削除' : '整理'}しました: ${result.removed} 件 by @${(req.rawUser || req.user)?.id}`,
     );
@@ -814,7 +814,7 @@ adminRouter.post('/image-proxy/cache', (req: Request, res: Response) => {
       success: true,
       message: `${result.removed} 件（${formatBytes(result.freedBytes)}）を削除しました。`,
       result,
-      stats: getProxyStats(),
+      stats: await getProxyStats(),
     });
   } catch (err: any) {
     console.error('[Admin Image Proxy Cache Error]:', err);
@@ -830,7 +830,7 @@ adminRouter.post('/maintenance/run', async (req: Request, res: Response) => {
       success: true,
       message: `定期メンテナンスを実行しました（リモート投稿 ${result.removedPosts} 件を削除）。`,
       result,
-      stats: getMaintenanceStats(),
+      stats: await getMaintenanceStats(),
     });
   } catch (err: any) {
     console.error('[Admin Maintenance Run Error]:', err);

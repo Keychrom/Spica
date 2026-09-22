@@ -4,7 +4,7 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // 画像プロキシの検証
@@ -42,6 +42,16 @@ for (const dir of [path.resolve(ROOT_DIR, 'server', 'data', 'proxy-cache'), path
 }
 
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/**
+ * seed 用の接続。アプリと同じドライバを使うので、PostgreSQL でも同じ検査が流せる
+ * （PostgreSQL のときは実行前に `npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset`）。
+ */
+const seedDb = createAsyncDatabase({
+  driver: process.env.DB_DRIVER,
+  connectionString: process.env.DATABASE_URL,
+  dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+});
 
 // 1x1 の PNG
 const PNG = Buffer.from(
@@ -181,19 +191,18 @@ async function run(): Promise<void> {
     const token = alice.sessionToken as string;
     const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
+    await seedDb.exec('PRAGMA busy_timeout = 10000');
     // インスタンス鍵は遅延生成されるため、署名の検証時点で読み直す
-    const instanceKey = (): string =>
-      String((db.prepare("SELECT private_key_pem FROM instance_actor WHERE id = 'instance'").get() as any)?.private_key_pem || '');
+    const instanceKey = async (): Promise<string> =>
+      String((await seedDb.prepare("SELECT private_key_pem FROM instance_actor WHERE id = 'instance'").get() as any)?.private_key_pem || '');
 
     const keys = generateTestKeyPair();
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', '127.0.0.1', 'eve', '', ?, '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
     ).run(REMOTE_ACTOR, `${REMOTE_ORIGIN}/icon.png`, `${REMOTE_ACTOR}/inbox`, `${REMOTE_ACTOR}#main-key`, keys.publicKeyPem, new Date().toISOString());
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
        VALUES ('f-eve', ?, ?, ?, 1, 'accepted', ?)
        ON CONFLICT(follower_url, following_url) DO UPDATE SET status = 'accepted'`,
@@ -279,7 +288,7 @@ async function run(): Promise<void> {
     // ── 4. 画像以外は拒否 ──────────────────────────────────
     console.log('\n🚫 [4] 画像以外のコンテンツは通さない');
     const pageUrl = `${REMOTE_ORIGIN}/page.html`;
-    const pageRes = await fetch(`${BASE}/proxy?url=${encodeURIComponent(pageUrl)}&s=${signProxyUrl(pageUrl, instanceKey())}`);
+    const pageRes = await fetch(`${BASE}/proxy?url=${encodeURIComponent(pageUrl)}&s=${signProxyUrl(pageUrl, await instanceKey())}`);
     check('HTML は 502', pageRes.status, 502);
 
     // ── 5. 無効化 ──────────────────────────────────────────
@@ -325,6 +334,7 @@ async function run(): Promise<void> {
     await sleep(600);
     try { server?.kill('SIGKILL'); } catch {}
     await new Promise<void>((resolve) => remote?.close(() => resolve()) ?? resolve());
+    await seedDb.close().catch(() => {});
   }
 
   console.log('');

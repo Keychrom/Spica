@@ -105,7 +105,7 @@ app.use('/', discoveryRouter);
 //   /api/health    … 同内容（API 配下）
 //   認証ヘッダー（有効なセッション）を付けると DB・配送キューの詳細も返す
 // ==========================================
-const healthHandler = (req: Request, res: Response) => {
+const healthHandler = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   let dbOk = true;
   try {
@@ -124,7 +124,7 @@ const healthHandler = (req: Request, res: Response) => {
   const hasAuth = Boolean(req.headers['authorization']);
   if (hasAuth && req.user) {
     try {
-      const stats = getMaintenanceStats();
+      const stats = await getMaintenanceStats();
       const queue = getDeliveryQueueStats();
       return res.status(dbOk ? 200 : 503).json({
         ...base,

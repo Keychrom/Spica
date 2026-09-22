@@ -4,7 +4,7 @@
  * PostgreSQL が無くても動きます（翻訳は純関数のため）。
  * プレースホルダの無限ループを作り込んだ反省から、機械的に検証できる形にしてあります。
  */
-import { translateSqlForPostgres, splitFtsTerms } from '../server/src/db/driver.js';
+import { translateSqlForPostgres, splitFtsTerms, splitExecStatements } from '../server/src/db/driver.js';
 
 let passed = 0;
 let failed = 0;
@@ -121,6 +121,18 @@ check(
   'like_count のような列名は書き換えない',
   translateSqlForPostgres('SELECT like_count FROM posts WHERE id = ?', ['p1'], resolvePrimaryKey),
   { sql: 'SELECT like_count FROM posts WHERE id = $1', params: ['p1'] },
+);
+check(
+  'BEGIN IMMEDIATE は BEGIN にする（PostgreSQL には無い。保持期間の削除で使っている）',
+  translateSqlForPostgres('BEGIN IMMEDIATE', [], resolvePrimaryKey).sql,
+  'BEGIN',
+);
+check(
+  'exec の複文は 1 文ずつ翻訳する',
+  splitExecStatements("DROP TABLE IF EXISTS temp._t; PRAGMA busy_timeout = 1; BEGIN IMMEDIATE;").map(
+    (statement) => translateSqlForPostgres(statement, []).sql,
+  ),
+  ['DROP TABLE IF EXISTS pg_temp._t', 'BEGIN'],
 );
 
 // ── FTS ──────────────────────────────────────────────────

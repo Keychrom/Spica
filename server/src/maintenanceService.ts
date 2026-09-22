@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { db, getServerSetting, setServerSetting } from './db.js';
+import { adb, db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
@@ -206,7 +206,7 @@ export async function runScheduledMaintenance(): Promise<{
   // ④ 画像プロキシのキャッシュ整理（期限切れ + 容量超過分）
   let proxyCache = { removed: 0, freedBytes: 0 };
   try {
-    proxyCache = pruneProxyCache();
+    proxyCache = await pruneProxyCache();
     if (proxyCache.removed > 0) {
       console.log(`[Auto Maintenance] 🖼️ 画像プロキシのキャッシュを削除: ${proxyCache.removed} 件（${(proxyCache.freedBytes / 1024 / 1024).toFixed(1)}MB）`);
     }
@@ -223,14 +223,14 @@ export async function runScheduledMaintenance(): Promise<{
 }
 
 /** 管理画面向け: 容量・件数・メンテナンス状況をまとめて返す */
-export function getMaintenanceStats(): MaintenanceStats {
+export async function getMaintenanceStats(): Promise<MaintenanceStats> {
   const size = getDbSizeInfo(config.dbPath, db);
-  const one = (sql: string): number => Number((db.prepare(sql).get() as any)?.c ?? 0);
+  const one = async (sql: string): Promise<number> => Number((await adb.prepare(sql).get() as any)?.c ?? 0);
   const cutoff = new Date(Date.now() - config.remotePostRetentionDays * 86400_000).toISOString();
 
-  const local = one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 1');
-  const remote = one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0');
-  const prunable = one(
+  const local = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 1');
+  const remote = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0');
+  const prunable = await one(
     `SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND datetime(p.published_at) < datetime('${cutoff}')
        AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.post_id = p.id)
        AND NOT EXISTS (SELECT 1 FROM pinned_posts pp WHERE pp.post_id = p.id)
@@ -240,7 +240,8 @@ export function getMaintenanceStats(): MaintenanceStats {
        AND NOT EXISTS (SELECT 1 FROM posts lp WHERE lp.is_local = 1 AND lp.id = p.in_reply_to)
        AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.following_url = p.author_url AND f.status = 'accepted')`,
   );
-  const mediaRow = db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size),0) AS b FROM media').get() as any;
+  const mediaRow = await adb.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size),0) AS b FROM media').get() as any;
+  const proxyStats = await getProxyStats();
 
   return {
     db: { sizeBytes: size.dbBytes, walBytes: size.walBytes, pageCount: size.pageCount, freelistCount: size.freelistCount },
@@ -249,12 +250,13 @@ export function getMaintenanceStats(): MaintenanceStats {
       local,
       remote,
       prunableRemote: prunable,
-      ftsRows: one('SELECT COUNT(*) AS c FROM posts_fts'),
+      ftsRows: await one('SELECT COUNT(*) AS c FROM posts_fts'),
     },
-    announces: one('SELECT COUNT(*) AS c FROM announces'),
+    announces: await one('SELECT COUNT(*) AS c FROM announces'),
     media: { count: Number(mediaRow?.c ?? 0), bytes: Number(mediaRow?.b ?? 0), quotaBytes: getMediaQuotaBytes() },
     imageProxy: (() => {
-      const stats = getProxyStats();
+      // 統計は下で 1 度だけ取る（同期版・非同期版が混ざらないよう同じ値を使う）
+      const stats = proxyStats;
       return { enabled: stats.enabled, files: stats.files, bytes: stats.bytes, maxBytes: stats.maxBytes, ttlDays: stats.ttlDays };
     })(),
     policy: {

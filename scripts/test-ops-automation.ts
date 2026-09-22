@@ -4,6 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // 運用の自動化の検証
@@ -34,6 +35,19 @@ const TEST_BACKUP_PREFIX = path.basename(TEST_DB).replace(/\.sqlite$/, '');
 
 // テストプロセス内で server/src を読み込む場合に備え、必ずテスト用DBを指す
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/** 実行中のドライバ（SQLite 固有の確認をスキップするために使う） */
+const isSqlite = (process.env.DB_DRIVER || 'sqlite').toLowerCase() !== 'postgres';
+
+/**
+ * seed 用の接続。アプリと同じドライバを使うので、PostgreSQL でも同じ検査が流せる
+ * （PostgreSQL のときは実行前に `npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset`）。
+ */
+const seedDb = createAsyncDatabase({
+  driver: process.env.DB_DRIVER,
+  connectionString: process.env.DATABASE_URL,
+  dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+});
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** WAL ファイルのパス（テスト用DB） */
@@ -181,9 +195,8 @@ async function run(): Promise<void> {
     console.log('\n🛠️ [3] リモート投稿を用意して自動整理を実行');
     const keys = generateTestKeyPair();
     const REMOTE_ACTOR = 'https://remote.test/users/eve';
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
-    db.prepare(
+    await seedDb.exec('PRAGMA busy_timeout = 10000');
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', 'remote.test', 'Eve', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
@@ -224,15 +237,16 @@ async function run(): Promise<void> {
     const runBody = await runRes.json();
     check('自動整理を実行できる', runRes.status, 200);
     check('古いリモート投稿が削除された', runBody.result.removedPosts >= 3, true);
-    check('バックアップが作られた', Boolean(runBody.result.backup?.path), true);
+    // バックアップは SQLite 専用（VACUUM INTO）。PostgreSQL では pg_dump を使う
+    if (isSqlite) check('バックアップが作られた', Boolean(runBody.result.backup?.path), true);
     check('実行後の統計が返る', typeof runBody.stats.posts.remote, 'number');
     if (runBody.result.backup?.path) createdBackups.push(runBody.result.backup.path);
 
-    const remoteAfter = Number((db.prepare('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0').get() as any).c);
+    const remoteAfter = Number((await seedDb.prepare('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0').get() as any).c);
     check('新しいリモート投稿は残っている', remoteAfter, 1);
     // 以降の検証はサーバー経由なので、テスト側の接続は閉じる
     // （開いたままだとサーバー終了時の WAL チェックポイントが完了できない）
-    db.close();
+    await seedDb.close();
 
     console.log('\n🗓️ [4] 自動実行は 1 日 1 回だけ');
     const { maybeRunScheduledMaintenance, getLastAutoMaintenanceAt } = await import('../server/src/maintenanceService.js');
@@ -257,10 +271,15 @@ async function run(): Promise<void> {
     const backupFiles = fs.existsSync(backupDir)
       ? fs.readdirSync(backupDir).filter((f) => f.startsWith(TEST_BACKUP_PREFIX))
       : [];
-    check('バックアップは世代数（2）までに整理される', backupFiles.length <= 2, true);
-    check('バックアップファイルが存在する', backupFiles.length >= 1, true);
-    const backupSizes = backupFiles.map((f) => fs.statSync(path.join(backupDir, f)).size);
-    check('バックアップが空でない', backupSizes.every((s) => s > 0), true);
+    if (isSqlite) {
+      check('バックアップは世代数（2）までに整理される', backupFiles.length <= 2, true);
+      check('バックアップファイルが存在する', backupFiles.length >= 1, true);
+      const backupSizes = backupFiles.map((f) => fs.statSync(path.join(backupDir, f)).size);
+      check('バックアップが空でない', backupSizes.every((s) => s > 0), true);
+    } else {
+      // バックアップは SQLite 専用（VACUUM INTO）。PostgreSQL は pg_dump を使う
+      check('PostgreSQL ではバックアップを作らない（pg_dump を使う）', backupFiles.length, 0);
+    }
 
     // ------------------------------------------------------------------
     console.log('\n🛑 [6] グレースフルシャットダウン');
@@ -310,10 +329,22 @@ async function run(): Promise<void> {
     const walPath = walPathOf(TEST_DB);
     const walSize = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
     check('WAL が畳まれる（チェックポイント）', walSize, 0);
-    const dbCheck = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB), { readOnly: true });
-    check('DB は整合性を保っている', (dbCheck.prepare('PRAGMA integrity_check').get() as any).integrity_check, 'ok');
-    check('書き込みは失われていない', Boolean((dbCheck.prepare("SELECT value FROM server_settings WHERE key = 'probe_before_shutdown'").get() as any)?.value), true);
-    dbCheck.close();
+    // 整合性と書き込みの確認はドライバ共通の接続で行う（PostgreSQL は integrity_check が無い）
+    if (isSqlite) {
+      const dbCheck = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB), { readOnly: true });
+      check('DB は整合性を保っている', (dbCheck.prepare('PRAGMA integrity_check').get() as any).integrity_check, 'ok');
+      check('書き込みは失われていない', Boolean((dbCheck.prepare("SELECT value FROM server_settings WHERE key = 'probe_before_shutdown'").get() as any)?.value), true);
+      dbCheck.close();
+    } else {
+      // seedDb は [3] で閉じているので、確認用に開き直す
+      const checkDb = createAsyncDatabase({ driver: process.env.DB_DRIVER, connectionString: process.env.DATABASE_URL });
+      check(
+        '書き込みは失われていない',
+        Boolean((await checkDb.prepare("SELECT value FROM server_settings WHERE key = 'probe_before_shutdown'").get() as any)?.value),
+        true,
+      );
+      await checkDb.close();
+    }
 
     completed = true;
   } finally {

@@ -22,6 +22,7 @@ import {
   PRAGMA_TABLE_INFO_RE,
   TABLE_INFO_SQL,
   SqliteDatabase,
+  splitExecStatements,
   insertOrReplaceTarget,
   translateSqlForPostgres,
   type SpicaRunResult,
@@ -237,13 +238,11 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   }
 
   async exec(sql: string): Promise<void> {
-    const statements = sql
-      .split(';')
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0)
-      .filter((statement) => !/^PRAGMA\b/i.test(statement));
+    // exec も翻訳する（BEGIN IMMEDIATE や temp. は PostgreSQL では通らない）
+    const statements = splitExecStatements(sql);
     if (statements.length === 0) return;
-    await this.execute(() => this.run(statements.map((statement) => `${statement};`).join('\n'), []));
+    const translated = statements.map((statement) => translateSqlForPostgres(statement, []).sql);
+    await this.execute(() => this.run(translated.map((statement) => `${statement};`).join('\n'), []));
   }
 
   async close(): Promise<void> {

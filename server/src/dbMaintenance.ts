@@ -357,9 +357,12 @@ export function applyRemotePostRemoval(db: SpicaDatabase, opts: MaintenanceOptio
     // 念のため: 過去の削除などで残っている孤立 FTS 行も掃除する
     counts.fts += Number(db.prepare('DELETE FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)').run().changes ?? 0);
   } finally {
-    // 途中で失敗しても FTS 同期トリガは必ず戻す（db.ts と同じ定義）
-    db.exec('DROP TRIGGER IF EXISTS posts_ad');
-    db.exec(triggerSql ?? FALLBACK_POSTS_AD_TRIGGER);
+    // 途中で失敗しても FTS 同期トリガは必ず戻す（db.ts と同じ定義）。
+    // PostgreSQL のトリガは外していないので触らない（SQLite の CREATE TRIGGER 構文は通らない）
+    if (triggerSql !== undefined) {
+      db.exec('DROP TRIGGER IF EXISTS posts_ad');
+      db.exec(triggerSql ?? FALLBACK_POSTS_AD_TRIGGER);
+    }
   }
 
   db.exec('DROP TABLE IF EXISTS temp._target_batch');

@@ -135,6 +135,18 @@ export const TABLE_INFO_SQL = `SELECT column_name AS name, data_type AS type, is
                WHERE table_schema = 'public' AND table_name = $1
                ORDER BY ordinal_position`;
 
+/**
+ * `exec()` 用: 複文を 1 文ずつに分けて翻訳する（パラメータは無い前提）。
+ * exec は DDL や BEGIN / COMMIT を流すため、prepare と違って 1 文ずつ翻訳する必要がある。
+ */
+export function splitExecStatements(sql: string): string[] {
+  return sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0)
+    .filter((statement) => !/^PRAGMA\b/i.test(statement));
+}
+
 /** `INSERT OR REPLACE INTO t (...) ...` を分解する（1=テーブル名 / 2=列リスト）。g フラグ無しなので exec は状態を持たない */
 export const INSERT_OR_REPLACE_RE = /^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(([^)]*)\)/i;
 
@@ -334,13 +346,11 @@ class PostgresDatabase implements SpicaDatabase {
   }
 
   exec(sql: string): void {
-    const statements = sql
-      .split(';')
-      .map((statement) => statement.trim())
-      .filter((statement) => statement.length > 0)
-      .filter((statement) => !/^PRAGMA\b/i.test(statement));
+    // exec も翻訳する（BEGIN IMMEDIATE や temp. は PostgreSQL では通らない）
+    const statements = splitExecStatements(sql);
     if (statements.length === 0) return;
-    this.call({ kind: 'exec', sql: statements.map((statement) => `${statement};`).join('\n'), params: [] });
+    const translated = statements.map((statement) => translateSqlForPostgres(statement, []).sql);
+    this.call({ kind: 'exec', sql: translated.map((statement) => `${statement};`).join('\n'), params: [] });
   }
 
   close(): void {
@@ -427,6 +437,9 @@ export function translateSqlForPostgres(
 
   // SQLite の temp.<table> は PostgreSQL では pg_temp.<table>
   text = text.replace(/\btemp\./gi, 'pg_temp.');
+
+  // SQLite の BEGIN IMMEDIATE / EXCLUSIVE / DEFERRED は PostgreSQL に無い（ロックは必要時に取る）
+  text = text.replace(/\bBEGIN\s+(?:IMMEDIATE|EXCLUSIVE|DEFERRED)\b/gi, 'BEGIN');
 
   // INSERT OR IGNORE / REPLACE
   if (/INSERT\s+OR\s+REPLACE/i.test(text)) {
