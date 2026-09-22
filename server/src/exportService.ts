@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { db, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
+import { adb, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
 import { config } from './config.js';
 
 const require = createRequire(import.meta.url);
@@ -73,8 +73,8 @@ export interface UserExportData {
 /**
  * ユーザーの全データを抽出して構造化オブジェクトを返す
  */
-export function exportUserData(userId: string): UserExportData {
-  const user = db.prepare(`
+export async function exportUserData(userId: string): Promise<UserExportData> {
+  const user = await adb.prepare(`
     SELECT id, name, summary, icon_url, banner_url, role, public_key_pem, created_at
     FROM users WHERE id = ?
   `).get(userId) as (UserRow & { public_key_pem: string }) | undefined;
@@ -87,7 +87,7 @@ export function exportUserData(userId: string): UserExportData {
   const handle = `@${user.id}@${config.domain}`;
 
   // 1. 投稿一覧
-  const postRows = db.prepare(`
+  const postRows = await adb.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as reactions_count,
       (SELECT COUNT(*) FROM announces a WHERE a.post_id = p.id) as renote_count
@@ -117,7 +117,7 @@ export function exportUserData(userId: string): UserExportData {
   });
 
   // 2. フォロー一覧
-  const followingRows = db.prepare(`
+  const followingRows = await adb.prepare(`
     SELECT following_url, created_at
     FROM follows
     WHERE follower_url = ? AND status = 'accepted'
@@ -130,7 +130,7 @@ export function exportUserData(userId: string): UserExportData {
   }));
 
   // 3. フォロワー一覧
-  const followerRows = db.prepare(`
+  const followerRows = await adb.prepare(`
     SELECT follower_url, created_at
     FROM follows
     WHERE following_url = ? AND status = 'accepted'
@@ -143,7 +143,7 @@ export function exportUserData(userId: string): UserExportData {
   }));
 
   // 4. ブックマーク一覧
-  const bookmarkRows = db.prepare(`
+  const bookmarkRows = await adb.prepare(`
     SELECT b.created_at as bookmarked_at, p.id as post_id, p.content, p.author_name, p.author_handle, p.published_at
     FROM bookmarks b
     JOIN posts p ON b.post_id = p.id
@@ -161,7 +161,7 @@ export function exportUserData(userId: string): UserExportData {
   }));
 
   // 5. リアクション履歴
-  const reactionRows = db.prepare(`
+  const reactionRows = await adb.prepare(`
     SELECT r.reaction, r.post_id, r.created_at, COALESCE(p.content, '') as post_content
     FROM reactions r
     LEFT JOIN posts p ON r.post_id = p.id
@@ -216,8 +216,10 @@ export function exportUserData(userId: string): UserExportData {
 /**
  * ユーザーの全データを ZIP アーカイブとしてストリーミング生成する
  */
-export function streamUserExportZip(userId: string, outputStream: NodeJS.WritableStream): Promise<void> {
+export async function streamUserExportZip(userId: string, outputStream: NodeJS.WritableStream): Promise<void> {
+  // 中で await するため async な executor にする（失敗は内側の try/catch が reject へ流す）
   return new Promise((resolve, reject) => {
+    void (async () => {
     const options = { zlib: { level: 9 } };
     const archive = typeof archiver === 'function'
       ? archiver('zip', options)
@@ -230,7 +232,7 @@ export function streamUserExportZip(userId: string, outputStream: NodeJS.Writabl
     archive.pipe(outputStream);
 
     try {
-      const data = exportUserData(userId);
+      const data = await exportUserData(userId);
 
       // manifest.json
       archive.append(JSON.stringify(data.manifest, null, 2), { name: 'manifest.json' });
@@ -289,5 +291,6 @@ export function streamUserExportZip(userId: string, outputStream: NodeJS.Writabl
       archive.abort();
       reject(err);
     }
+    })().catch(reject);
   });
 }

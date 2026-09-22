@@ -63,9 +63,10 @@ function throttleMs(): number {
 }
 
 /** メール通知が使える状態か（SMTP 設定済み + 機能が有効） */
-export function isEmailNotificationAvailable(): boolean {
+export async function isEmailNotificationAvailable(): Promise<boolean> {
   if (getServerSetting('email_notifications') === 'false') return false;
-  return config.emailNotifications !== false && isMailConfigured();
+  if (config.emailNotifications === false) return false;
+  return await isMailConfigured();
 }
 
 interface Recipient {
@@ -97,7 +98,7 @@ export async function getEmailNotificationStatus(userId: string): Promise<{
 }> {
   const recipient = await getRecipient(userId);
   return {
-    available: isEmailNotificationAvailable(),
+    available: await isEmailNotificationAvailable(),
     enabled: Boolean(recipient?.enabled),
     email: recipient?.email || '',
     verified: Boolean(recipient?.verified),
@@ -122,7 +123,7 @@ export async function queueNotificationEmail(params: {
   postContent?: string;
   content?: string;
 }): Promise<void> {
-  if (!isEmailNotificationAvailable()) return;
+  if (!(await isEmailNotificationAvailable())) return;
   const recipient = await getRecipient(params.userId);
   // オプトイン・メール設定・確認済みのすべてが揃っている場合だけ
   if (!recipient || !recipient.enabled || !recipient.verified) return;

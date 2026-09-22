@@ -108,7 +108,7 @@ const upload = multer({
 apiRouter.post('/auth/register/email-code', async (req: Request, res: Response) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
 
-  if (!isMailConfigured()) {
+  if (!(await isMailConfigured())) {
     return res.status(503).json({ error: 'このサーバーはメール送信が設定されていないため、確認コードを送信できません。' });
   }
   if (!isValidEmail(email)) {
@@ -124,7 +124,7 @@ apiRouter.post('/auth/register/email-code', async (req: Request, res: Response) 
   try {
     const code = generateVerificationCode();
     // 登録前はユーザーが存在しないため、メールアドレス単位の擬似IDでコードを管理する
-    issueVerificationCode({ userId: `register:${email}`, email, purpose: 'register', code });
+    await issueVerificationCode({ userId: `register:${email}`, email, purpose: 'register', code });
 
     const sent = await sendMail({
       to: email,
@@ -152,7 +152,7 @@ apiRouter.post('/auth/register/email-code', async (req: Request, res: Response) 
 });
 
 // アカウント新規登録 (マスターキー発行)
-apiRouter.post('/auth/register', (req: Request, res: Response) => {
+apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response) => {
   const { id, name, summary, inviteCode, agreedToRules } = req.body;
   if (!id || !name) {
     return res.status(400).json({ error: 'ユーザーID (英数字) と表示名は必須です。' });
@@ -235,12 +235,12 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
 
     // 📧 メール送信が設定されているサーバーでは、確認コードによるメール確認を必須にする。
     //    SMTP 未設定のサーバーではメール関連機能が無効のため、確認なしで登録できる。
-    if (isMailConfigured()) {
+    if (await isMailConfigured()) {
       const emailCode = typeof req.body?.emailCode === 'string' ? req.body.emailCode.trim() : '';
       if (!emailCode) {
         return res.status(400).json({ error: 'メールアドレスの確認コードを入力してください（「確認コードを送信」から取得できます）。' });
       }
-      const verified = verifyCode({ userId: `register:${email}`, email, code: emailCode, purpose: 'register' });
+      const verified = await verifyCode({ userId: `register:${email}`, email, code: emailCode, purpose: 'register' });
       if (!verified.ok) {
         return res.status(400).json({ error: verified.error || '確認コードが正しくありません。' });
       }
@@ -291,7 +291,7 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
   }
 
   // 4. 初回セッションを発行
-  const session = createSession(cleanId);
+  const session = await createSession(cleanId);
 
   const actorUrl = `${config.origin}/users/${cleanId}`;
   const handle = `@${cleanId}@${config.domain}`;
@@ -312,16 +312,16 @@ apiRouter.post('/auth/register', (req: Request, res: Response) => {
       email: registerEmail,
       email_verified: registerEmailVerified,
       hasPassword: Boolean(passwordHash),
-      permissions: Array.from(getUserPermissions({ id: cleanId, role })),
+      permissions: Array.from(await getUserPermissions({ id: cleanId, role })),
     },
     masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
     sessionToken: session.token,
     sessionExpiresAt: session.expiresAt,
   });
-});
+}));
 
 // ログイン (マスターキー / パスワードの両対応)
-apiRouter.post('/auth/login', (req: Request, res: Response) => {
+apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) => {
   const { id, email, masterKey, password } = req.body;
 
   if (!masterKey && !password) {
@@ -361,7 +361,7 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
     return res.status(401).json({ error: '認証情報が一致しません。' });
   }
 
-  const session = createSession(user.id);
+  const session = await createSession(user.id);
   const handle = `@${user.id}@${config.domain}`;
 
   res.json({
@@ -377,25 +377,25 @@ apiRouter.post('/auth/login', (req: Request, res: Response) => {
       email: user.email || '',
       email_verified: Number((user as any).email_verified) || 0,
       hasPassword: Boolean((user as any).password_hash),
-      permissions: Array.from(getUserPermissions({ id: user.id, role: user.role })),
+      permissions: Array.from(await getUserPermissions({ id: user.id, role: user.role })),
     },
     sessionToken: session.token,
     sessionExpiresAt: session.expiresAt,
   });
-});
+}));
 
 // ログアウト
-apiRouter.post('/auth/logout', (req: Request, res: Response) => {
+apiRouter.post('/auth/logout', asyncHandler(async (req: Request, res: Response) => {
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
-    destroySession(token);
+    await destroySession(token);
   }
   res.json({ success: true });
-});
+}));
 
 // 現在のログインユーザー情報
-apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
+apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.user!;
   const raw = req.rawUser;
   const myActorUrl = `${config.origin}/users/${user.id}`;
@@ -415,23 +415,23 @@ apiRouter.get('/auth/me', requireAuth, (req: Request, res: Response) => {
     email_verified: Number(raw?.email_verified) || 0,
     hasPassword: Boolean(raw?.password_hash),
     // 権限の一覧（'admin' / 'moderate' など）。画面の出し分けはこの配列で判断する
-    permissions: Array.from(getUserPermissions(user)),
+    permissions: Array.from(await getUserPermissions(user)),
   });
-});
+}));
 
 // ==========================================
 // 📡 リアルタイムストリーミング (SSE) エンドポイント
 // ==========================================
-apiRouter.get('/streaming', (req: Request, res: Response) => {
+apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => {
   let user = req.user;
   if (!user && req.query.token && typeof req.query.token === 'string') {
-    user = getUserFromToken(req.query.token) || undefined;
+    user = await getUserFromToken(req.query.token) || undefined;
   }
   const clientId = addStreamClient(res, user?.id);
   req.on('close', () => {
     removeStreamClient(clientId);
   });
-});
+}));
 
 /**
  * 単一投稿用のアンケート情報を取得するヘルパー
@@ -3814,14 +3814,14 @@ function getAuthMode(): 'master_key' | 'password' {
 }
 
 // メール登録・復元の利用可否（クライアントがUIを出し分けるための情報）
-apiRouter.get('/auth/recovery/status', (_req: Request, res: Response) => {
+apiRouter.get('/auth/recovery/status', asyncHandler(async (_req: Request, res: Response) => {
   res.json({
     authMode: getAuthMode(),
     allowEmailRegistration: isEmailRegistrationAllowed(),
-    mailConfigured: isMailConfigured(),
-    recoveryAvailable: isEmailRegistrationAllowed() && isMailConfigured(),
+    mailConfigured: await isMailConfigured(),
+    recoveryAvailable: isEmailRegistrationAllowed() && (await isMailConfigured()),
   });
-});
+}));
 
 // メールアドレスの登録（確認コードを送信）
 // 🔑 パスワードの設定・変更（パスワード方式のサーバー向け）
@@ -3865,7 +3865,7 @@ apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) =
   if (!isEmailRegistrationAllowed() && !isReverify) {
     return res.status(403).json({ error: 'このサーバーではメールアドレスの登録が許可されていません。' });
   }
-  if (!isMailConfigured()) {
+  if (!(await isMailConfigured())) {
     return res.status(503).json({ error: 'サーバーのメール送信が設定されていないため登録できません。' });
   }
 
@@ -3881,7 +3881,7 @@ apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) =
 
   try {
     const code = generateVerificationCode();
-    issueVerificationCode({ userId: user.id, email, purpose: 'verify_email', code });
+    await issueVerificationCode({ userId: user.id, email, purpose: 'verify_email', code });
     db.prepare('UPDATE users SET email = ?, email_verified = 0 WHERE id = ?').run(email, user.id);
 
     const sent = await sendMail({
@@ -3911,7 +3911,7 @@ apiRouter.post('/user/email', requireAuth, async (req: Request, res: Response) =
 });
 
 // 確認コードの検証（メールアドレスの有効化）
-apiRouter.post('/user/email/verify', requireAuth, (req: Request, res: Response) => {
+apiRouter.post('/user/email/verify', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
@@ -3920,7 +3920,7 @@ apiRouter.post('/user/email/verify', requireAuth, (req: Request, res: Response) 
     return res.status(400).json({ error: 'メールアドレスと確認コードを入力してください。' });
   }
 
-  const result = verifyCode({ userId: user.id, email, code, purpose: 'verify_email' });
+  const result = await verifyCode({ userId: user.id, email, code, purpose: 'verify_email' });
   if (!result.ok) {
     return res.status(400).json({ error: result.error });
   }
@@ -3928,7 +3928,7 @@ apiRouter.post('/user/email/verify', requireAuth, (req: Request, res: Response) 
   db.prepare('UPDATE users SET email = ?, email_verified = 1 WHERE id = ?').run(email, user.id);
   console.log(`[Email] ✅ @${user.id} のメールアドレスを確認しました`);
   res.json({ success: true, message: 'メールアドレスを確認しました。マスターキーを紛失した際に復元できます。' });
-});
+}));
 
 // メールアドレスの削除
 apiRouter.delete('/user/email', requireAuth, (req: Request, res: Response) => {
@@ -3950,7 +3950,7 @@ apiRouter.post('/auth/recovery/request', async (req: Request, res: Response) => 
     message: '入力された情報に一致するアカウントがあり、メールアドレスが確認済みの場合は、確認コードを送信しました。',
   };
 
-  if (!userId || !isValidEmail(email) || !isEmailRegistrationAllowed() || !isMailConfigured()) {
+  if (!userId || !isValidEmail(email) || !isEmailRegistrationAllowed() || !(await isMailConfigured())) {
     return res.json(genericResponse);
   }
 
@@ -3962,7 +3962,7 @@ apiRouter.post('/auth/recovery/request', async (req: Request, res: Response) => 
     }
 
     const code = generateVerificationCode();
-    issueVerificationCode({ userId: user.id, email, purpose: 'recovery', code });
+    await issueVerificationCode({ userId: user.id, email, purpose: 'recovery', code });
 
     const sent = await sendMail({
       to: email,
@@ -3998,7 +3998,7 @@ apiRouter.post('/auth/recovery/verify', async (req: Request, res: Response) => {
   if (!userId || !isValidEmail(email) || !code) {
     return res.status(400).json({ error: 'ユーザーID・メールアドレス・確認コードを入力してください。' });
   }
-  if (!isEmailRegistrationAllowed() || !isMailConfigured()) {
+  if (!isEmailRegistrationAllowed() || !(await isMailConfigured())) {
     return res.status(403).json({ error: 'このサーバーでは復元機能が利用できません。' });
   }
 
@@ -4008,7 +4008,7 @@ apiRouter.post('/auth/recovery/verify', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'ユーザーIDまたはメールアドレスが正しくありません。' });
     }
 
-    const verified = verifyCode({ userId: user.id, email, code, purpose: 'recovery' });
+    const verified = await verifyCode({ userId: user.id, email, code, purpose: 'recovery' });
     if (!verified.ok) {
       return res.status(400).json({ error: verified.error });
     }

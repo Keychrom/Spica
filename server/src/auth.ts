@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
-import { db, UserRow } from './db.js';
+import { adb, UserRow } from './db.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -74,12 +74,12 @@ export function verifyPassword(password: string, stored: string | null | undefin
 /**
  * セッショントークンを発行して DB に保存（有効期限: 30日）
  */
-export function createSession(userId: string): { token: string; expiresAt: string } {
+export async function createSession(userId: string): Promise<{ token: string; expiresAt: string }> {
   const token = `spica_sess_${crypto.randomBytes(32).toString('hex')}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  db.prepare(`
+  await adb.prepare(`
     INSERT INTO sessions (token, user_id, created_at, expires_at)
     VALUES (?, ?, ?, ?)
   `).run(token, userId, now.toISOString(), expiresAt);
@@ -90,16 +90,16 @@ export function createSession(userId: string): { token: string; expiresAt: strin
 /**
  * セッショントークンを破棄（ログアウト）
  */
-export function destroySession(token: string) {
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+export async function destroySession(token: string): Promise<void> {
+  await adb.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
 /**
  * トークンからユーザーを検証・取得
  */
-export function getUserFromToken(token: string): AuthenticatedUser | null {
+export async function getUserFromToken(token: string): Promise<AuthenticatedUser | null> {
   const now = new Date().toISOString();
-  const session = db.prepare(`
+  const session = await adb.prepare(`
     SELECT user_id, expires_at FROM sessions WHERE token = ? AND expires_at > ?
   `).get(token, now) as { user_id: string; expires_at: string } | undefined;
 
@@ -107,7 +107,7 @@ export function getUserFromToken(token: string): AuthenticatedUser | null {
     return null;
   }
 
-  const user = db.prepare(`
+  const user = await adb.prepare(`
     SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?
   `).get(session.user_id) as unknown as AuthenticatedUser | undefined;
 
@@ -122,21 +122,24 @@ export function getUserFromToken(token: string): AuthenticatedUser | null {
  * 認証ミドルウェア（リクエストヘッダーからセッションを読み取る）
  */
 export function authenticate(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    req.user = null;
-    return next();
-  }
+  // 非同期の失敗は next(err) に流す（Express 4 は reject を拾わないため）
+  void (async () => {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      req.user = null;
+      return next();
+    }
 
-  const token = authHeader.slice(7).trim();
-  const user = getUserFromToken(token);
-  req.user = user;
+    const token = authHeader.slice(7).trim();
+    const user = await getUserFromToken(token);
+    req.user = user;
 
-  if (user) {
-    req.rawUser = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as UserRow;
-  }
+    if (user) {
+      req.rawUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as UserRow;
+    }
 
-  next();
+    next();
+  })().catch(next);
 }
 
 /**
@@ -154,13 +157,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
  *   - users.role が 'admin' の場合は admin 権限を持つ（既存の管理者）
  *   - 付与されたロール（roles.permissions）の権限も加える
  */
-export function getUserPermissions(user: { id: string; role: string }): Set<string> {
+export async function getUserPermissions(user: { id: string; role: string }): Promise<Set<string>> {
   const permissions = new Set<string>();
   if (user.role === 'admin') {
     permissions.add('admin');
   }
   try {
-    const rows = db.prepare(`
+    const rows = await adb.prepare(`
       SELECT r.permissions FROM user_roles ur
       JOIN roles r ON ur.role_id = r.id
       WHERE ur.user_id = ?
@@ -177,11 +180,11 @@ export function getUserPermissions(user: { id: string; role: string }): Set<stri
 }
 
 /** 指定権限を持つか（'admin' は全権限を包含する） */
-export function hasPermission(user: { id: string; role: string } | null | undefined, permission: string): boolean {
+export async function hasPermission(user: { id: string; role: string } | null | undefined, permission: string): Promise<boolean> {
   if (!user) {
     return false;
   }
-  const permissions = getUserPermissions(user);
+  const permissions = await getUserPermissions(user);
   return permissions.has(permission) || permissions.has('admin');
 }
 
@@ -190,10 +193,12 @@ export function hasPermission(user: { id: string; role: string } | null | undefi
  * 付与ロールに 'admin' 権限がある場合も許可する
  */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!hasPermission(req.user, 'admin')) {
-    return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
-  }
-  next();
+  void (async () => {
+    if (!(await hasPermission(req.user, 'admin'))) {
+      return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+    }
+    next();
+  })().catch(next);
 }
 
 /**
@@ -201,8 +206,10 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
  * 'moderate' 権限を持つロールを付与されたユーザーが利用できる
  */
 export function requireModerator(req: Request, res: Response, next: NextFunction) {
-  if (!hasPermission(req.user, 'moderate')) {
-    return res.status(403).json({ error: 'この操作にはモデレーター権限が必要です。' });
-  }
-  next();
+  void (async () => {
+    if (!(await hasPermission(req.user, 'moderate'))) {
+      return res.status(403).json({ error: 'この操作にはモデレーター権限が必要です。' });
+    }
+    next();
+  })().catch(next);
 }

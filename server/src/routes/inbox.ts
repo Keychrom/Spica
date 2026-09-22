@@ -627,7 +627,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // 📡 アンテナ条件チェック ＆ 通知
         // 📡 アンテナ条件チェック ＆ 通知（フォロワー限定は通知経由で内容が漏れるため対象外）
         if (noteIsPublic) {
-          checkAntennaMatchesAndNotify({
+          await checkAntennaMatchesAndNotify({
             id: noteId,
             user_id: actorUrl,
             author_name: remoteActor.name || remoteActor.username,

@@ -109,7 +109,7 @@ async function runTest() {
   `).run();
 
   // JSON エクスポート実行
-  const exportData = exportUserData('alice');
+  const exportData = await exportUserData('alice');
 
   // アカウント情報検証
   if (exportData.account.id !== 'alice' || exportData.account.name !== 'アリス') {

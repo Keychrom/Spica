@@ -58,13 +58,16 @@ const MODERATOR_ALLOWED_PATHS = [
 ];
 
 adminRouter.use((req: Request, res: Response, next) => {
-  if (hasPermission(req.user, 'admin')) {
-    return next();
-  }
-  if (hasPermission(req.user, 'moderate') && MODERATOR_ALLOWED_PATHS.some((pattern) => pattern.test(req.path))) {
-    return next();
-  }
-  return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+  // 権限解決は DB を見るため非同期。失敗は next(err) に流す
+  void (async () => {
+    if (await hasPermission(req.user, 'admin')) {
+      return next();
+    }
+    if ((await hasPermission(req.user, 'moderate')) && MODERATOR_ALLOWED_PATHS.some((pattern) => pattern.test(req.path))) {
+      return next();
+    }
+    return res.status(403).json({ error: 'この操作には管理者権限が必要です。' });
+  })().catch(next);
 });
 
 // 権限チェックを通過した変更操作を監査ログに記録する（拒否された操作は記録しない）
@@ -1216,9 +1219,9 @@ adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
 // ==========================================
 
 // 現在の設定を取得（パスワードは伏せる）
-adminRouter.get('/mail-settings', (_req: Request, res: Response) => {
+adminRouter.get('/mail-settings', async (_req: Request, res: Response) => {
   try {
-    const cfg = getMailConfig();
+    const cfg = await getMailConfig();
     const info = getInstanceInfo();
     res.json({
       host: cfg.host,
@@ -1227,7 +1230,7 @@ adminRouter.get('/mail-settings', (_req: Request, res: Response) => {
       user: cfg.user,
       hasPassword: Boolean(cfg.pass),
       from: cfg.from,
-      configured: isMailConfigured(cfg),
+      configured: await isMailConfigured(cfg),
       allowEmailRegistration: String(getServerSetting('allow_email_registration', 'false')).toLowerCase() === 'true',
       authMode: String(getServerSetting('auth_mode', 'master_key')).toLowerCase() === 'password' ? 'password' : 'master_key',
       registrationMode: info.registration_mode,
@@ -1262,7 +1265,7 @@ adminRouter.post('/mail-settings', (req: Request, res: Response) => {
 // 接続テスト（指定があればその場の値で試す）
 adminRouter.post('/mail-settings/test', async (req: Request, res: Response) => {
   try {
-    const cfg = getMailConfig();
+    const cfg = await getMailConfig();
     const candidate = {
       ...cfg,
       host: typeof req.body?.host === 'string' && req.body.host.trim() ? req.body.host.trim() : cfg.host,

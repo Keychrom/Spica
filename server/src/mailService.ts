@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import { db, getServerSetting, setServerSetting } from './db.js';
+import { adb, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 
 /**
@@ -22,7 +22,7 @@ export interface MailConfig {
   from: string;
 }
 
-export function getMailConfig(): MailConfig {
+export async function getMailConfig(): Promise<MailConfig> {
   const envFallback = (key: string, envKey: string): string =>
     getServerSetting(key as any, process.env[envKey] || '') || '';
 
@@ -39,7 +39,7 @@ export function getMailConfig(): MailConfig {
   };
 }
 
-export function saveMailConfig(cfg: Partial<MailConfig>): void {
+export async function saveMailConfig(cfg: Partial<MailConfig>): Promise<void> {
   const map: [keyof MailConfig, string][] = [
     ['host', 'smtp_host'],
     ['port', 'smtp_port'],
@@ -55,11 +55,12 @@ export function saveMailConfig(cfg: Partial<MailConfig>): void {
   }
 }
 
-export function isMailConfigured(cfg = getMailConfig()): boolean {
-  return Boolean(cfg.host && cfg.from);
+export async function isMailConfigured(cfg?: MailConfig): Promise<boolean> {
+  const resolved = cfg || (await getMailConfig());
+  return Boolean(resolved.host && resolved.from);
 }
 
-function buildTransport(cfg: MailConfig): Transporter {
+async function buildTransport(cfg: MailConfig): Promise<Transporter> {
   return nodemailer.createTransport({
     host: cfg.host,
     port: cfg.port,
@@ -76,13 +77,13 @@ export interface SendMailResult {
 }
 
 export async function sendMail(params: { to: string; subject: string; text: string }): Promise<SendMailResult> {
-  const cfg = getMailConfig();
-  if (!isMailConfigured(cfg)) {
+  const cfg = await getMailConfig();
+  if (!(await isMailConfigured(cfg))) {
     return { ok: false, error: 'SMTP が設定されていません。' };
   }
 
   try {
-    const transporter = buildTransport(cfg);
+    const transporter = await buildTransport(cfg);
     await transporter.sendMail({
       from: cfg.from,
       to: params.to,
@@ -98,12 +99,12 @@ export async function sendMail(params: { to: string; subject: string; text: stri
 }
 
 /** 管理画面の「接続テスト」用: 接続と認証のみ確認する */
-export async function verifyMailConnection(cfg = getMailConfig()): Promise<SendMailResult> {
-  if (!isMailConfigured(cfg)) {
+export async function verifyMailConnection(cfg?: MailConfig): Promise<SendMailResult> {
+  if (!(await isMailConfigured(cfg))) {
     return { ok: false, error: 'SMTP が設定されていません。' };
   }
   try {
-    const transporter = buildTransport(cfg);
+    const transporter = await buildTransport(cfg ?? (await getMailConfig()));
     await transporter.verify();
     return { ok: true };
   } catch (err: any) {
@@ -133,18 +134,18 @@ export interface EmailVerificationRow {
  * purpose = 'register' はアカウント登録前の確認用で、まだユーザーが存在しないため
  * userId に `register:<メールアドレス>` という擬似IDを渡してメール単位で管理する。
  */
-export function issueVerificationCode(params: {
+export async function issueVerificationCode(params: {
   userId: string;
   email: string;
   purpose: 'verify_email' | 'recovery' | 'register';
   code: string;
   ttlMinutes?: number;
-}): void {
+}): Promise<void> {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + (params.ttlMinutes ?? 10) * 60 * 1000).toISOString();
 
-  db.prepare('DELETE FROM email_verifications WHERE user_id = ? AND purpose = ?').run(params.userId, params.purpose);
-  db.prepare(`
+  await adb.prepare('DELETE FROM email_verifications WHERE user_id = ? AND purpose = ?').run(params.userId, params.purpose);
+  await adb.prepare(`
     INSERT INTO email_verifications (id, user_id, email, code_hash, purpose, expires_at, attempts, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?)
   `).run(
@@ -169,13 +170,13 @@ export interface VerifyCodeResult {
 }
 
 /** 確認コードを検証する（期限・試行回数つき） */
-export function verifyCode(params: {
+export async function verifyCode(params: {
   userId: string;
   email: string;
   code: string;
   purpose: 'verify_email' | 'recovery' | 'register';
-}): VerifyCodeResult {
-  const row = db.prepare(
+}): Promise<VerifyCodeResult> {
+  const row = await adb.prepare(
     'SELECT * FROM email_verifications WHERE user_id = ? AND purpose = ?',
   ).get(params.userId, params.purpose) as unknown as EmailVerificationRow | undefined;
 
@@ -183,21 +184,21 @@ export function verifyCode(params: {
     return { ok: false, error: '確認コードが見つかりません。もう一度お試しください。' };
   }
   if (new Date(row.expires_at) < new Date()) {
-    db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+    await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
     return { ok: false, error: '確認コードの有効期限が切れています。' };
   }
   if (row.attempts >= 5) {
-    db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+    await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
     return { ok: false, error: '試行回数の上限に達しました。もう一度お試しください。' };
   }
   if (row.email !== params.email.toLowerCase()) {
     return { ok: false, error: 'メールアドレスが一致しません。' };
   }
   if (row.code_hash !== hashVerificationCode(params.code)) {
-    db.prepare('UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?').run(row.id);
+    await adb.prepare('UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?').run(row.id);
     return { ok: false, error: '確認コードが正しくありません。' };
   }
 
-  db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+  await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
   return { ok: true };
 }

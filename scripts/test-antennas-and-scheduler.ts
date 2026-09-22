@@ -65,7 +65,7 @@ async function runTest() {
     cw: '',
     media_attachments: '[]',
   };
-  if (!isPostMatchingAntenna(post1, antenna1)) {
+  if (!(await isPostMatchingAntenna(post1, antenna1))) {
     throw new Error('テストノート1がアンテナ1にマッチしませんでした');
   }
   console.log('✅ キーワードマッチング成功 ("Spica" 検出)');
@@ -78,7 +78,7 @@ async function runTest() {
     cw: '',
     media_attachments: '[]',
   };
-  if (isPostMatchingAntenna(post2, antenna1)) {
+  if (await isPostMatchingAntenna(post2, antenna1)) {
     throw new Error('除外キーワード "bot" を含むノートが除外されませんでした');
   }
   console.log('✅ 除外キーワード動作成功 ("bot" を含む投稿を除外)');
@@ -99,10 +99,10 @@ async function runTest() {
   };
   const postLower = { id: 'p-lower', user_id: userB.id, content: 'spica test', cw: '', media_attachments: '[]' };
   const postUpper = { id: 'p-upper', user_id: userB.id, content: 'SPICA test', cw: '', media_attachments: '[]' };
-  if (isPostMatchingAntenna(postLower, antennaCase)) {
+  if (await isPostMatchingAntenna(postLower, antennaCase)) {
     throw new Error('case_sensitive=1 の場合に小文字が誤検知されました');
   }
-  if (!isPostMatchingAntenna(postUpper, antennaCase)) {
+  if (!(await isPostMatchingAntenna(postUpper, antennaCase))) {
     throw new Error('case_sensitive=1 の場合に大文字が正しくマッチしませんでした');
   }
   console.log('✅ 大文字小文字の厳密マッチ判定成功');
