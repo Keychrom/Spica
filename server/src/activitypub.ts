@@ -791,7 +791,7 @@ export async function deliverActivity(params: {
     return false;
   }
 
-  const queued = enqueueDelivery({
+  const queued = await enqueueDelivery({
     inboxUrl: params.inboxUrl,
     activity: params.activity,
     senderUserId: params.senderUser?.id ?? null,

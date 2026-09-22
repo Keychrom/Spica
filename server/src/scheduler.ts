@@ -140,10 +140,10 @@ export async function processDeliveryQueue(): Promise<number> {
     // 1時間に1回、古い行（配信済み・失敗確定）を掃除する
     if (Date.now() - lastPruneAt > PRUNE_INTERVAL_MS) {
       lastPruneAt = Date.now();
-      pruneDeliveries();
+      await pruneDeliveries();
     }
 
-    const due = listDueDeliveries(DELIVERY_BATCH_LIMIT);
+    const due = await listDueDeliveries(DELIVERY_BATCH_LIMIT);
     if (due.length === 0) {
       return 0;
     }
@@ -156,7 +156,7 @@ export async function processDeliveryQueue(): Promise<number> {
         try {
           activity = JSON.parse(row.activity);
         } catch {
-          markDeliveryDead(row, { error: '保存された Activity を解析できませんでした' });
+          await markDeliveryDead(row, { error: '保存された Activity を解析できませんでした' });
           continue;
         }
 
@@ -165,7 +165,7 @@ export async function processDeliveryQueue(): Promise<number> {
         if (!row.use_instance_actor && row.sender_user_id) {
           senderUser = db.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
           if (!senderUser) {
-            markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
+            await markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
             continue;
           }
         }
@@ -178,19 +178,19 @@ export async function processDeliveryQueue(): Promise<number> {
         });
 
         if (result.ok) {
-          markDeliveryDelivered(row.id);
+          await markDeliveryDelivered(row.id);
           deliveredCount++;
           console.log(`[Delivery Queue] ✅ 再送に成功: ${row.activity_type || 'Activity'} -> ${row.inbox_url}`);
           continue;
         }
 
         if (!result.retryable) {
-          markDeliveryDead(row, { status: result.status, error: result.error });
+          await markDeliveryDead(row, { status: result.status, error: result.error });
           console.warn(`[Delivery Queue] ⛔ 再送を断念（恒久的な失敗）: ${row.inbox_url} (${result.error})`);
           continue;
         }
 
-        const outcome = markDeliveryFailed(row, { status: result.status, error: result.error });
+        const outcome = await markDeliveryFailed(row, { status: result.status, error: result.error });
         if (outcome.dead) {
           console.warn(`[Delivery Queue] 💀 試行回数の上限に達したため断念: ${row.inbox_url} (${row.attempts + 1}回失敗)`);
         } else {

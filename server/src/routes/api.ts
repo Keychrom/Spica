@@ -1224,7 +1224,7 @@ apiRouter.post(
     try {
       // ドライブの容量上限（MEDIA_QUOTA_MB。0 なら無制限）
       const incomingBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-      const quota = checkMediaQuota(user.id, incomingBytes);
+      const quota = await checkMediaQuota(user.id, incomingBytes);
       if (!quota.ok) {
         return res.status(413).json({ error: quota.error });
       }
@@ -1242,20 +1242,22 @@ apiRouter.post(
       );
 
       // ドライブの台帳に記録する（投稿に添付されなくても一覧・削除できるようにする）
-      const mediaRows = uploaded.map((item) =>
-        toClientMedia(recordMedia({
-          userId: user.id,
-          url: item.url,
-          key: item.key,
-          mediaType: item.mediaType,
-          size: item.size,
-          name: item.name,
-          thumbnailUrl: item.thumbnailUrl,
-          thumbnailKey: item.thumbnailKey,
-          width: item.width,
-          height: item.height,
-          duration: item.duration,
-        }))
+      const mediaRows = await Promise.all(
+        uploaded.map(async (item) =>
+          toClientMedia(await recordMedia({
+            userId: user.id,
+            url: item.url,
+            key: item.key,
+            mediaType: item.mediaType,
+            size: item.size,
+            name: item.name,
+            thumbnailUrl: item.thumbnailUrl,
+            thumbnailKey: item.thumbnailKey,
+            width: item.width,
+            height: item.height,
+            duration: item.duration,
+          }))
+        )
       );
 
       res.json({
@@ -1275,41 +1277,41 @@ apiRouter.post(
 // ==========================================
 
 // 自分のメディア一覧（使用量つき・新しい順）
-apiRouter.get('/drive', requireAuth, (req: Request, res: Response) => {
+apiRouter.get('/drive', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const page = parsePageQuery(req, 40);
   if (page.error) {
     return res.status(400).json({ error: page.error });
   }
   try {
-    const items = listMedia({ userId: user.id, limit: page.limit + 1, cursor: page.cursor });
+    const items = await listMedia({ userId: user.id, limit: page.limit + 1, cursor: page.cursor });
     const pageRows = applyPageHeaders(res, items, page.limit, 'created_at', 'id');
     res.json({
       items: pageRows.map(toClientMedia),
-      stats: getMediaStats(user.id),
+      stats: await getMediaStats(user.id),
     });
   } catch (err: any) {
     console.error('[API Drive Error]:', err);
     res.status(500).json({ error: err.message || 'ドライブの取得に失敗しました。' });
   }
-});
+}));
 
 // 使用量のみ（軽量）
-apiRouter.get('/drive/stats', requireAuth, (req: Request, res: Response) => {
-  res.json(getMediaStats(req.rawUser!.id));
-});
+apiRouter.get('/drive/stats', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  res.json(await getMediaStats(req.rawUser!.id));
+}));
 
 // メディアの削除（投稿で使用中のものは拒否）
 apiRouter.delete('/drive/:id', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
     const mediaId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const result = deleteMedia(user.id, mediaId);
+    const result = await deleteMedia(user.id, mediaId);
     if (!result.ok) {
       return res.status(result.inUse ? 409 : 404).json({ error: result.error, inUse: Boolean(result.inUse) });
     }
     console.log(`[Drive] 🗑️ @${user.id} がメディアを削除しました: ${mediaId}`);
-    res.json({ success: true, stats: getMediaStats(user.id) });
+    res.json({ success: true, stats: await getMediaStats(user.id) });
   } catch (err: any) {
     console.error('[API Drive Delete Error]:', err);
     res.status(500).json({ error: err.message || 'メディアの削除に失敗しました。' });
@@ -1367,7 +1369,7 @@ apiRouter.delete('/posts/:id', requireAuth, async (req: Request, res: Response) 
   } catch {}
 
   // ドライブの紐づけを解除する（ファイル自体はドライブに残す）
-  unlinkMediaFromPost(postId);
+  await unlinkMediaFromPost(postId);
 
   console.log(`[Post Delete] Post ${postId} deleted by @${user.id}`);
 

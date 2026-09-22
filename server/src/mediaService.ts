@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { adb } from './db.js';
 import { config } from './config.js';
 import { deleteMediaFile } from './storage.js';
 
@@ -40,16 +40,16 @@ export function getMediaQuotaBytes(): number {
   return mb > 0 ? mb * 1024 * 1024 : 0;
 }
 
-export function getMediaStats(userId: string): MediaStats {
-  const row = db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS b FROM media WHERE user_id = ?').get(userId) as any;
+export async function getMediaStats(userId: string): Promise<MediaStats> {
+  const row = await adb.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size), 0) AS b FROM media WHERE user_id = ?').get(userId) as any;
   return { count: Number(row?.c ?? 0), bytes: Number(row?.b ?? 0), quotaBytes: getMediaQuotaBytes() };
 }
 
 /** 追加アップロードを受け入れられるか（クォータ超過の判定） */
-export function checkMediaQuota(userId: string, incomingBytes: number): { ok: boolean; error?: string } {
+export async function checkMediaQuota(userId: string, incomingBytes: number): Promise<{ ok: boolean; error?: string }> {
   const quota = getMediaQuotaBytes();
   if (quota <= 0) return { ok: true };
-  const stats = getMediaStats(userId);
+  const stats = await getMediaStats(userId);
   if (stats.bytes + incomingBytes > quota) {
     const used = (stats.bytes / 1024 / 1024).toFixed(1);
     const limit = (quota / 1024 / 1024).toFixed(0);
@@ -59,7 +59,7 @@ export function checkMediaQuota(userId: string, incomingBytes: number): { ok: bo
 }
 
 /** アップロードされたメディアを台帳に記録する */
-export function recordMedia(params: {
+export async function recordMedia(params: {
   userId: string;
   url: string;
   key: string;
@@ -72,10 +72,10 @@ export function recordMedia(params: {
   height?: number | null;
   duration?: number | null;
   postId?: string | null;
-}): MediaRow {
+}): Promise<MediaRow> {
   const id = `media_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   const now = new Date().toISOString();
-  db.prepare(`
+  await adb.prepare(`
     INSERT INTO media (id, user_id, url, key, media_type, size, name, thumbnail_url, thumbnail_key, width, height, duration, post_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -94,17 +94,17 @@ export function recordMedia(params: {
     params.postId ?? null,
     now,
   );
-  return db.prepare('SELECT * FROM media WHERE id = ?').get(id) as unknown as MediaRow;
+  return await adb.prepare('SELECT * FROM media WHERE id = ?').get(id) as unknown as MediaRow;
 }
 
 /** 投稿の作成時に、添付 URL から台帳のメディアを投稿へ紐づける */
-export function linkMediaToPost(userId: string, postId: string, attachments: any[]): void {
+export async function linkMediaToPost(userId: string, postId: string, attachments: any[]): Promise<void> {
   if (!Array.isArray(attachments) || attachments.length === 0) return;
   const urls = attachments
     .map((a) => (typeof a === 'string' ? a : a?.url))
     .filter((u): u is string => typeof u === 'string' && u.length > 0);
   if (urls.length === 0) return;
-  const update = db.prepare('UPDATE media SET post_id = ? WHERE user_id = ? AND url = ?');
+  const update = await adb.prepare('UPDATE media SET post_id = ? WHERE user_id = ? AND url = ?');
   for (const url of urls) {
     try {
       update.run(postId, userId, url);
@@ -115,9 +115,9 @@ export function linkMediaToPost(userId: string, postId: string, attachments: any
 }
 
 /** 投稿が削除されたときの紐づけ解除（ファイルはドライブに残す） */
-export function unlinkMediaFromPost(postId: string): void {
+export async function unlinkMediaFromPost(postId: string): Promise<void> {
   try {
-    db.prepare('UPDATE media SET post_id = NULL WHERE post_id = ?').run(postId);
+    await adb.prepare('UPDATE media SET post_id = NULL WHERE post_id = ?').run(postId);
   } catch (err: any) {
     console.warn('[Drive] メディアの紐づけ解除に失敗しました:', err?.message || err);
   }
@@ -166,24 +166,24 @@ export function toClientMedia(row: MediaRow | MediaListItem): ClientMedia {
 }
 
 /** 自分のメディア一覧（新しい順・カーソル対応） */
-export function listMedia(params: { userId: string; limit: number; cursor?: { at: string; id: string } | null }): MediaListItem[] {
+export async function listMedia(params: { userId: string; limit: number; cursor?: { at: string; id: string } | null }): Promise<MediaListItem[]> {
   const rows = params.cursor
-    ? (db
+    ? await (adb
         .prepare(
           `SELECT m.*, p.content AS post_content, p.is_local AS post_is_local
            FROM media m LEFT JOIN posts p ON p.id = m.post_id
            WHERE m.user_id = ? AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))
            ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
         )
-        .all(params.userId, params.cursor.at, params.cursor.at, params.cursor.id, params.limit) as any[])
-    : (db
+        .all(params.userId, params.cursor.at, params.cursor.at, params.cursor.id, params.limit) as Promise<any[]>)
+    : await (adb
         .prepare(
           `SELECT m.*, p.content AS post_content, p.is_local AS post_is_local
            FROM media m LEFT JOIN posts p ON p.id = m.post_id
            WHERE m.user_id = ?
            ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
         )
-        .all(params.userId, params.limit) as any[]);
+        .all(params.userId, params.limit) as Promise<any[]>);
 
   return rows.map((row) => ({
     ...(row as MediaRow),
@@ -200,8 +200,8 @@ export interface DeleteMediaResult {
 }
 
 /** メディアを削除する（ファイル本体とサムネイルも消す） */
-export function deleteMedia(userId: string, id: string): DeleteMediaResult {
-  const row = db.prepare('SELECT * FROM media WHERE id = ? AND user_id = ?').get(id, userId) as unknown as MediaRow | undefined;
+export async function deleteMedia(userId: string, id: string): Promise<DeleteMediaResult> {
+  const row = await adb.prepare('SELECT * FROM media WHERE id = ? AND user_id = ?').get(id, userId) as unknown as MediaRow | undefined;
   if (!row) return { ok: false, error: 'ファイルが見つかりません。' };
 
   // 投稿に使用中のものは消さない（投稿の添付が壊れるため）。先に投稿を削除してもらう。
@@ -209,7 +209,7 @@ export function deleteMedia(userId: string, id: string): DeleteMediaResult {
     return { ok: false, inUse: true, error: 'このファイルは投稿で使用されています。先に該当の投稿を削除してください。' };
   }
 
-  db.prepare('DELETE FROM media WHERE id = ?').run(id);
+  await adb.prepare('DELETE FROM media WHERE id = ?').run(id);
 
   // ファイルは消せなくても台帳からは外す（孤児は db:maintenance の孤立メディア掃除で回収できる）
   if (row.key) void deleteMediaFile({ key: row.key, url: row.url });
@@ -218,10 +218,10 @@ export function deleteMedia(userId: string, id: string): DeleteMediaResult {
 }
 
 /** アカウント削除時に、そのユーザーのメディアを台帳とストレージから消す */
-export function deleteAllMediaForUser(userId: string): number {
-  const rows = db.prepare('SELECT id, key, url, thumbnail_key, thumbnail_url FROM media WHERE user_id = ?').all(userId) as any[];
+export async function deleteAllMediaForUser(userId: string): Promise<number> {
+  const rows = await adb.prepare('SELECT id, key, url, thumbnail_key, thumbnail_url FROM media WHERE user_id = ?').all(userId) as any[];
   for (const row of rows) {
-    db.prepare('DELETE FROM media WHERE id = ?').run(row.id);
+    await adb.prepare('DELETE FROM media WHERE id = ?').run(row.id);
     if (row.key) void deleteMediaFile({ key: row.key, url: row.url });
     if (row.thumbnail_key) void deleteMediaFile({ key: row.thumbnail_key, url: row.thumbnail_url });
   }
@@ -232,9 +232,9 @@ export function deleteAllMediaForUser(userId: string): number {
  * ドライブの整合性チェック用: 台帳にあるが投稿から参照されていない情報を返す。
  * （db:maintenance の孤立メディア判定に使う）
  */
-export function listReferencedLocalKeys(): Set<string> {
+export async function listReferencedLocalKeys(): Promise<Set<string>> {
   const keys = new Set<string>();
-  for (const row of db.prepare("SELECT key FROM media WHERE key != ''").all() as any[]) {
+  for (const row of await adb.prepare("SELECT key FROM media WHERE key != ''").all() as any[]) {
     keys.add(String(row.key));
   }
   return keys;

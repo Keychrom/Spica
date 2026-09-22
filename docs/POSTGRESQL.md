@@ -17,7 +17,7 @@
 > | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
 > | 既存テストスイートの PG 対応 | 🚧 一部 | 監査ログ・メール通知・画像プロキシ・自動運用・通報・サイレンスは PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（7.0% / 43 箇所） | 恒久対応。手順は下の「案A の進め方」 |
+> | データ層の非同期化（案A） | 🚧 進行中（16% / 98 箇所） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -120,9 +120,9 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | 段階 | 内容 |
 | :--- | :--- |
 | ✅ 土台 | 非同期ドライバ、契約テスト（`npm run test:db-async`）、進捗の可視化 |
-| ✅ 最初の葉 | `auditLog` / `emailNotifier` / `imageProxy` / `maintenanceService` / `pushService` / `linkPreview` / `reportService` — SQLite と PostgreSQL の両方でスイート緑 |
+| ✅ 最初の葉 | `auditLog` / `emailNotifier` / `imageProxy` / `maintenanceService` / `pushService` / `linkPreview` / `reportService` / `webauthnService` / `mediaService` / `accountService` / `deliveryQueue` — SQLite と PostgreSQL の両方でスイート緑 |
 | ✅ 読み取りの要 | `routes/api.ts` のタイムライン整形（`enrichAndFilterPosts`）。リンクプレビューは行ごとではなく 1 回のクエリでまとめて取る |
-| ⬜ 残りの葉 | `mediaService` / `deliveryQueue` / `accountService` / `webauthnService` / `scheduler` など |
+| ⬜ 残りの葉 | `scheduler` / `activitypub` / `postService` / `auth` / `exportService` / `importService` など |
 | ⬜ ルート | `routes/*.ts`（api 231 / admin 67 / inbox 50 箇所。await の伝播が中心） |
 | ⬜ 中核 | `db.ts`（32 箇所）。ここを変換すると全呼び出し元に波及するので最後 |
 | ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |

@@ -1517,9 +1517,9 @@ adminRouter.post('/reports/:id/resolve', async (req: Request, res: Response) => 
 // ==========================================
 
 // 再送キューの状況（待機中・直近の失敗・バックオフ設定）
-adminRouter.get('/delivery-queue', (_req: Request, res: Response) => {
+adminRouter.get('/delivery-queue', async (_req: Request, res: Response) => {
   try {
-    const stats = getDeliveryQueueStats();
+    const stats = await getDeliveryQueueStats();
     const pending = db.prepare(`
       SELECT id, activity_id, activity_type, inbox_url, attempts, next_attempt_at, last_status, last_error, created_at
       FROM outbox_deliveries
@@ -1549,9 +1549,9 @@ adminRouter.get('/delivery-queue', (_req: Request, res: Response) => {
 });
 
 // 待機中の再送を今すぐ前倒しして実行する
-adminRouter.post('/delivery-queue/retry', (req: Request, res: Response) => {
+adminRouter.post('/delivery-queue/retry', async (req: Request, res: Response) => {
   try {
-    const released = releasePendingDeliveries();
+    const released = await releasePendingDeliveries();
     console.log(`[Admin Delivery] 🔁 再送を前倒し (${released}件) by @${req.user!.id}`);
     if (released > 0) {
       // ワーカーを即時起動する（応答は待たない。1件ずつの配送は時間がかかるため）
@@ -1569,9 +1569,9 @@ adminRouter.post('/delivery-queue/retry', (req: Request, res: Response) => {
 });
 
 // 失敗が確定した配送をまとめて削除する
-adminRouter.post('/delivery-queue/clear-failed', (req: Request, res: Response) => {
+adminRouter.post('/delivery-queue/clear-failed', async (req: Request, res: Response) => {
   try {
-    const removed = clearFailedDeliveries();
+    const removed = await clearFailedDeliveries();
     console.log(`[Admin Delivery] 🧹 失敗した配送を削除 (${removed}件) by @${req.user!.id}`);
     res.json({ success: true, removed, message: `失敗した配送 ${removed} 件を削除しました。` });
   } catch (err: any) {

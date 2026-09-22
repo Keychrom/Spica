@@ -125,7 +125,7 @@ const healthHandler = async (req: Request, res: Response) => {
   if (hasAuth && req.user) {
     try {
       const stats = await getMaintenanceStats();
-      const queue = getDeliveryQueueStats();
+      const queue = await getDeliveryQueueStats();
       return res.status(dbOk ? 200 : 503).json({
         ...base,
         db: { ...base.db, sizeBytes: stats.db.sizeBytes, walBytes: stats.db.walBytes },

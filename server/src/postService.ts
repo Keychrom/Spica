@@ -116,7 +116,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now, channelId);
 
   // 添付メディアをドライブの台帳へ紐づける（自分がアップロードしたメディアのみ）
-  linkMediaToPost(user.id, postId, parsedAttachments);
+  await linkMediaToPost(user.id, postId, parsedAttachments);
 
   // チャンネルの投稿数をインクリメント
   let channelData: any = null;

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { adb } from './db.js';
 
 /**
  * 📮 配送再送キュー
@@ -61,18 +61,18 @@ export function nextRetryDelayMs(attempts: number): number {
  * 配送失敗を再送キューに登録する。
  * 同じ Activity + 配送先がすでに待機中なら二重登録しない（false を返す）。
  */
-export function enqueueDelivery(params: {
+export async function enqueueDelivery(params: {
   inboxUrl: string;
   activity: any;
   senderUserId?: string | null;
   useInstanceActor?: boolean;
   status?: number | null;
   error?: string;
-}): boolean {
+}): Promise<boolean> {
   try {
     const activityId = String(params.activity?.id || '');
     if (activityId) {
-      const existing = db.prepare(
+      const existing = await adb.prepare(
         "SELECT id FROM outbox_deliveries WHERE status = 'pending' AND activity_id = ? AND inbox_url = ?",
       ).get(activityId, params.inboxUrl) as { id: string } | undefined;
       if (existing) {
@@ -81,7 +81,7 @@ export function enqueueDelivery(params: {
     }
 
     const now = new Date();
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO outbox_deliveries (
         id, activity_id, activity_type, inbox_url, activity, sender_user_id,
         use_instance_actor, attempts, next_attempt_at, last_status, last_error, status, created_at, updated_at
@@ -108,10 +108,10 @@ export function enqueueDelivery(params: {
 }
 
 /** 再送の期限が来ている行を取得（古い順） */
-export function listDueDeliveries(limit = 50): OutboxDeliveryRow[] {
+export async function listDueDeliveries(limit = 50): Promise<OutboxDeliveryRow[]> {
   try {
     const nowIso = new Date().toISOString();
-    return db.prepare(`
+    return await adb.prepare(`
       SELECT * FROM outbox_deliveries
       WHERE status = 'pending' AND next_attempt_at <= ?
       ORDER BY next_attempt_at ASC
@@ -124,9 +124,9 @@ export function listDueDeliveries(limit = 50): OutboxDeliveryRow[] {
 }
 
 /** 再送に成功した行を配信済みにする */
-export function markDeliveryDelivered(id: string): void {
+export async function markDeliveryDelivered(id: string): Promise<void> {
   try {
-    db.prepare(
+    await adb.prepare(
       "UPDATE outbox_deliveries SET status = 'delivered', last_error = '', updated_at = ? WHERE id = ?",
     ).run(new Date().toISOString(), id);
   } catch (err) {
@@ -138,17 +138,17 @@ export function markDeliveryDelivered(id: string): void {
  * 再送に失敗した行を更新する。
  * まだ試行回数に余裕があれば次回予定を入れ、使い切ったら 'failed' で確定する。
  */
-export function markDeliveryFailed(
+export async function markDeliveryFailed(
   row: OutboxDeliveryRow,
   params: { status?: number | null; error?: string },
-): { dead: boolean; nextAttemptAt: string | null } {
+): Promise<{ dead: boolean; nextAttemptAt: string | null }> {
   try {
     const attempts = row.attempts + 1;
     const now = new Date();
     const message = String(params.error || '').slice(0, 500);
 
     if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-      db.prepare(`
+      await adb.prepare(`
         UPDATE outbox_deliveries
         SET attempts = ?, status = 'failed', last_status = ?, last_error = ?, updated_at = ?
         WHERE id = ?
@@ -157,7 +157,7 @@ export function markDeliveryFailed(
     }
 
     const nextAttemptAt = new Date(now.getTime() + nextRetryDelayMs(attempts)).toISOString();
-    db.prepare(`
+    await adb.prepare(`
       UPDATE outbox_deliveries
       SET attempts = ?, next_attempt_at = ?, last_status = ?, last_error = ?, updated_at = ?
       WHERE id = ?
@@ -170,9 +170,9 @@ export function markDeliveryFailed(
 }
 
 /** 恒久的な失敗（4xx など）として確定させる */
-export function markDeliveryDead(row: OutboxDeliveryRow, params: { status?: number | null; error?: string }): void {
+export async function markDeliveryDead(row: OutboxDeliveryRow, params: { status?: number | null; error?: string }): Promise<void> {
   try {
-    db.prepare(`
+    await adb.prepare(`
       UPDATE outbox_deliveries
       SET status = 'failed', last_status = ?, last_error = ?, updated_at = ?
       WHERE id = ?
@@ -183,13 +183,13 @@ export function markDeliveryDead(row: OutboxDeliveryRow, params: { status?: numb
 }
 
 /** 古い行を削除する（配信済み: 1日 / 失敗確定: 7日） */
-export function pruneDeliveries(): number {
+export async function pruneDeliveries(): Promise<number> {
   try {
     const now = Date.now();
     const deliveredBefore = new Date(now - DELIVERED_RETENTION_MS).toISOString();
     const failedBefore = new Date(now - FAILED_RETENTION_MS).toISOString();
-    db.prepare("DELETE FROM outbox_deliveries WHERE status = 'delivered' AND updated_at < ?").run(deliveredBefore);
-    db.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed' AND updated_at < ?").run(failedBefore);
+    await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'delivered' AND updated_at < ?").run(deliveredBefore);
+    await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed' AND updated_at < ?").run(failedBefore);
     return 1;
   } catch (err) {
     console.error('[Delivery Queue] ❌ 古い行の削除に失敗:', err);
@@ -205,17 +205,17 @@ export interface DeliveryQueueStats {
 }
 
 /** 管理画面向けの集計 */
-export function getDeliveryQueueStats(): DeliveryQueueStats {
+export async function getDeliveryQueueStats(): Promise<DeliveryQueueStats> {
   try {
-    const count = (status: string): number =>
-      (db.prepare('SELECT COUNT(*) as c FROM outbox_deliveries WHERE status = ?').get(status) as { c: number }).c;
-    const next = db.prepare(
+    const count = async (status: string): Promise<number> =>
+      (await adb.prepare('SELECT COUNT(*) as c FROM outbox_deliveries WHERE status = ?').get(status) as { c: number }).c;
+    const next = await adb.prepare(
       "SELECT next_attempt_at FROM outbox_deliveries WHERE status = 'pending' ORDER BY next_attempt_at ASC LIMIT 1",
     ).get() as { next_attempt_at: string } | undefined;
     return {
-      pending: count('pending'),
-      delivered: count('delivered'),
-      failed: count('failed'),
+      pending: await count('pending'),
+      delivered: await count('delivered'),
+      failed: await count('failed'),
       nextAttemptAt: next?.next_attempt_at ?? null,
     };
   } catch {
@@ -224,10 +224,10 @@ export function getDeliveryQueueStats(): DeliveryQueueStats {
 }
 
 /** 待機中の再送をすべて「今すぐ」に前倒しする（管理画面の手動再送） */
-export function releasePendingDeliveries(): number {
+export async function releasePendingDeliveries(): Promise<number> {
   try {
     const nowIso = new Date().toISOString();
-    const result = db.prepare(
+    const result = await adb.prepare(
       "UPDATE outbox_deliveries SET next_attempt_at = ?, updated_at = ? WHERE status = 'pending'",
     ).run(nowIso, nowIso);
     return Number(result.changes ?? 0);
@@ -238,9 +238,9 @@ export function releasePendingDeliveries(): number {
 }
 
 /** 失敗確定した行をまとめて削除する（管理画面からの掃除用） */
-export function clearFailedDeliveries(): number {
+export async function clearFailedDeliveries(): Promise<number> {
   try {
-    const result = db.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed'").run();
+    const result = await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed'").run();
     return Number(result.changes ?? 0);
   } catch (err) {
     console.error('[Delivery Queue] ❌ 失敗行の削除に失敗:', err);
