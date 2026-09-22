@@ -41,7 +41,9 @@ check(
 check(
   '文字列リテラル内の ? は触らない',
   translateSqlForPostgres("SELECT * FROM posts WHERE content LIKE '%?%' AND id = ?", ['x'], resolvePrimaryKey),
-  { sql: "SELECT * FROM posts WHERE content LIKE '%?%' AND id = $1", params: ['x'] },
+  // LIKE は ILIKE に寄せる（SQLite の LIKE は ASCII で大文字小文字を区別しない）が、
+  // 文字列リテラルの中身（'%?%'）とプレースホルダの数は変わらない
+  { sql: "SELECT * FROM posts WHERE content ILIKE '%?%' AND id = $1", params: ['x'] },
 );
 check(
   'コメント内の ? は触らない',
@@ -99,6 +101,26 @@ check(
   'PRAGMA は無効化する（呼び出し側で処理する前提の保険）',
   translateSqlForPostgres('PRAGMA table_info(users)', [], resolvePrimaryKey),
   { sql: 'SELECT 1 AS noop', params: [] },
+);
+check(
+  'IFNULL を COALESCE にする（通報の重複判定で使っている）',
+  translateSqlForPostgres("SELECT id FROM reports WHERE user_id = ? AND IFNULL(target_post_id, '') = IFNULL(?, '')", ['u1', 'p1'], resolvePrimaryKey),
+  { sql: "SELECT id FROM reports WHERE user_id = $1 AND COALESCE(target_post_id, '') = COALESCE($2, '')", params: ['u1', 'p1'] },
+);
+check(
+  'LIKE を ILIKE にする（SQLite の LIKE は ASCII で大文字小文字を区別しない）',
+  translateSqlForPostgres('SELECT id FROM users WHERE id LIKE ? OR handle NOT LIKE ?', ['%a%', '%b%'], resolvePrimaryKey),
+  { sql: 'SELECT id FROM users WHERE id ILIKE $1 OR handle NOT ILIKE $2', params: ['%a%', '%b%'] },
+);
+check(
+  '既に ILIKE のものは二重にしない',
+  translateSqlForPostgres('SELECT id FROM posts WHERE content ILIKE ?', ['%x%'], resolvePrimaryKey),
+  { sql: 'SELECT id FROM posts WHERE content ILIKE $1', params: ['%x%'] },
+);
+check(
+  'like_count のような列名は書き換えない',
+  translateSqlForPostgres('SELECT like_count FROM posts WHERE id = ?', ['p1'], resolvePrimaryKey),
+  { sql: 'SELECT like_count FROM posts WHERE id = $1', params: ['p1'] },
 );
 
 // ── FTS ──────────────────────────────────────────────────

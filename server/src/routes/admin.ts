@@ -71,7 +71,7 @@ adminRouter.use((req: Request, res: Response, next) => {
 adminRouter.use(auditMiddleware());
 
 // 管理操作の監査ログ（管理者のみ。モデレーターには開放しない）
-adminRouter.get('/audit', (req: Request, res: Response) => {
+adminRouter.get('/audit', async (req: Request, res: Response) => {
   try {
     const limit = parseInt(String(req.query.limit ?? '50'), 10);
     const before = typeof req.query.before === 'string' ? req.query.before : undefined;
@@ -79,12 +79,12 @@ adminRouter.get('/audit', (req: Request, res: Response) => {
     const actorId = typeof req.query.actorId === 'string' && req.query.actorId ? req.query.actorId : undefined;
     const targetId = typeof req.query.targetId === 'string' && req.query.targetId ? req.query.targetId : undefined;
 
-    const result = listAdminActions({ limit, before, action, actorId, targetId });
+    const result = await listAdminActions({ limit, before, action, actorId, targetId });
     res.json({
       actions: result.actions,
       nextCursor: result.nextCursor,
       total: result.total,
-      kinds: listActionKinds(),
+      kinds: await listActionKinds(),
     });
   } catch (err: any) {
     console.error('[Admin Audit Error]:', err);
@@ -93,16 +93,16 @@ adminRouter.get('/audit', (req: Request, res: Response) => {
 });
 
 // 監査ログの削除（指定日数より古いもの）
-adminRouter.post('/audit/prune', (req: Request, res: Response) => {
+adminRouter.post('/audit/prune', async (req: Request, res: Response) => {
   try {
     const days = parseInt(String(req.body?.days ?? '180'), 10);
     if (!Number.isFinite(days) || days < 1 || days > 3650) {
       return res.status(400).json({ error: '保持日数は 1〜3650 で指定してください。' });
     }
-    const removed = pruneAdminActions(days);
+    const removed = await pruneAdminActions(days);
     const actorId = String((req.rawUser || req.user)!.id);
     console.log(`[Admin] 🧾 監査ログを削除: ${removed} 件（${days} 日より前） by @${actorId}`);
-    recordAdminAction({
+    await recordAdminAction({
       actorId,
       action: 'audit_prune',
       method: 'POST',

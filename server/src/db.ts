@@ -1,5 +1,6 @@
 import { config } from './config.js';
-import { createDatabase } from './db/driver.js';
+import { createDatabase, SqliteDatabase } from './db/driver.js';
+import { createAsyncDatabase } from './db/asyncDriver.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -22,6 +23,19 @@ if (config.dbDriver === 'sqlite') {
 export const db = createDatabase({
   driver: config.dbDriver,
   dbPath: config.dbPath,
+  connectionString: config.databaseUrl,
+});
+
+/**
+ * 非同期のデータベース接続（案A の移行先。server/src/db/asyncDriver.ts）。
+ *
+ * 変換済みのモジュールはこちらを使う。SQLite のときは `db` と同じ接続を共有するので、
+ * 同期版と非同期版が同じデータを見る（PostgreSQL では接続が別になるため、
+ * 1 つのトランザクションを両者にまたがらせないこと）。
+ */
+export const adb = createAsyncDatabase({
+  driver: config.dbDriver,
+  sqlite: db.kind === 'sqlite' ? (db as SqliteDatabase) : undefined,
   connectionString: config.databaseUrl,
 });
 
@@ -1451,7 +1465,7 @@ export function createNotification(params: {
 
     // ✉️ メール通知（SMTP 設定 + ユーザーがオプトインしている場合のみ）
     import('./emailNotifier.js')
-      .then(({ queueNotificationEmail }) => {
+      .then(({ queueNotificationEmail }) =>
         queueNotificationEmail({
           userId: params.userId,
           type: params.type,
@@ -1460,8 +1474,8 @@ export function createNotification(params: {
           postId: params.postId || null,
           postContent: postSnippet,
           content: contentSnippet,
-        });
-      })
+        }),
+      )
       .catch(() => {});
 
     return true;

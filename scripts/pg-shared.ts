@@ -6,16 +6,15 @@
  * ・FTS5 の影テーブルなど、PostgreSQL 側で扱わないものを除外する
  */
 import { DatabaseSync } from 'node:sqlite';
-import pg from 'pg';
 
 /**
  * node-postgres は BIGINT(int8) を文字列で返す。
  * Spica の値は 2^53 に収まる（ミリ秒タイムスタンプや件数）ので数値に寄せ、
  * SQLite 側と突き合わせやすくする。
+ *
+ * 実体はアプリ側の非同期ドライバと同じものを使う（型の扱いを二重管理しない）。
  */
-export function configurePgTypes(): void {
-  pg.types.setTypeParser(20, (value: string) => (value === null ? null : Number(value)));
-}
+export { configurePgTypes } from '../server/src/db/asyncDriver.js';
 
 export interface SqliteObject {
   type: 'table' | 'index' | 'trigger';

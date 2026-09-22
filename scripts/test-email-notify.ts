@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // メール通知の検証（SMTP あり / なしの両方）
@@ -33,6 +33,16 @@ const PUBLIC = 'https://www.w3.org/ns/activitystreams#Public';
 });
 
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/**
+ * seed 用の接続。アプリと同じドライバを使うので、PostgreSQL でも同じ検査が流せる
+ * （PostgreSQL のときは実行前に `npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset`）。
+ */
+const seedDb = createAsyncDatabase({
+  driver: process.env.DB_DRIVER,
+  connectionString: process.env.DATABASE_URL,
+  dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+});
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let failures = 0;
@@ -240,10 +250,9 @@ async function run(): Promise<void> {
     check('SMTP 未設定でも登録できる', reg.status >= 200 && reg.status < 300, true);
 
     const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
+    await seedDb.exec('PRAGMA busy_timeout = 10000');
     const keys = generateTestKeyPair();
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', 'remote.test', 'eve', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
@@ -391,6 +400,7 @@ async function run(): Promise<void> {
     await sleep(600);
     try { server?.kill('SIGKILL'); } catch {}
     await smtp?.close();
+    await seedDb.close().catch(() => {});
   }
 
   console.log('');

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from './db.js';
+import { adb } from './db.js';
 
 /**
  * 管理操作の監査ログ（admin_actions）
@@ -127,7 +127,7 @@ function resolveTarget(path: string, body: unknown): { targetType: string; targe
 }
 
 /** 監査ログを 1 件記録する（失敗しても呼び出し元の処理は止めない） */
-export function recordAdminAction(params: {
+export async function recordAdminAction(params: {
   actorId: string;
   action: string;
   method?: string;
@@ -136,14 +136,14 @@ export function recordAdminAction(params: {
   targetId?: string;
   detail?: string | Record<string, unknown>;
   status?: number;
-}): void {
+}): Promise<void> {
   try {
     const detail = typeof params.detail === 'string'
       ? params.detail
       : params.detail
         ? summarizeBody(params.detail, {})
         : '';
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO admin_actions (id, actor_id, action, method, path, target_type, target_id, detail, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -182,7 +182,9 @@ export function auditMiddleware() {
         const target = resolveTarget(path, req.body);
         const summary = summarizeBody(req.body, req.query);
 
-        recordAdminAction({
+        // res.on('finish') は await できないので投げっぱなしにする。
+        // recordAdminAction は自分で失敗を握るので、ここでの reject は起きない想定。
+        void recordAdminAction({
           actorId,
           action,
           method: req.method,
@@ -219,13 +221,13 @@ function detailFor(row: AdminActionRow): string {
 }
 
 /** 監査ログの一覧（新しい順） */
-export function listAdminActions(params: {
+export async function listAdminActions(params: {
   limit?: number;
   before?: string;
   action?: string;
   actorId?: string;
   targetId?: string;
-}): { actions: (AdminActionView & { detail_json: string })[]; nextCursor: string | null; total: number } {
+}): Promise<{ actions: (AdminActionView & { detail_json: string })[]; nextCursor: string | null; total: number }> {
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
   const conds: string[] = [];
   const args: any[] = [];
@@ -248,7 +250,7 @@ export function listAdminActions(params: {
   }
 
   const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
-  const rows = db.prepare(`
+  const rows = await adb.prepare(`
     SELECT * FROM admin_actions ${where}
     ORDER BY created_at DESC, id DESC
     LIMIT ?
@@ -258,7 +260,7 @@ export function listAdminActions(params: {
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   const last = pageRows[pageRows.length - 1];
 
-  const total = Number((db.prepare(`SELECT COUNT(*) AS c FROM admin_actions ${where}`).get(...args) as any)?.c ?? 0);
+  const total = Number((await adb.prepare(`SELECT COUNT(*) AS c FROM admin_actions ${where}`).get(...args) as any)?.c ?? 0);
 
   return {
     actions: pageRows.map((row) => ({
@@ -272,17 +274,17 @@ export function listAdminActions(params: {
 }
 
 /** 古い監査ログを削除する（保持日数より前のもの） */
-export function pruneAdminActions(retentionDays: number): number {
+export async function pruneAdminActions(retentionDays: number): Promise<number> {
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
   const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
-  const result = db.prepare('DELETE FROM admin_actions WHERE created_at < ?').run(cutoff);
+  const result = await adb.prepare('DELETE FROM admin_actions WHERE created_at < ?').run(cutoff);
   return Number(result.changes ?? 0);
 }
 
 /** 表示に使える操作の種類（フィルタ用） */
-export function listActionKinds(): { action: string; label: string; count: number }[] {
+export async function listActionKinds(): Promise<{ action: string; label: string; count: number }[]> {
   try {
-    const rows = db.prepare(`
+    const rows = await adb.prepare(`
       SELECT action, COUNT(*) AS c FROM admin_actions GROUP BY action ORDER BY c DESC
     `).all() as unknown as { action: string; c: number }[];
     return rows.map((row) => {

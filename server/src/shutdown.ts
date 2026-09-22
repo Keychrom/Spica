@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { db } from './db.js';
+import { db, adb } from './db.js';
 import { stopScheduler } from './scheduler.js';
 import { closeAllStreams } from './streaming.js';
 
@@ -79,8 +79,15 @@ export function createGracefulShutdown(deps: GracefulShutdownDeps): (signal: str
       // すでに閉じている場合は無視
     }
 
-    console.log('[Shutdown] ✅ 終了しました');
-    exit(0);
+    // 非同期接続（PostgreSQL のソケット）は閉じてから終わる。
+    // 閉じ終わらない場合は上の forceExit が強制終了する。
+    adb
+      .close()
+      .catch(() => {})
+      .finally(() => {
+        console.log('[Shutdown] ✅ 終了しました');
+        exit(0);
+      });
   };
 }
 

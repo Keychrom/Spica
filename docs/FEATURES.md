@@ -134,7 +134,7 @@
 | **リモート投稿の保持期間** | `REMOTE_POST_RETENTION_DAYS`（既定 30 日）。ブックマーク・ピン留め・ローカル投稿の返信先/引用元・ローカルのリアクション/ブースト・ローカル投稿への返信・フォロー中アクターの投稿は残します。 |
 | **バックアップ** | `db:maintenance` が削除前に `VACUUM INTO` でスナップショットを作成し、`server/data/backups/` に世代管理（既定3世代）します。 |
 | **複数人での運営** | 管理者を複数置けます（ロールで `admin` / `moderate` を付与）。監査ログで操作の履歴が残り、通報は運営全員に通知されるため、担当を決めて交代で見られます。DM が無い（方針）ため、運営同士の連絡はノード外の手段を使ってください。 |
-| **PostgreSQL 対応（任意）** | 既定は SQLite で、`DB_DRIVER=postgres DATABASE_URL=...` を設定したときだけ PostgreSQL で動きます（実験的）。スキーマ生成・データ移送・検証・アプリの起動まで実装済みで、既存のコードはそのまま動きます（同期ファサード）。**書き込みは直列で、手動メンテナンス CLI と `VACUUM INTO` によるバックアップは SQLite 専用**です。設計・移行手順・制約は [POSTGRESQL.md](POSTGRESQL.md)、移植コストの計測は `npm run db:port-report`、SQL 翻訳の検証は `npm run test:pg-translate`。 |
+| **PostgreSQL 対応（任意）** | 既定は SQLite で、`DB_DRIVER=postgres DATABASE_URL=...` を設定したときだけ PostgreSQL で動きます（実験的）。スキーマ生成・データ移送・検証・アプリの起動まで実装済みで、既存のコードはそのまま動きます（同期ファサード）。**書き込みは直列で、手動メンテナンス CLI と `VACUUM INTO` によるバックアップは SQLite 専用**です。恒久対応としてデータ層の非同期化（案A）を進めており、進捗は `npm run db:async:status` で見られます。設計・移行手順・制約は [POSTGRESQL.md](POSTGRESQL.md)、移植コストの計測は `npm run db:port-report`、SQL 翻訳の検証は `npm run test:pg-translate`、非同期層の検証は `npm run test:db-async`。 |
 | **検証スクリプト** | 連合・署名検証・配送・ページネーション・ドライブ・通知設定・動画サムネイルなど、`npm run test:*` で機能ごとの検証を実行できます。 |
 
 ## 9. 実装していないもの（方針）

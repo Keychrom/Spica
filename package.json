@@ -52,6 +52,8 @@
     "db:pg:migrate": "npx tsx scripts/pg-migrate.ts",
     "test:pg-port": "npx tsx scripts/test-pg-port.ts",
     "test:pg-translate": "npx tsx scripts/test-pg-translate.ts",
+    "test:db-async": "npx tsx scripts/test-db-async.ts",
+    "db:async:status": "npx tsx scripts/db-async-status.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
     "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
   },

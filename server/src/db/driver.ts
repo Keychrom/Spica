@@ -53,7 +53,11 @@ const DEFAULT_QUERY_TIMEOUT_MS = 60_000;
 export class SqliteDatabase implements SpicaDatabase {
   readonly kind = 'sqlite' as const;
 
-  constructor(private readonly inner: DatabaseSync) {}
+  /**
+   * 生の SQLite 接続。非同期層（server/src/db/asyncDriver.ts）が同じ接続を共有するために公開している。
+   * 同じファイルに 2 本繋ぐと WAL でも書き込みが競合するので、接続は 1 本に保つ。
+   */
+  constructor(readonly inner: DatabaseSync) {}
 
   prepare(sql: string): SpicaStatement {
     return this.inner.prepare(sql) as unknown as SpicaStatement;
@@ -121,8 +125,27 @@ function workerExecArgv(): string[] {
   return out;
 }
 
-const PRAGMA_NOOP_RE = /^\s*PRAGMA\s+(?:journal_mode|foreign_keys|busy_timeout|synchronous|wal_checkpoint|optimize|page_size|page_count|freelist_count|temp_store|mmap_size|cache_size)\b/i;
-const PRAGMA_TABLE_INFO_RE = /^\s*PRAGMA\s+table_info\(\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\)/i;
+/** `PRAGMA <設定>` は PostgreSQL では何もしない（呼び出し側で無視してよい） */
+export const PRAGMA_NOOP_RE = /^\s*PRAGMA\s+(?:journal_mode|foreign_keys|busy_timeout|synchronous|wal_checkpoint|optimize|page_size|page_count|freelist_count|temp_store|mmap_size|cache_size)\b/i;
+/** `PRAGMA table_info(x)` は information_schema で代替する */
+export const PRAGMA_TABLE_INFO_RE = /^\s*PRAGMA\s+table_info\(\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\)/i;
+/** `PRAGMA table_info(x)` の代わりに流すクエリ（$1 にテーブル名） */
+export const TABLE_INFO_SQL = `SELECT column_name AS name, data_type AS type, is_nullable AS notnull, column_default AS dflt_value
+                FROM information_schema.columns
+               WHERE table_schema = 'public' AND table_name = $1
+               ORDER BY ordinal_position`;
+
+/** `INSERT OR REPLACE INTO t (...) ...` を分解する（1=テーブル名 / 2=列リスト）。g フラグ無しなので exec は状態を持たない */
+export const INSERT_OR_REPLACE_RE = /^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(([^)]*)\)/i;
+
+/**
+ * `INSERT OR REPLACE INTO t (...)` の対象テーブル名を返す（該当しなければ null）。
+ * ON CONFLICT を組み立てるには主キーが要るので、先にテーブル名だけ取り出す。
+ */
+export function insertOrReplaceTarget(sql: string): string | null {
+  const match = INSERT_OR_REPLACE_RE.exec(sql);
+  return match ? match[1] : null;
+}
 
 class PostgresDatabase implements SpicaDatabase {
   readonly kind = 'postgres' as const;
@@ -259,9 +282,10 @@ class PostgresDatabase implements SpicaDatabase {
 
   /** INSERT OR REPLACE を ON CONFLICT ... DO UPDATE に変換する */
   private translateInsertOrReplace(sql: string): string {
-    const match = /^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(([^)]*)\)/i.exec(sql);
+    const match = INSERT_OR_REPLACE_RE.exec(sql);
     if (!match) return sql.replace(/INSERT\s+OR\s+REPLACE/i, 'INSERT');
-    const [, table, columnsRaw] = match;
+    const table = match[1];
+    const columnsRaw = match[2];
     const columns = columnsRaw.split(',').map((c) => c.trim().replace(/"/g, '')).filter(Boolean);
     const keys = this.primaryKeyOf(table);
     if (keys.length === 0) {
@@ -291,14 +315,7 @@ class PostgresDatabase implements SpicaDatabase {
     // PRAGMA table_info(x) は information_schema で代替する
     const tableInfo = PRAGMA_TABLE_INFO_RE.exec(trimmed);
     if (tableInfo) {
-      return this.call({
-        kind: 'query',
-        sql: `SELECT column_name AS name, data_type AS type, is_nullable AS notnull, column_default AS dflt_value
-                FROM information_schema.columns
-               WHERE table_schema = 'public' AND table_name = $1
-               ORDER BY ordinal_position`,
-        params: [tableInfo[1]],
-      });
+      return this.call({ kind: 'query', sql: TABLE_INFO_SQL, params: [tableInfo[1]] });
     }
     if (PRAGMA_NOOP_RE.test(trimmed)) {
       return mode === 'run' ? { changes: 0, lastInsertRowid: 0 } : [];
@@ -441,6 +458,14 @@ export function translateSqlForPostgres(
   text = text.replace(/datetime\(\s*('(?:[^']|'')*')\s*\)/gi, '$1');
   text = text.replace(/datetime\(\s*([A-Za-z_"][A-Za-z0-9_."]*)\s*\)/gi, '$1');
   text = text.replace(/bm25\(\s*"?posts_fts"?\s*\)/gi, 'p.published_at');
+
+  // IFNULL は PostgreSQL に無い（COALESCE が同じ）
+  text = text.replace(/\bifnull\s*\(/gi, 'COALESCE(');
+
+  // SQLite の LIKE は ASCII について大文字小文字を区別しない。
+  // PostgreSQL の LIKE は区別するので、挙動を合わせて ILIKE にする
+  // （既に ILIKE と書かれているものはそのまま）
+  text = text.replace(/(?<![Ii])\bLIKE\b/gi, 'ILIKE');
 
   // FTS: `posts_fts MATCH ?` の「何番目のプレースホルダか」を先に数えてから、
   // MATCH というキーワードを消す（PostgreSQL に MATCH は無い）。

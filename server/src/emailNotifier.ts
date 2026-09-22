@@ -1,4 +1,4 @@
-import { db, getServerSetting } from './db.js';
+import { adb, getServerSetting } from './db.js';
 import { config } from './config.js';
 import { isMailConfigured, sendMail } from './mailService.js';
 
@@ -75,8 +75,8 @@ interface Recipient {
   enabled: boolean;
 }
 
-function getRecipient(userId: string): Recipient | null {
-  const row = db.prepare(
+async function getRecipient(userId: string): Promise<Recipient | null> {
+  const row = await adb.prepare(
     'SELECT id, email, email_verified, email_notifications FROM users WHERE id = ?',
   ).get(userId) as { id: string; email?: string | null; email_verified?: number | null; email_notifications?: number | null } | undefined;
   if (!row || !row.email) return null;
@@ -89,13 +89,13 @@ function getRecipient(userId: string): Recipient | null {
 }
 
 /** ユーザー側の設定状態（UI 表示用） */
-export function getEmailNotificationStatus(userId: string): {
+export async function getEmailNotificationStatus(userId: string): Promise<{
   available: boolean;
   enabled: boolean;
   email: string;
   verified: boolean;
-} {
-  const recipient = getRecipient(userId);
+}> {
+  const recipient = await getRecipient(userId);
   return {
     available: isEmailNotificationAvailable(),
     enabled: Boolean(recipient?.enabled),
@@ -105,15 +105,15 @@ export function getEmailNotificationStatus(userId: string): {
 }
 
 /** ユーザー側の ON/OFF 保存 */
-export function setEmailNotificationEnabled(userId: string, enabled: boolean): void {
-  db.prepare('UPDATE users SET email_notifications = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
+export async function setEmailNotificationEnabled(userId: string, enabled: boolean): Promise<void> {
+  await adb.prepare('UPDATE users SET email_notifications = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
 }
 
 /**
  * 通知が作られたときに呼ぶ（createNotification から動的 import される）。
  * ここでは送信せず、まとめ送りのキューに積むだけ。
  */
-export function queueNotificationEmail(params: {
+export async function queueNotificationEmail(params: {
   userId: string;
   type: string;
   actorName: string;
@@ -121,9 +121,9 @@ export function queueNotificationEmail(params: {
   postId?: string | null;
   postContent?: string;
   content?: string;
-}): void {
+}): Promise<void> {
   if (!isEmailNotificationAvailable()) return;
-  const recipient = getRecipient(params.userId);
+  const recipient = await getRecipient(params.userId);
   // オプトイン・メール設定・確認済みのすべてが揃っている場合だけ
   if (!recipient || !recipient.enabled || !recipient.verified) return;
 
@@ -168,7 +168,7 @@ async function flushUser(userId: string): Promise<void> {
   batch.items = [];
   pending.delete(userId);
 
-  const recipient = getRecipient(userId);
+  const recipient = await getRecipient(userId);
   if (!recipient || !recipient.enabled || !recipient.verified) return;
 
   // 連投防止: 前回の送信から間隔が空いていなければ、残り時間だけ待ってから再キュー
@@ -213,7 +213,7 @@ async function flushUser(userId: string): Promise<void> {
   try {
     const result = await sendMail({ to: recipient.email, subject, text });
     if (result.ok) {
-      db.prepare(`
+      await adb.prepare(`
         INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
       `).run(`email_notify_last_${userId}`, String(Date.now()), new Date().toISOString());

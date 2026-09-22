@@ -2646,14 +2646,14 @@ apiRouter.get('/notifications', requireAuth, (req: Request, res: Response) => {
 });
 
 // 通知の種類別設定（フォロー・返信・メンション・リアクション・リノート・アンテナ・引っ越し）
-apiRouter.get('/notifications/settings', requireAuth, (req: Request, res: Response) => {
+apiRouter.get('/notifications/settings', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
     res.json({
       prefs: getNotificationPrefs(user.id),
       types: NOTIFICATION_TYPES.map((type) => ({ type, label: NOTIFICATION_TYPE_LABELS[type] ?? type })),
       // メール通知（SMTP 設定時のみ利用可能。オプトイン）
-      email: getEmailNotificationStatus(user.id),
+      email: await getEmailNotificationStatus(user.id),
     });
   } catch (err: any) {
     console.error('[API Notification Settings Error]:', err);
@@ -2676,11 +2676,11 @@ apiRouter.post('/notifications/settings', requireAuth, (req: Request, res: Respo
 });
 
 // メール通知の ON/OFF（SMTP 未設定なら 400）
-apiRouter.post('/notifications/email', requireAuth, (req: Request, res: Response) => {
+apiRouter.post('/notifications/email', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
     const enabled = req.body?.enabled === true;
-    const status = getEmailNotificationStatus(user.id);
+    const status = await getEmailNotificationStatus(user.id);
     if (!status.available) {
       return res.status(400).json({ error: 'このサーバーではメール通知が利用できません（SMTP 未設定）。' });
     }
@@ -2690,9 +2690,9 @@ apiRouter.post('/notifications/email', requireAuth, (req: Request, res: Response
     if (enabled && !status.verified) {
       return res.status(400).json({ error: 'メールアドレスの確認が済んでいません。設定 → メールアドレスから確認してください。' });
     }
-    setEmailNotificationEnabled(user.id, enabled);
+    await setEmailNotificationEnabled(user.id, enabled);
     console.log(`[Notification] ✉️ @${user.id} のメール通知: ${enabled ? 'ON' : 'OFF'}`);
-    res.json({ success: true, email: getEmailNotificationStatus(user.id) });
+    res.json({ success: true, email: await getEmailNotificationStatus(user.id) });
   } catch (err: any) {
     console.error('[API Notification Email Error]:', err);
     res.status(500).json({ error: err.message || 'メール通知の設定に失敗しました。' });

@@ -14,9 +14,10 @@
 > | SQLite → PostgreSQL のデータ移送 | ✅ 実装済み | `npm run db:pg:migrate -- --from ... --dsn ... --verify` |
 > | **アプリ本体のドライバ（PG で起動する）** | ✅ 実装済み（同期ファサード） | `DB_DRIVER=postgres DATABASE_URL=... npm start` |
 > | SQL 翻訳の単体検証 | ✅ 実装済み | `npm run test:pg-translate`（PG 不要） |
+> | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
-> | 既存テストスイートの PG 対応 | 🚧 一部 | HTTP だけで完結するスイートはそのまま PG で通る（下記に個別の状態） |
-> | データ層の非同期化（案A） | ⬜ 未着手 | 恒久対応。数週間規模 |
+> | 既存テストスイートの PG 対応 | 🚧 一部 | 監査ログ・メール通知・ページネーション・お知らせは PG でも全項目緑（下記に個別の状態） |
+> | データ層の非同期化（案A） | 🚧 進行中（1.3%） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -36,6 +37,8 @@
 | `INSERT OR IGNORE` / `REPLACE` | 7 | 置換（`ON CONFLICT` へ） |
 | `datetime()` 系 | 5 | 置換 |
 | `VACUUM` / `wal_checkpoint` | 5 | **設計変更**（運用が変わる） |
+| `IFNULL` | 2 | 置換（`COALESCE` へ。通報の重複判定で使っていた） |
+| `LIKE` | 41 | 置換（`ILIKE` へ。SQLite の LIKE は ASCII で大文字小文字を区別しないため） |
 
 実データ（ライブノードのスナップショット）での移送結果:
 
@@ -77,6 +80,46 @@ SQL をリポジトリ層へ集約し、呼び出しを `await` に変えてい�
 > [!TIP]
 > いまは案Bで「PG でも動く」状態にあり、案A は恒久対応として残しています。両案で必要な
 > スキーマ・移送・検証は先に済ませてあります。
+
+#### 案A の進め方（2026-09 着手）
+
+移行先は `server/src/db/asyncDriver.ts` の非同期インターフェースです。SQLite は既存の同期接続を
+そのまま包み、PostgreSQL は `pg` クライアントに直列化して投げます（worker も `Atomics.wait` も使わない）。
+
+```ts
+import { adb } from './db.js';               // 同期版の db と並べて公開している
+
+const row = await adb.prepare('SELECT ... WHERE id = ?').get(id);   // await が付くだけ
+await adb.prepare('UPDATE ...').run(value, id);
+```
+
+手順（1 ファイルずつ、下から上へ）:
+
+1. `npm run db:async:status` で残りを確認し、**自分で SQL を持っている葉のモジュール**から選ぶ
+   （`auditLog.ts` や `imageNotifier.ts` のような、他のモジュールの関数を経由しないもの）。
+2. `import { db }` を `import { adb }` に変え、`db.prepare(...)` を `await adb.prepare(...)` にする。
+3. それを含む関数を `async` にする。呼び出し元にも `await` を伝播させる
+   （Express のハンドラは `async (req, res) => {}` にし、**try/catch を必ず付ける**。
+   Express 4 は非同期の失敗を拾わないため、付け忘れるとプロセスが落ちる）。
+4. `res.on('finish')` のような await できない場所は `void fn().catch(() => {})` にする。
+5. `npx tsc -p server/tsconfig.json --noEmit` → 既存スイートを SQLite と PostgreSQL の両方で実行。
+6. `npm run db:async:status` で数字が減ったことを確認。
+
+トランザクション: 変換した範囲では `withTransaction(adb, async () => {...})` を使います。
+PostgreSQL では 1 接続に直列化しているので `fn` の中に他のクエリが割り込みません。
+**1 つのトランザクションを同期版と非同期版にまたがらせないこと**（接続が別なので、書き込み前の
+データが非同期側から見えない）。トランザクションのある範囲はまとめて変換します（アプリ内は 2 箇所だけ）。
+
+進捗の目安（数字は `npm run db:async:status` の出力）:
+
+| 段階 | 内容 |
+| :--- | :--- |
+| ✅ 土台 | 非同期ドライバ、契約テスト（`npm run test:db-async`）、進捗の可視化 |
+| ✅ 最初の葉 | `auditLog.ts`（監査ログ）/ `emailNotifier.ts`（メール通知）— SQLite と PostgreSQL の両方でスイート緑 |
+| ⬜ 残りの葉 | `imageProxy` / `pushService` / `linkPreview` / `mediaService` / `deliveryQueue` / `accountService` など |
+| ⬜ ルート | `routes/*.ts`（api 231 / admin 67 / inbox 50 箇所。await の伝播が中心） |
+| ⬜ 中核 | `db.ts`（32 箇所）。ここを変換すると全呼び出し元に波及するので最後 |
+| ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
 
 ---
 
@@ -227,6 +270,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する |
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
 | **短い検索語** | trigram 索引は 3 文字未満だと効きにくい | 1〜2 文字の検索は全走査になる。機能は同じで遅いだけ |
+| **バイナリ列** | SQLite は `Uint8Array`、PG は `Buffer` で返る | 現在のスキーマにバイナリ列は無い（鍵や画像は TEXT の base64）。増やすときは注意 |
 | **worker の異常** | 起動に 3 回失敗したら明示的なエラーで停止する | 黙って SQLite に落ちたりはしない（誤動作より停止を選ぶ） |
 | **セッション** | 移送後にテーブルは引き継がれる | とはいえ移行時は再ログインを促すのが安全 |
 
@@ -243,9 +287,16 @@ DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 
 | スイート | PG での状態 |
 | :--- | :--- |
+| `test-admin-audit` / `test-email-notify` | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-pagination` / `test-announcements` | ✅ そのまま通る |
 | `test-password-auth` | 🚧 HTTP の検査（登録・ログイン・マスターキー・拒否）は全部通る。最後の「平文で保存されない」検査だけが **SQLite ファイルを直接開く**ため PG では開けずに失敗する |
 | `test-federation` | ❌ 2 つのノードが別々の SQLite ファイルを消して回る作り。PG ではノードごとに DB を分ける改造が要る |
+
+> [!NOTE]
+> スイートが `new DatabaseSync(...)` で直接 SQLite を開いて seed していると、PG では空のファイルを
+> 開いて `no such table` で落ちます。`createAsyncDatabase({ driver: process.env.DB_DRIVER, connectionString:
+> process.env.DATABASE_URL, dbPath: ... })` に置き換えると、どちらの DB でも同じ検査が流せます
+> （`test-admin-audit.ts` / `test-email-notify.ts` が実例）。
 
 ---
 

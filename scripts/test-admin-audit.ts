@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // 複数人運用のための3機能の検証
@@ -32,6 +32,17 @@ const PUBLIC = 'https://www.w3.org/ns/activitystreams#Public';
 });
 
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/**
+ * seed 用の接続。DB_DRIVER / DATABASE_URL をそのまま使うので、
+ * SQLite でも PostgreSQL でも同じ検査が流せる（PostgreSQL のときは
+ * 実行前に `npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset` で作り直すこと）。
+ */
+const seedDb = createAsyncDatabase({
+  driver: process.env.DB_DRIVER,
+  connectionString: process.env.DATABASE_URL,
+  dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+});
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let failures = 0;
@@ -122,7 +133,13 @@ async function run(): Promise<void> {
       stdio: 'pipe',
     });
     server.stdout?.on('data', () => {});
-    server.stderr?.on('data', () => {});
+    // サーバー側のエラーは診断に必要なので、失敗時に読めるよう残す
+    const serverLog: string[] = [];
+    server.stderr?.on('data', (chunk: Buffer) => {
+      const line = chunk.toString();
+      serverLog.push(line);
+      if (/error|Error/.test(line)) console.error(`   [server] ${line.trim()}`);
+    });
     if (!(await waitForServer(BASE))) throw new Error('サーバー起動失敗');
     console.log('✅ サーバー起動完了\n');
 
@@ -140,8 +157,8 @@ async function run(): Promise<void> {
     const modUser = await register('moder');
     const normal = await register('bob');
 
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
+    // seed はアプリと同じドライバで行う（PostgreSQL でも同じ手順で検証できるように）
+    await seedDb.exec('PRAGMA busy_timeout = 10000');
 
     // モデレーターのロールを作って付与する（UI と同じ経路: /api/admin/roles → /users/:id/roles）
     const adminAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${admin.sessionToken}` };
@@ -203,7 +220,7 @@ async function run(): Promise<void> {
     });
 
     const keys = generateTestKeyPair();
-    db.prepare(
+    await seedDb.prepare(
       `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
        VALUES (?, 'eve', 'remote.test', 'eve', '', '', '', ?, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
@@ -228,6 +245,10 @@ async function run(): Promise<void> {
       headers: normalAuth,
       body: JSON.stringify({ targetPostId: noteId, category: 'spam', comment: '宣伝目的の連投です' }),
     });
+    if (!(reportRes.status >= 200 && reportRes.status < 300)) {
+      console.log(`     ↳ 通報の応答: ${reportRes.status} ${await reportRes.text().catch(() => '')}`.trim());
+      console.log(`     ↳ サーバーログ末尾: ${serverLog.join('').trim().split('\n').slice(-6).join(' | ')}`);
+    }
     check('通報できる', reportRes.status >= 200 && reportRes.status < 300, true);
     await sleep(600);
 
@@ -321,6 +342,7 @@ async function run(): Promise<void> {
     try { server?.kill('SIGTERM'); } catch {}
     await sleep(700);
     try { server?.kill('SIGKILL'); } catch {}
+    await seedDb.close().catch(() => {});
   }
 
   console.log('');

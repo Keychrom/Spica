@@ -236,11 +236,15 @@ async function run(): Promise<void> {
 
     console.log('\n🗓️ [4] 自動実行は 1 日 1 回だけ');
     const { maybeRunScheduledMaintenance, getLastAutoMaintenanceAt } = await import('../server/src/maintenanceService.js');
-    // スケジューラが呼ぶのと同じ関数を明示的に 2 回呼んで、1 日 1 回の判定を確認する
-    const firstRun = await maybeRunScheduledMaintenance(new Date());
+    // スケジューラが呼ぶのと同じ関数を明示的に 2 回呼んで、1 日 1 回の判定を確認する。
+    // 実行予定時刻（既定 4 時）を過ぎた時刻を渡して、実時刻に依存させない
+    // （深夜 0〜4 時に走らせると「まだ予定時刻の前」で正しく false になるため）
+    const scheduledTime = new Date();
+    scheduledTime.setHours(12, 0, 0, 0);
+    const firstRun = await maybeRunScheduledMaintenance(scheduledTime);
     check('予定時刻を過ぎていれば実行する', firstRun, true);
     check('実行済みフラグが記録された', Boolean(getLastAutoMaintenanceAt()), true);
-    const secondRun = await maybeRunScheduledMaintenance(new Date());
+    const secondRun = await maybeRunScheduledMaintenance(scheduledTime);
     check('同じ日には 2 回目を実行しない', secondRun, false);
 
     // ------------------------------------------------------------------
