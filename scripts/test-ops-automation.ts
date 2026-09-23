@@ -250,11 +250,25 @@ async function run(): Promise<void> {
 
     console.log('\n🗓️ [4] 自動実行は 1 日 1 回だけ');
     const { maybeRunScheduledMaintenance, getLastAutoMaintenanceAt } = await import('../server/src/maintenanceService.js');
-    // スケジューラが呼ぶのと同じ関数を明示的に 2 回呼んで、1 日 1 回の判定を確認する。
-    // 実行予定時刻（既定 4 時）を過ぎた時刻を渡して、実時刻に依存させない
-    // （深夜 0〜4 時に走らせると「まだ予定時刻の前」で正しく false になるため）
+    // この検査はサーバー側のスケジューラ（10 秒ごとに同じ関数を呼ぶ）と競合する。
+    // [2] で実行時刻を 0 時にしているため、そのままだとスケジューラが先に実行して
+    // 「今日は実行済み」のフラグを立て、この検査が落ちる（実行タイミング次第で揺れる）。
+    // 実行時刻を未来（23 時）にしてスケジューラを止め、実行済みフラグも消してから判定する。
+    await fetch(`${BASE}/api/admin/maintenance/settings`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ hour: 23 }),
+    });
+    const resetDb = createAsyncDatabase({
+      driver: process.env.DB_DRIVER,
+      connectionString: process.env.DATABASE_URL,
+      dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+    });
+    await resetDb.prepare("DELETE FROM server_settings WHERE key = 'last_auto_maintenance'").run();
+    await resetDb.close();
+
     const scheduledTime = new Date();
-    scheduledTime.setHours(12, 0, 0, 0);
+    scheduledTime.setHours(23, 30, 0, 0);
     const firstRun = await maybeRunScheduledMaintenance(scheduledTime);
     check('予定時刻を過ぎていれば実行する', firstRun, true);
     check('実行済みフラグが記録された', Boolean(getLastAutoMaintenanceAt()), true);

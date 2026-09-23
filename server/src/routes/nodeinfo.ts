@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { db, getInstanceInfo } from '../db.js';
+import { asyncHandler } from '../asyncHandler.js';
+import { adb, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
 
 export const nodeinfoRouter = Router();
@@ -15,9 +16,9 @@ nodeinfoRouter.get('/.well-known/nodeinfo', (req: Request, res: Response) => {
   });
 });
 
-nodeinfoRouter.get('/nodeinfo/2.1', (req: Request, res: Response) => {
-  const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number }).count;
-  const postCount = (db.prepare('SELECT COUNT(*) as count FROM posts WHERE is_local = 1').get() as { count: number }).count;
+nodeinfoRouter.get('/nodeinfo/2.1', asyncHandler(async (req: Request, res: Response) => {
+  const userCount = (await adb.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number }).count;
+  const postCount = (await adb.prepare('SELECT COUNT(*) as count FROM posts WHERE is_local = 1').get() as { count: number }).count;
   const info = getInstanceInfo();
 
   res.setHeader('Content-Type', 'application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"');
@@ -49,7 +50,7 @@ nodeinfoRouter.get('/nodeinfo/2.1', (req: Request, res: Response) => {
       nodeIcon: info.icon_url,
       // 参考情報（invite = 招待制 / closed = 停止中）
       registrationMode: info.registration_mode,
-      staffAccounts: db.prepare("SELECT id FROM users WHERE role = 'admin'").all().map((row: any) => `${config.origin}/users/${row.id}`),
+      staffAccounts: (await adb.prepare("SELECT id FROM users WHERE role = 'admin'").all()).map((row: any) => `${config.origin}/users/${row.id}`),
     },
   });
-});
+}));

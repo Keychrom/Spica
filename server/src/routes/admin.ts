@@ -1,7 +1,8 @@
+import { asyncHandler } from '../asyncHandler.js';
 import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode, getServerSetting, setServerSetting } from '../db.js';
+import { adb, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode, getServerSetting, setServerSetting } from '../db.js';
 import { requireAdmin, hasPermission, getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
@@ -121,16 +122,16 @@ adminRouter.post('/audit/prune', async (req: Request, res: Response) => {
 });
 
 // サーバー全体統計
-adminRouter.get('/stats', (req: Request, res: Response) => {
-  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
-  const adminCount = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
-  const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
-  const federatedPostCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
-  const remoteActorCount = (db.prepare('SELECT COUNT(*) as c FROM remote_actors').get() as any).c;
-  const followCount = (db.prepare('SELECT COUNT(*) as c FROM follows').get() as any).c;
+adminRouter.get('/stats', asyncHandler(async (req: Request, res: Response) => {
+  const userCount = (await adb.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const adminCount = (await adb.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+  const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
+  const federatedPostCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
+  const remoteActorCount = (await adb.prepare('SELECT COUNT(*) as c FROM remote_actors').get() as any).c;
+  const followCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows').get() as any).c;
 
   // 連携先ドメイン数
-  const domains = db.prepare('SELECT DISTINCT domain FROM remote_actors').all() as { domain: string }[];
+  const domains = await adb.prepare('SELECT DISTINCT domain FROM remote_actors').all() as { domain: string }[];
   const instanceInfo = getInstanceInfo();
 
   res.json({
@@ -154,11 +155,11 @@ adminRouter.get('/stats', (req: Request, res: Response) => {
       follows: followCount,
     },
   });
-});
+}));
 
 // ユーザー管理一覧
-adminRouter.get('/users', (req: Request, res: Response) => {
-  const users = db.prepare(`
+adminRouter.get('/users', asyncHandler(async (req: Request, res: Response) => {
+  const users = await adb.prepare(`
     SELECT
       u.id,
       u.name,
@@ -173,21 +174,23 @@ adminRouter.get('/users', (req: Request, res: Response) => {
   `).all() as any[];
 
   // 各ユーザーに付与されているロールも返す（ロール管理UIで使用）
-  const enriched = users.map((user) => ({
-    ...user,
-    roles: db.prepare(`
+  const enriched = await Promise.all(
+    users.map(async (user) => ({
+      ...user,
+      roles: await adb.prepare(`
       SELECT r.id, r.name, r.color FROM user_roles ur
       JOIN roles r ON ur.role_id = r.id
       WHERE ur.user_id = ?
       ORDER BY r.created_at ASC
     `).all(user.id),
-  }));
+    })),
+  );
 
   res.json(enriched);
-});
+}));
 
 // ユーザーのロール変更 (admin / user)
-adminRouter.post('/users/:id/role', (req: Request, res: Response) => {
+adminRouter.post('/users/:id/role', asyncHandler(async (req: Request, res: Response) => {
   const targetId = req.params.id as string;
   const { role } = req.body;
 
@@ -197,18 +200,18 @@ adminRouter.post('/users/:id/role', (req: Request, res: Response) => {
 
   // 自分自身の管理者権限を誤って剥奪しないように保護（最後の管理者の場合）
   if (targetId === req.user?.id && role !== 'admin') {
-    const adminCount = (db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+    const adminCount = (await adb.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
     if (adminCount <= 1) {
       return res.status(400).json({ error: '唯一の管理者自身から管理者権限を剥奪することはできません。' });
     }
   }
 
-  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+  await adb.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
   res.json({ success: true, userId: targetId, role });
-});
+}));
 
 // ユーザーの凍結・解除
-adminRouter.post('/users/:id/freeze', (req: Request, res: Response) => {
+adminRouter.post('/users/:id/freeze', asyncHandler(async (req: Request, res: Response) => {
   const targetId = req.params.id as string;
   const { isFrozen } = req.body;
 
@@ -217,15 +220,15 @@ adminRouter.post('/users/:id/freeze', (req: Request, res: Response) => {
   }
 
   const frozenVal = isFrozen ? 1 : 0;
-  db.prepare('UPDATE users SET is_frozen = ? WHERE id = ?').run(frozenVal, targetId);
+  await adb.prepare('UPDATE users SET is_frozen = ? WHERE id = ?').run(frozenVal, targetId);
 
   // 凍結された場合はアクティブなセッションをすべて破棄
   if (frozenVal === 1) {
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
+    await adb.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetId);
   }
 
   res.json({ success: true, userId: targetId, isFrozen: frozenVal === 1 });
-});
+}));
 
 // ユーザーアカウントの完全削除 (管理者モデレーション操作)
 adminRouter.delete('/users/:id', async (req: Request, res: Response) => {
@@ -246,15 +249,15 @@ adminRouter.delete('/users/:id', async (req: Request, res: Response) => {
 });
 
 // 連携先インスタンス（リモートActor）一覧
-adminRouter.get('/federation', (req: Request, res: Response) => {
-  const actors = db.prepare(`
+adminRouter.get('/federation', asyncHandler(async (req: Request, res: Response) => {
+  const actors = await adb.prepare(`
     SELECT id, username, domain, name, summary, inbox_url, updated_at
     FROM remote_actors
     ORDER BY updated_at DESC
     LIMIT 100
   `).all();
 
-  const domainStats = db.prepare(`
+  const domainStats = await adb.prepare(`
     SELECT domain, COUNT(*) as actor_count
     FROM remote_actors
     GROUP BY domain
@@ -265,20 +268,20 @@ adminRouter.get('/federation', (req: Request, res: Response) => {
     actors,
     domainStats,
   });
-});
+}));
 
 // ==========================================
 // リレーサーバー管理 API
 // ==========================================
 
 // 登録リレー一覧
-adminRouter.get('/relays', (req: Request, res: Response) => {
-  const relays = db.prepare('SELECT * FROM relays ORDER BY created_at DESC').all() as unknown as RelayRow[];
+adminRouter.get('/relays', asyncHandler(async (req: Request, res: Response) => {
+  const relays = await adb.prepare('SELECT * FROM relays ORDER BY created_at DESC').all() as unknown as RelayRow[];
   res.json(relays);
-});
+}));
 
 // リレーサーバーへの接続（Follow 送信）
-adminRouter.post('/relays', async (req: Request, res: Response) => {
+adminRouter.post('/relays', asyncHandler(async (req: Request, res: Response) => {
   const { url } = req.body;
   if (!url || !url.trim()) {
     return res.status(400).json({ error: 'リレーの URL（Inbox または Actor URL）を入力してください。' });
@@ -339,7 +342,7 @@ adminRouter.post('/relays', async (req: Request, res: Response) => {
     }
 
     const now = new Date().toISOString();
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO relays (inbox_url, actor_url, status, created_at)
       VALUES (?, ?, 'pending', ?)
       ON CONFLICT(inbox_url) DO UPDATE SET
@@ -383,16 +386,16 @@ adminRouter.post('/relays', async (req: Request, res: Response) => {
     console.error('[Relay Connect Error]:', err);
     res.status(500).json({ error: err.message || 'リレーサーバーへの接続に失敗しました。' });
   }
-});
+}));
 
 // リレーサーバーの購読解除 (Undo Follow 送信)
-adminRouter.delete('/relays', async (req: Request, res: Response) => {
+adminRouter.delete('/relays', asyncHandler(async (req: Request, res: Response) => {
   const { inboxUrl } = req.body;
   if (!inboxUrl) {
     return res.status(400).json({ error: 'inboxUrl が必要です。' });
   }
 
-  const relay = db.prepare('SELECT * FROM relays WHERE inbox_url = ?').get(inboxUrl) as unknown as RelayRow | undefined;
+  const relay = await adb.prepare('SELECT * FROM relays WHERE inbox_url = ?').get(inboxUrl) as unknown as RelayRow | undefined;
   if (!relay) {
     return res.status(404).json({ error: '指定されたリレーが見つかりません。' });
   }
@@ -424,23 +427,23 @@ adminRouter.delete('/relays', async (req: Request, res: Response) => {
       useInstanceActor: true,
     }).catch(() => {});
 
-    db.prepare('DELETE FROM relays WHERE inbox_url = ?').run(inboxUrl);
+    await adb.prepare('DELETE FROM relays WHERE inbox_url = ?').run(inboxUrl);
 
     res.json({ success: true, message: 'リレーの購読を解除しました。' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // 登録されているリレーへの Follow Activity 再送 (個別または一括)
-adminRouter.post('/relays/resend', async (req: Request, res: Response) => {
+adminRouter.post('/relays/resend', asyncHandler(async (req: Request, res: Response) => {
   const { inboxUrl } = req.body;
   const instanceActorUrl = `${config.origin}/actor`;
 
   try {
     const targetRelays = inboxUrl
-      ? (db.prepare('SELECT * FROM relays WHERE inbox_url = ?').all(inboxUrl) as unknown as RelayRow[])
-      : (db.prepare('SELECT * FROM relays').all() as unknown as RelayRow[]);
+      ? (await adb.prepare('SELECT * FROM relays WHERE inbox_url = ?').all(inboxUrl) as unknown as RelayRow[])
+      : (await adb.prepare('SELECT * FROM relays').all() as unknown as RelayRow[]);
 
     if (targetRelays.length === 0) {
       return res.status(404).json({ error: '対象のリレーが見つかりません。' });
@@ -451,7 +454,7 @@ adminRouter.post('/relays/resend', async (req: Request, res: Response) => {
       let actorUrl = relay.actor_url;
       if (!actorUrl || actorUrl.endsWith('/inbox')) {
         actorUrl = relay.inbox_url.replace(/\/inbox\/?$/, '/actor');
-        db.prepare('UPDATE relays SET actor_url = ? WHERE inbox_url = ?').run(actorUrl, relay.inbox_url);
+        await adb.prepare('UPDATE relays SET actor_url = ? WHERE inbox_url = ?').run(actorUrl, relay.inbox_url);
       }
 
       const followActivity = {
@@ -488,52 +491,52 @@ adminRouter.post('/relays/resend', async (req: Request, res: Response) => {
     console.error('[Relay Resend Error]:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // リレーの承認ステータス手動切替
-adminRouter.post('/relays/toggle-status', (req: Request, res: Response) => {
+adminRouter.post('/relays/toggle-status', asyncHandler(async (req: Request, res: Response) => {
   const { inboxUrl, status } = req.body;
   if (!inboxUrl) {
     return res.status(400).json({ error: 'inboxUrl が必要です。' });
   }
 
   const newStatus = status === 'accepted' ? 'accepted' : 'pending';
-  db.prepare('UPDATE relays SET status = ? WHERE inbox_url = ?').run(newStatus, inboxUrl);
+  await adb.prepare('UPDATE relays SET status = ? WHERE inbox_url = ?').run(newStatus, inboxUrl);
 
   res.json({ success: true, inboxUrl, status: newStatus });
-});
+}));
 
 // 提携先ドメイン・リモートキャッシュ全消去
-adminRouter.post('/cache/clear', (req: Request, res: Response) => {
+adminRouter.post('/cache/clear', asyncHandler(async (req: Request, res: Response) => {
   try {
     const { clearPosts } = req.body;
-    db.prepare('DELETE FROM remote_actors').run();
+    await adb.prepare('DELETE FROM remote_actors').run();
     if (clearPosts !== false) {
-      db.prepare('DELETE FROM posts WHERE is_local = 0').run();
+      await adb.prepare('DELETE FROM posts WHERE is_local = 0').run();
     }
     console.log('[Admin] Remote cache cleared by admin.');
     res.json({ success: true, message: '連携先ドメインキャッシュおよび外部受信投稿を全消去しました。' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ==========================================
 // ドメイン（サーバー）ブロック管理
 // ==========================================
 
 // ブロック中ドメイン一覧の取得
-adminRouter.get('/blocks', (req: Request, res: Response) => {
+adminRouter.get('/blocks', asyncHandler(async (req: Request, res: Response) => {
   try {
-    const blocks = db.prepare('SELECT domain, reason, created_at, created_by, severity FROM blocked_domains ORDER BY created_at DESC').all() as unknown as BlockedDomainRow[];
+    const blocks = await adb.prepare('SELECT domain, reason, created_at, created_by, severity FROM blocked_domains ORDER BY created_at DESC').all() as unknown as BlockedDomainRow[];
     res.json(blocks);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // 新規ドメインのブロック登録（および過去データのパージ）
-adminRouter.post('/blocks', (req: Request, res: Response) => {
+adminRouter.post('/blocks', asyncHandler(async (req: Request, res: Response) => {
   try {
     const { domain, reason, purgeData, severity } = req.body;
     if (!domain || typeof domain !== 'string') {
@@ -553,7 +556,7 @@ adminRouter.post('/blocks', (req: Request, res: Response) => {
     }
 
     // 既にブロックされているかチェック
-    const existing = db.prepare('SELECT domain FROM blocked_domains WHERE domain = ?').get(cleanDomain);
+    const existing = await adb.prepare('SELECT domain FROM blocked_domains WHERE domain = ?').get(cleanDomain);
     if (existing) {
       return res.status(409).json({ error: `ドメイン "${cleanDomain}" は既にブロックされています。` });
     }
@@ -564,7 +567,7 @@ adminRouter.post('/blocks', (req: Request, res: Response) => {
     // silence = タイムライン等から隠すだけ（配送・フォローは維持）。既定は suspend（完全遮断）
     const cleanSeverity = severity === 'silence' ? 'silence' : 'suspend';
 
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO blocked_domains (domain, reason, created_at, created_by, severity)
       VALUES (?, ?, ?, ?, ?)
     `).run(cleanDomain, cleanReason, now, adminId, cleanSeverity);
@@ -595,10 +598,10 @@ adminRouter.post('/blocks', (req: Request, res: Response) => {
     console.error('[Admin Block Domain Error]:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ドメインのブロック解除
-adminRouter.delete('/blocks/:domain', (req: Request, res: Response) => {
+adminRouter.delete('/blocks/:domain', asyncHandler(async (req: Request, res: Response) => {
   try {
     const rawDomain = decodeURIComponent(req.params.domain as string);
     const cleanDomain = extractDomain(rawDomain);
@@ -607,12 +610,12 @@ adminRouter.delete('/blocks/:domain', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'ドメイン名が無効です。' });
     }
 
-    const existing = db.prepare('SELECT domain FROM blocked_domains WHERE domain = ?').get(cleanDomain);
+    const existing = await adb.prepare('SELECT domain FROM blocked_domains WHERE domain = ?').get(cleanDomain);
     if (!existing) {
       return res.status(404).json({ error: `ドメイン "${cleanDomain}" はブロックリストに存在しません。` });
     }
 
-    db.prepare('DELETE FROM blocked_domains WHERE domain = ?').run(cleanDomain);
+    await adb.prepare('DELETE FROM blocked_domains WHERE domain = ?').run(cleanDomain);
 
     console.log(`[Admin] ✅ Domain "${cleanDomain}" unblocked by @${(req.rawUser || req.user)?.id}`);
 
@@ -625,7 +628,7 @@ adminRouter.delete('/blocks/:domain', (req: Request, res: Response) => {
     console.error('[Admin Unblock Domain Error]:', err);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ==========================================
 // メディアストレージ設定 (Cloudflare R2 / S3互換)
@@ -928,9 +931,9 @@ adminRouter.post('/server-banner', uploadImageFile.single('banner'), async (req:
 // ==========================================
 
 // カスタム絵文字一覧取得
-adminRouter.get('/emojis', (req: Request, res: Response) => {
+adminRouter.get('/emojis', asyncHandler(async (req: Request, res: Response) => {
   try {
-    const emojis = db.prepare(`
+    const emojis = await adb.prepare(`
       SELECT * FROM custom_emojis ORDER BY category ASC, name ASC
     `).all() as unknown as CustomEmojiRow[];
     res.json(emojis);
@@ -938,10 +941,10 @@ adminRouter.get('/emojis', (req: Request, res: Response) => {
     console.error('[Admin Emojis Error]:', err);
     res.status(500).json({ error: 'カスタム絵文字一覧の取得に失敗しました。' });
   }
-});
+}));
 
 // カスタム絵文字の登録 (ファイルアップロード or URL)
-adminRouter.post('/emojis', uploadImageFile.single('file'), async (req: Request, res: Response) => {
+adminRouter.post('/emojis', uploadImageFile.single('file'), asyncHandler(async (req: Request, res: Response) => {
   try {
     let { name, category, url } = req.body;
 
@@ -956,7 +959,7 @@ adminRouter.post('/emojis', uploadImageFile.single('file'), async (req: Request,
     }
 
     // 重複チェック
-    const existing = db.prepare('SELECT id FROM custom_emojis WHERE name = ?').get(cleanName);
+    const existing = await adb.prepare('SELECT id FROM custom_emojis WHERE name = ?').get(cleanName);
     if (existing) {
       return res.status(409).json({ error: `ショートコード :${cleanName}: は既に登録されています。` });
     }
@@ -983,7 +986,7 @@ adminRouter.post('/emojis', uploadImageFile.single('file'), async (req: Request,
     const cleanCategory = (category && typeof category === 'string' && category.trim()) ? category.trim() : '一般';
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO custom_emojis (id, name, url, category, aliases, created_at)
       VALUES (?, ?, ?, ?, '[]', ?)
     `).run(emojiId, cleanName, emojiUrl, cleanCategory, now);
@@ -1006,18 +1009,18 @@ adminRouter.post('/emojis', uploadImageFile.single('file'), async (req: Request,
     console.error('[Admin Custom Emoji Register Error]:', err);
     res.status(500).json({ error: err.message || 'カスタム絵文字の登録に失敗しました。' });
   }
-});
+}));
 
 // カスタム絵文字の削除
-adminRouter.delete('/emojis/:id', (req: Request, res: Response) => {
+adminRouter.delete('/emojis/:id', asyncHandler(async (req: Request, res: Response) => {
   try {
     const emojiId = String(req.params.id);
-    const existing = db.prepare('SELECT * FROM custom_emojis WHERE id = ?').get(emojiId) as CustomEmojiRow | undefined;
+    const existing = await adb.prepare('SELECT * FROM custom_emojis WHERE id = ?').get(emojiId) as CustomEmojiRow | undefined;
     if (!existing) {
       return res.status(404).json({ error: '該当のカスタム絵文字が見つかりません。' });
     }
 
-    db.prepare('DELETE FROM custom_emojis WHERE id = ?').run(emojiId);
+    await adb.prepare('DELETE FROM custom_emojis WHERE id = ?').run(emojiId);
     console.log(`[Admin] 🗑️ Custom emoji deleted: :${existing.name}: by @${(req.rawUser || req.user)?.id}`);
 
     res.json({
@@ -1028,16 +1031,16 @@ adminRouter.delete('/emojis/:id', (req: Request, res: Response) => {
     console.error('[Admin Custom Emoji Delete Error]:', err);
     res.status(500).json({ error: 'カスタム絵文字の削除に失敗しました。' });
   }
-});
+}));
 
 // ==========================================
 // 🎟 招待コード管理 API
 // ==========================================
 
 // 招待コード一覧取得
-adminRouter.get('/invitations', (req: Request, res: Response) => {
+adminRouter.get('/invitations', asyncHandler(async (req: Request, res: Response) => {
   try {
-    const invitations = db.prepare(`
+    const invitations = await adb.prepare(`
       SELECT * FROM invitation_codes ORDER BY created_at DESC
     `).all() as unknown as InvitationCodeRow[];
     res.json(invitations);
@@ -1045,10 +1048,10 @@ adminRouter.get('/invitations', (req: Request, res: Response) => {
     console.error('[Admin Invitations Error]:', err);
     res.status(500).json({ error: '招待コード一覧の取得に失敗しました。' });
   }
-});
+}));
 
 // 招待コードの新規発行
-adminRouter.post('/invitations', (req: Request, res: Response) => {
+adminRouter.post('/invitations', asyncHandler(async (req: Request, res: Response) => {
   try {
     const user = (req.rawUser || req.user)!;
     const { maxUses = 1, expiresInDays = null, memo = '' } = req.body;
@@ -1064,7 +1067,7 @@ adminRouter.post('/invitations', (req: Request, res: Response) => {
     const code = `spica-inv-${randomSuffix}`;
     const now = new Date().toISOString();
 
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO invitation_codes (code, created_by, max_uses, used_count, expires_at, memo, created_at)
       VALUES (?, ?, ?, 0, ?, ?, ?)
     `).run(code, user.id, parsedMaxUses, expiresAt, String(memo || '').trim(), now);
@@ -1088,18 +1091,18 @@ adminRouter.post('/invitations', (req: Request, res: Response) => {
     console.error('[Admin Invitation Create Error]:', err);
     res.status(500).json({ error: '招待コードの発行に失敗しました。' });
   }
-});
+}));
 
 // 招待コードの削除 / 無効化
-adminRouter.delete('/invitations/:code', (req: Request, res: Response) => {
+adminRouter.delete('/invitations/:code', asyncHandler(async (req: Request, res: Response) => {
   try {
     const code = String(req.params.code);
-    const existing = db.prepare('SELECT * FROM invitation_codes WHERE code = ?').get(code) as InvitationCodeRow | undefined;
+    const existing = await adb.prepare('SELECT * FROM invitation_codes WHERE code = ?').get(code) as InvitationCodeRow | undefined;
     if (!existing) {
       return res.status(404).json({ error: '該当の招待コードが見つかりません。' });
     }
 
-    db.prepare('DELETE FROM invitation_codes WHERE code = ?').run(code);
+    await adb.prepare('DELETE FROM invitation_codes WHERE code = ?').run(code);
     console.log(`[Admin] 🗑️ Invitation code revoked: ${code} by @${(req.rawUser || req.user)?.id}`);
 
     res.json({
@@ -1110,7 +1113,7 @@ adminRouter.delete('/invitations/:code', (req: Request, res: Response) => {
     console.error('[Admin Invitation Delete Error]:', err);
     res.status(500).json({ error: '招待コードの削除に失敗しました。' });
   }
-});
+}));
 
 // サーバー登録モード変更 (open / invite / closed)
 adminRouter.post('/registration-mode', (req: Request, res: Response) => {
@@ -1139,18 +1142,18 @@ adminRouter.post('/registration-mode', (req: Request, res: Response) => {
 // ==========================================
 
 // お知らせ一覧（無効なものも含む）
-adminRouter.get('/announcements', (_req: Request, res: Response) => {
+adminRouter.get('/announcements', asyncHandler(async (_req: Request, res: Response) => {
   try {
-    const rows = db.prepare('SELECT * FROM announcements ORDER BY created_at DESC LIMIT 200').all();
+    const rows = await adb.prepare('SELECT * FROM announcements ORDER BY created_at DESC LIMIT 200').all();
     res.json(rows);
   } catch (err: any) {
     console.error('[Admin Announcements Error]:', err);
     res.status(500).json({ error: 'お知らせの取得に失敗しました。' });
   }
-});
+}));
 
 // お知らせの作成
-adminRouter.post('/announcements', (req: Request, res: Response) => {
+adminRouter.post('/announcements', asyncHandler(async (req: Request, res: Response) => {
   const { title, content, isActive } = req.body;
   const cleanTitle = typeof title === 'string' ? title.trim().slice(0, 120) : '';
   const cleanContent = typeof content === 'string' ? content.trim().slice(0, 5000) : '';
@@ -1162,26 +1165,26 @@ adminRouter.post('/announcements', (req: Request, res: Response) => {
   try {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO announcements (id, title, content, is_active, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(id, cleanTitle, cleanContent, isActive === false ? 0 : 1, req.user!.id, now, now);
 
     console.log(`[Admin Announcement] 📢 作成: ${cleanTitle} (@${req.user!.id})`);
-    res.status(201).json({ success: true, id, announcement: db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
+    res.status(201).json({ success: true, id, announcement: await adb.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
   } catch (err: any) {
     console.error('[Admin Announcement Create Error]:', err);
     res.status(500).json({ error: 'お知らせの作成に失敗しました。' });
   }
-});
+}));
 
 // お知らせの更新（タイトル / 本文 / 有効・無効）
-adminRouter.put('/announcements/:id', (req: Request, res: Response) => {
+adminRouter.put('/announcements/:id', asyncHandler(async (req: Request, res: Response) => {
   const { title, content, isActive } = req.body;
   const id = String(req.params.id);
 
   try {
-    const existing = db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) as any;
+    const existing = await adb.prepare('SELECT * FROM announcements WHERE id = ?').get(id) as any;
     if (!existing) {
       return res.status(404).json({ error: 'お知らせが見つかりません。' });
     }
@@ -1190,20 +1193,20 @@ adminRouter.put('/announcements/:id', (req: Request, res: Response) => {
     const nextContent = typeof content === 'string' && content.trim() ? content.trim().slice(0, 5000) : existing.content;
     const nextActive = typeof isActive === 'boolean' ? (isActive ? 1 : 0) : existing.is_active;
 
-    db.prepare('UPDATE announcements SET title = ?, content = ?, is_active = ?, updated_at = ? WHERE id = ?')
+    await adb.prepare('UPDATE announcements SET title = ?, content = ?, is_active = ?, updated_at = ? WHERE id = ?')
       .run(nextTitle, nextContent, nextActive, new Date().toISOString(), id);
 
-    res.json({ success: true, announcement: db.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
+    res.json({ success: true, announcement: await adb.prepare('SELECT * FROM announcements WHERE id = ?').get(id) });
   } catch (err: any) {
     console.error('[Admin Announcement Update Error]:', err);
     res.status(500).json({ error: 'お知らせの更新に失敗しました。' });
   }
-});
+}));
 
 // お知らせの削除
-adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
+adminRouter.delete('/announcements/:id', asyncHandler(async (req: Request, res: Response) => {
   try {
-    const result = db.prepare('DELETE FROM announcements WHERE id = ?').run(String(req.params.id));
+    const result = await adb.prepare('DELETE FROM announcements WHERE id = ?').run(String(req.params.id));
     if (result.changes === 0) {
       return res.status(404).json({ error: 'お知らせが見つかりません。' });
     }
@@ -1212,7 +1215,7 @@ adminRouter.delete('/announcements/:id', (req: Request, res: Response) => {
     console.error('[Admin Announcement Delete Error]:', err);
     res.status(500).json({ error: 'お知らせの削除に失敗しました。' });
   }
-});
+}));
 
 // ==========================================
 // 📧 メール送信（SMTP）と認証方式の設定
@@ -1327,21 +1330,23 @@ function normalizePermissions(raw: unknown): string {
   return Array.from(new Set(list.map((p) => String(p).trim()).filter((p) => valid.has(p)))).join(',');
 }
 
-adminRouter.get('/roles', (_req: Request, res: Response) => {
+adminRouter.get('/roles', asyncHandler(async (_req: Request, res: Response) => {
   try {
-    const roles = db.prepare('SELECT * FROM roles ORDER BY created_at ASC').all() as any[];
-    const withCounts = roles.map((role) => ({
-      ...role,
-      member_count: (db.prepare('SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?').get(role.id) as { c: number }).c,
-    }));
+    const roles = await adb.prepare('SELECT * FROM roles ORDER BY created_at ASC').all() as any[];
+    const withCounts = await Promise.all(
+      roles.map(async (role) => ({
+        ...role,
+        member_count: (await adb.prepare('SELECT COUNT(*) AS c FROM user_roles WHERE role_id = ?').get(role.id) as { c: number }).c,
+      })),
+    );
     res.json({ roles: withCounts, availablePermissions: AVAILABLE_PERMISSIONS });
   } catch (err: any) {
     console.error('[Admin Roles Error]:', err);
     res.status(500).json({ error: 'ロール一覧の取得に失敗しました。' });
   }
-});
+}));
 
-adminRouter.post('/roles', (req: Request, res: Response) => {
+adminRouter.post('/roles', asyncHandler(async (req: Request, res: Response) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 40) : '';
   const color = typeof req.body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(req.body.color) ? req.body.color : '#6366f1';
   const permissions = normalizePermissions(req.body?.permissions);
@@ -1352,18 +1357,18 @@ adminRouter.post('/roles', (req: Request, res: Response) => {
   if (!permissions) {
     return res.status(400).json({ error: '権限を1つ以上選択してください。' });
   }
-  const count = (db.prepare('SELECT COUNT(*) AS c FROM roles').get() as { c: number }).c;
+  const count = (await adb.prepare('SELECT COUNT(*) AS c FROM roles').get() as { c: number }).c;
   if (count >= 30) {
     return res.status(400).json({ error: '作成できるロールは 30 件までです。' });
   }
-  if (db.prepare('SELECT id FROM roles WHERE name = ?').get(name)) {
+  if (await adb.prepare('SELECT id FROM roles WHERE name = ?').get(name)) {
     return res.status(409).json({ error: '同じ名前のロールが既に存在します。' });
   }
 
   try {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO roles (id, name, color, permissions, is_system, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+    await adb.prepare('INSERT INTO roles (id, name, color, permissions, is_system, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
       .run(id, name, color, permissions, now, now);
     console.log(`[Role] 🎭 ロール「${name}」を作成 (${permissions}) by @${req.user!.id}`);
     res.status(201).json({ success: true, id, name, color, permissions });
@@ -1371,12 +1376,12 @@ adminRouter.post('/roles', (req: Request, res: Response) => {
     console.error('[Admin Role Create Error]:', err);
     res.status(500).json({ error: 'ロールの作成に失敗しました。' });
   }
-});
+}));
 
-adminRouter.put('/roles/:id', (req: Request, res: Response) => {
+adminRouter.put('/roles/:id', asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
   try {
-    const existing = db.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
+    const existing = await adb.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
     if (!existing) {
       return res.status(404).json({ error: 'ロールが見つかりません。' });
     }
@@ -1388,70 +1393,74 @@ adminRouter.put('/roles/:id', (req: Request, res: Response) => {
     if (!permissions) {
       return res.status(400).json({ error: '権限を1つ以上選択してください。' });
     }
-    const duplicated = db.prepare('SELECT id FROM roles WHERE name = ? AND id != ?').get(name, id);
+    const duplicated = await adb.prepare('SELECT id FROM roles WHERE name = ? AND id != ?').get(name, id);
     if (duplicated) {
       return res.status(409).json({ error: '同じ名前のロールが既に存在します。' });
     }
 
-    db.prepare('UPDATE roles SET name = ?, color = ?, permissions = ?, updated_at = ? WHERE id = ?')
+    await adb.prepare('UPDATE roles SET name = ?, color = ?, permissions = ?, updated_at = ? WHERE id = ?')
       .run(name, color, permissions, new Date().toISOString(), id);
     console.log(`[Role] 🎭 ロール「${name}」を更新 (${permissions}) by @${req.user!.id}`);
-    res.json({ success: true, role: db.prepare('SELECT * FROM roles WHERE id = ?').get(id) });
+    res.json({ success: true, role: await adb.prepare('SELECT * FROM roles WHERE id = ?').get(id) });
   } catch (err: any) {
     console.error('[Admin Role Update Error]:', err);
     res.status(500).json({ error: 'ロールの更新に失敗しました。' });
   }
-});
+}));
 
-adminRouter.delete('/roles/:id', (req: Request, res: Response) => {
+adminRouter.delete('/roles/:id', asyncHandler(async (req: Request, res: Response) => {
   const id = String(req.params.id);
   try {
-    const role = db.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
+    const role = await adb.prepare('SELECT * FROM roles WHERE id = ?').get(id) as any;
     if (!role) {
       return res.status(404).json({ error: 'ロールが見つかりません。' });
     }
-    db.prepare('DELETE FROM user_roles WHERE role_id = ?').run(id);
-    db.prepare('DELETE FROM roles WHERE id = ?').run(id);
+    await adb.prepare('DELETE FROM user_roles WHERE role_id = ?').run(id);
+    await adb.prepare('DELETE FROM roles WHERE id = ?').run(id);
     console.log(`[Role] 🗑️ ロール「${role.name}」を削除 by @${req.user!.id}`);
     res.json({ success: true });
   } catch (err: any) {
     console.error('[Admin Role Delete Error]:', err);
     res.status(500).json({ error: 'ロールの削除に失敗しました。' });
   }
-});
+}));
 
 // ユーザーへのロール付与（roleIds を渡して置き換える / 空配列で全部外す）
-adminRouter.post('/users/:id/roles', (req: Request, res: Response) => {
+adminRouter.post('/users/:id/roles', asyncHandler(async (req: Request, res: Response) => {
   const targetUserId = String(req.params.id);
   const roleIds = Array.isArray(req.body?.roleIds) ? req.body.roleIds.map((r: unknown) => String(r)) : null;
 
   if (!roleIds) {
     return res.status(400).json({ error: 'roleIds（配列）が必要です。' });
   }
-  const targetUser = db.prepare('SELECT id, role FROM users WHERE id = ?').get(targetUserId) as { id: string; role: string } | undefined;
+  const targetUser = await adb.prepare('SELECT id, role FROM users WHERE id = ?').get(targetUserId) as { id: string; role: string } | undefined;
   if (!targetUser) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
   // 管理者（users.role = 'admin'）から管理権限を外す操作は禁止（締め出し防止）
-  const assignsAdminPermission = roleIds.some((roleId: string) => {
-    const role = db.prepare('SELECT permissions FROM roles WHERE id = ?').get(roleId) as { permissions: string } | undefined;
-    return String(role?.permissions || '').split(',').map((p) => p.trim()).includes('admin');
-  });
+  let assignsAdminPermission = false;
+  for (const roleId of roleIds as string[]) {
+    const role = await adb.prepare('SELECT permissions FROM roles WHERE id = ?').get(roleId) as { permissions: string } | undefined;
+    if (String(role?.permissions || '').split(',').map((p) => p.trim()).includes('admin')) {
+      assignsAdminPermission = true;
+      break;
+    }
+  }
   if (targetUser.role === 'admin' && !assignsAdminPermission) {
-    const adminCount = (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as { c: number }).c;
+    const adminCount = (await adb.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as { c: number }).c;
     if (adminCount <= 1) {
       return res.status(400).json({ error: '最後の管理者から管理権限を外すことはできません。' });
     }
   }
 
   try {
-    db.prepare('DELETE FROM user_roles WHERE user_id = ?').run(targetUserId);
+    await adb.prepare('DELETE FROM user_roles WHERE user_id = ?').run(targetUserId);
     const now = new Date().toISOString();
-    const insert = db.prepare('INSERT INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)');
+    const insert = await adb.prepare('INSERT INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)');
     let applied = 0;
     for (const roleId of roleIds) {
-      const exists = db.prepare('SELECT id FROM roles WHERE id = ?').get(roleId);
+      const exists = await adb.prepare('SELECT id FROM roles WHERE id = ?').get(roleId);
       if (!exists) continue;
       insert.run(targetUserId, roleId, now);
       applied++;
@@ -1462,14 +1471,14 @@ adminRouter.post('/users/:id/roles', (req: Request, res: Response) => {
     console.error('[Admin User Roles Error]:', err);
     res.status(500).json({ error: 'ロールの付与に失敗しました。' });
   }
-});
+}));
 
 // ==========================================
 // 🚩 通報（モデレーションキュー）
 // ==========================================
 
 // 通報一覧（?status=open|resolved|rejected|all）
-adminRouter.get('/reports', async (req: Request, res: Response) => {
+adminRouter.get('/reports', asyncHandler(async (req: Request, res: Response) => {
   try {
     const status = (req.query.status as string) || 'all';
     const reports = await listReports(status === 'all' ? undefined : status);
@@ -1477,14 +1486,14 @@ adminRouter.get('/reports', async (req: Request, res: Response) => {
       reports,
       counts: {
         open: await countOpenReports(),
-        total: (db.prepare('SELECT COUNT(*) AS c FROM reports').get() as { c: number }).c,
+        total: (await adb.prepare('SELECT COUNT(*) AS c FROM reports').get() as { c: number }).c,
       },
     });
   } catch (err: any) {
     console.error('[Admin Reports Error]:', err);
     res.status(500).json({ error: '通報一覧の取得に失敗しました。' });
   }
-});
+}));
 
 // 未対応の通報件数（バッジ用）
 adminRouter.get('/reports/count', async (_req: Request, res: Response) => {
@@ -1520,17 +1529,17 @@ adminRouter.post('/reports/:id/resolve', async (req: Request, res: Response) => 
 // ==========================================
 
 // 再送キューの状況（待機中・直近の失敗・バックオフ設定）
-adminRouter.get('/delivery-queue', async (_req: Request, res: Response) => {
+adminRouter.get('/delivery-queue', asyncHandler(async (_req: Request, res: Response) => {
   try {
     const stats = await getDeliveryQueueStats();
-    const pending = db.prepare(`
+    const pending = await adb.prepare(`
       SELECT id, activity_id, activity_type, inbox_url, attempts, next_attempt_at, last_status, last_error, created_at
       FROM outbox_deliveries
       WHERE status = 'pending'
       ORDER BY next_attempt_at ASC
       LIMIT 20
     `).all();
-    const recentFailures = db.prepare(`
+    const recentFailures = await adb.prepare(`
       SELECT id, activity_id, activity_type, inbox_url, attempts, last_status, last_error, updated_at
       FROM outbox_deliveries
       WHERE status = 'failed'
@@ -1549,7 +1558,7 @@ adminRouter.get('/delivery-queue', async (_req: Request, res: Response) => {
     console.error('[Admin Delivery Queue Error]:', err);
     res.status(500).json({ error: '配送キューの取得に失敗しました。' });
   }
-});
+}));
 
 // 待機中の再送を今すぐ前倒しして実行する
 adminRouter.post('/delivery-queue/retry', async (req: Request, res: Response) => {

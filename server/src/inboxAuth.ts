@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { config } from './config.js';
-import { db, UserRow } from './db.js';
+import { adb, UserRow } from './db.js';
 import { fetchRemoteActor } from './activitypub.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { parseSignatureHeader, verifyHttpSignatureDetailed } from './crypto.js';
@@ -69,13 +69,13 @@ export function normalizeActorUrl(rawUrl: string): string | null {
 /**
  * 管理画面で accepted 済みのリレー（またはその inbox）かどうかを判定する
  */
-function isAcceptedRelayActor(keyActorUrl: string): boolean {
+async function isAcceptedRelayActor(keyActorUrl: string): Promise<boolean> {
   const normalized = normalizeActorUrl(keyActorUrl);
   if (!normalized) {
     return false;
   }
   try {
-    const rows = db.prepare("SELECT actor_url, inbox_url FROM relays WHERE status = 'accepted'").all() as {
+    const rows = await adb.prepare("SELECT actor_url, inbox_url FROM relays WHERE status = 'accepted'").all() as {
       actor_url: string;
       inbox_url: string;
     }[];
@@ -113,7 +113,7 @@ export async function resolvePublicKey(keyActorUrl: string): Promise<{ publicKey
     const userMatch = parsed.pathname.match(/^\/users\/([^/]+)\/?$/);
     if (userMatch) {
       const userId = decodeURIComponent(userMatch[1]).toLowerCase();
-      const localUser = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+      const localUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
       if (!localUser?.public_key_pem) {
         return { publicKeyPem: null, error: `Local actor not found for keyId: ${keyActorUrl}` };
       }
@@ -174,7 +174,7 @@ export async function verifyInboxSignature(req: Request, activityActorUrl?: stri
     }
     if (keyOwner !== activityActor) {
       const forwardingAllowed =
-        config.inboxForwardedPolicy === 'any' || isAcceptedRelayActor(keyActorUrl);
+        config.inboxForwardedPolicy === 'any' || (await isAcceptedRelayActor(keyActorUrl));
       if (!forwardingAllowed) {
         return {
           verified: false,
@@ -282,11 +282,11 @@ export async function getVerifiedSigner(req: Request): Promise<FetchAuthResult> 
 }
 
 /** 指定アクターがローカルユーザーの承認済みフォロワーかどうか */
-export function isAcceptedFollower(followerActorUrl: string, followedActorUrl: string): boolean {
+export async function isAcceptedFollower(followerActorUrl: string, followedActorUrl: string): Promise<boolean> {
   if (!followerActorUrl || !followedActorUrl) return false;
   try {
     return Boolean(
-      db.prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'").get(
+      await adb.prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'").get(
         followerActorUrl,
         followedActorUrl,
       ),

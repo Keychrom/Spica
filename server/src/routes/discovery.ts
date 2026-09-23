@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { db, UserRow, PostRow } from '../db.js';
+import { asyncHandler } from '../asyncHandler.js';
+import { adb, UserRow, PostRow } from '../db.js';
 import { config } from '../config.js';
 import { getInstanceInfo } from '../db.js';
 
@@ -103,14 +104,14 @@ function buildItemsFromPosts(posts: PostRow[], authorName: string): RssItem[] {
 }
 
 // ユーザー別フィード
-discoveryRouter.get('/users/:username/feed.xml', (req: Request, res: Response) => {
+discoveryRouter.get('/users/:username/feed.xml', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
   if (!user) {
     return res.status(404).send('Not Found');
   }
 
-  const posts = db.prepare(`
+  const posts = await adb.prepare(`
     SELECT * FROM posts
     WHERE user_id = ? AND is_local = 1 AND (visibility = 'public' OR visibility IS NULL)
     ORDER BY published_at DESC LIMIT 20
@@ -129,11 +130,11 @@ discoveryRouter.get('/users/:username/feed.xml', (req: Request, res: Response) =
 
   console.log(`[Feed] 📡 ${actorUrl}/feed.xml を配信 (${posts.length} 件)`);
   sendRss(res, xml);
-});
+}));
 
 // ローカル公開タイムラインのフィード
-discoveryRouter.get('/feed.xml', (_req: Request, res: Response) => {
-  const posts = db.prepare(`
+discoveryRouter.get('/feed.xml', asyncHandler(async (_req: Request, res: Response) => {
+  const posts = await adb.prepare(`
     SELECT * FROM posts
     WHERE is_local = 1 AND (visibility = 'public' OR visibility IS NULL)
     ORDER BY published_at DESC LIMIT 30
@@ -151,10 +152,10 @@ discoveryRouter.get('/feed.xml', (_req: Request, res: Response) => {
 
   console.log(`[Feed] 📡 ${config.origin}/feed.xml を配信 (${posts.length} 件)`);
   sendRss(res, xml);
-});
+}));
 
 // oEmbed（他サイトへ投稿を埋め込むための情報）
-discoveryRouter.get('/api/oembed', (req: Request, res: Response) => {
+discoveryRouter.get('/api/oembed', asyncHandler(async (req: Request, res: Response) => {
   const rawUrl = String(req.query.url || '');
   if (!rawUrl) {
     return res.status(400).json({ error: 'url パラメータが必要です。' });
@@ -162,7 +163,7 @@ discoveryRouter.get('/api/oembed', (req: Request, res: Response) => {
 
   const postId = decodeURIComponent(rawUrl.split('?post=')[1] || '');
   const post = postId
-    ? (db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined)
+    ? (await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined)
     : undefined;
 
   if (!post || post.is_local !== 1 || (post.visibility && post.visibility !== 'public')) {
@@ -183,4 +184,4 @@ discoveryRouter.get('/api/oembed', (req: Request, res: Response) => {
     html: `<blockquote class="spica-embed"><p>${escapeXml(text.slice(0, 500))}</p>&mdash; ${escapeXml(post.author_name || '')} (@${escapeXml(post.author_handle || '')}) <a href="${escapeXml(postUrl(post.id))}">${escapeXml(postUrl(post.id))}</a></blockquote>`,
     width,
   });
-});
+}));
