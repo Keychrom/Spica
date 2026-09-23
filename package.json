@@ -7,6 +7,9 @@
     "server",
     "client"
   ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "concurrently \"npm --workspace=server run dev\" \"npm --workspace=client run dev\"",
     "dev:server": "npm --workspace=server run dev",

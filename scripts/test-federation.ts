@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
+import { Client } from 'pg';
 
 // ポートは TEST_PORT で変更可能（既定 3000/3001）。稼働中の開発サーバーと衝突させずに実行できる。
 const PORT_A = process.env.TEST_PORT ? parseInt(process.env.TEST_PORT, 10) : 3000;
@@ -10,16 +11,91 @@ const BASE_A = `http://localhost:${PORT_A}`;
 const BASE_B = `http://localhost:${PORT_B}`;
 const ROOT_DIR = process.cwd();
 
-// テスト用DBを初期化・クリーンアップ
-[`data_${PORT_A}.sqlite`, `data_${PORT_B}.sqlite`].flatMap((f) => [f, `${f}-wal`, `${f}-shm`]).forEach((f) => {
-  const p1 = path.resolve(ROOT_DIR, f);
-  const p2 = path.resolve(ROOT_DIR, 'server', f);
-  [p1, p2].forEach((p) => {
-    if (fs.existsSync(p)) {
-      try { fs.unlinkSync(p); } catch {}
+// DB_DRIVER=postgres のときは、2 ノード分のデータベースを用意して使う
+const USE_PG = /^(postgres|postgresql|pg)$/i.test(String(process.env.DB_DRIVER || ''));
+const PG_DSN = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL || '';
+/** ノード A / B が使うデータベース名（元の DB 名に接尾辞を付ける） */
+const PG_DB_A = pgDatabaseName('_node_a');
+const PG_DB_B = pgDatabaseName('_node_b');
+
+/** 元の DSN のデータベース名に接尾辞を付けた DSN を作る */
+function pgDatabaseName(suffix: string): string {
+  try {
+    const url = new URL(PG_DSN);
+    const base = url.pathname.replace(/^\//, '') || 'spica';
+    return `${base}${suffix}`;
+  } catch {
+    return `spica${suffix}`;
+  }
+}
+
+function dsnFor(database: string): string {
+  const url = new URL(PG_DSN);
+  url.pathname = `/${database}`;
+  return url.toString();
+}
+
+/**
+ * ノード A / B 用のデータベースを作り直す。
+ * 作れない場合（ロールに CREATEDB が無いなど）は理由を出して false を返す。
+ */
+async function preparePgDatabases(): Promise<boolean> {
+  if (!PG_DSN) {
+    console.log('⏭️  TEST_DATABASE_URL が無いため PostgreSQL ではスキップしました');
+    return false;
+  }
+  const admin = new Client({ connectionString: PG_DSN });
+  try {
+    await admin.connect();
+    for (const name of [PG_DB_A, PG_DB_B]) {
+      // 接続が残っていると DROP できないので FORCE を付ける（PostgreSQL 13+）
+      await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+      await admin.query(`CREATE DATABASE "${name}"`);
     }
+    console.log(`🗄️  PostgreSQL のノード用 DB を用意しました: ${PG_DB_A} / ${PG_DB_B}\n`);
+    await admin.end();
+    return true;
+  } catch (err: any) {
+    console.error(`❌ PostgreSQL のノード用 DB を用意できませんでした: ${err?.message || err}`);
+    console.error(`   （${PG_DB_A} / ${PG_DB_B} を作る権限が必要です。管理者は次で付与できます:`);
+    console.error(`     ALTER ROLE <アプリのロール> CREATEDB; ）`);
+    try {
+      await admin.end();
+    } catch {}
+    return false;
+  }
+}
+
+/** ノード用の DB を片付ける（接続が残っていても消せるよう FORCE を付ける） */
+async function dropPgDatabases(): Promise<void> {
+  if (!USE_PG || !PG_DSN) return;
+  const admin = new Client({ connectionString: PG_DSN });
+  try {
+    await admin.connect();
+    for (const name of [PG_DB_A, PG_DB_B]) {
+      await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    }
+  } catch {
+    // 消せなくてもテスト結果には影響しない
+  } finally {
+    try {
+      await admin.end();
+    } catch {}
+  }
+}
+
+// テスト用DBを初期化・クリーンアップ（SQLite のときだけ。PG は preparePgDatabases が作り直す）
+if (!USE_PG) {
+  [`data_${PORT_A}.sqlite`, `data_${PORT_B}.sqlite`].flatMap((f) => [f, `${f}-wal`, `${f}-shm`]).forEach((f) => {
+    const p1 = path.resolve(ROOT_DIR, f);
+    const p2 = path.resolve(ROOT_DIR, 'server', f);
+    [p1, p2].forEach((p) => {
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); } catch {}
+      }
+    });
   });
-});
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,6 +144,13 @@ async function run() {
   console.log(`   Node A=${PORT_A} / Node B=${PORT_B}`);
   console.log('====================================================\n');
 
+  // DB_DRIVER=postgres のときは、ノードごとに別のデータベースを使う
+  // （SQLite のときはノードごとに別ファイル。どちらも「独立した 2 ノード」を作る）
+  if (USE_PG) {
+    const ok = await preparePgDatabases();
+    if (!ok) return; // 理由は preparePgDatabases が出力する
+  }
+
   let nodeA: ChildProcess | null = null;
   let nodeB: ChildProcess | null = null;
 
@@ -84,7 +167,9 @@ async function run() {
         PORT: String(PORT_A),
         DOMAIN: `localhost:${PORT_A}`,
         PROTOCOL: 'http', // ローカル2ノード間の連合テストのため http を明示
+        // PG のときはノード専用の DB を、SQLite のときはノード専用のファイルを使う
         DB_PATH: path.resolve(ROOT_DIR, 'server', `data_${PORT_A}.sqlite`),
+        ...(USE_PG ? { DB_DRIVER: 'postgres', DATABASE_URL: dsnFor(PG_DB_A) } : {}),
         INSTANCE_NAME: 'Node-A',
       },
       stdio: 'pipe',
@@ -101,6 +186,7 @@ async function run() {
         DOMAIN: `localhost:${PORT_B}`,
         PROTOCOL: 'http',
         DB_PATH: path.resolve(ROOT_DIR, 'server', `data_${PORT_B}.sqlite`),
+        ...(USE_PG ? { DB_DRIVER: 'postgres', DATABASE_URL: dsnFor(PG_DB_B) } : {}),
         INSTANCE_NAME: 'Node-B',
       },
       stdio: 'pipe',
@@ -247,6 +333,11 @@ async function run() {
     }
     if (nodeB && nodeB.pid) {
       try { spawn('taskkill', ['/pid', nodeB.pid.toString(), '/f', '/t'], { shell: true }); } catch {}
+    }
+    // PostgreSQL のときは、接続が切れるのを少し待ってからノード用 DB を片付ける
+    if (USE_PG) {
+      await sleep(1000);
+      await dropPgDatabases();
     }
   }
 }

@@ -137,6 +137,26 @@ try {
   ].join('\n'));
   check('シェル例の変数展開・例示用 DSN は検出しない', findingsFor('shell.md').length, 0);
 
+  // 関数呼び出しは参照として扱う（実値がソース上に無い形）。
+  // ただし呼び出しの中に文字列リテラルがある場合は、秘密が書かれている可能性があるので検出する。
+  // ※ このファイル自体もリポジトリの走査対象なので、キー名は実行時に組み立てる
+  //   （そのまま書くと、検査用のフィクスチャが「秘密の代入」として検出されてしまう）
+  const secretKey = ['DATABASE', '_URL'].join('');
+  writeFixture('src/call.ts', [
+    `const env = { DB_DRIVER: 'postgres', ${secretKey}: buildDsn(host, port) };`,
+    `const other = { ${secretKey}: atob('cG9zdGdyZXM6Ly91OnBAaC9kYg') };`,
+  ].join('\n'));
+  check(
+    '関数呼び出し（リテラル無し）は参照として扱う',
+    findingsFor('call.ts').some((f) => f.rule === 'assigned-secret' && f.line === 1),
+    false,
+  );
+  check(
+    '呼び出し中の文字列リテラルは検出する',
+    findingsFor('call.ts').some((f) => f.rule === 'assigned-secret' && f.line === 2),
+    true,
+  );
+
   // 逆方向の確認: 参照と実値が同じファイルにあれば、実値のほうは検出される
   writeFixture('src/mixed.ts', [
     `const DATABASE_URL = process.env.DATABASE_URL || '';`,

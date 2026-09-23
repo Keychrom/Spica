@@ -90,7 +90,16 @@ function isExampleConnectionString(value: string): boolean {
  * 実値が書かれていれば参照の形にならないため、ここで見逃すことはない。
  */
 function isReferenceValue(value: string): boolean {
-  return /^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|\$\(|<[^>]*>|\{\{[^}]*\}\}|process\.env\.|import\.meta\.env\.|Deno\.env|os\.environ)/.test(value);
+  if (
+    /^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]*\}|\$\(|<[^>]*>|\{\{[^}]*\}\}|process\.env\.|import\.meta\.env\.|Deno\.env|os\.environ)/.test(value)
+  ) {
+    return true;
+  }
+  // 関数呼び出しも「参照」として扱う（`DATABASE_URL: buildDsn(host, port)` のように、
+  // 実値がソース上に無い形）。値の抽出が引数の途中で切れることがあるので、
+  // 閉じ括弧は無くてもよい。ただし**呼び出しの中に文字列リテラルがある場合は除く**:
+  // `atob('c2VjcmV0')` のように、秘密そのものが書かれている可能性があるため
+  return /^[A-Za-z_$][A-Za-z0-9_$.]*\s*\([^'"]*\)?$/.test(value);
 }
 
 /** 検出ルール本体 */

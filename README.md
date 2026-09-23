@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
-[![Node.js](https://img.shields.io/badge/Node.js-v20%2B-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-v22.13%2B-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 
 ---
@@ -39,7 +39,7 @@ Spica は、W3C 標準規格 **ActivityPub** に完全準拠した自律分散�
 ## 🚀 クイックスタート (ローカル起動)
 
 ### 前提条件
-- **Node.js**: v20.0.0 以上 (v22 / v24 推奨)
+- **Node.js**: v22.13.0 以上（v24 推奨）。`node:sqlite` を使うため、v22.5〜v22.12 / v23.0〜v23.3 では `--experimental-sqlite` が必要で、v20 以前では動作しません
 - **npm**: v9.0.0 以上
 
 ### 1. リポジトリのクローン

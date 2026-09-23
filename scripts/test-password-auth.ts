@@ -179,10 +179,18 @@ async function run() {
 
     // ------------------------------------------------------------------
     console.log('\n🔒 [5] パスワードは平文で保存されない');
-    const { DatabaseSync } = await import('node:sqlite');
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB), { readOnly: true });
-    const row = db.prepare('SELECT password_hash, email FROM users WHERE id = ?').get('alice2') as { password_hash: string; email: string };
-    db.close();
+    // どちらのドライバでも確かめられるように、アプリと同じハンドルで読む
+    const { createAsyncDatabase } = await import('../server/src/db/asyncDriver.js');
+    const inspectDb = createAsyncDatabase({
+      driver: process.env.DB_DRIVER,
+      connectionString: process.env.DATABASE_URL,
+      dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+    });
+    const row = (await inspectDb.prepare('SELECT password_hash, email FROM users WHERE id = ?').get('alice2')) as {
+      password_hash: string;
+      email: string;
+    };
+    await inspectDb.close();
     check('ハッシュ形式が scrypt', String(row.password_hash).startsWith('scrypt$'), true);
     check('平文パスワードが含まれない', String(row.password_hash).includes('supersecret1'), false);
     check('メールが保存される', row.email, 'alice2@example.com');

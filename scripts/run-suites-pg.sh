@@ -8,10 +8,13 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-# .env からテスト用 DSN を読む（BOM と空行に耐える形で）
-DSN="$(sed -e 's/^\xEF\xBB\xBF//' -e 's/\r$//' .env | grep -E '^TEST_DATABASE_URL=' | head -1 | cut -d= -f2-)"
+# テスト用 DSN は環境変数 → .env の順に読む（CI には .env が無い）
+DSN="${TEST_DATABASE_URL:-}"
+if [ -z "$DSN" ] && [ -f .env ]; then
+  DSN="$(sed -e 's/^\xEF\xBB\xBF//' -e 's/\r$//' .env | grep -E '^TEST_DATABASE_URL=' | head -1 | cut -d= -f2-)"
+fi
 if [ -z "$DSN" ]; then
-  echo "❌ .env に TEST_DATABASE_URL がありません" >&2
+  echo "❌ TEST_DATABASE_URL がありません（環境変数か .env に設定してください）" >&2
   exit 2
 fi
 
@@ -24,6 +27,7 @@ DEFAULT_SUITES=(
   pg-port pg-backup pg-translate db-async admin-audit email-notify image-proxy ops-automation
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
+  password-auth federation
 )
 
 SUITES=("$@")
@@ -42,6 +46,12 @@ for s in "${SUITES[@]}"; do
   unset_list=""
   if [ "$s" = "pg-port" ]; then
     unset_list="-u DB_DRIVER -u DATABASE_URL"
+  fi
+  # federation は 2 ノードを立てる。稼働中の開発サーバー（:3000）と衝突しないよう別ポートを使う
+  if [ "$s" = "federation" ]; then
+    export TEST_PORT=3400
+  else
+    unset TEST_PORT
   fi
 
   npx tsx scripts/pg-init.ts --dsn "$DSN" --reset > "$log" 2>&1

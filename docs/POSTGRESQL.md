@@ -332,29 +332,46 @@ npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-**いま PG でも緑になるスイート（17 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
+**いま PG でも緑になるスイート（19 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
 `pg-translate`（28）/ `db-async`（46）/ `admin-audit` / `email-notify` / `image-proxy` /
 `ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
 `antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
-`theme-channels-webauthn`
+`theme-channels-webauthn` / `password-auth` / `federation`
+
+`test-federation` はノードごとに**別のデータベース**（`<db>_node_a` / `<db>_node_b`）を作って
+2 ノードを立てます。作る権限が無い場合は理由を出してスキップします
+（管理者が `ALTER ROLE <アプリのロール> CREATEDB;` を実行すると回ります）。
 
 SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でまとめて回せます。
+`run-suites-pg.sh` は `TEST_DATABASE_URL` を環境変数からも読むので、`.env` が無い CI でも動きます。
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| 上記 17 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
-| `test-password-auth` | 🚧 HTTP の検査（登録・ログイン・マスターキー・拒否）は全部通る。最後の「平文で保存されない」検査だけが **SQLite ファイルを直接開く**ため PG では開けずに失敗する |
+| 上記 19 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-search-policy` | 🚧 直近の `posts_fts` を直接いじる検査があり、SQLite 前提（PG では trigram 索引側の検査として `test-pg-port` が担当） |
 | `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む SQLite 専用のスイート。PG 側の保全は `db:maintenance` ではなく `pg_dump` + 手動 SQL |
-| `test-federation` | ❌ 2 つのノードが別々の SQLite ファイルを消して回る作り。PG ではノードごとに DB を分ける改造が要る |
 
 > [!NOTE]
 > スイートが `new DatabaseSync(...)` で直接 SQLite を開いて seed していると、PG では空のファイルを
 > 開いて `no such table` で落ちます。`createAsyncDatabase({ driver: process.env.DB_DRIVER, connectionString:
 > process.env.DATABASE_URL, dbPath: ... })` に置き換えると、どちらの DB でも同じ検査が流せます
 > （`test-admin-audit.ts` / `test-email-notify.ts` が実例）。
-> 逆に「SQLite ファイルを直接開いて中身を確かめる」検査（`test-password-auth` など）は PG では
-> そのままでは動かないので、`createAsyncDatabase` 経由の確認に置き換えていきます。
+> 逆に「SQLite ファイルを直接開いて中身を確かめる」検査（`test-password-auth` など）は
+> `createAsyncDatabase` 経由の確認に置き換えてあります。
+
+### CI（GitHub Actions）
+
+`.github/workflows/test.yml` が push / pull request のたびに 3 つの job を回します。
+
+| job | 内容 |
+| :--- | :--- |
+| 静的チェック | `check:secrets`（秘密の混入）/ `check:await`（await の付け忘れ）/ サーバーとクライアントの型チェック |
+| SQLite のスイート | `bash scripts/run-suites.sh`（36 本） |
+| PostgreSQL のスイート | `postgres:18` サービス + 専用ロール（`CREATEDB` 付き）+ `pg_trgm` を用意して `bash scripts/run-suites-pg.sh`（19 本） |
+
+実行環境は **Node 24**（`node:sqlite` が flag 無しで使えるのが v22.13 / v23.4 以降のため。
+v20 では動きません）。`TEST_DATABASE_URL` は環境変数でも渡せるようにしてあり、
+CI のように `.env` が無い場所でもスイートが回ります。
 
 ---
 

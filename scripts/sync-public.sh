@@ -30,6 +30,7 @@ FILES=(
   package.json
 )
 DIRS=(
+  .github/workflows
   server/src
   scripts
 )
@@ -42,7 +43,10 @@ copy_file() {
   fi
   if cmp -s "$DEV_DIR/$rel" "$PUB_DIR/$rel"; then return; fi
   echo "  → $rel"
-  if $APPLY; then cp "$DEV_DIR/$rel" "$PUB_DIR/$rel"; fi
+  if $APPLY; then
+    mkdir -p "$(dirname "$PUB_DIR/$rel")"
+    cp "$DEV_DIR/$rel" "$PUB_DIR/$rel"
+  fi
 }
 
 echo "=========================================="
@@ -60,7 +64,7 @@ for dir in "${DIRS[@]}"; do
   # 公開ツリーに無いファイル（新規）と、内容が違うファイルを運ぶ
   while IFS= read -r rel; do
     case "$rel" in
-      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json) copy_file "$rel" ;;
+      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml) copy_file "$rel" ;;
     esac
   done < <(cd "$DEV_DIR" && find "$dir" -type f \
     -not -path "*/node_modules/*" -not -path "*/dist/*" \
