@@ -213,7 +213,7 @@ async function main(): Promise<number> {
     }
     process.env.DB_PATH = tempDb;
     const dbModule: any = await import('../server/src/db.js');
-    dbModule.initDatabase();
+    await dbModule.initDatabase();
     dbPath = tempDb;
   }
 

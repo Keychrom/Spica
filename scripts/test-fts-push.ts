@@ -19,7 +19,7 @@ async function runTest() {
   console.log('🧪 === FTS5全文検索 ＆ Web Push機能 総合検証テスト ===\n');
 
   const { initDatabase, db } = await import('../server/src/db.js');
-  initDatabase();
+  await initDatabase();
 
   const {
     getOrCreateVapidKeys,

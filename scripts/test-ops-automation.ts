@@ -250,6 +250,9 @@ async function run(): Promise<void> {
 
     console.log('\n🗓️ [4] 自動実行は 1 日 1 回だけ');
     const { maybeRunScheduledMaintenance, getLastAutoMaintenanceAt } = await import('../server/src/maintenanceService.js');
+    const { loadServerSettings } = await import('../server/src/db.js');
+    // このプロセスでも設定を読めるようにする（サーバーは起動時に読み込む）
+    await loadServerSettings();
     // この検査はサーバー側のスケジューラ（10 秒ごとに同じ関数を呼ぶ）と競合する。
     // [2] で実行時刻を 0 時にしているため、そのままだとスケジューラが先に実行して
     // 「今日は実行済み」のフラグを立て、この検査が落ちる（実行タイミング次第で揺れる）。
@@ -320,7 +323,7 @@ async function run(): Promise<void> {
     const { createGracefulShutdown } = await import('../server/src/shutdown.js');
     const { setServerSetting: writeSetting, getServerSetting } = await import('../server/src/db.js');
     // 書き込みを作ってからチェックポイントさせる
-    writeSetting('probe_before_shutdown', new Date().toISOString());
+    await writeSetting('probe_before_shutdown', new Date().toISOString());
     check('シャットダウン前の書き込みが読める', Boolean(getServerSetting('probe_before_shutdown', '')), true);
 
     let serverClosed = false;

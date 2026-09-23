@@ -20,7 +20,7 @@ async function runTest() {
   console.log('🧪 === データエクスポート ＆ サーバールール・規約同意 総合検証テスト ===\n');
 
   const { initDatabase, db, getInstanceInfo, saveInstanceInfo, DEFAULT_SERVER_RULES } = await import('../server/src/db.js');
-  initDatabase();
+  await initDatabase();
 
   const { exportUserData, streamUserExportZip } = await import('../server/src/exportService.js');
 

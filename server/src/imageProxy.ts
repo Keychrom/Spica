@@ -68,8 +68,8 @@ export function isImageProxyEnabled(): boolean {
   return config.imageProxy !== false;
 }
 
-export function setImageProxyEnabled(enabled: boolean): void {
-  setServerSetting('image_proxy', enabled ? 'true' : 'false');
+export async function setImageProxyEnabled(enabled: boolean): Promise<void> {
+  await setServerSetting('image_proxy', enabled ? 'true' : 'false');
 }
 
 export function getProxyMaxBytes(): number {

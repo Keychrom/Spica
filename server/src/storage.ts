@@ -50,13 +50,13 @@ export function getStorageConfig(): StorageConfig {
 /**
  * ストレージ設定を保存 (DB)
  */
-export function saveStorageConfig(cfg: Partial<StorageConfig>): void {
-  if (cfg.endpoint !== undefined) setServerSetting('s3_endpoint', cfg.endpoint.trim());
-  if (cfg.bucket !== undefined) setServerSetting('s3_bucket', cfg.bucket.trim());
-  if (cfg.accessKeyId !== undefined) setServerSetting('s3_access_key_id', cfg.accessKeyId.trim());
-  if (cfg.secretAccessKey !== undefined) setServerSetting('s3_secret_access_key', cfg.secretAccessKey.trim());
-  if (cfg.publicUrl !== undefined) setServerSetting('s3_public_url', cfg.publicUrl.trim().replace(/\/+$/, ''));
-  if (cfg.region !== undefined) setServerSetting('s3_region', cfg.region.trim() || 'auto');
+export async function saveStorageConfig(cfg: Partial<StorageConfig>): Promise<void> {
+  if (cfg.endpoint !== undefined) await setServerSetting('s3_endpoint', cfg.endpoint.trim());
+  if (cfg.bucket !== undefined) await setServerSetting('s3_bucket', cfg.bucket.trim());
+  if (cfg.accessKeyId !== undefined) await setServerSetting('s3_access_key_id', cfg.accessKeyId.trim());
+  if (cfg.secretAccessKey !== undefined) await setServerSetting('s3_secret_access_key', cfg.secretAccessKey.trim());
+  if (cfg.publicUrl !== undefined) await setServerSetting('s3_public_url', cfg.publicUrl.trim().replace(/\/+$/, ''));
+  if (cfg.region !== undefined) await setServerSetting('s3_region', cfg.region.trim() || 'auto');
 }
 
 /**

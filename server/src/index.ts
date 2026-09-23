@@ -29,7 +29,7 @@ import {
 } from './imageProxy.js';
 
 // データベースの初期化
-initDatabase();
+await initDatabase();
 
 // 予約投稿バックグラウンドワーカーの起動
 startScheduler();

@@ -86,7 +86,7 @@ function initPostgresSchema(): void {
   }
 }
 
-export function initDatabase() {
+export async function initDatabase(): Promise<void> {
   // PostgreSQL では、SQLite の migrations ではなく生成済みスキーマを適用する
   // （スキーマの正は db.ts の migrations 側。npm run db:pg:schema で生成する）
   if (db.kind === 'postgres') {
@@ -793,6 +793,9 @@ export function initDatabase() {
   } catch (ftsSyncErr) {
     console.warn('[FTS5 Sync Warning]:', ftsSyncErr);
   }
+
+  // 設定をメモリへ読み込む（読み取りは同期で行えるようにする）
+  await loadServerSettings();
 }
 
 export interface ChannelRow {
@@ -1486,27 +1489,54 @@ export async function createNotification(params: {
 }
 
 /**
- * サーバー設定の取得（DB）
+ * サーバー設定のキャッシュ。
+ *
+ * 設定は読み取りが非常に多く（リクエストごとに何度も引く）、しかも同期の呼び出し元が残る
+ * （例: 画像プロキシの URL 書き換えは res.json を同期で差し替える）。そこで起動時にメモリへ
+ * 読み込み、読み取りは同期で済ませる。書き込みは DB とキャッシュの両方に反映する（write-through）。
+ *
+ * 別プロセスの CLI（npm run db:maintenance など）が設定を変えた場合、このプロセスのキャッシュは
+ * 古いままなので `refreshServerSettings()` を定期的に呼んで追いつかせる。
  */
-export function getServerSetting(key: string, defaultValue?: string): string | undefined {
-  try {
-    const row = db.prepare('SELECT value FROM server_settings WHERE key = ?').get(key) as { value: string } | undefined;
-    return row ? row.value : defaultValue;
-  } catch {
-    return defaultValue;
-  }
+let settingsCache: Map<string, string> | null = null;
+
+/** 設定をメモリに読み込む（起動時に 1 回。initDatabase から呼ばれる） */
+export async function loadServerSettings(): Promise<void> {
+  const rows = await adb.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
+  const next = new Map<string, string>();
+  for (const row of rows) next.set(row.key, row.value);
+  settingsCache = next;
+}
+
+/** 設定を読み直す（別プロセスの変更に追いつくため、定期的に呼ぶ） */
+export async function refreshServerSettings(): Promise<void> {
+  await loadServerSettings();
 }
 
 /**
- * サーバー設定の保存（DB）
+ * サーバー設定の取得（メモリのキャッシュから同期で返す）
+ *
+ * キャッシュ未ロード（initDatabase 前）は既定値を返す。
  */
-export function setServerSetting(key: string, value: string): void {
+export function getServerSetting(key: string, defaultValue?: string): string | undefined {
+  if (!settingsCache) return defaultValue;
+  const value = settingsCache.get(key);
+  return value === undefined ? defaultValue : value;
+}
+
+/**
+ * サーバー設定の保存（DB へ書き、キャッシュにも反映する）
+ */
+export async function setServerSetting(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
-  db.prepare(`
+  await adb.prepare(`
     INSERT INTO server_settings (key, value, updated_at)
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(key, value, now);
+  // キャッシュ未ロードでも、この後の読み取りが同じプロセスで見えるようにする
+  if (!settingsCache) settingsCache = new Map();
+  settingsCache.set(key, value);
 }
 
 /**
@@ -1588,24 +1618,24 @@ export function getInstanceInfo(): InstanceInfo {
 /**
  * サーバー基本設定の保存 (DB)
  */
-export function saveInstanceInfo(info: Partial<InstanceInfo>): void {
-  if (info.name !== undefined) setServerSetting('instance_name', info.name.trim());
-  if (info.description !== undefined) setServerSetting('instance_description', info.description.trim());
-  if (info.icon_url !== undefined) setServerSetting('instance_icon', info.icon_url.trim());
-  if (info.banner_url !== undefined) setServerSetting('instance_banner', info.banner_url.trim());
-  if (info.registration_mode !== undefined) setServerSetting('registration_mode', info.registration_mode);
-  if (info.tos_url !== undefined) setServerSetting('tos_url', info.tos_url.trim());
-  if (info.privacy_policy_url !== undefined) setServerSetting('privacy_policy_url', info.privacy_policy_url.trim());
-  if (info.contact_url !== undefined) setServerSetting('contact_url', info.contact_url.trim());
-  if (info.repository_url !== undefined) setServerSetting('repository_url', info.repository_url.trim());
-  if (info.operator_url !== undefined) setServerSetting('operator_url', info.operator_url.trim());
+export async function saveInstanceInfo(info: Partial<InstanceInfo>): Promise<void> {
+  if (info.name !== undefined) await setServerSetting('instance_name', info.name.trim());
+  if (info.description !== undefined) await setServerSetting('instance_description', info.description.trim());
+  if (info.icon_url !== undefined) await setServerSetting('instance_icon', info.icon_url.trim());
+  if (info.banner_url !== undefined) await setServerSetting('instance_banner', info.banner_url.trim());
+  if (info.registration_mode !== undefined) await setServerSetting('registration_mode', info.registration_mode);
+  if (info.tos_url !== undefined) await setServerSetting('tos_url', info.tos_url.trim());
+  if (info.privacy_policy_url !== undefined) await setServerSetting('privacy_policy_url', info.privacy_policy_url.trim());
+  if (info.contact_url !== undefined) await setServerSetting('contact_url', info.contact_url.trim());
+  if (info.repository_url !== undefined) await setServerSetting('repository_url', info.repository_url.trim());
+  if (info.operator_url !== undefined) await setServerSetting('operator_url', info.operator_url.trim());
   if (info.server_rules !== undefined) {
     const cleanRules = Array.isArray(info.server_rules)
       ? info.server_rules.map((r) => r.trim()).filter((r) => r.length > 0)
       : [];
-    setServerSetting('server_rules', JSON.stringify(cleanRules));
+    await setServerSetting('server_rules', JSON.stringify(cleanRules));
   }
   if (info.require_rules_agreement !== undefined) {
-    setServerSetting('require_rules_agreement', info.require_rules_agreement ? 'true' : 'false');
+    await setServerSetting('require_rules_agreement', info.require_rules_agreement ? 'true' : 'false');
   }
 }

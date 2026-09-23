@@ -792,7 +792,7 @@ adminRouter.post('/maintenance/settings', async (req: Request, res: Response) =>
       }
       setServerSetting('auto_maintenance_hour', String(parsed));
     }
-    if (typeof imageProxy === 'boolean') setImageProxyEnabled(imageProxy);
+    if (typeof imageProxy === 'boolean') await setImageProxyEnabled(imageProxy);
     if (imageProxyMaxMb !== undefined) {
       const parsed = parseInt(String(imageProxyMaxMb), 10);
       if (!Number.isFinite(parsed) || parsed < 16 || parsed > 10240) {
@@ -845,12 +845,12 @@ adminRouter.post('/maintenance/run', async (req: Request, res: Response) => {
 });
 
 // リモートコンテンツの保存・索引ポリシーの更新
-adminRouter.post('/content-policy', (req: Request, res: Response) => {
+adminRouter.post('/content-policy', asyncHandler(async (req: Request, res: Response) => {
   try {
     const { ftsIndexScope, remoteAnnouncePolicy } = req.body || {};
     const updated: Record<string, string> = {};
-    if (ftsIndexScope !== undefined) updated.fts_index_scope = setFtsIndexScope(ftsIndexScope);
-    if (remoteAnnouncePolicy !== undefined) updated.remote_announce_policy = setRemoteAnnouncePolicy(remoteAnnouncePolicy);
+    if (ftsIndexScope !== undefined) updated.fts_index_scope = await setFtsIndexScope(ftsIndexScope);
+    if (remoteAnnouncePolicy !== undefined) updated.remote_announce_policy = await setRemoteAnnouncePolicy(remoteAnnouncePolicy);
     if (Object.keys(updated).length === 0) {
       return res.status(400).json({ error: '変更する項目が指定されていません。' });
     }
@@ -866,7 +866,7 @@ adminRouter.post('/content-policy', (req: Request, res: Response) => {
     console.error('[Admin Content Policy Error]:', err);
     res.status(500).json({ error: err.message || '設定の保存に失敗しました。' });
   }
-});
+}));
 
 // サーバーアイコンのアップロード
 adminRouter.post('/server-icon', uploadImageFile.single('icon'), async (req: Request, res: Response) => {

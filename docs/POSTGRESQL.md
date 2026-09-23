@@ -17,7 +17,7 @@
 > | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
 > | 既存テストスイートの PG 対応 | 🚧 一部 | 11 スイートが PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（89% / 541 箇所） | 恒久対応。手順は下の「案A の進め方」 |
+> | データ層の非同期化（案A） | 🚧 進行中（89% / 543 箇所） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -124,7 +124,7 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | ✅ 中核 | `postService`（投稿作成）/ `auth`（セッション・権限）/ `activitypub`（配送とアクター取得）/ `scheduler`（予約投稿）/ `mailService` / `exportService` |
 | ✅ 読み取りの要 | `routes/api.ts` のタイムライン整形（`enrichAndFilterPosts`）。リンクプレビューは行ごとではなく 1 回のクエリでまとめて取る |
 | ✅ ルート | `routes/api.ts`（231 箇所）/ `admin.ts`（67）/ `inbox.ts`（50）/ `users.ts`（9）— ハンドラ単位の機械的な変換で移行 |
-| 🚧 中核（最後） | `db.ts` の残りは設定（`getServerSetting` / `setServerSetting`）と起動時のマイグレーション。設定はメモリに載せて同期で読む設計へ移すのが次の一歩 |
+| 🚧 中核（最後） | `db.ts` の残りは起動時のマイグレーション DDL（14 箇所）。**設定はメモリのキャッシュから同期で読む方式に移行済み**（`loadServerSettings` を起動時に呼び、書き込みは write-through）。残りは `instanceActor`（起動時のテーブル作成と鍵）/ `webfinger` / `shutdown` |
 | ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
 | — | `dbMaintenance.ts`（48）は **SQLite 専用の手動メンテナンス CLI**。自前の接続を開く設計なので変換しない |
 

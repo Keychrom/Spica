@@ -72,9 +72,9 @@ export function getFtsIndexScope(conn?: SpicaDatabase): FtsIndexScope {
   return normalizeScope(process.env.FTS_INDEX_SCOPE || config.ftsIndexScope);
 }
 
-export function setFtsIndexScope(scope: unknown): FtsIndexScope {
+export async function setFtsIndexScope(scope: unknown): Promise<FtsIndexScope> {
   const value = normalizeScope(scope);
-  setServerSetting('fts_index_scope', value);
+  await setServerSetting('fts_index_scope', value);
   return value;
 }
 
@@ -84,9 +84,9 @@ export function getRemoteAnnouncePolicy(conn?: SpicaDatabase): RemoteAnnouncePol
   return normalizeAnnouncePolicy(process.env.REMOTE_ANNOUNCE_POLICY || config.remoteAnnouncePolicy);
 }
 
-export function setRemoteAnnouncePolicy(policy: unknown): RemoteAnnouncePolicy {
+export async function setRemoteAnnouncePolicy(policy: unknown): Promise<RemoteAnnouncePolicy> {
   const value = normalizeAnnouncePolicy(policy);
-  setServerSetting('remote_announce_policy', value);
+  await setServerSetting('remote_announce_policy', value);
   return value;
 }
 

@@ -19,7 +19,7 @@ async function runTest() {
   console.log('🧪 === 🎨 チャンネル機能 ＆ 🔐 WebAuthn / パスキー 総合検証テスト ===\n');
 
   const { initDatabase, db } = await import('../server/src/db.js');
-  initDatabase();
+  await initDatabase();
 
   const { executeCreatePost } = await import('../server/src/postService.js');
   const {

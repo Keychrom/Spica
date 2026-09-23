@@ -51,7 +51,7 @@ export async function saveMailConfig(cfg: Partial<MailConfig>): Promise<void> {
   for (const [field, key] of map) {
     if (cfg[field] === undefined) continue;
     const value = field === 'port' ? String(cfg.port) : field === 'secure' ? String(cfg.secure) : String(cfg[field]);
-    setServerSetting(key as any, value.trim());
+    await setServerSetting(key as any, value.trim());
   }
 }
 

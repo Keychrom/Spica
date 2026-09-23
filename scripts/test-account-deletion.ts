@@ -20,7 +20,7 @@ async function runTest() {
   console.log('🧪 === アカウント削除機能 総合検証テスト ===');
 
   const { initDatabase, db } = await import('../server/src/db.js');
-  initDatabase();
+  await initDatabase();
 
   const { deleteUserAccount } = await import('../server/src/accountService.js');
 

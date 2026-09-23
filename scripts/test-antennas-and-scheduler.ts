@@ -19,7 +19,7 @@ async function runTest() {
   console.log('🧪 === 📡 アンテナ機能 ＆ ⏰ 予約投稿・下書き 総合検証テスト ===\n');
 
   const { initDatabase, db, createNotification } = await import('../server/src/db.js');
-  initDatabase();
+  await initDatabase();
 
   const { executeCreatePost, isPostMatchingAntenna, checkAntennaMatchesAndNotify } = await import('../server/src/postService.js');
   const { processScheduledPosts } = await import('../server/src/scheduler.js');

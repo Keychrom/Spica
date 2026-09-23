@@ -110,8 +110,8 @@ export function getLastAutoMaintenanceAt(): string | null {
   return getServerSetting(LAST_RUN_KEY, '') || null;
 }
 
-export function setAutoMaintenanceEnabled(enabled: boolean): boolean {
-  setServerSetting('auto_maintenance', enabled ? 'true' : 'false');
+export async function setAutoMaintenanceEnabled(enabled: boolean): Promise<boolean> {
+  await setServerSetting('auto_maintenance', enabled ? 'true' : 'false');
   return enabled;
 }
 
@@ -135,7 +135,7 @@ export async function maybeRunScheduledMaintenance(now = new Date()): Promise<bo
   isRunningFlag.value = true;
   try {
     await runScheduledMaintenance();
-    setServerSetting(LAST_RUN_KEY, new Date().toISOString());
+    await setServerSetting(LAST_RUN_KEY, new Date().toISOString());
     return true;
   } finally {
     isRunningFlag.value = false;

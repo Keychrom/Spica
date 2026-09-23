@@ -7,7 +7,7 @@ import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
  * VAPIDキーの初期化と取得
  * DBに未保存の場合は自動生成して永続化
  */
-export function getOrCreateVapidKeys(): { publicKey: string; privateKey: string } {
+export async function getOrCreateVapidKeys(): Promise<{ publicKey: string; privateKey: string }> {
   let publicKey = getServerSetting('vapid_public_key');
   let privateKey = getServerSetting('vapid_private_key');
 
@@ -16,8 +16,8 @@ export function getOrCreateVapidKeys(): { publicKey: string; privateKey: string 
     const keys = webpush.generateVAPIDKeys();
     publicKey = keys.publicKey;
     privateKey = keys.privateKey;
-    setServerSetting('vapid_public_key', publicKey);
-    setServerSetting('vapid_private_key', privateKey);
+    await setServerSetting('vapid_public_key', publicKey);
+    await setServerSetting('vapid_private_key', privateKey);
     console.log('[WebPush] ✅ VAPID keys generated and stored in database.');
   }
 
@@ -31,8 +31,8 @@ export function getOrCreateVapidKeys(): { publicKey: string; privateKey: string 
 /**
  * クライアント提供用の VAPID 公開鍵
  */
-export function getVapidPublicKey(): string {
-  const { publicKey } = getOrCreateVapidKeys();
+export async function getVapidPublicKey(): Promise<string> {
+  const { publicKey } = await getOrCreateVapidKeys();
   return publicKey;
 }
 
