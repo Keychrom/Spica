@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
-import { adb, UserRow, PostRow } from '../db.js';
+import { db, UserRow, PostRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
-import { getInstanceInfo } from '../db.js';
 
 /**
  * 発見性（ディスカバリー）まわりのエンドポイント
@@ -106,12 +105,12 @@ function buildItemsFromPosts(posts: PostRow[], authorName: string): RssItem[] {
 // ユーザー別フィード
 discoveryRouter.get('/users/:username/feed.xml', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
   if (!user) {
     return res.status(404).send('Not Found');
   }
 
-  const posts = await adb.prepare(`
+  const posts = await db.prepare(`
     SELECT * FROM posts
     WHERE user_id = ? AND is_local = 1 AND (visibility = 'public' OR visibility IS NULL)
     ORDER BY published_at DESC LIMIT 20
@@ -134,7 +133,7 @@ discoveryRouter.get('/users/:username/feed.xml', asyncHandler(async (req: Reques
 
 // ローカル公開タイムラインのフィード
 discoveryRouter.get('/feed.xml', asyncHandler(async (_req: Request, res: Response) => {
-  const posts = await adb.prepare(`
+  const posts = await db.prepare(`
     SELECT * FROM posts
     WHERE is_local = 1 AND (visibility = 'public' OR visibility IS NULL)
     ORDER BY published_at DESC LIMIT 30
@@ -163,7 +162,7 @@ discoveryRouter.get('/api/oembed', asyncHandler(async (req: Request, res: Respon
 
   const postId = decodeURIComponent(rawUrl.split('?post=')[1] || '');
   const post = postId
-    ? (await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined)
+    ? (await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined)
     : undefined;
 
   if (!post || post.is_local !== 1 || (post.visibility && post.visibility !== 'public')) {

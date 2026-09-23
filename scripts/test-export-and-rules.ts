@@ -19,7 +19,7 @@ process.env.DOMAIN = 'spica.test';
 async function runTest() {
   console.log('🧪 === データエクスポート ＆ サーバールール・規約同意 総合検証テスト ===\n');
 
-  const { initDatabase, db, getInstanceInfo, saveInstanceInfo, DEFAULT_SERVER_RULES } = await import('../server/src/db.js');
+  const { db, initDatabase, getInstanceInfo, saveInstanceInfo, DEFAULT_SERVER_RULES } = await import('../server/src/db.js');
   await initDatabase();
 
   const { exportUserData, streamUserExportZip } = await import('../server/src/exportService.js');
@@ -40,7 +40,7 @@ async function runTest() {
     '著作権侵害や違法行為の禁止',
     'スパム行為の禁止',
   ];
-  saveInstanceInfo({
+  await saveInstanceInfo({
     tos_url: 'https://spica.test/terms.html',
     privacy_policy_url: 'https://spica.test/privacy.html',
     contact_url: 'https://spica.test/contact.html',
@@ -70,7 +70,7 @@ async function runTest() {
   console.log('\n--- 2. データエクスポート (JSON / ZIP) の検証 ---');
 
   // テストユーザー作成
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
     VALUES
       ('alice', 'アリス', '星を観測する人', 'secret_hash_value', 'user', 0, 'PUBLIC_KEY_PEM_DATA', 'PRIVATE_KEY_PEM_DATA', datetime('now')),
@@ -78,7 +78,7 @@ async function runTest() {
   `).run();
 
   // 投稿作成
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, cw, is_local, visibility, published_at)
     VALUES
       ('p1', 'alice', 'アリス', 'https://spica.test/users/alice', '@alice@spica.test', 'Spicaからの初投稿！データ主権万歳！', NULL, 1, 'public', '2026-09-19T01:00:00Z'),
@@ -87,7 +87,7 @@ async function runTest() {
   `).run();
 
   // フォロー関係
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
     VALUES
       ('f1', 'https://spica.test/users/alice', 'https://spica.test/users/bob', 'https://spica.test/users/bob/inbox', 1, 'accepted', datetime('now')),
@@ -95,13 +95,13 @@ async function runTest() {
   `).run();
 
   // ブックマーク
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO bookmarks (user_id, post_id, created_at)
     VALUES ('alice', 'p3', datetime('now'))
   `).run();
 
   // リアクション
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO reactions (id, post_id, user_id, user_name, reaction, is_local, created_at)
     VALUES
       ('r1', 'p3', 'alice', 'アリス', '⭐', 1, datetime('now')),
@@ -166,7 +166,7 @@ async function runTest() {
   // テスト 3: 新規登録時のサーバールール・規約同意検証
   // ==========================================
   console.log('\n--- 3. 新規登録時のサーバールール・規約同意検証 ---');
-  const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
   const currentInstanceInfo = getInstanceInfo();
 
   // 同意なしの登録試行 (規約同意が有効な場合)
@@ -189,7 +189,7 @@ async function runTest() {
   console.log('✅ 規約同意完了後の登録許可検証正常');
 
   // クリーンアップ
-  db.close();
+  await db.close();
   [TEST_DB_PATH, `${TEST_DB_PATH}-wal`, `${TEST_DB_PATH}-shm`].forEach((p) => {
     if (fs.existsSync(p)) {
       try { fs.unlinkSync(p); } catch {}

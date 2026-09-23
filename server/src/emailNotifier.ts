@@ -1,4 +1,4 @@
-import { adb, getServerSetting } from './db.js';
+import { db, getServerSetting } from './db.js';
 import { config } from './config.js';
 import { isMailConfigured, sendMail } from './mailService.js';
 
@@ -77,7 +77,7 @@ interface Recipient {
 }
 
 async function getRecipient(userId: string): Promise<Recipient | null> {
-  const row = await adb.prepare(
+  const row = await db.prepare(
     'SELECT id, email, email_verified, email_notifications FROM users WHERE id = ?',
   ).get(userId) as { id: string; email?: string | null; email_verified?: number | null; email_notifications?: number | null } | undefined;
   if (!row || !row.email) return null;
@@ -107,7 +107,7 @@ export async function getEmailNotificationStatus(userId: string): Promise<{
 
 /** ユーザー側の ON/OFF 保存 */
 export async function setEmailNotificationEnabled(userId: string, enabled: boolean): Promise<void> {
-  await adb.prepare('UPDATE users SET email_notifications = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
+  await db.prepare('UPDATE users SET email_notifications = ? WHERE id = ?').run(enabled ? 1 : 0, userId);
 }
 
 /**
@@ -214,7 +214,7 @@ async function flushUser(userId: string): Promise<void> {
   try {
     const result = await sendMail({ to: recipient.email, subject, text });
     if (result.ok) {
-      await adb.prepare(`
+      await db.prepare(`
         INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
       `).run(`email_notify_last_${userId}`, String(Date.now()), new Date().toISOString());

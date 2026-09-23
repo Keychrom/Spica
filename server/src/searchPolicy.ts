@@ -1,6 +1,5 @@
-import { DatabaseSync } from 'node:sqlite';
-import type { SpicaDatabase } from './db/driver.js';
-import { adb, getServerSetting, setServerSetting } from './db.js';
+import type { AsyncSpicaDatabase } from './db/asyncDriver.js';
+import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 
 /**
@@ -52,22 +51,22 @@ function normalizeAnnouncePolicy(raw: unknown): RemoteAnnouncePolicy {
 }
 
 /**
- * 設定の読み出し。接続を渡すとその接続から読む（メンテナンス CLI 用。
- * サーバーの共有接続を開かずに済ませるため）。
+ * 設定の読み出し。
+ * 接続を渡すとその接続から読む（メンテナンス CLI 用。サーバーの共有接続を開かずに済ませるため）。
+ * 渡さない場合はメモリのキャッシュ（起動時に loadServerSettings が読む）から同期で返す。
  */
-/** server_settings から値を読む（接続を渡せばその接続を使う）。CLI からも使う */
-export function readSetting(conn: SpicaDatabase | undefined, key: string): string {
+export async function readSetting(conn: AsyncSpicaDatabase | undefined, key: string): Promise<string> {
   if (!conn) return getServerSetting(key as any, '') || '';
   try {
-    const row = conn.prepare('SELECT value FROM server_settings WHERE key = ?').get(key) as { value?: string } | undefined;
+    const row = await conn.prepare('SELECT value FROM server_settings WHERE key = ?').get(key) as { value?: string } | undefined;
     return row?.value || '';
   } catch {
     return '';
   }
 }
 
-export function getFtsIndexScope(conn?: SpicaDatabase): FtsIndexScope {
-  const stored = readSetting(conn, 'fts_index_scope');
+export async function getFtsIndexScope(conn?: AsyncSpicaDatabase): Promise<FtsIndexScope> {
+  const stored = await readSetting(conn, 'fts_index_scope');
   if (stored) return normalizeScope(stored);
   return normalizeScope(process.env.FTS_INDEX_SCOPE || config.ftsIndexScope);
 }
@@ -78,8 +77,8 @@ export async function setFtsIndexScope(scope: unknown): Promise<FtsIndexScope> {
   return value;
 }
 
-export function getRemoteAnnouncePolicy(conn?: SpicaDatabase): RemoteAnnouncePolicy {
-  const stored = readSetting(conn, 'remote_announce_policy');
+export async function getRemoteAnnouncePolicy(conn?: AsyncSpicaDatabase): Promise<RemoteAnnouncePolicy> {
+  const stored = await readSetting(conn, 'remote_announce_policy');
   if (stored) return normalizeAnnouncePolicy(stored);
   return normalizeAnnouncePolicy(process.env.REMOTE_ANNOUNCE_POLICY || config.remoteAnnouncePolicy);
 }
@@ -94,7 +93,7 @@ export async function setRemoteAnnouncePolicy(policy: unknown): Promise<RemoteAn
 export async function isFollowedByLocal(actorUrl: string | null | undefined): Promise<boolean> {
   if (!actorUrl) return false;
   try {
-    const row = await adb
+    const row = await db
       .prepare("SELECT 1 FROM follows WHERE following_url = ? AND status = 'accepted' LIMIT 1")
       .get(actorUrl);
     return Boolean(row);
@@ -107,7 +106,7 @@ export async function isFollowedByLocal(actorUrl: string | null | undefined): Pr
 export async function isReplyToLocalPost(inReplyTo: string | null | undefined): Promise<boolean> {
   if (!inReplyTo) return false;
   try {
-    const row = await adb.prepare('SELECT 1 FROM posts WHERE id = ? AND is_local = 1').get(inReplyTo);
+    const row = await db.prepare('SELECT 1 FROM posts WHERE id = ? AND is_local = 1').get(inReplyTo);
     return Boolean(row);
   } catch {
     return false;
@@ -119,7 +118,7 @@ export async function isReplyToLocalPost(inReplyTo: string | null | undefined): 
  * 挿入時に posts.fts_indexed へ保存し、トリガがそれを見て索引するかどうかを決める。
  */
 export async function shouldIndexRemotePost(params: { authorUrl?: string | null; inReplyTo?: string | null }): Promise<boolean> {
-  switch (getFtsIndexScope()) {
+  switch (await getFtsIndexScope()) {
     case 'all':
       return true;
     case 'follows':
@@ -132,7 +131,7 @@ export async function shouldIndexRemotePost(params: { authorUrl?: string | null;
 
 /** 受信したリモートのブースト（Announce）を保存するか */
 export async function shouldStoreRemoteAnnounce(actorUrl: string | null | undefined): Promise<boolean> {
-  switch (getRemoteAnnouncePolicy()) {
+  switch (await getRemoteAnnouncePolicy()) {
     case 'all':
       return true;
     case 'none':
@@ -152,9 +151,9 @@ export interface FtsPolicyResult {
   ftsRowsAfter: number;
 }
 
-/** 方針を既存データへ遡及適用する（db:maintenance から呼ぶ。接続は呼び出し側が渡す） */
-export function applyFtsPolicy(conn: SpicaDatabase): FtsPolicyResult {
-  const scope = getFtsIndexScope(conn);
+/** 方針を既存データへ遡及適用する（db:maintenance と自動メンテナンスから呼ぶ） */
+export async function applyFtsPolicy(conn: AsyncSpicaDatabase): Promise<FtsPolicyResult> {
+  const scope = await getFtsIndexScope(conn);
   const keepCondition = `
     is_local = 1 OR (
       '${scope}' = 'all' OR (
@@ -166,43 +165,43 @@ export function applyFtsPolicy(conn: SpicaDatabase): FtsPolicyResult {
     )`;
 
   // fts_indexed を方針どおりに更新する
-  conn.exec(`UPDATE posts SET fts_indexed = CASE WHEN ${keepCondition} THEN 1 ELSE 0 END`);
+  await conn.exec(`UPDATE posts SET fts_indexed = CASE WHEN ${keepCondition} THEN 1 ELSE 0 END`);
 
   const toUnindex = Number(
-    (conn.prepare(`SELECT COUNT(*) AS c FROM posts WHERE fts_indexed = 0 AND id IN (SELECT post_id FROM posts_fts)`).get() as any).c,
+    (await conn.prepare(`SELECT COUNT(*) AS c FROM posts WHERE fts_indexed = 0 AND id IN (SELECT post_id FROM posts_fts)`).get() as any).c,
   );
   const toIndex = Number(
-    (conn.prepare(`SELECT COUNT(*) AS c FROM posts WHERE fts_indexed = 1 AND id NOT IN (SELECT post_id FROM posts_fts)`).get() as any).c,
+    (await conn.prepare(`SELECT COUNT(*) AS c FROM posts WHERE fts_indexed = 1 AND id NOT IN (SELECT post_id FROM posts_fts)`).get() as any).c,
   );
 
   if (toUnindex > 0) {
-    conn.exec('DELETE FROM posts_fts WHERE post_id IN (SELECT id FROM posts WHERE fts_indexed = 0)');
+    await conn.exec('DELETE FROM posts_fts WHERE post_id IN (SELECT id FROM posts WHERE fts_indexed = 0)');
   }
   if (toIndex > 0) {
-    conn.exec(`
+    await conn.exec(`
       INSERT INTO posts_fts(post_id, content)
       SELECT id, content FROM posts
       WHERE fts_indexed = 1 AND id NOT IN (SELECT post_id FROM posts_fts)
     `);
   }
   // 過去の削除などで残っている孤立 FTS 行も掃除する
-  conn.exec('DELETE FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)');
+  await conn.exec('DELETE FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)');
 
-  const ftsRowsAfter = Number((conn.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
+  const ftsRowsAfter = Number((await conn.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
   return { toUnindex, toIndex, ftsRowsAfter };
 }
 
 /** 方針に反して保存されているリモートのブーストを削除する */
-export function applyAnnouncePolicy(conn: SpicaDatabase): { toRemove: number; remaining: number } {
-  const policy = getRemoteAnnouncePolicy(conn);
+export async function applyAnnouncePolicy(conn: AsyncSpicaDatabase): Promise<{ toRemove: number; remaining: number }> {
+  const policy = await getRemoteAnnouncePolicy(conn);
   let toRemove = 0;
   if (policy === 'none') {
-    toRemove = Number((conn.prepare('SELECT COUNT(*) AS c FROM announces WHERE is_local = 0').get() as any).c);
-    if (toRemove > 0) conn.exec('DELETE FROM announces WHERE is_local = 0');
+    toRemove = Number((await conn.prepare('SELECT COUNT(*) AS c FROM announces WHERE is_local = 0').get() as any).c);
+    if (toRemove > 0) await conn.exec('DELETE FROM announces WHERE is_local = 0');
   } else if (policy === 'follows') {
     toRemove = Number(
       (
-        conn
+        await conn
           .prepare(
             `SELECT COUNT(*) AS c FROM announces WHERE is_local = 0
                AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.following_url = announces.user_id AND f.status = 'accepted')`,
@@ -211,12 +210,12 @@ export function applyAnnouncePolicy(conn: SpicaDatabase): { toRemove: number; re
       ).c,
     );
     if (toRemove > 0) {
-      conn.exec(`
+      await conn.exec(`
         DELETE FROM announces WHERE is_local = 0
           AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.following_url = announces.user_id AND f.status = 'accepted')
       `);
     }
   }
-  const remaining = Number((conn.prepare('SELECT COUNT(*) AS c FROM announces').get() as any).c);
+  const remaining = Number((await conn.prepare('SELECT COUNT(*) AS c FROM announces').get() as any).c);
   return { toRemove, remaining };
 }

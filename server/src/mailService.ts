@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-import { adb, getServerSetting, setServerSetting } from './db.js';
+import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 
 /**
@@ -144,8 +144,8 @@ export async function issueVerificationCode(params: {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + (params.ttlMinutes ?? 10) * 60 * 1000).toISOString();
 
-  await adb.prepare('DELETE FROM email_verifications WHERE user_id = ? AND purpose = ?').run(params.userId, params.purpose);
-  await adb.prepare(`
+  await db.prepare('DELETE FROM email_verifications WHERE user_id = ? AND purpose = ?').run(params.userId, params.purpose);
+  await db.prepare(`
     INSERT INTO email_verifications (id, user_id, email, code_hash, purpose, expires_at, attempts, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?)
   `).run(
@@ -176,7 +176,7 @@ export async function verifyCode(params: {
   code: string;
   purpose: 'verify_email' | 'recovery' | 'register';
 }): Promise<VerifyCodeResult> {
-  const row = await adb.prepare(
+  const row = await db.prepare(
     'SELECT * FROM email_verifications WHERE user_id = ? AND purpose = ?',
   ).get(params.userId, params.purpose) as unknown as EmailVerificationRow | undefined;
 
@@ -184,21 +184,21 @@ export async function verifyCode(params: {
     return { ok: false, error: '確認コードが見つかりません。もう一度お試しください。' };
   }
   if (new Date(row.expires_at) < new Date()) {
-    await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+    await db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
     return { ok: false, error: '確認コードの有効期限が切れています。' };
   }
   if (row.attempts >= 5) {
-    await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+    await db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
     return { ok: false, error: '試行回数の上限に達しました。もう一度お試しください。' };
   }
   if (row.email !== params.email.toLowerCase()) {
     return { ok: false, error: 'メールアドレスが一致しません。' };
   }
   if (row.code_hash !== hashVerificationCode(params.code)) {
-    await adb.prepare('UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?').run(row.id);
+    await db.prepare('UPDATE email_verifications SET attempts = attempts + 1 WHERE id = ?').run(row.id);
     return { ok: false, error: '確認コードが正しくありません。' };
   }
 
-  await adb.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
+  await db.prepare('DELETE FROM email_verifications WHERE id = ?').run(row.id);
   return { ok: true };
 }

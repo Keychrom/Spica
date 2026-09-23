@@ -18,7 +18,7 @@ process.env.DOMAIN = 'spica.test';
 async function runTest() {
   console.log('🧪 === FTS5全文検索 ＆ Web Push機能 総合検証テスト ===\n');
 
-  const { initDatabase, db } = await import('../server/src/db.js');
+  const { db, initDatabase } = await import('../server/src/db.js');
   await initDatabase();
 
   const {
@@ -33,19 +33,19 @@ async function runTest() {
   // テスト 1: Web Push サービス
   // ==========================================
   console.log('--- 1. Web Push サービスの検証 ---');
-  const vapidKeys = getOrCreateVapidKeys();
+  const vapidKeys = await getOrCreateVapidKeys();
   if (!vapidKeys.publicKey || !vapidKeys.privateKey) {
     throw new Error('VAPIDキーの生成に失敗しました');
   }
   console.log(`✅ VAPID公開鍵生成成功: ${vapidKeys.publicKey.slice(0, 20)}...`);
 
-  const pubKey = getVapidPublicKey();
+  const pubKey = await getVapidPublicKey();
   if (pubKey !== vapidKeys.publicKey) {
     throw new Error('getVapidPublicKey が一致しません');
   }
 
   // テストユーザー作成 (外部キー制約)
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
     VALUES ('testuser', 'テストユーザー', 'WebPush用', 'hash', 'user', 0, 'pub', 'priv', datetime('now'))
   `).run();
@@ -76,13 +76,13 @@ async function runTest() {
   console.log('\n--- 2. SQLite FTS5 (trigram) 全文検索の検証 ---');
 
   // テストユーザー作成
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
     VALUES ('alice', 'アリス', 'テストユーザー', 'hash', 'user', 0, 'pub', 'priv', datetime('now'))
   `).run();
 
   // 投稿作成（トリガーにより posts_fts へ自動同期されるはず）
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, visibility, published_at)
     VALUES
       ('p1', 'alice', 'アリス', 'https://spica.test/users/alice', '@alice@spica.test', '今日は青い星Spicaを観測しました。とても美しい星光です。', 1, 'public', '2026-09-19T00:00:00Z'),
@@ -91,14 +91,14 @@ async function runTest() {
   `).run();
 
   // トリガーによって posts_fts に3件入っているか確認
-  const ftsCount = (db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
+  const ftsCount = (await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
   if (ftsCount !== 3) {
     throw new Error(`posts_fts にデータが自動同期されていません (期待: 3, 実際: ${ftsCount})`);
   }
   console.log(`✅ posts_fts への AFTER INSERT トリガー自動同期成功 (件数: ${ftsCount})`);
 
   // 3文字以上の単語検索 (FTS5 trigram): 「青い星」
-  const res1 = db.prepare(`
+  const res1 = await db.prepare(`
     SELECT p.id, p.content FROM posts_fts f
     JOIN posts p ON f.post_id = p.id
     WHERE posts_fts MATCH '"青い星"'
@@ -109,7 +109,7 @@ async function runTest() {
   console.log('✅ 3文字以上の日本語単語検索「青い星」-> p1 が正確にヒット');
 
   // 単語検索: 「ActivityPub」
-  const res2 = db.prepare(`
+  const res2 = await db.prepare(`
     SELECT p.id, p.content FROM posts_fts f
     JOIN posts p ON f.post_id = p.id
     WHERE posts_fts MATCH '"ActivityPub"'
@@ -120,7 +120,7 @@ async function runTest() {
   console.log('✅ 英単語検索「ActivityPub」-> p2 が正確にヒット');
 
   // 複数単語 AND 検索: 「青い星」AND「美しい」
-  const res3 = db.prepare(`
+  const res3 = await db.prepare(`
     SELECT p.id, p.content FROM posts_fts f
     JOIN posts p ON f.post_id = p.id
     WHERE posts_fts MATCH '"青い星" "美しい"'
@@ -132,7 +132,7 @@ async function runTest() {
 
   // 1〜2文字の単語（例: 「観測」）のハイブリッド検索ロジック検証 (LIKE フォールバック)
   const shortQuery = '観測';
-  const resShort = db.prepare(`
+  const resShort = await db.prepare(`
     SELECT id, content FROM posts
     WHERE content LIKE ?
   `).all(`%${shortQuery}%`) as any[];
@@ -142,15 +142,15 @@ async function runTest() {
   console.log('✅ 短語ハイブリッド補完（1〜2文字）「観測」-> p1 が正確にヒット');
 
   // トリガー検証: 投稿削除時に FTS から消去されるか
-  db.prepare('DELETE FROM posts WHERE id = ?').run('p3');
-  const ftsCountAfterDel = (db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
+  await db.prepare('DELETE FROM posts WHERE id = ?').run('p3');
+  const ftsCountAfterDel = (await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
   if (ftsCountAfterDel !== 2) {
     throw new Error(`削除トリガーが作動していません (期待: 2, 実際: ${ftsCountAfterDel})`);
   }
   console.log('✅ posts_ad (AFTER DELETE) トリガーによる FTS からの自動消去成功');
 
   // クリーンアップ
-  db.close();
+  await db.close();
   [TEST_DB_PATH, `${TEST_DB_PATH}-wal`, `${TEST_DB_PATH}-shm`].forEach((p) => {
     if (fs.existsSync(p)) {
       try { fs.unlinkSync(p); } catch {}

@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { adb, db, UserRow } from '../db.js';
+import { db, UserRow } from '../db.js';
 import { config } from '../config.js';
+import { asyncHandler } from '../asyncHandler.js';
 
 export const webfingerRouter = Router();
 
-webfingerRouter.get('/webfinger', (req: Request, res: Response) => {
+webfingerRouter.get('/webfinger', asyncHandler(async (req: Request, res: Response) => {
   const resource = req.query.resource as string;
   if (!resource) {
     return res.status(400).json({ error: 'クエリパラメータ resource が必要です。例: acct:user@domain' });
@@ -40,7 +41,7 @@ webfingerRouter.get('/webfinger', (req: Request, res: Response) => {
     });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as UserRow | undefined;
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
@@ -64,4 +65,4 @@ webfingerRouter.get('/webfinger', (req: Request, res: Response) => {
       },
     ],
   });
-});
+}));

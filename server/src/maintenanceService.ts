@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { adb, db, getServerSetting, setServerSetting } from './db.js';
+import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
@@ -175,8 +175,8 @@ export async function runScheduledMaintenance(): Promise<{
   let fts = { toUnindex: 0, toIndex: 0 };
   let announces = { toRemove: 0 };
   try {
-    const ftsResult = applyFtsPolicy(db);
-    const announceResult = applyAnnouncePolicy(db);
+    const ftsResult = await applyFtsPolicy(db);
+    const announceResult = await applyAnnouncePolicy(db);
     fts = { toUnindex: ftsResult.toUnindex, toIndex: ftsResult.toIndex };
     announces = { toRemove: announceResult.toRemove };
     if (ftsResult.toUnindex + ftsResult.toIndex > 0 || announceResult.toRemove > 0) {
@@ -191,9 +191,9 @@ export async function runScheduledMaintenance(): Promise<{
   // ③ 保持期間を超えたリモート投稿の削除（VACUUM はしない）
   let removedPosts = 0;
   try {
-    const plan = planRemotePostRemoval(db, options);
+    const plan = await planRemotePostRemoval(db, options);
     if (plan.total > 0) {
-      const counts = applyRemotePostRemoval(db, options);
+      const counts = await applyRemotePostRemoval(db, options);
       removedPosts = counts.posts;
       console.log(`[Auto Maintenance] 🗑️ 古いリモート投稿を削除: ${counts.posts} 件（従属行 ${counts.reactions + counts.announces + counts.notifications} 件）`);
     } else {
@@ -214,7 +214,7 @@ export async function runScheduledMaintenance(): Promise<{
     console.error('[Auto Maintenance] 画像プロキシの整理に失敗しました:', err?.message || err);
   }
 
-  const size = getDbSizeInfo(config.dbPath, db);
+  const size = await getDbSizeInfo(config.dbPath, db);
   console.log(
     `[Auto Maintenance] ✅ 完了 (${((Date.now() - started) / 1000).toFixed(1)}s) / DB ${(size.dbBytes / 1024 / 1024).toFixed(1)}MB + WAL ${(size.walBytes / 1024 / 1024).toFixed(1)}MB` +
       ' / ※ 領域の解放（VACUUM）はサーバー停止時に npm run db:maintenance -- --apply で',
@@ -224,8 +224,8 @@ export async function runScheduledMaintenance(): Promise<{
 
 /** 管理画面向け: 容量・件数・メンテナンス状況をまとめて返す */
 export async function getMaintenanceStats(): Promise<MaintenanceStats> {
-  const size = getDbSizeInfo(config.dbPath, db);
-  const one = async (sql: string): Promise<number> => Number((await adb.prepare(sql).get() as any)?.c ?? 0);
+  const size = await getDbSizeInfo(config.dbPath, db);
+  const one = async (sql: string): Promise<number> => Number((await db.prepare(sql).get() as any)?.c ?? 0);
   const cutoff = new Date(Date.now() - config.remotePostRetentionDays * 86400_000).toISOString();
 
   const local = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 1');
@@ -240,7 +240,7 @@ export async function getMaintenanceStats(): Promise<MaintenanceStats> {
        AND NOT EXISTS (SELECT 1 FROM posts lp WHERE lp.is_local = 1 AND lp.id = p.in_reply_to)
        AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.following_url = p.author_url AND f.status = 'accepted')`,
   );
-  const mediaRow = await adb.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size),0) AS b FROM media').get() as any;
+  const mediaRow = await db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size),0) AS b FROM media').get() as any;
   const proxyStats = await getProxyStats();
 
   return {
@@ -260,8 +260,8 @@ export async function getMaintenanceStats(): Promise<MaintenanceStats> {
       return { enabled: stats.enabled, files: stats.files, bytes: stats.bytes, maxBytes: stats.maxBytes, ttlDays: stats.ttlDays };
     })(),
     policy: {
-      ftsIndexScope: getFtsIndexScope(),
-      remoteAnnouncePolicy: getRemoteAnnouncePolicy(),
+      ftsIndexScope: await getFtsIndexScope(),
+      remoteAnnouncePolicy: await getRemoteAnnouncePolicy(),
       retentionDays: config.remotePostRetentionDays,
     },
     automation: {

@@ -1,4 +1,4 @@
-﻿import { adb, UserRow, ScheduledPostRow, createNotification } from './db.js';
+﻿import { db, UserRow, ScheduledPostRow, createNotification } from './db.js';
 import { executeCreatePost } from './postService.js';
 import { attemptDelivery } from './activitypub.js';
 import { maybeRunScheduledMaintenance } from './maintenanceService.js';
@@ -32,7 +32,7 @@ export async function processScheduledPosts(): Promise<number> {
   let processedCount = 0;
   try {
     const nowIso = new Date().toISOString();
-    const pendingPosts = await adb.prepare(`
+    const pendingPosts = await db.prepare(`
       SELECT * FROM scheduled_posts
       WHERE status = 'pending' AND scheduled_at <= ?
       ORDER BY scheduled_at ASC
@@ -48,14 +48,14 @@ export async function processScheduledPosts(): Promise<number> {
 
     for (const item of pendingPosts) {
       try {
-        const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(item.user_id) as UserRow | undefined;
+        const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(item.user_id) as UserRow | undefined;
         if (!user) {
-          await adb.prepare('UPDATE scheduled_posts SET status = "failed", error_message = "ユーザーが見つかりません" WHERE id = ?').run(item.id);
+          await db.prepare('UPDATE scheduled_posts SET status = "failed", error_message = "ユーザーが見つかりません" WHERE id = ?').run(item.id);
           continue;
         }
 
         if (user.is_frozen === 1) {
-          await adb.prepare('UPDATE scheduled_posts SET status = "failed", error_message = "アカウントが凍結されているため投稿をキャンセルしました" WHERE id = ?').run(item.id);
+          await db.prepare('UPDATE scheduled_posts SET status = "failed", error_message = "アカウントが凍結されているため投稿をキャンセルしました" WHERE id = ?').run(item.id);
           continue;
         }
 
@@ -85,7 +85,7 @@ export async function processScheduledPosts(): Promise<number> {
         });
 
         // 成功ステータスに更新
-        await adb.prepare(`
+        await db.prepare(`
           UPDATE scheduled_posts 
           SET status = 'published', published_post_id = ?, error_message = ''
           WHERE id = ?
@@ -108,7 +108,7 @@ export async function processScheduledPosts(): Promise<number> {
         });
       } catch (err: any) {
         console.error(`[Scheduler Error] Failed to publish scheduled post ${item.id}:`, err);
-        await adb.prepare(`
+        await db.prepare(`
           UPDATE scheduled_posts 
           SET status = 'failed', error_message = ?
           WHERE id = ?
@@ -163,7 +163,7 @@ export async function processDeliveryQueue(): Promise<number> {
         // 送信元ユーザー（署名鍵）を解決する。インスタンスアクターなら不要
         let senderUser: UserRow | undefined;
         if (!row.use_instance_actor && row.sender_user_id) {
-          senderUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
+          senderUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
           if (!senderUser) {
             await markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
             continue;

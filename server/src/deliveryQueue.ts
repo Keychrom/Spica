@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { adb } from './db.js';
+import { db } from './db.js';
 
 /**
  * 📮 配送再送キュー
@@ -72,7 +72,7 @@ export async function enqueueDelivery(params: {
   try {
     const activityId = String(params.activity?.id || '');
     if (activityId) {
-      const existing = await adb.prepare(
+      const existing = await db.prepare(
         "SELECT id FROM outbox_deliveries WHERE status = 'pending' AND activity_id = ? AND inbox_url = ?",
       ).get(activityId, params.inboxUrl) as { id: string } | undefined;
       if (existing) {
@@ -81,7 +81,7 @@ export async function enqueueDelivery(params: {
     }
 
     const now = new Date();
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO outbox_deliveries (
         id, activity_id, activity_type, inbox_url, activity, sender_user_id,
         use_instance_actor, attempts, next_attempt_at, last_status, last_error, status, created_at, updated_at
@@ -111,7 +111,7 @@ export async function enqueueDelivery(params: {
 export async function listDueDeliveries(limit = 50): Promise<OutboxDeliveryRow[]> {
   try {
     const nowIso = new Date().toISOString();
-    return await adb.prepare(`
+    return await db.prepare(`
       SELECT * FROM outbox_deliveries
       WHERE status = 'pending' AND next_attempt_at <= ?
       ORDER BY next_attempt_at ASC
@@ -126,7 +126,7 @@ export async function listDueDeliveries(limit = 50): Promise<OutboxDeliveryRow[]
 /** 再送に成功した行を配信済みにする */
 export async function markDeliveryDelivered(id: string): Promise<void> {
   try {
-    await adb.prepare(
+    await db.prepare(
       "UPDATE outbox_deliveries SET status = 'delivered', last_error = '', updated_at = ? WHERE id = ?",
     ).run(new Date().toISOString(), id);
   } catch (err) {
@@ -148,7 +148,7 @@ export async function markDeliveryFailed(
     const message = String(params.error || '').slice(0, 500);
 
     if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-      await adb.prepare(`
+      await db.prepare(`
         UPDATE outbox_deliveries
         SET attempts = ?, status = 'failed', last_status = ?, last_error = ?, updated_at = ?
         WHERE id = ?
@@ -157,7 +157,7 @@ export async function markDeliveryFailed(
     }
 
     const nextAttemptAt = new Date(now.getTime() + nextRetryDelayMs(attempts)).toISOString();
-    await adb.prepare(`
+    await db.prepare(`
       UPDATE outbox_deliveries
       SET attempts = ?, next_attempt_at = ?, last_status = ?, last_error = ?, updated_at = ?
       WHERE id = ?
@@ -172,7 +172,7 @@ export async function markDeliveryFailed(
 /** 恒久的な失敗（4xx など）として確定させる */
 export async function markDeliveryDead(row: OutboxDeliveryRow, params: { status?: number | null; error?: string }): Promise<void> {
   try {
-    await adb.prepare(`
+    await db.prepare(`
       UPDATE outbox_deliveries
       SET status = 'failed', last_status = ?, last_error = ?, updated_at = ?
       WHERE id = ?
@@ -188,8 +188,8 @@ export async function pruneDeliveries(): Promise<number> {
     const now = Date.now();
     const deliveredBefore = new Date(now - DELIVERED_RETENTION_MS).toISOString();
     const failedBefore = new Date(now - FAILED_RETENTION_MS).toISOString();
-    await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'delivered' AND updated_at < ?").run(deliveredBefore);
-    await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed' AND updated_at < ?").run(failedBefore);
+    await db.prepare("DELETE FROM outbox_deliveries WHERE status = 'delivered' AND updated_at < ?").run(deliveredBefore);
+    await db.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed' AND updated_at < ?").run(failedBefore);
     return 1;
   } catch (err) {
     console.error('[Delivery Queue] ❌ 古い行の削除に失敗:', err);
@@ -208,8 +208,8 @@ export interface DeliveryQueueStats {
 export async function getDeliveryQueueStats(): Promise<DeliveryQueueStats> {
   try {
     const count = async (status: string): Promise<number> =>
-      (await adb.prepare('SELECT COUNT(*) as c FROM outbox_deliveries WHERE status = ?').get(status) as { c: number }).c;
-    const next = await adb.prepare(
+      (await db.prepare('SELECT COUNT(*) as c FROM outbox_deliveries WHERE status = ?').get(status) as { c: number }).c;
+    const next = await db.prepare(
       "SELECT next_attempt_at FROM outbox_deliveries WHERE status = 'pending' ORDER BY next_attempt_at ASC LIMIT 1",
     ).get() as { next_attempt_at: string } | undefined;
     return {
@@ -227,7 +227,7 @@ export async function getDeliveryQueueStats(): Promise<DeliveryQueueStats> {
 export async function releasePendingDeliveries(): Promise<number> {
   try {
     const nowIso = new Date().toISOString();
-    const result = await adb.prepare(
+    const result = await db.prepare(
       "UPDATE outbox_deliveries SET next_attempt_at = ?, updated_at = ? WHERE status = 'pending'",
     ).run(nowIso, nowIso);
     return Number(result.changes ?? 0);
@@ -240,7 +240,7 @@ export async function releasePendingDeliveries(): Promise<number> {
 /** 失敗確定した行をまとめて削除する（管理画面からの掃除用） */
 export async function clearFailedDeliveries(): Promise<number> {
   try {
-    const result = await adb.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed'").run();
+    const result = await db.prepare("DELETE FROM outbox_deliveries WHERE status = 'failed'").run();
     return Number(result.changes ?? 0);
   } catch (err) {
     console.error('[Delivery Queue] ❌ 失敗行の削除に失敗:', err);

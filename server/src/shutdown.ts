@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import { db, adb } from './db.js';
+import { db } from './db.js';
 import { stopScheduler } from './scheduler.js';
 import { closeAllStreams } from './streaming.js';
 
@@ -66,23 +66,13 @@ export function createGracefulShutdown(deps: GracefulShutdownDeps): (signal: str
       // 未対応の場合は無視
     }
 
-    // DB の後始末は接続の終了を待たずに済ませる（待つと終われないことがある）
-    try {
-      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-      console.log('[Shutdown] 💾 WAL をチェックポイントしました');
-    } catch (err: any) {
-      console.warn('[Shutdown] チェックポイントに失敗:', err?.message || err);
-    }
-    try {
-      db.close();
-    } catch {
-      // すでに閉じている場合は無視
-    }
-
-    // 非同期接続（PostgreSQL のソケット）は閉じてから終わる。
-    // 閉じ終わらない場合は上の forceExit が強制終了する。
-    adb
-      .close()
+    // DB の後始末。WAL をチェックポイントしてから接続を閉じる
+    // （PostgreSQL では checkpoint は何もしない）。終了の完了は待つが、
+    // 待ち続けて終われない場合に備えて上の forceExit が上限として働く。
+    db
+      .checkpoint()
+      .catch(() => {})
+      .then(() => db.close())
       .catch(() => {})
       .finally(() => {
         console.log('[Shutdown] ✅ 終了しました');

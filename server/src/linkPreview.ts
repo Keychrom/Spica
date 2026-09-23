@@ -1,4 +1,4 @@
-import { adb } from './db.js';
+import { db } from './db.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
 
 /**
@@ -98,7 +98,7 @@ export async function getCachedPreviews(urls: string[]): Promise<Map<string, Lin
   }
   try {
     const placeholders = urls.map(() => '?').join(',');
-    const rows = await adb.prepare(`SELECT * FROM link_previews WHERE url IN (${placeholders})`).all(...urls) as unknown as LinkPreview[];
+    const rows = await db.prepare(`SELECT * FROM link_previews WHERE url IN (${placeholders})`).all(...urls) as unknown as LinkPreview[];
     const cutoff = Date.now() - CACHE_TTL_MS;
     for (const row of rows) {
       if (row.status === 'ok' && Date.parse(row.fetched_at) > cutoff) {
@@ -113,7 +113,7 @@ export async function getCachedPreviews(urls: string[]): Promise<Map<string, Lin
 
 async function hasRecentFailure(url: string): Promise<boolean> {
   try {
-    const row = await adb.prepare('SELECT fetched_at, status FROM link_previews WHERE url = ?').get(url) as
+    const row = await db.prepare('SELECT fetched_at, status FROM link_previews WHERE url = ?').get(url) as
       | { fetched_at: string; status: string }
       | undefined;
     if (!row) {
@@ -127,7 +127,7 @@ async function hasRecentFailure(url: string): Promise<boolean> {
 
 async function savePreview(preview: LinkPreview): Promise<void> {
   try {
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO link_previews (url, title, description, image_url, site_name, status, fetched_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(url) DO UPDATE SET

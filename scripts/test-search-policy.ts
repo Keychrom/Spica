@@ -4,6 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // リモートコンテンツの保存・索引ポリシーの検証
@@ -324,19 +325,20 @@ async function run(): Promise<void> {
 
     const { applyFtsPolicy, applyAnnouncePolicy } = await import('../server/src/searchPolicy.js');
     // 実際のメンテナンスと同じく、専用の接続を渡して適用する
-    const policyDb = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    policyDb.exec('PRAGMA busy_timeout = 10000');
+    const policyConn = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
+    policyConn.exec('PRAGMA busy_timeout = 10000');
+    const policyDb = createAsyncDatabase({ sqlite: policyConn });
 
-    const ftsApplied = applyFtsPolicy(policyDb);
+    const ftsApplied = await applyFtsPolicy(policyDb);
     check('方針に反する索引が外される（リモート分）', ftsApplied.toUnindex >= 2, true);
     check('索引に入れ直す件数は 0（狭める方向）', ftsApplied.toIndex, 0);
-    const localFtsAfter = Number((policyDb.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
+    const localFtsAfter = Number((await policyDb.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
     check('索引にはローカル投稿だけが残る（ローカル2件）', localFtsAfter, 2);
 
-    const annApplied = applyAnnouncePolicy(policyDb);
+    const annApplied = await applyAnnouncePolicy(policyDb);
     check('方針に反するブーストが削除される', annApplied.toRemove, 1);
     check('フォロー中のブーストは残る', annApplied.remaining, 1);
-    policyDb.close();
+    policyConn.close();
 
     completed = true;
   } finally {

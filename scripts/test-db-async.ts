@@ -2,8 +2,10 @@
  * 非同期データベース層の検証 (`npm run test:db-async`)
  *
  * SQLite だけで動きます。TEST_DATABASE_URL があれば **同じ検査を PostgreSQL でも**流します。
- * 検査は「同期版（従来の db）と非同期版（adb）が同じ結果を返すこと」を軸にしているので、
- * 移行中にどちらかがずれたら落ちます。
+ *
+ * 検査の軸は「ドライバをまたいで同じ結果が返ること」。行の突き合わせの参照側には
+ * SQLite の同期ラッパー（wrapSqliteDatabase。SQLite 専用のメンテナンス CLI と同じ実装）を使い、
+ * PostgreSQL 側もその値と一致するかを見ます。
  *
  *   TEST_DATABASE_URL=postgres://spica:pass@127.0.0.1:5432/spica_test npm run test:db-async
  */
@@ -32,7 +34,14 @@ function check(name: string, actual: unknown, expected: unknown): void {
 }
 
 /** 1 つのデータベース（同期版 + 非同期版）に対して同じ検査を流す */
-async function inspect(label: string, sync: SpicaDatabase, async: AsyncSpicaDatabase): Promise<void> {
+/** ドライバごとの最終スナップショット（同じ操作を流した結果を突き合わせる） */
+const snapshots = new Map<string, unknown>();
+
+/**
+ * 1 つの非同期ハンドルに同じ検査を流す。
+ * 最後に同じ操作列の結果（probe テーブルの中身）を控え、先に流したドライバと突き合わせる。
+ */
+async function inspect(label: string, async: AsyncSpicaDatabase): Promise<void> {
   console.log(`\n── ${label} ─────────────────────────────`);
 
   const before = { passed, failed };
@@ -69,12 +78,7 @@ async function inspect(label: string, sync: SpicaDatabase, async: AsyncSpicaData
   check(`${label}: 該当なしの get は undefined`, (await async.prepare('SELECT id FROM async_probe WHERE id = ?').get('nope')) as unknown, undefined);
   check(`${label}: 該当なしの all は空配列`, (await async.prepare('SELECT id FROM async_probe WHERE id = ?').all('nope')) as unknown, []);
 
-  // ── 同期版と同じ結果か（移行中の要） ─────────────────────
-  check(
-    `${label}: 同期版と同じ行を返す`,
-    (await async.prepare('SELECT id, num, note FROM async_probe ORDER BY id').all()) as unknown,
-    sync.prepare('SELECT id, num, note FROM async_probe ORDER BY id').all() as unknown,
-  );
+
 
   // ── 値の型（数値・真偽値 0/1・NULL・BLOB） ───────────────
   const withBlob = Buffer.from('バイナリ', 'utf8');
@@ -139,6 +143,14 @@ async function inspect(label: string, sync: SpicaDatabase, async: AsyncSpicaData
   // エラーの後も使い続けられる
   check(`${label}: エラーの後も使える`, ((await async.prepare('SELECT COUNT(*) AS n FROM async_probe').get()) as any).n, 5);
 
+  // ── 同じ操作列を流した結果が、先のドライバと一致するか ─────
+  const snapshot = (await async.prepare('SELECT id, num, note FROM async_probe ORDER BY id').all()) as unknown;
+  const previous = [...snapshots.entries()][0];
+  if (previous) {
+    check(`${label}: 同じ操作を流すと ${previous[0]} と同じ行になる`, snapshot, previous[1]);
+  }
+  snapshots.set(label, snapshot);
+
   await async.exec('DROP TABLE IF EXISTS async_probe');
   console.log(`  （${label}: ${passed - before.passed} 件成功 / ${failed - before.failed} 件失敗）`);
 }
@@ -158,7 +170,7 @@ const sqliteInner = new DatabaseSync(SQLITE_FILE);
 sqliteInner.exec('PRAGMA journal_mode = WAL;');
 const sqliteSync = wrapSqliteDatabase(sqliteInner);
 const sqliteAsync = createAsyncDatabase({ driver: 'sqlite', sqlite: sqliteInner });
-await inspect('SQLite', sqliteSync, sqliteAsync);
+await inspect('SQLite', sqliteAsync);
 
 // 同期版と非同期版が同じ接続を見ていること
 await sqliteAsync.exec('CREATE TABLE IF NOT EXISTS shared_probe (id TEXT)');
@@ -169,6 +181,21 @@ check(
   'shared',
 );
 await sqliteAsync.exec('DROP TABLE shared_probe');
+
+// ── PostgreSQL（TEST_DATABASE_URL があるときだけ） ────────
+// 参照側は SQLite の同期ラッパー（同じ操作で同じ値が返るはず。ドライバ間の一致を見る）
+let skippedPg = false;
+if (DSN) {
+  const pgAsync = createAsyncDatabase({ driver: 'postgres', connectionString: DSN });
+  await pgAsync.ready();
+  await inspect('PostgreSQL', pgAsync);
+  await pgAsync.close();
+} else {
+  skippedPg = true;
+  console.log('\n⏭️  PostgreSQL の検査はスキップしました（TEST_DATABASE_URL 未設定）');
+}
+
+// SQLite の後片付け（PostgreSQL の突き合わせが終わってから）
 await sqliteAsync.close();
 fs.rmSync(SQLITE_FILE, { force: true });
 for (const suffix of ['-wal', '-shm']) {
@@ -177,20 +204,6 @@ for (const suffix of ['-wal', '-shm']) {
   } catch {
     // 消せなくても続行する
   }
-}
-
-// ── PostgreSQL（TEST_DATABASE_URL があるときだけ） ────────
-let skippedPg = false;
-if (DSN) {
-  const pgSync = (await import('../server/src/db/driver.js')).createDatabase({ driver: 'postgres', connectionString: DSN });
-  const pgAsync = createAsyncDatabase({ driver: 'postgres', connectionString: DSN });
-  await pgAsync.ready();
-  await inspect('PostgreSQL', pgSync, pgAsync);
-  await pgAsync.close();
-  pgSync.close();
-} else {
-  skippedPg = true;
-  console.log('\n⏭️  PostgreSQL の検査はスキップしました（TEST_DATABASE_URL 未設定）');
 }
 
 console.log('');

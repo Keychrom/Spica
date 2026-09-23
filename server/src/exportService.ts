@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { adb, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
+import { db, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
 import { config } from './config.js';
 
 const require = createRequire(import.meta.url);
@@ -74,7 +74,7 @@ export interface UserExportData {
  * ユーザーの全データを抽出して構造化オブジェクトを返す
  */
 export async function exportUserData(userId: string): Promise<UserExportData> {
-  const user = await adb.prepare(`
+  const user = await db.prepare(`
     SELECT id, name, summary, icon_url, banner_url, role, public_key_pem, created_at
     FROM users WHERE id = ?
   `).get(userId) as (UserRow & { public_key_pem: string }) | undefined;
@@ -87,7 +87,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   const handle = `@${user.id}@${config.domain}`;
 
   // 1. 投稿一覧
-  const postRows = await adb.prepare(`
+  const postRows = await db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as reactions_count,
       (SELECT COUNT(*) FROM announces a WHERE a.post_id = p.id) as renote_count
@@ -117,7 +117,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   });
 
   // 2. フォロー一覧
-  const followingRows = await adb.prepare(`
+  const followingRows = await db.prepare(`
     SELECT following_url, created_at
     FROM follows
     WHERE follower_url = ? AND status = 'accepted'
@@ -130,7 +130,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   }));
 
   // 3. フォロワー一覧
-  const followerRows = await adb.prepare(`
+  const followerRows = await db.prepare(`
     SELECT follower_url, created_at
     FROM follows
     WHERE following_url = ? AND status = 'accepted'
@@ -143,7 +143,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   }));
 
   // 4. ブックマーク一覧
-  const bookmarkRows = await adb.prepare(`
+  const bookmarkRows = await db.prepare(`
     SELECT b.created_at as bookmarked_at, p.id as post_id, p.content, p.author_name, p.author_handle, p.published_at
     FROM bookmarks b
     JOIN posts p ON b.post_id = p.id
@@ -161,7 +161,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   }));
 
   // 5. リアクション履歴
-  const reactionRows = await adb.prepare(`
+  const reactionRows = await db.prepare(`
     SELECT r.reaction, r.post_id, r.created_at, COALESCE(p.content, '') as post_content
     FROM reactions r
     LEFT JOIN posts p ON r.post_id = p.id

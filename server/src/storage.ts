@@ -1,5 +1,5 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { getServerSetting, setServerSetting } from './db.js';
+import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import { convertImageToWebp } from './imageProcessor.js';
 import { generateVideoPoster } from './videoProcessor.js';

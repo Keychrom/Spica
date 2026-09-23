@@ -53,12 +53,12 @@ function buildRegex(word: MutedWord): RegExp | null {
 }
 
 /** 指定ユーザーが登録しているミュートワードを取得する */
-export function getMutedWords(userId: string | null | undefined): MutedWord[] {
+export async function getMutedWords(userId: string | null | undefined): Promise<MutedWord[]> {
   if (!userId) {
     return [];
   }
   try {
-    return db
+    return await db
       .prepare('SELECT id, keyword, case_sensitive, whole_word FROM muted_words WHERE user_id = ?')
       .all(userId) as unknown as MutedWord[];
   } catch {

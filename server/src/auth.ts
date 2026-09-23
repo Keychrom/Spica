@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
-import { adb, UserRow } from './db.js';
+import { db, UserRow } from './db.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -79,7 +79,7 @@ export async function createSession(userId: string): Promise<{ token: string; ex
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO sessions (token, user_id, created_at, expires_at)
     VALUES (?, ?, ?, ?)
   `).run(token, userId, now.toISOString(), expiresAt);
@@ -91,7 +91,7 @@ export async function createSession(userId: string): Promise<{ token: string; ex
  * セッショントークンを破棄（ログアウト）
  */
 export async function destroySession(token: string): Promise<void> {
-  await adb.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  await db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
 /**
@@ -99,7 +99,7 @@ export async function destroySession(token: string): Promise<void> {
  */
 export async function getUserFromToken(token: string): Promise<AuthenticatedUser | null> {
   const now = new Date().toISOString();
-  const session = await adb.prepare(`
+  const session = await db.prepare(`
     SELECT user_id, expires_at FROM sessions WHERE token = ? AND expires_at > ?
   `).get(token, now) as { user_id: string; expires_at: string } | undefined;
 
@@ -107,7 +107,7 @@ export async function getUserFromToken(token: string): Promise<AuthenticatedUser
     return null;
   }
 
-  const user = await adb.prepare(`
+  const user = await db.prepare(`
     SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?
   `).get(session.user_id) as unknown as AuthenticatedUser | undefined;
 
@@ -135,7 +135,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
     req.user = user;
 
     if (user) {
-      req.rawUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as UserRow;
+      req.rawUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as UserRow;
     }
 
     next();
@@ -163,7 +163,7 @@ export async function getUserPermissions(user: { id: string; role: string }): Pr
     permissions.add('admin');
   }
   try {
-    const rows = await adb.prepare(`
+    const rows = await db.prepare(`
       SELECT r.permissions FROM user_roles ur
       JOIN roles r ON ur.role_id = r.id
       WHERE ur.user_id = ?

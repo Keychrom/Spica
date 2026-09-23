@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { config } from './config.js';
-import { adb, UserRow } from './db.js';
+import { db, UserRow } from './db.js';
 import { fetchRemoteActor } from './activitypub.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { parseSignatureHeader, verifyHttpSignatureDetailed } from './crypto.js';
@@ -75,7 +75,7 @@ async function isAcceptedRelayActor(keyActorUrl: string): Promise<boolean> {
     return false;
   }
   try {
-    const rows = await adb.prepare("SELECT actor_url, inbox_url FROM relays WHERE status = 'accepted'").all() as {
+    const rows = await db.prepare("SELECT actor_url, inbox_url FROM relays WHERE status = 'accepted'").all() as {
       actor_url: string;
       inbox_url: string;
     }[];
@@ -113,7 +113,7 @@ export async function resolvePublicKey(keyActorUrl: string): Promise<{ publicKey
     const userMatch = parsed.pathname.match(/^\/users\/([^/]+)\/?$/);
     if (userMatch) {
       const userId = decodeURIComponent(userMatch[1]).toLowerCase();
-      const localUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+      const localUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
       if (!localUser?.public_key_pem) {
         return { publicKeyPem: null, error: `Local actor not found for keyId: ${keyActorUrl}` };
       }
@@ -286,7 +286,7 @@ export async function isAcceptedFollower(followerActorUrl: string, followedActor
   if (!followerActorUrl || !followedActorUrl) return false;
   try {
     return Boolean(
-      await adb.prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'").get(
+      await db.prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'").get(
         followerActorUrl,
         followedActorUrl,
       ),

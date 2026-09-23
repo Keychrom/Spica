@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { adb, UserRow } from './db.js';
+import { db, UserRow } from './db.js';
 import { config } from './config.js';
 import { normalizeVisibility, PostVisibility } from './postVisibility.js';
 
@@ -170,7 +170,7 @@ export async function importNotes(user: UserRow, notes: NormalizedNote[]): Promi
   let failed = 0;
   const errors: string[] = [];
 
-  const insert = await adb.prepare(`
+  const insert = await db.prepare(`
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at, channel_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', NULL, NULL, ?, '[]', ?, ?, NULL)
   `);
@@ -180,7 +180,7 @@ export async function importNotes(user: UserRow, notes: NormalizedNote[]): Promi
   for (const note of targets) {
     try {
       const postId = buildImportedPostId(actorUrl, note.sourceId);
-      const existing = await adb.prepare('SELECT id FROM posts WHERE id = ?').get(postId);
+      const existing = await db.prepare('SELECT id FROM posts WHERE id = ?').get(postId);
       if (existing) {
         skipped++;
         continue;

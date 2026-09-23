@@ -65,7 +65,7 @@ async function seedSqlite(): Promise<{ posts: number; ftsRows: number; users: nu
   }
   process.env.DB_PATH = TEST_SQLITE;
   const mod: any = await import('../server/src/db.js');
-  mod.await initDatabase();
+  await mod.initDatabase();
 
   const db = new DatabaseSync(TEST_SQLITE);
   const now = new Date().toISOString();

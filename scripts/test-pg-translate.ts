@@ -128,6 +128,30 @@ check(
   'BEGIN',
 );
 check(
+  '2 引数の MAX/MIN は GREATEST/LEAST にする（SQLite のスカラー関数。チャンネルのフォロワー数で使っている）',
+  translateSqlForPostgres(
+    'UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?',
+    ['c1'],
+    resolvePrimaryKey,
+  ),
+  { sql: 'UPDATE channels SET followers_count = GREATEST(0, followers_count - 1) WHERE id = $1', params: ['c1'] },
+);
+check(
+  '集約の MAX/MIN は書き換えない（引数が 1 つ）',
+  translateSqlForPostgres('SELECT MAX(published_at) AS latest, MIN(created_at) FROM posts WHERE user_id = ?', ['u1'], resolvePrimaryKey),
+  { sql: 'SELECT MAX(published_at) AS latest, MIN(created_at) FROM posts WHERE user_id = $1', params: ['u1'] },
+);
+check(
+  "datetime('now') は ISO 8601 の UTC 文字列にする（'now' という文字列を書かない）",
+  translateSqlForPostgres("INSERT INTO sessions (token, created_at) VALUES (?, datetime('now'))", ['t1'], resolvePrimaryKey).sql,
+  `INSERT INTO sessions (token, created_at) VALUES ($1, TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ON CONFLICT DO NOTHING`,
+);
+check(
+  "datetime('now', '+30 days') は CURRENT_TIMESTAMP + INTERVAL にする（セッションの有効期限）",
+  translateSqlForPostgres("SELECT 1 FROM sessions WHERE expires_at > datetime('now', '+30 days')", [], resolvePrimaryKey).sql,
+  `SELECT 1 FROM sessions WHERE expires_at > TO_CHAR((CURRENT_TIMESTAMP + INTERVAL '+30 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+);
+check(
   'exec の複文は 1 文ずつ翻訳する',
   splitExecStatements("DROP TABLE IF EXISTS temp._t; PRAGMA busy_timeout = 1; BEGIN IMMEDIATE;").map(
     (statement) => translateSqlForPostgres(statement, []).sql,
@@ -137,6 +161,15 @@ check(
 
 // ── FTS ──────────────────────────────────────────────────
 console.log('\n🔎 FTS（trigram 相当）');
+check(
+  'リテラルの MATCH も ILIKE に展開する（テストが SQL を直接書く場合）',
+  translateSqlForPostgres(
+    `SELECT p.id FROM posts_fts f JOIN posts p ON f.post_id = p.id WHERE posts_fts MATCH '"青い星" "美しい"'`,
+    [],
+    resolvePrimaryKey,
+  ).sql,
+  `SELECT p.id FROM posts_fts f JOIN posts p ON f.post_id = p.id WHERE f.content ILIKE '%青い星%' AND f.content ILIKE '%美しい%'`,
+);
 check(
   'posts_fts MATCH ? は ILIKE の AND に展開する',
   translateSqlForPostgres(

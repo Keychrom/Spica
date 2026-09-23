@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { adb, UserRow, PostRow, RemoteActorRow, isDomainBlocked, isInboxBlockingSender } from './db.js';
+import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked, isInboxBlockingSender } from './db.js';
 import { signHeaders } from './crypto.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
@@ -494,7 +494,7 @@ export async function resolveWebFinger(handle: string): Promise<string> {
   }
 
   const [username, domain] = parts;
-  if (isDomainBlocked(domain)) {
+  if (await isDomainBlocked(domain)) {
     throw new Error(`ドメイン "${domain}" はサーバーポリシーによりブロックされています。`);
   }
 
@@ -548,13 +548,13 @@ export function extractImageUrl(mediaObj: any): string {
  * リモートの Actor (Person) を取得してローカルキャッシュDBに保存
  */
 export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): Promise<RemoteActorRow> {
-  if (isDomainBlocked(actorUrl)) {
+  if (await isDomainBlocked(actorUrl)) {
     throw new Error(`ブロックされたドメインのアクターは取得できません: ${actorUrl}`);
   }
 
   // すでにキャッシュにあるか確認（forceRefresh でない場合）
   if (!forceRefresh) {
-    const existing = await adb.prepare('SELECT * FROM remote_actors WHERE id = ?').get(actorUrl) as unknown as RemoteActorRow | undefined;
+    const existing = await db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(actorUrl) as unknown as RemoteActorRow | undefined;
     if (existing) {
       return existing;
     }
@@ -597,7 +597,7 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
   }
 
   const now = new Date().toISOString();
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -693,7 +693,7 @@ export async function attemptDelivery(params: {
   senderUser?: UserRow;
   useInstanceActor?: boolean;
 }): Promise<DeliveryAttemptResult> {
-  if (isDomainBlocked(params.inboxUrl)) {
+  if (await isDomainBlocked(params.inboxUrl)) {
     console.log(`[Delivery Skipped] 🚫 Skipping delivery to blocked domain inbox: ${params.inboxUrl}`);
     return { ok: false, status: null, error: 'ブロック済みドメイン', retryable: false };
   }
@@ -930,14 +930,14 @@ export async function federatePollUpdate(params: {
   senderVoterActorUrl?: string;
 }) {
   try {
-    const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(params.postId) as PostRow | undefined;
+    const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(params.postId) as PostRow | undefined;
     if (!post || post.is_local !== 1) return;
 
-    const poll = await adb.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
+    const poll = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
     if (!poll) return;
 
-    const choices = await adb.prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(poll.id) as any[];
-    const authorUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
+    const choices = await db.prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(poll.id) as any[];
+    const authorUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
     if (!authorUser) return;
 
     const updateActivity = buildUpdateQuestionActivity({
@@ -953,14 +953,14 @@ export async function federatePollUpdate(params: {
 
     // 配信先 Inbox の収集 (フォロワー + リレー + 投票者リモートサーバー)
     const authorUrl = `${config.origin}/users/${authorUser.id}`;
-    const followerInboxes = (await adb.prepare(`
+    const followerInboxes = (await db.prepare(`
       SELECT DISTINCT inbox_url FROM follows
       WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
     `).all(authorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
     // リレーは不特定多数へ再配信するため、公開投稿以外では使用しない
     const relayInboxes = post.visibility === 'public'
-      ? (await adb.prepare(`
+      ? (await db.prepare(`
           SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
         `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
       : [];

@@ -2,7 +2,7 @@ import { asyncHandler } from '../asyncHandler.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { adb, db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, isDomainHidden, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting } from '../db.js';
+import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, matchesBlockedDomainRule, loadBlockedDomainRules, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting, NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
 import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
 import { getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
@@ -19,7 +19,6 @@ import { isMailConfigured, sendMail, generateVerificationCode, issueVerification
 
 import { uploadMediaFile } from '../storage.js';
 import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
-import { NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
 import { executeCreatePost } from '../postService.js';
 import {
   createWebAuthnRegistrationOptions,
@@ -116,7 +115,7 @@ apiRouter.post('/auth/register/email-code', asyncHandler(async (req: Request, re
   }
 
   // 既に使われているメールアドレスには送らない（登録時と同じ 409 で揃える）
-  const taken = await adb.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
+  const taken = await db.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
   if (taken) {
     return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
   }
@@ -163,13 +162,13 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     return res.status(400).json({ error: 'ユーザーIDは2〜30文字の英数字、ハイフン、アンダースコアのみ使用できます。' });
   }
 
-  const existing = await adb.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
+  const existing = await db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
   if (existing) {
     return res.status(409).json({ error: 'このユーザーIDは既に使用されています。' });
   }
 
   // ユーザー数の確認 (最初のユーザーは自動的に管理者)
-  const userCount = (await adb.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
   const role = userCount === 0 ? 'admin' : 'user';
 
   // 招待コード検証および利用規約・ルール同意検証（最初の管理者以外の登録時）
@@ -198,7 +197,7 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     }
 
     if (codeStr) {
-      const inv = await adb.prepare('SELECT * FROM invitation_codes WHERE code = ?').get(codeStr) as InvitationCodeRow | undefined;
+      const inv = await db.prepare('SELECT * FROM invitation_codes WHERE code = ?').get(codeStr) as InvitationCodeRow | undefined;
       if (!inv) {
         return res.status(400).json({ error: '入力された招待コードは存在しません。' });
       }
@@ -228,7 +227,7 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     if (password.length < 8) {
       return res.status(400).json({ error: 'パスワードは8文字以上で入力してください。' });
     }
-    const emailTaken = await adb.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
+    const emailTaken = await db.prepare("SELECT id FROM users WHERE email = ? AND email != ''").get(email) as { id: string } | undefined;
     if (emailTaken) {
       return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
     }
@@ -264,7 +263,7 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
   const now = new Date().toISOString();
 
   // 3. DB にユーザー保存
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified)
     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -284,7 +283,7 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
   // 4. 招待コードの使用回数をインクリメント
   if (verifiedInviteCode) {
     try {
-      await adb.prepare('UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?').run(verifiedInviteCode);
+      await db.prepare('UPDATE invitation_codes SET used_count = used_count + 1 WHERE code = ?').run(verifiedInviteCode);
     } catch (e) {
       console.error('[Spica Register] Failed to increment invite code usage:', e);
     }
@@ -334,10 +333,10 @@ apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) =
   // ユーザーID または メールアドレスで利用者を解決する
   let user: UserRow | undefined;
   if (id) {
-    user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(String(id).trim().toLowerCase().replace(/^@/, '')) as unknown as UserRow | undefined;
+    user = await db.prepare('SELECT * FROM users WHERE id = ?').get(String(id).trim().toLowerCase().replace(/^@/, '')) as unknown as UserRow | undefined;
   }
   if (!user && email) {
-    user = await adb.prepare('SELECT * FROM users WHERE email = ? AND email != ?').get(String(email).trim().toLowerCase(), '') as unknown as UserRow | undefined;
+    user = await db.prepare('SELECT * FROM users WHERE email = ? AND email != ?').get(String(email).trim().toLowerCase(), '') as unknown as UserRow | undefined;
   }
 
   if (!user) {
@@ -399,9 +398,9 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
   const user = req.user!;
   const raw = req.rawUser;
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const followerCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ?').get(myActorUrl) as any).c;
-  const followingCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ?').get(myActorUrl) as any).c;
-  const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+  const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ?').get(myActorUrl) as any).c;
+  const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ?').get(myActorUrl) as any).c;
+  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
 
   res.json({
     ...user,
@@ -438,10 +437,10 @@ apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => 
  */
 export async function getPollDataForPost(postId: string, currentUserId?: string | null) {
   try {
-    const poll = await adb.prepare('SELECT id, post_id, multiple, expires_at, created_at FROM polls WHERE post_id = ?').get(postId) as any;
+    const poll = await db.prepare('SELECT id, post_id, multiple, expires_at, created_at FROM polls WHERE post_id = ?').get(postId) as any;
     if (!poll) return null;
 
-    const choices = await adb.prepare(`
+    const choices = await db.prepare(`
       SELECT choice_index, text, votes_count
       FROM poll_choices
       WHERE poll_id = ?
@@ -450,7 +449,7 @@ export async function getPollDataForPost(postId: string, currentUserId?: string 
 
     let myVotedIndices = new Set<number>();
     if (currentUserId) {
-      const myVotes = await adb.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(poll.id, currentUserId) as { choice_index: number }[];
+      const myVotes = await db.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(poll.id, currentUserId) as { choice_index: number }[];
       myVotedIndices = new Set(myVotes.map((v) => v.choice_index));
     }
 
@@ -489,7 +488,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   const postIds = Array.from(new Set(rows.map((r) => r.post_id || r.id)));
   const placeholders = postIds.map(() => '?').join(',');
 
-  const allReactions = await adb.prepare(`
+  const allReactions = await db.prepare(`
     SELECT post_id, reaction, count(*) as count,
       max(case when user_id = ? then 1 else 0 end) as me
     FROM reactions
@@ -497,7 +496,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
     GROUP BY post_id, reaction
   `).all(currentActorUrl || '', ...postIds) as { post_id: string; reaction: string; count: number; me: number }[];
 
-  const allAnnounces = await adb.prepare(`
+  const allAnnounces = await db.prepare(`
     SELECT post_id, count(*) as count,
       max(case when user_id = ? then 1 else 0 end) as me
     FROM announces
@@ -505,7 +504,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
     GROUP BY post_id
   `).all(currentActorUrl || '', ...postIds) as { post_id: string; count: number; me: number }[];
 
-  const allReplies = await adb.prepare(`
+  const allReplies = await db.prepare(`
     SELECT in_reply_to as post_id, count(*) as count
     FROM posts
     WHERE in_reply_to IN (${placeholders})
@@ -515,7 +514,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   // 📊 アンケート情報の取得
   const pollsMap = new Map<string, any>();
   try {
-    const pollRows = await adb.prepare(`
+    const pollRows = await db.prepare(`
       SELECT id, post_id, multiple, expires_at, created_at
       FROM polls
       WHERE post_id IN (${placeholders})
@@ -525,7 +524,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
       const pollIds = pollRows.map((p) => p.id);
       const pollPlaceholders = pollIds.map(() => '?').join(',');
 
-      const choiceRows = await adb.prepare(`
+      const choiceRows = await db.prepare(`
         SELECT id, poll_id, choice_index, text, votes_count
         FROM poll_choices
         WHERE poll_id IN (${pollPlaceholders})
@@ -534,7 +533,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
 
       let userVotesMap = new Map<string, Set<number>>();
       if (currentUserId) {
-        const voteRows = await adb.prepare(`
+        const voteRows = await db.prepare(`
           SELECT poll_id, choice_index
           FROM poll_votes
           WHERE poll_id IN (${pollPlaceholders}) AND user_id = ?
@@ -583,7 +582,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   let bookmarkedSet = new Set<string>();
   if (currentUserId) {
     try {
-      const bookmarkedRows = await adb.prepare(`
+      const bookmarkedRows = await db.prepare(`
         SELECT post_id FROM bookmarks
         WHERE user_id = ? AND post_id IN (${placeholders})
       `).all(currentUserId, ...postIds) as { post_id: string }[];
@@ -595,7 +594,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   let pinnedSet = new Set<string>();
   if (currentUserId) {
     try {
-      const pinnedRows = await adb.prepare(`
+      const pinnedRows = await db.prepare(`
         SELECT post_id FROM pinned_posts
         WHERE user_id = ? AND post_id IN (${placeholders})
       `).all(currentUserId, ...postIds) as { post_id: string }[];
@@ -607,10 +606,10 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   const blockedOrMutedUserIds = new Set<string>();
   if (currentUserId) {
     try {
-      const blockedRows = await adb.prepare(`
+      const blockedRows = await db.prepare(`
         SELECT target_user_id FROM user_blocks WHERE user_id = ?
       `).all(currentUserId) as { target_user_id: string }[];
-      const mutedRows = await adb.prepare(`
+      const mutedRows = await db.prepare(`
         SELECT target_user_id FROM user_mutes WHERE user_id = ?
       `).all(currentUserId) as { target_user_id: string }[];
       for (const r of blockedRows) if (r.target_user_id) blockedOrMutedUserIds.add(r.target_user_id.toLowerCase());
@@ -619,7 +618,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   }
 
   // 🔇 ワードフィルター（ミュートワード）
-  const mutedWords = getMutedWords(currentUserId);
+  const mutedWords = await getMutedWords(currentUserId);
 
   const reactionsMap = new Map<string, { reaction: string; count: number; me: boolean }[]>();
   for (const r of allReactions) {
@@ -643,7 +642,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   if (quoteIds.length > 0) {
     try {
       const qPlaceholders = quoteIds.map(() => '?').join(',');
-      const quoteRows = await adb.prepare(`
+      const quoteRows = await db.prepare(`
         SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at
         FROM posts
         WHERE id IN (${qPlaceholders})
@@ -682,7 +681,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
   if (channelIds.length > 0) {
     try {
       const cPlaceholders = channelIds.map(() => '?').join(',');
-      const channelRows = await adb.prepare(`
+      const channelRows = await db.prepare(`
         SELECT id, name, description, banner_url, color, posts_count, followers_count
         FROM channels
         WHERE id IN (${cPlaceholders})
@@ -701,6 +700,8 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
     new Set(rows.map((r) => extractFirstUrl(r.content)).filter((url): url is string => Boolean(url))),
   );
   const linkPreviews = await getCachedPreviews(previewUrls);
+  // 遮断ドメインは 1 回だけ読み込む（投稿ごとに問い合わせない）
+  const blockedDomainRules = await loadBlockedDomainRules();
 
   const enrichedItems = rows.map((r) => {
     const pid = r.post_id || r.id;
@@ -768,9 +769,9 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
       }
     }
     if (item.is_local === 1) return true;
-    // 表示の絞り込みは suspend / silence のどちらでも隠す
-    if (isDomainHidden(item.author_url) || isDomainHidden(item.author_handle)) return false;
-    if (item.renote && (isDomainHidden(item.renote.url) || isDomainHidden(item.renote.handle))) return false;
+    // 表示の絞り込みは suspend / silence のどちらでも隠す（判定は読み込み済みルールに対して同期で行う）
+    if (matchesBlockedDomainRule(blockedDomainRules, item.author_url) || matchesBlockedDomainRule(blockedDomainRules, item.author_handle)) return false;
+    if (item.renote && (matchesBlockedDomainRule(blockedDomainRules, item.renote.url) || matchesBlockedDomainRule(blockedDomainRules, item.renote.handle))) return false;
     return true;
   });
 
@@ -780,7 +781,7 @@ async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null,
     : filteredItems;
 
   // 閲覧権限のない投稿（フォロワー限定で、閲覧者が本人でもフォロワーでもないもの）を除外
-  return filterVisiblePosts(wordFilteredItems, currentActorUrl);
+  return await filterVisiblePosts(wordFilteredItems, currentActorUrl);
 }
 
 // タイムライン取得（ローカル / ホーム / 連合 / タグ別）- リノート（RT）・リアクション・返信集計付き
@@ -904,7 +905,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     LIMIT ?
   `;
 
-  const rows = await adb.prepare(query).all(...params, ...announceParams, page.limit + 1) as any[];
+  const rows = await db.prepare(query).all(...params, ...announceParams, page.limit + 1) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
@@ -917,7 +918,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
 apiRouter.get('/tags/popular', asyncHandler(async (_req: Request, res: Response) => {
   try {
     // フォロワー限定投稿のタグは公開のトレンドに出さない
-    const recentPosts = await adb.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 200").all() as { content: string }[];
+    const recentPosts = await db.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 200").all() as { content: string }[];
     const tagCountMap = new Map<string, number>();
 
     const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
@@ -1026,7 +1027,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
         const actor = await fetchRemoteActor(actorUrl, false);
         let isFollowing = false;
         if (currentActorUrl) {
-          const follow = await adb.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, actor.id);
+          const follow = await db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, actor.id);
           isFollowing = Boolean(follow);
         }
 
@@ -1048,14 +1049,14 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
 
   // 2. ユーザー検索 (ローカルユーザー + キャッシュ済みリモートユーザー)
   const searchPattern = `%${searchText.replace(/^@/, '')}%`;
-  const localUsers = searchText ? await adb.prepare(`
+  const localUsers = searchText ? await db.prepare(`
     SELECT id, name, summary, icon_url, 1 as is_local, NULL as domain, ('@' || id) as handle
     FROM users
     WHERE id LIKE ? OR name LIKE ?
     LIMIT 10
   `).all(searchPattern, searchPattern) as any[] : [];
 
-  const remoteActors = searchText ? await adb.prepare(`
+  const remoteActors = searchText ? await db.prepare(`
     SELECT id, username, domain, name, summary, icon_url, 0 as is_local, ('@' || username || '@' || domain) as handle
     FROM remote_actors
     WHERE username LIKE ? OR name LIKE ? OR domain LIKE ?
@@ -1066,7 +1067,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
     let isFollowing = false;
     const targetUrl = u.is_local ? `${config.origin}/users/${u.id}` : u.id;
     if (currentActorUrl) {
-      const follow = await adb.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, targetUrl);
+      const follow = await db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(currentActorUrl, targetUrl);
       isFollowing = Boolean(follow);
     }
     return {
@@ -1085,7 +1086,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
       // 3文字以上の単語を安全にフレーズエスケープして FTS5 MATCH クエリ作成
       const ftsQuery = terms.filter((t) => t.length >= 3).map((t) => `"${t.replace(/"/g, '""')}"`).join(' ');
       if (ftsQuery) {
-        postRows = await adb.prepare(`
+        postRows = await db.prepare(`
           SELECT 
             p.id AS post_id,
             p.user_id,
@@ -1130,7 +1131,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
   // 演算子のみの検索（例: has:media だけ）にも対応するため、本文が空でも実行する
   if (postRows.length === 0 && (terms.length > 0 || extraConds.length > 0)) {
     const postPattern = terms.length > 0 ? `%${searchText}%` : '%';
-    postRows = await adb.prepare(`
+    postRows = await db.prepare(`
       SELECT 
         p.id AS post_id,
         p.user_id,
@@ -1350,7 +1351,7 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
   const postId = decodeURIComponent(rawPostId);
   const user = (req.rawUser || req.user)!;
 
-  const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined;
+  const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as unknown as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
@@ -1361,11 +1362,11 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
   }
 
   // DBから削除 (カスケード的にreactions / announces / polls もクリーンアップ)
-  await adb.prepare('DELETE FROM posts WHERE id = ?').run(postId);
-  await adb.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
-  await adb.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
+  await db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
+  await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
+  await db.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
   try {
-    await adb.prepare('DELETE FROM polls WHERE post_id = ?').run(postId);
+    await db.prepare('DELETE FROM polls WHERE post_id = ?').run(postId);
   } catch {}
 
   // ドライブの紐づけを解除する（ファイル自体はドライブに残す）
@@ -1381,7 +1382,7 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
   // 公開投稿だった場合のみ ActivityPub Delete をフォロワー & リレーへ配信
   // （ローカル限定・フォロワー限定はリレーへ配送しない）
   if (post.visibility === 'public' && post.is_local === 1) {
-    const authorUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
+    const authorUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(post.user_id) as UserRow | undefined;
     if (authorUser) {
       const actorUrl = `${config.origin}/users/${authorUser.id}`;
       const deleteActivity = buildDeleteActivity({
@@ -1389,12 +1390,12 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
         targetPostUrl: postId,
       });
 
-      const followerInboxes = (await adb.prepare(`
+      const followerInboxes = (await db.prepare(`
         SELECT DISTINCT inbox_url FROM follows
         WHERE following_url = ? AND inbox_url IS NOT NULL AND inbox_url != ''
       `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
-      const relayInboxes = (await adb.prepare(`
+      const relayInboxes = (await db.prepare(`
         SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
       `).all() as { inbox_url: string }[]).map((r) => r.inbox_url);
 
@@ -1419,16 +1420,16 @@ apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Req
     return res.status(400).json({ error: '投票する選択肢を1つ以上選択してください。' });
   }
 
-  const poll = await adb.prepare('SELECT * FROM polls WHERE post_id = ?').get(postId) as any;
+  const poll = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(postId) as any;
   if (!poll) {
     return res.status(404).json({ error: 'この投稿にはアンケートがありません。' });
   }
 
   // 閲覧できない投稿（フォロワー限定など）には投票できない
-  const voteTarget = await adb.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
+  const voteTarget = await db.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
     | { author_url: string; visibility: string | null }
     | undefined;
-  if (voteTarget && !canViewPost(voteTarget, `${config.origin}/users/${user.id}`)) {
+  if (voteTarget && !(await canViewPost(voteTarget, `${config.origin}/users/${user.id}`))) {
     return res.status(403).json({ error: 'このアンケートには投票できません。' });
   }
 
@@ -1443,13 +1444,13 @@ apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Req
   }
 
   // 投票済み判定
-  const existingVoteCount = (await adb.prepare('SELECT COUNT(*) as c FROM poll_votes WHERE poll_id = ? AND user_id = ?').get(poll.id, user.id) as any).c;
+  const existingVoteCount = (await db.prepare('SELECT COUNT(*) as c FROM poll_votes WHERE poll_id = ? AND user_id = ?').get(poll.id, user.id) as any).c;
   if (existingVoteCount > 0) {
     return res.status(400).json({ error: '既にこのアンケートには投票済みです。' });
   }
 
   // 選択肢の存在検証
-  const pollChoices = await adb.prepare('SELECT choice_index FROM poll_choices WHERE poll_id = ?').all(poll.id) as { choice_index: number }[];
+  const pollChoices = await db.prepare('SELECT choice_index FROM poll_choices WHERE poll_id = ?').all(poll.id) as { choice_index: number }[];
   const validIndices = new Set(pollChoices.map((c) => c.choice_index));
   for (const c of choices) {
     if (typeof c !== 'number' || !validIndices.has(c)) {
@@ -1458,19 +1459,19 @@ apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Req
   }
 
   const now = new Date().toISOString();
-  const insertVote = await adb.prepare('INSERT INTO poll_votes (id, poll_id, choice_index, user_id, created_at) VALUES (?, ?, ?, ?, ?)');
-  const updateCount = await adb.prepare('UPDATE poll_choices SET votes_count = votes_count + 1 WHERE poll_id = ? AND choice_index = ?');
+  const insertVote = await db.prepare('INSERT INTO poll_votes (id, poll_id, choice_index, user_id, created_at) VALUES (?, ?, ?, ?, ?)');
+  const updateCount = await db.prepare('UPDATE poll_choices SET votes_count = votes_count + 1 WHERE poll_id = ? AND choice_index = ?');
 
   try {
-    await adb.exec('BEGIN');
+    await db.exec('BEGIN');
     for (const choiceIdx of choices) {
       insertVote.run(crypto.randomUUID(), poll.id, choiceIdx, user.id, now);
       updateCount.run(poll.id, choiceIdx);
     }
-    await adb.exec('COMMIT');
+    await db.exec('COMMIT');
   } catch (err) {
     try {
-      await adb.exec('ROLLBACK');
+      await db.exec('ROLLBACK');
     } catch {}
     throw err;
   }
@@ -1507,25 +1508,25 @@ apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request
   const user = req.rawUser!;
   const actorUrl = `${config.origin}/users/${user.id}`;
 
-  const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
+  const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '対象の投稿が見つかりません。' });
   }
 
   // 閲覧できない投稿（フォロワー限定など）にはリアクションできない
-  if (!canViewPost(post, actorUrl)) {
+  if (!(await canViewPost(post, actorUrl))) {
     return res.status(403).json({ error: 'この投稿にはリアクションできません。' });
   }
 
   // 既に同じリアクションが付与されているかチェック
-  const existing = await adb.prepare(`
+  const existing = await db.prepare(`
     SELECT * FROM reactions WHERE post_id = ? AND user_id = ? AND reaction = ?
   `).get(postId, actorUrl, reaction) as ReactionRow | undefined;
 
   let added = false;
   if (existing) {
     // 既存あり → 解除 (Undo)
-    await adb.prepare('DELETE FROM reactions WHERE id = ?').run(existing.id);
+    await db.prepare('DELETE FROM reactions WHERE id = ?').run(existing.id);
     added = false;
 
     // 外部投稿の場合、Undo Activity を配送
@@ -1555,7 +1556,7 @@ apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request
     const reactionId = `${config.origin}/activities/react/${crypto.randomUUID()}`;
     const now = new Date().toISOString();
 
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO reactions (id, post_id, user_id, user_name, user_icon, reaction, is_local, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, ?)
       ON CONFLICT(post_id, user_id, reaction) DO UPDATE SET
@@ -1618,7 +1619,7 @@ apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request
   }
 
   // 最新のリアクション集計を返却
-  const updatedReactions = await adb.prepare(`
+  const updatedReactions = await db.prepare(`
     SELECT reaction, count(*) as count,
       max(case when user_id = ? then 1 else 0 end) as me
     FROM reactions
@@ -1654,24 +1655,24 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
   const user = req.rawUser!;
   const actorUrl = `${config.origin}/users/${user.id}`;
 
-  const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
+  const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId) as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '対象の投稿が見つかりません。' });
   }
 
   // 閲覧できない投稿（フォロワー限定など）はリノートできない
-  if (!canViewPost(post, actorUrl)) {
+  if (!(await canViewPost(post, actorUrl))) {
     return res.status(403).json({ error: 'この投稿はリノートできません。' });
   }
 
-  const existing = await adb.prepare(`
+  const existing = await db.prepare(`
     SELECT * FROM announces WHERE post_id = ? AND user_id = ?
   `).get(postId, actorUrl) as AnnounceRow | undefined;
 
   let announced = false;
   if (existing) {
     // 解除
-    await adb.prepare('DELETE FROM announces WHERE id = ?').run(existing.id);
+    await db.prepare('DELETE FROM announces WHERE id = ?').run(existing.id);
     announced = false;
 
     // Undo(Announce) 配信
@@ -1699,7 +1700,7 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
     const announceId = `${config.origin}/activities/announce/${crypto.randomUUID()}`;
     const now = new Date().toISOString();
 
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO announces (id, post_id, user_id, user_name, user_handle, user_icon, is_local, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, ?)
       ON CONFLICT(post_id, user_id) DO UPDATE SET
@@ -1736,13 +1737,13 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
       targetActorUrl: post.author_url,
     });
 
-    const followerInboxes = (await adb.prepare(`
+    const followerInboxes = (await db.prepare(`
       SELECT DISTINCT inbox_url FROM follows
       WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
     `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
     const relayInboxes = post.visibility === 'public'
-      ? (await adb.prepare(`
+      ? (await db.prepare(`
           SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
         `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
       : [];
@@ -1764,7 +1765,7 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
     }
   }
 
-  const announceCount = (await adb.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(postId) as any).c;
+  const announceCount = (await db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(postId) as any).c;
 
   // 📡 全クライアントにリノート変化をブロードキャスト（公開投稿のみ）
   if (await isPublicPost(postId)) {
@@ -1796,7 +1797,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
 
   // 対象投稿
-  const post = await adb.prepare(`
+  const post = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
       p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
@@ -1814,7 +1815,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   // 親投稿（in_reply_to がある場合）
   let parent = null;
   if (post.in_reply_to) {
-    parent = await adb.prepare(`
+    parent = await db.prepare(`
       SELECT 
         p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
         p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
@@ -1827,7 +1828,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   }
 
   // 子返信一覧
-  const replies = await adb.prepare(`
+  const replies = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
       p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
@@ -1864,7 +1865,7 @@ apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Re
   const user = req.rawUser!;
   const myActorUrl = `${config.origin}/users/${user.id}`;
 
-  if (isDomainBlocked(targetHandle)) {
+  if (await isDomainBlocked(targetHandle)) {
     return res.status(400).json({ error: 'このサーバーはブロックされているためフォローできません。' });
   }
 
@@ -1878,11 +1879,11 @@ apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Re
       if (targetActorUrl.startsWith(config.origin)) {
         isTargetLocal = true;
         const uid = targetActorUrl.split('/').pop()!;
-        localTargetUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(uid);
+        localTargetUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(uid);
       }
     } else if (targetHandle.includes(`@${config.domain}`) || !targetHandle.includes('@')) {
       const cleanId = targetHandle.replace(/^@/, '').replace(`@${config.domain}`, '');
-      localTargetUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(cleanId);
+      localTargetUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(cleanId);
       if (localTargetUser) {
         isTargetLocal = true;
         targetActorUrl = `${config.origin}/users/${localTargetUser.id}`;
@@ -1902,7 +1903,7 @@ apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Re
 
     if (isTargetLocal && localTargetUser) {
       // ローカルユーザー同士のフォロー: 外部配送なしで即時承認
-      await adb.prepare(`
+      await db.prepare(`
         INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
         VALUES (?, ?, ?, ?, 1, 'accepted', ?)
         ON CONFLICT(follower_url, following_url) DO UPDATE SET
@@ -1944,7 +1945,7 @@ apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Re
     });
 
     // follows テーブルに登録
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
       VALUES (?, ?, ?, ?, 1, 'pending', ?)
       ON CONFLICT(follower_url, following_url) DO UPDATE SET
@@ -1998,13 +1999,13 @@ apiRouter.post('/unfollow', requireAuth, asyncHandler(async (req: Request, res: 
       return res.status(400).json({ error: '解除対象のユーザーが指定されていません。' });
     }
 
-    const followRow = await adb.prepare('SELECT * FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl) as FollowRow | undefined;
+    const followRow = await db.prepare('SELECT * FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl) as FollowRow | undefined;
     if (!followRow) {
       return res.status(400).json({ error: 'このユーザーをフォローしていません。' });
     }
 
     // follows テーブルから削除
-    await adb.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(myActorUrl, targetActorUrl);
+    await db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(myActorUrl, targetActorUrl);
 
     // リモートユーザーなら Undo(Follow) を配送
     if (!targetActorUrl.startsWith(config.origin) && followRow.inbox_url) {
@@ -2062,7 +2063,7 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
         try { return JSON.parse((user as any).fields || '[]'); } catch { return []; }
       })();
 
-  await adb.prepare(`
+  await db.prepare(`
     UPDATE users SET
       name = ?,
       summary = ?,
@@ -2075,13 +2076,13 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
   `).run(newName, newSummary, newIconUrl, newBannerUrl, newIsLocked, JSON.stringify(newFields), newDiscoverable, user.id);
 
   // 自身の過去投稿の author_name / author_icon も更新
-  await adb.prepare(`UPDATE posts SET author_name = ?, author_icon = ? WHERE is_local = 1 AND user_id = ?`).run(newName, newIconUrl, user.id);
+  await db.prepare(`UPDATE posts SET author_name = ?, author_icon = ? WHERE is_local = 1 AND user_id = ?`).run(newName, newIconUrl, user.id);
 
-  const updatedUser = await adb.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(user.id) as any;
+  const updatedUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(user.id) as any;
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const followerCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
-  const followingCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
-  const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+  const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
+  const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
+  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
 
   res.json({
     ...updatedUser,
@@ -2102,7 +2103,7 @@ apiRouter.get('/user/migration', requireAuth, asyncHandler(async (req: Request, 
   const user = req.rawUser!;
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followers = (
-    await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND follower_url != ?').get(myActorUrl, myActorUrl) as any
+    await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND follower_url != ?').get(myActorUrl, myActorUrl) as any
   ).c;
 
   res.json({
@@ -2121,7 +2122,7 @@ apiRouter.post('/user/migration/alias', requireAuth, asyncHandler(async (req: Re
 
   // 空文字で解除
   if (!input) {
-    await adb.prepare("UPDATE users SET also_known_as = '' WHERE id = ?").run(user.id);
+    await db.prepare("UPDATE users SET also_known_as = '' WHERE id = ?").run(user.id);
     console.log(`[Migration] 📦 @${user.id} の引っ越し元を解除`);
     return res.json({ success: true, alsoKnownAs: '', message: '引っ越し元アカウントを解除しました。' });
   }
@@ -2145,7 +2146,7 @@ apiRouter.post('/user/migration/alias', requireAuth, asyncHandler(async (req: Re
       return res.status(400).json({ error: '自分自身は引っ越し元に指定できません。' });
     }
 
-    await adb.prepare('UPDATE users SET also_known_as = ? WHERE id = ?').run(actorUrl, user.id);
+    await db.prepare('UPDATE users SET also_known_as = ? WHERE id = ?').run(actorUrl, user.id);
     console.log(`[Migration] 📦 @${user.id} の引っ越し元を登録: ${actorUrl}`);
     res.json({ success: true, alsoKnownAs: actorUrl, message: `引っ越し元アカウントを登録しました。Actor 文書の alsoKnownAs として公開されます。` });
   } catch (err: any) {
@@ -2182,7 +2183,7 @@ apiRouter.post('/user/migration/move', requireAuth, asyncHandler(async (req: Req
     if (targetActorUrl === myActorUrl) {
       return res.status(400).json({ error: '自分自身へは引っ越せません。' });
     }
-    if (isDomainBlocked(targetActorUrl)) {
+    if (await isDomainBlocked(targetActorUrl)) {
       return res.status(400).json({ error: 'このサーバーはブロック対象のため引っ越せません。' });
     }
 
@@ -2196,7 +2197,7 @@ apiRouter.post('/user/migration/move', requireAuth, asyncHandler(async (req: Req
     }
 
     // 3. フォロワー全員へ Move を配送する
-    const followerRows = await adb.prepare('SELECT * FROM follows WHERE following_url = ? AND follower_url != ?').all(
+    const followerRows = await db.prepare('SELECT * FROM follows WHERE following_url = ? AND follower_url != ?').all(
       myActorUrl,
       myActorUrl,
     ) as unknown as FollowRow[];
@@ -2211,7 +2212,7 @@ apiRouter.post('/user/migration/move', requireAuth, asyncHandler(async (req: Req
     }
 
     // 4. 移行先を記録する（Actor 文書の movedTo として公開される）
-    await adb.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(targetActorUrl, user.id);
+    await db.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(targetActorUrl, user.id);
 
     console.log(
       `[Migration] 📦 @${user.id} が ${targetActorUrl} へ引っ越し（フォロワー ${followerRows.length}件 / 成功 ${delivered} / 失敗 ${failed}）`,
@@ -2233,7 +2234,7 @@ apiRouter.post('/user/migration/move', requireAuth, asyncHandler(async (req: Req
 // 引っ越し先の記録を解除する（配送済みの Move は取り消せない）
 apiRouter.post('/user/migration/cancel', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  await adb.prepare("UPDATE users SET moved_to = '' WHERE id = ?").run(user.id);
+  await db.prepare("UPDATE users SET moved_to = '' WHERE id = ?").run(user.id);
   console.log(`[Migration] 📦 @${user.id} の引っ越し先を解除`);
   res.json({ success: true, message: '引っ越し先の記録を解除しました（連合先へ配送済みの Move は取り消せません）。' });
 }));
@@ -2285,7 +2286,7 @@ apiRouter.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request,
 
   // 3. 最後の管理者を削除しない保護
   if (user.role === 'admin') {
-    const adminCount = (await adb.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+    const adminCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
     if (adminCount <= 1) {
       return res.status(400).json({
         error: 'あなたはサーバーで唯一の管理者です。退会する前に別のユーザーを管理者に任命してください。',
@@ -2316,12 +2317,12 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
     cleanId = cleanId.replace(`@${config.domain}`, '');
   }
 
-  const localUser = await adb.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(cleanId) as any;
+  const localUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(cleanId) as any;
   if (localUser) {
     const actorUrl = `${config.origin}/users/${localUser.id}`;
-    const followerCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
-    const followingCount = (await adb.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
-    const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(localUser.id) as any).c;
+    const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
+    const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
+    const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(localUser.id) as any).c;
 
     let isFollowing = false;
     let isBlocked = false;
@@ -2329,16 +2330,16 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
     let isBlockingMe = false;
     if (req.user && req.user.id !== localUser.id) {
       if (myActorUrl) {
-        const f = await adb.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, actorUrl);
+        const f = await db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, actorUrl);
         isFollowing = !!f;
       }
-      isBlocked = !!await adb.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
-      isMuted = !!await adb.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
-      isBlockingMe = !!await adb.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(localUser.id, req.user.id);
+      isBlocked = !!await db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
+      isMuted = !!await db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, localUser.id);
+      isBlockingMe = !!await db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(localUser.id, req.user.id);
     }
 
     // 📌 ピン留めノートの取得
-    const pinnedRows = await adb.prepare(`
+    const pinnedRows = await db.prepare(`
       SELECT 
         p.*,
         p.id AS post_id,
@@ -2370,7 +2371,7 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
       discoverable: Number((localUser as any).discoverable ?? 1) === 1,
       // 🏅 プロフィール項目とバッジ（付与ロール）
       fields: parseProfileFields((localUser as any).fields).map((f) => ({ name: f.name, value: f.value })),
-      roles: await adb.prepare(`
+      roles: await db.prepare(`
         SELECT r.id, r.name, r.color FROM user_roles ur
         JOIN roles r ON ur.role_id = r.id
         WHERE ur.user_id = ?
@@ -2397,25 +2398,25 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
 
     // キャッシュを検索、未取得または画像未取得なら最新化
     let remoteActor: RemoteActorRow;
-    const existing = await adb.prepare('SELECT * FROM remote_actors WHERE id = ?').get(targetActorUrl) as RemoteActorRow | undefined;
+    const existing = await db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(targetActorUrl) as RemoteActorRow | undefined;
     if (existing && existing.icon_url) {
       remoteActor = existing;
     } else {
       remoteActor = await fetchRemoteActor(targetActorUrl, true);
     }
 
-    const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?)').get(targetActorUrl, targetActorUrl) as any).c;
+    const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?)').get(targetActorUrl, targetActorUrl) as any).c;
 
     let isFollowing = false;
     let isBlocked = false;
     let isMuted = false;
     if (req.user) {
       if (myActorUrl) {
-        const f = await adb.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl);
+        const f = await db.prepare('SELECT id FROM follows WHERE follower_url = ? AND following_url = ?').get(myActorUrl, targetActorUrl);
         isFollowing = !!f;
       }
-      isBlocked = !!await adb.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
-      isMuted = !!await adb.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
+      isBlocked = !!await db.prepare('SELECT 1 FROM user_blocks WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
+      isMuted = !!await db.prepare('SELECT 1 FROM user_mutes WHERE user_id = ? AND target_user_id = ?').get(req.user.id, targetActorUrl);
     }
 
     return res.json({
@@ -2459,7 +2460,7 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
     cleanId = cleanId.replace(`@${config.domain}`, '');
   }
 
-  const localUser = await adb.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
+  const localUser = await db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
   let posts: any[] = [];
 
   const baseSelect = `
@@ -2479,14 +2480,14 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
   `;
 
   if (localUser) {
-    posts = await adb.prepare(`
+    posts = await db.prepare(`
       ${baseSelect}
       WHERE p.user_id = ?${cursorCond}
       ORDER BY p.published_at DESC, p.id DESC
       LIMIT ?
     `).all(cleanId, ...cursorParams, page.limit + 1);
   } else {
-    posts = await adb.prepare(`
+    posts = await db.prepare(`
       ${baseSelect}
       WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)${cursorCond}
       ORDER BY p.published_at DESC, p.id DESC
@@ -2508,7 +2509,7 @@ apiRouter.get('/following', asyncHandler(async (req: Request, res: Response) => 
   }
 
   const myActorUrl = `${config.origin}/users/${userId}`;
-  const following = await adb.prepare(`
+  const following = await db.prepare(`
     SELECT f.*, r.name, r.username, r.domain
     FROM follows f
     LEFT JOIN remote_actors r ON f.following_url = r.id
@@ -2527,7 +2528,7 @@ apiRouter.get('/followers', asyncHandler(async (req: Request, res: Response) => 
 
   const myActorUrl = `${config.origin}/users/${userId}`;
   // 承認済みのフォロワーのみ（鍵アカウントの承認待ちは含めない）
-  const followers = await adb.prepare(`
+  const followers = await db.prepare(`
     SELECT f.*, r.name, r.username, r.domain
     FROM follows f
     LEFT JOIN remote_actors r ON f.follower_url = r.id
@@ -2540,9 +2541,9 @@ apiRouter.get('/followers', asyncHandler(async (req: Request, res: Response) => 
 
 // サーバー公開情報
 apiRouter.get('/server-info', asyncHandler(async (req: Request, res: Response) => {
-  const userCount = (await adb.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
-  const postCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
-  const federatedPostCount = (await adb.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
+  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
+  const federatedPostCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
   const instanceInfo = getInstanceInfo();
 
   res.json({
@@ -2572,7 +2573,7 @@ apiRouter.get('/server-info', asyncHandler(async (req: Request, res: Response) =
 // 公開カスタム絵文字一覧（投稿・リアクションのピッカー用）
 apiRouter.get('/emojis', asyncHandler(async (req: Request, res: Response) => {
   try {
-    const emojis = await adb.prepare(`
+    const emojis = await db.prepare(`
       SELECT id, name, url, category, aliases FROM custom_emojis ORDER BY category ASC, name ASC
     `).all() as unknown as CustomEmojiRow[];
     res.json(emojis);
@@ -2623,7 +2624,7 @@ apiRouter.get('/notifications', requireAuth, asyncHandler(async (req: Request, r
   params.push(page.limit + 1);
 
   try {
-    const notifications = await adb.prepare(`
+    const notifications = await db.prepare(`
       SELECT * FROM notifications
       WHERE user_id = ? ${filterClause}${cursorClause}
       ORDER BY created_at DESC, id DESC
@@ -2634,19 +2635,20 @@ apiRouter.get('/notifications', requireAuth, asyncHandler(async (req: Request, r
     const pageRows = applyPageHeaders(res, notifications, page.limit, 'created_at', 'id');
 
     // ブロックまたはミュートしているユーザーを除外
-    const blockedRows = await adb.prepare('SELECT target_user_id FROM user_blocks WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
-    const mutedRows = await adb.prepare('SELECT target_user_id FROM user_mutes WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
+    const blockedRows = await db.prepare('SELECT target_user_id FROM user_blocks WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
+    const mutedRows = await db.prepare('SELECT target_user_id FROM user_mutes WHERE user_id = ?').all(user.id) as { target_user_id: string }[];
     const excludeIds = new Set<string>();
     for (const r of blockedRows) if (r.target_user_id) excludeIds.add(r.target_user_id.toLowerCase());
     for (const r of mutedRows) if (r.target_user_id) excludeIds.add(r.target_user_id.toLowerCase());
+    const blockedDomainRules = await loadBlockedDomainRules();
 
     const filtered = pageRows.filter((n) => {
       if (n.actor_id && excludeIds.has(n.actor_id.toLowerCase())) return false;
       if (n.actor_handle && excludeIds.has(n.actor_handle.toLowerCase())) return false;
       // サイレンス / ブロックしたサーバーからの通知は一覧に出さない
-      if (n.actor_id && isDomainHidden(n.actor_id)) return false;
-      if (n.actor_handle && isDomainHidden(n.actor_handle)) return false;
-      if ((n as any).origin_url && isDomainHidden((n as any).origin_url)) return false;
+      if (matchesBlockedDomainRule(blockedDomainRules, n.actor_id)) return false;
+      if (matchesBlockedDomainRule(blockedDomainRules, n.actor_handle)) return false;
+      if (matchesBlockedDomainRule(blockedDomainRules, (n as any).origin_url)) return false;
       return true;
     });
 
@@ -2717,7 +2719,7 @@ apiRouter.get('/notifications/unread-count', requireAuth, asyncHandler(async (re
   try {
     const disabled = await getDisabledNotificationTypes(user.id);
     const exclude = disabled.length > 0 ? ` AND type NOT IN (${disabled.map(() => '?').join(', ')})` : '';
-    const row = await adb.prepare(`
+    const row = await db.prepare(`
       SELECT COUNT(*) as c FROM notifications
       WHERE user_id = ? AND is_read = 0${exclude}
     `).get(user.id, ...disabled) as { c: number } | undefined;
@@ -2733,7 +2735,7 @@ apiRouter.get('/notifications/unread-count', requireAuth, asyncHandler(async (re
 apiRouter.post('/notifications/read-all', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
-    await adb.prepare(`
+    await db.prepare(`
       UPDATE notifications
       SET is_read = 1
       WHERE user_id = ? AND is_read = 0
@@ -2752,7 +2754,7 @@ apiRouter.post('/notifications/:id/read', requireAuth, asyncHandler(async (req: 
   const notificationId = req.params.id as string;
 
   try {
-    await adb.prepare(`
+    await db.prepare(`
       UPDATE notifications
       SET is_read = 1
       WHERE id = ? AND user_id = ?
@@ -2774,11 +2776,11 @@ async function toggleBookmarkPost(userId: string, targetPostId: string) {
   let cleanPostId = targetPostId.trim();
 
   // posts テーブルから該当投稿を照合
-  let post = await adb.prepare('SELECT id FROM posts WHERE id = ?').get(cleanPostId) as { id: string } | undefined;
+  let post = await db.prepare('SELECT id FROM posts WHERE id = ?').get(cleanPostId) as { id: string } | undefined;
   if (!post && cleanPostId.includes('%')) {
     try {
       const decoded = decodeURIComponent(cleanPostId);
-      post = await adb.prepare('SELECT id FROM posts WHERE id = ?').get(decoded) as { id: string } | undefined;
+      post = await db.prepare('SELECT id FROM posts WHERE id = ?').get(decoded) as { id: string } | undefined;
       if (post) cleanPostId = decoded;
     } catch {}
   }
@@ -2787,13 +2789,13 @@ async function toggleBookmarkPost(userId: string, targetPostId: string) {
     return { success: false, notFound: true };
   }
 
-  const existing = await adb.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
+  const existing = await db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
   if (existing) {
-    await adb.prepare('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
+    await db.prepare('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
     return { success: true, bookmarked: false, postId: cleanPostId };
   } else {
     const now = new Date().toISOString();
-    await adb.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
+    await db.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
     return { success: true, bookmarked: true, postId: cleanPostId };
   }
 }
@@ -2808,10 +2810,10 @@ apiRouter.post('/bookmarks/toggle', requireAuth, asyncHandler(async (req: Reques
   }
 
   // 閲覧できない投稿（フォロワー限定など）はブックマークできない
-  const bookmarkTarget = await adb.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
+  const bookmarkTarget = await db.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
     | { author_url: string; visibility: string | null }
     | undefined;
-  if (bookmarkTarget && !canViewPost(bookmarkTarget, `${config.origin}/users/${user.id}`)) {
+  if (bookmarkTarget && !(await canViewPost(bookmarkTarget, `${config.origin}/users/${user.id}`))) {
     return res.status(403).json({ error: 'この投稿はブックマークできません。' });
   }
 
@@ -2871,7 +2873,7 @@ apiRouter.get('/bookmarks', requireAuth, asyncHandler(async (req: Request, res: 
       LIMIT ?
     `;
 
-    const rows = await adb.prepare(query).all(user.id, ...cursorParams, page.limit + 1) as any[];
+    const rows = await db.prepare(query).all(user.id, ...cursorParams, page.limit + 1) as any[];
     const currentActorUrl = `${config.origin}/users/${user.id}`;
     const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
     const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, user.id);
@@ -2891,11 +2893,11 @@ async function togglePinPost(userId: string, targetPostId: string): Promise<{ su
   let cleanPostId = targetPostId.trim();
 
   // posts テーブルから該当投稿を照合
-  let post = await adb.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(cleanPostId) as { id: string; user_id: string; is_local: number } | undefined;
+  let post = await db.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(cleanPostId) as { id: string; user_id: string; is_local: number } | undefined;
   if (!post && cleanPostId.includes('%')) {
     try {
       const decoded = decodeURIComponent(cleanPostId);
-      post = await adb.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(decoded) as { id: string; user_id: string; is_local: number } | undefined;
+      post = await db.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(decoded) as { id: string; user_id: string; is_local: number } | undefined;
       if (post) cleanPostId = decoded;
     } catch {}
   }
@@ -2909,18 +2911,18 @@ async function togglePinPost(userId: string, targetPostId: string): Promise<{ su
     return { success: false, notAllowed: true, error: '自分の投稿のみプロフィールにピン留めできます。' };
   }
 
-  const existing = await adb.prepare('SELECT 1 FROM pinned_posts WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
+  const existing = await db.prepare('SELECT 1 FROM pinned_posts WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
   if (existing) {
-    await adb.prepare('DELETE FROM pinned_posts WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
+    await db.prepare('DELETE FROM pinned_posts WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
     return { success: true, pinned: false, postId: cleanPostId };
   } else {
     // 上限5件チェック
-    const count = (await adb.prepare('SELECT COUNT(*) as c FROM pinned_posts WHERE user_id = ?').get(userId) as any).c;
+    const count = (await db.prepare('SELECT COUNT(*) as c FROM pinned_posts WHERE user_id = ?').get(userId) as any).c;
     if (count >= 5) {
       return { success: false, limitReached: true, error: 'ピン留めできるノートは最大5件までです。' };
     }
     const now = new Date().toISOString();
-    await adb.prepare('INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
+    await db.prepare('INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
     return { success: true, pinned: true, postId: cleanPostId };
   }
 }
@@ -2990,7 +2992,7 @@ apiRouter.post('/users/:identifier/block', requireAuth, asyncHandler(async (req:
     let cleanId = rawIdentifier.replace(/^@/, '');
     if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
 
-    const localUser = await adb.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
+    const localUser = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
     let targetUserId = cleanId;
     let targetHandle = `@${cleanId}@${config.domain}`;
     let targetName = localUser?.name || cleanId;
@@ -3017,14 +3019,14 @@ apiRouter.post('/users/:identifier/block', requireAuth, asyncHandler(async (req:
     }
 
     const now = new Date().toISOString();
-    await adb.prepare(`
+    await db.prepare(`
       INSERT OR REPLACE INTO user_blocks (user_id, target_user_id, target_handle, target_name, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(user.id, targetUserId, targetHandle, targetName, now);
 
     // 相互フォローの解除
     const targetActorUrl = isRemote ? targetUserId : `${config.origin}/users/${targetUserId}`;
-    await adb.prepare(`
+    await db.prepare(`
       DELETE FROM follows
       WHERE (follower_url = ? AND following_url = ?)
          OR (follower_url = ? AND following_url = ?)
@@ -3065,7 +3067,7 @@ apiRouter.post('/users/:identifier/unblock', requireAuth, asyncHandler(async (re
     let cleanId = rawIdentifier.replace(/^@/, '');
     if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
 
-    const localUser = await adb.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
+    const localUser = await db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
     let targetUserId = cleanId;
     let isRemote = false;
     let remoteActorInbox: string | null = null;
@@ -3089,7 +3091,7 @@ apiRouter.post('/users/:identifier/unblock', requireAuth, asyncHandler(async (re
       } catch {}
     }
 
-    await adb.prepare('DELETE FROM user_blocks WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+    await db.prepare('DELETE FROM user_blocks WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
 
     // リモートユーザーの場合、Undo(Block) を配送
     if (isRemote && remoteActorInbox) {
@@ -3130,7 +3132,7 @@ apiRouter.post('/users/:identifier/mute', requireAuth, asyncHandler(async (req: 
     let cleanId = rawIdentifier.replace(/^@/, '');
     if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
 
-    const localUser = await adb.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
+    const localUser = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(cleanId) as any;
     let targetUserId = cleanId;
     let targetHandle = `@${cleanId}@${config.domain}`;
     let targetName = localUser?.name || cleanId;
@@ -3153,7 +3155,7 @@ apiRouter.post('/users/:identifier/mute', requireAuth, asyncHandler(async (req: 
     }
 
     const now = new Date().toISOString();
-    await adb.prepare(`
+    await db.prepare(`
       INSERT OR REPLACE INTO user_mutes (user_id, target_user_id, target_handle, target_name, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(user.id, targetUserId, targetHandle, targetName, now);
@@ -3175,7 +3177,7 @@ apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req
     if (cleanId.includes(`@${config.domain}`)) cleanId = cleanId.replace(`@${config.domain}`, '');
 
     let targetUserId = cleanId;
-    const localUser = await adb.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
+    const localUser = await db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId) as any;
     if (localUser) {
       targetUserId = localUser.id;
     } else {
@@ -3190,7 +3192,7 @@ apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req
       targetUserId = targetActorUrl;
     }
 
-    await adb.prepare('DELETE FROM user_mutes WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+    await db.prepare('DELETE FROM user_mutes WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
 
     res.json({ success: true, is_muted: false });
   } catch (err: any) {
@@ -3203,7 +3205,7 @@ apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req
 apiRouter.get('/user/blocks', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
-    const blocks = await adb.prepare(`
+    const blocks = await db.prepare(`
       SELECT target_user_id as id, target_handle as handle, target_name as name, created_at
       FROM user_blocks
       WHERE user_id = ?
@@ -3220,7 +3222,7 @@ apiRouter.get('/user/blocks', requireAuth, asyncHandler(async (req: Request, res
 apiRouter.get('/user/mutes', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
-    const mutes = await adb.prepare(`
+    const mutes = await db.prepare(`
       SELECT target_user_id as id, target_handle as handle, target_name as name, created_at
       FROM user_mutes
       WHERE user_id = ?
@@ -3249,7 +3251,7 @@ apiRouter.get('/autocomplete/users', asyncHandler(async (req: Request, res: Resp
 
     // 1. ログインユーザーがフォロー中のユーザーから検索（優先度高）
     if (currentActorUrl) {
-      const followRows = await adb.prepare(`
+      const followRows = await db.prepare(`
         SELECT r.id, r.username, r.name, r.domain, r.icon_url
         FROM follows f
         JOIN remote_actors r ON f.following_url = r.id
@@ -3274,7 +3276,7 @@ apiRouter.get('/autocomplete/users', asyncHandler(async (req: Request, res: Resp
     }
 
     // 2. ローカルユーザーから検索
-    const localUsers = await adb.prepare(`
+    const localUsers = await db.prepare(`
       SELECT id, name, icon_url
       FROM users
       WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ?
@@ -3299,7 +3301,7 @@ apiRouter.get('/autocomplete/users', asyncHandler(async (req: Request, res: Resp
     // 3. その他リモートアクターから検索（件数枠が余っている場合）
     if (results.length < 8) {
       const remainingLimit = 8 - results.length;
-      const remoteUsers = await adb.prepare(`
+      const remoteUsers = await db.prepare(`
         SELECT id, username, name, domain, icon_url
         FROM remote_actors
         WHERE LOWER(username) LIKE ? OR LOWER(name) LIKE ?
@@ -3335,7 +3337,7 @@ apiRouter.get('/autocomplete/tags', asyncHandler(async (req: Request, res: Respo
 
   try {
     // フォロワー限定投稿のタグは候補に出さない
-    const recentPosts = await adb.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 300").all() as { content: string }[];
+    const recentPosts = await db.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 300").all() as { content: string }[];
     const tagCountMap = new Map<string, number>();
 
     const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
@@ -3383,7 +3385,7 @@ apiRouter.get('/push/vapid-public-key', (req: Request, res: Response) => {
 // 📢 お知らせ（サーバーからの一斉告知）: 有効なもののみ公開
 apiRouter.get('/announcements', asyncHandler(async (_req: Request, res: Response) => {
   try {
-    const rows = await adb.prepare(`
+    const rows = await db.prepare(`
       SELECT id, title, content, created_at, updated_at FROM announcements
       WHERE is_active = 1
       ORDER BY created_at DESC LIMIT 20
@@ -3401,7 +3403,7 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
   const q = String(req.query.q || '').trim();
 
   try {
-    const rows = await adb.prepare(`
+    const rows = await db.prepare(`
       SELECT id, name, summary, icon_url, banner_url, created_at, fields, discoverable
       FROM users
       WHERE is_frozen = 0 AND COALESCE(discoverable, 1) = 1
@@ -3421,10 +3423,10 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
         handle: `@${user.id}@${config.domain}`,
         actor_url: actorUrl,
         created_at: user.created_at,
-        post_count: (await adb.prepare('SELECT COUNT(*) AS c FROM posts WHERE user_id = ?').get(user.id) as { c: number }).c,
-        follower_count: (await adb.prepare("SELECT COUNT(*) AS c FROM follows WHERE following_url = ? AND status = 'accepted'").get(actorUrl) as { c: number }).c,
+        post_count: (await db.prepare('SELECT COUNT(*) AS c FROM posts WHERE user_id = ?').get(user.id) as { c: number }).c,
+        follower_count: (await db.prepare("SELECT COUNT(*) AS c FROM follows WHERE following_url = ? AND status = 'accepted'").get(actorUrl) as { c: number }).c,
         fields: parseProfileFields((user as any).fields).map((f) => ({ name: f.name, value: f.value })),
-        roles: await adb.prepare(`
+        roles: await db.prepare(`
           SELECT r.id, r.name, r.color FROM user_roles ur
           JOIN roles r ON ur.role_id = r.id
           WHERE ur.user_id = ?
@@ -3443,7 +3445,7 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
 // 🔇 ワードフィルター（ミュートワード）管理
 apiRouter.get('/muted-words', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const words = await adb.prepare(
+  const words = await db.prepare(
     'SELECT id, keyword, case_sensitive, whole_word, created_at FROM muted_words WHERE user_id = ? ORDER BY created_at DESC',
   ).all(user.id);
   res.json(words);
@@ -3457,18 +3459,18 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
     return res.status(400).json({ error: 'キーワードを入力してください。' });
   }
 
-  const existing = await adb.prepare('SELECT id FROM muted_words WHERE user_id = ? AND keyword = ?').get(user.id, value);
+  const existing = await db.prepare('SELECT id FROM muted_words WHERE user_id = ? AND keyword = ?').get(user.id, value);
   if (existing) {
     return res.status(409).json({ error: '同じキーワードが既に登録されています。' });
   }
 
-  const count = (await adb.prepare('SELECT COUNT(*) AS c FROM muted_words WHERE user_id = ?').get(user.id) as { c: number }).c;
+  const count = (await db.prepare('SELECT COUNT(*) AS c FROM muted_words WHERE user_id = ?').get(user.id) as { c: number }).c;
   if (count >= 200) {
     return res.status(400).json({ error: '登録できるキーワードは 200 件までです。' });
   }
 
   const id = crypto.randomUUID();
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO muted_words (id, user_id, keyword, case_sensitive, whole_word, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(id, user.id, value, caseSensitive ? 1 : 0, wholeWord ? 1 : 0, new Date().toISOString());
@@ -3479,7 +3481,7 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
 
 apiRouter.delete('/muted-words/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const result = await adb.prepare('DELETE FROM muted_words WHERE id = ? AND user_id = ?').run(String(req.params.id), user.id);
+  const result = await db.prepare('DELETE FROM muted_words WHERE id = ? AND user_id = ?').run(String(req.params.id), user.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: 'キーワードが見つかりません。' });
   }
@@ -3490,14 +3492,14 @@ apiRouter.delete('/muted-words/:id', requireAuth, asyncHandler(async (req: Reque
 apiRouter.get('/follow-requests', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT id, follower_url, inbox_url, created_at FROM follows
     WHERE following_url = ? AND status = 'pending'
     ORDER BY created_at DESC LIMIT 200
   `).all(myActorUrl) as { id: string; follower_url: string; inbox_url: string; created_at: string }[];
 
   const enriched = await Promise.all(rows.map(async (row) => {
-    const remote = await adb.prepare('SELECT username, domain, name, icon_url FROM remote_actors WHERE id = ?').get(row.follower_url) as
+    const remote = await db.prepare('SELECT username, domain, name, icon_url FROM remote_actors WHERE id = ?').get(row.follower_url) as
       | { username: string; domain: string; name: string | null; icon_url: string | null }
       | undefined;
     return {
@@ -3524,7 +3526,7 @@ apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req:
   }
 
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const row = await adb.prepare('SELECT * FROM follows WHERE follower_url = ? AND following_url = ?').get(actorUrl, myActorUrl) as
+  const row = await db.prepare('SELECT * FROM follows WHERE follower_url = ? AND following_url = ?').get(actorUrl, myActorUrl) as
     | { id: string; follower_url: string; following_url: string; inbox_url: string; status: string }
     | undefined;
 
@@ -3542,7 +3544,7 @@ apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req:
   };
 
   if (action === 'accept') {
-    await adb.prepare("UPDATE follows SET status = 'accepted' WHERE follower_url = ? AND following_url = ?").run(actorUrl, myActorUrl);
+    await db.prepare("UPDATE follows SET status = 'accepted' WHERE follower_url = ? AND following_url = ?").run(actorUrl, myActorUrl);
     console.log(`[FollowRequest] ✅ @${user.id} が ${actorUrl} のフォローを承認しました`);
     if (row.inbox_url) {
       deliverActivity({
@@ -3552,7 +3554,7 @@ apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req:
       }).catch(() => {});
     }
   } else {
-    await adb.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(actorUrl, myActorUrl);
+    await db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(actorUrl, myActorUrl);
     console.log(`[FollowRequest] 🚫 @${user.id} が ${actorUrl} のフォローを拒否しました`);
     if (row.inbox_url) {
       deliverActivity({
@@ -3572,11 +3574,11 @@ apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req:
 // 自分のリスト一覧
 apiRouter.get('/lists', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const lists = await adb.prepare('SELECT * FROM lists WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as any[];
+  const lists = await db.prepare('SELECT * FROM lists WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as any[];
   const withMembers = await Promise.all(
     lists.map(async (list) => ({
       ...list,
-      members: await adb.prepare('SELECT id, member, display_name FROM list_members WHERE list_id = ? ORDER BY created_at ASC').all(list.id),
+      members: await db.prepare('SELECT id, member, display_name FROM list_members WHERE list_id = ? ORDER BY created_at ASC').all(list.id),
     })),
   );
   res.json(withMembers);
@@ -3589,14 +3591,14 @@ apiRouter.post('/lists', requireAuth, asyncHandler(async (req: Request, res: Res
   if (!name) {
     return res.status(400).json({ error: 'リスト名を入力してください。' });
   }
-  const count = (await adb.prepare('SELECT COUNT(*) AS c FROM lists WHERE user_id = ?').get(user.id) as { c: number }).c;
+  const count = (await db.prepare('SELECT COUNT(*) AS c FROM lists WHERE user_id = ?').get(user.id) as { c: number }).c;
   if (count >= 50) {
     return res.status(400).json({ error: '作成できるリストは 50 件までです。' });
   }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  await adb.prepare('INSERT INTO lists (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO lists (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
     .run(id, user.id, name, now, now);
   console.log(`[List] 📋 @${user.id} がリスト「${name}」を作成`);
   res.status(201).json({ success: true, id, name });
@@ -3610,7 +3612,7 @@ apiRouter.put('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: 
   if (!name) {
     return res.status(400).json({ error: 'リスト名を入力してください。' });
   }
-  const result = await adb.prepare('UPDATE lists SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+  const result = await db.prepare('UPDATE lists SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?')
     .run(name, new Date().toISOString(), id, user.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: 'リストが見つかりません。' });
@@ -3622,12 +3624,12 @@ apiRouter.put('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: 
 apiRouter.delete('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const id = String(req.params.id);
-  const existing = await adb.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(id, user.id);
+  const existing = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(id, user.id);
   if (!existing) {
     return res.status(404).json({ error: 'リストが見つかりません。' });
   }
-  await adb.prepare('DELETE FROM list_members WHERE list_id = ?').run(id);
-  await adb.prepare('DELETE FROM lists WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM list_members WHERE list_id = ?').run(id);
+  await db.prepare('DELETE FROM lists WHERE id = ?').run(id);
   res.json({ success: true });
 }));
 
@@ -3635,7 +3637,7 @@ apiRouter.delete('/lists/:id', requireAuth, asyncHandler(async (req: Request, re
 apiRouter.post('/lists/:id/members', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
-  const list = await adb.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
+  const list = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
   if (!list) {
     return res.status(404).json({ error: 'リストが見つかりません。' });
   }
@@ -3647,23 +3649,23 @@ apiRouter.post('/lists/:id/members', requireAuth, asyncHandler(async (req: Reque
 
   // 表示名の解決（ローカルユーザー → リモートアクター → そのまま）
   const localId = raw.replace(/^@/, '').split('@')[0].toLowerCase();
-  const localUser = await adb.prepare('SELECT id, name FROM users WHERE id = ?').get(localId) as { id: string; name: string } | undefined;
+  const localUser = await db.prepare('SELECT id, name FROM users WHERE id = ?').get(localId) as { id: string; name: string } | undefined;
   const remoteActor = localUser
     ? undefined
-    : (await adb.prepare('SELECT id, name, username FROM remote_actors WHERE id = ?').get(raw) as
+    : (await db.prepare('SELECT id, name, username FROM remote_actors WHERE id = ?').get(raw) as
         | { id: string; name: string | null; username: string }
         | undefined);
 
   const member = localUser ? localUser.id : raw;
   const displayName = localUser?.name || remoteActor?.name || remoteActor?.username || raw;
 
-  const count = (await adb.prepare('SELECT COUNT(*) AS c FROM list_members WHERE list_id = ?').get(listId) as { c: number }).c;
+  const count = (await db.prepare('SELECT COUNT(*) AS c FROM list_members WHERE list_id = ?').get(listId) as { c: number }).c;
   if (count >= 500) {
     return res.status(400).json({ error: '1つのリストに追加できるのは 500 人までです。' });
   }
 
   try {
-    await adb.prepare('INSERT INTO list_members (id, list_id, member, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
+    await db.prepare('INSERT INTO list_members (id, list_id, member, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(crypto.randomUUID(), listId, member, displayName, new Date().toISOString());
   } catch {
     return res.status(409).json({ error: '既にこのリストに追加されています。' });
@@ -3676,11 +3678,11 @@ apiRouter.post('/lists/:id/members', requireAuth, asyncHandler(async (req: Reque
 apiRouter.delete('/lists/:id/members/:memberId', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
-  const list = await adb.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
+  const list = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
   if (!list) {
     return res.status(404).json({ error: 'リストが見つかりません。' });
   }
-  const result = await adb.prepare('DELETE FROM list_members WHERE id = ? AND list_id = ?').run(String(req.params.memberId), listId);
+  const result = await db.prepare('DELETE FROM list_members WHERE id = ? AND list_id = ?').run(String(req.params.memberId), listId);
   if (result.changes === 0) {
     return res.status(404).json({ error: 'メンバーが見つかりません。' });
   }
@@ -3691,7 +3693,7 @@ apiRouter.delete('/lists/:id/members/:memberId', requireAuth, asyncHandler(async
 apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
-  const list = await adb.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id) as any;
+  const list = await db.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id) as any;
   if (!list) {
     return res.status(404).json({ error: 'リストが見つかりません。' });
   }
@@ -3701,7 +3703,7 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
     return res.status(400).json({ error: page.error });
   }
 
-  const members = (await adb.prepare('SELECT member FROM list_members WHERE list_id = ?').all(listId) as { member: string }[])
+  const members = (await db.prepare('SELECT member FROM list_members WHERE list_id = ?').all(listId) as { member: string }[])
     .map((m) => m.member);
 
   if (members.length === 0) {
@@ -3722,7 +3724,7 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
   }
   params.push(page.limit + 1);
 
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT
       p.id AS post_id,
       p.*,
@@ -3738,8 +3740,9 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
 
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
   const viewerActor = `${config.origin}/users/${user.id}`;
-  const visible = filterVisiblePosts(pageRows, viewerActor)
-    .filter((post) => !postMatchesMutedWords(post, getMutedWords(user.id)));
+  const listMutedWords = await getMutedWords(user.id);
+  const visible = (await filterVisiblePosts(pageRows, viewerActor))
+    .filter((post) => !postMatchesMutedWords(post, listMutedWords));
   const enriched = await enrichAndFilterPosts(visible, viewerActor, user.id);
 
   res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
@@ -3851,7 +3854,7 @@ apiRouter.post('/user/password', requireAuth, asyncHandler(async (req: Request, 
     });
   }
 
-  await adb.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), user.id);
+  await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword), user.id);
   console.log(`[Password] 🔑 @${user.id} のパスワードを${hasPassword ? '変更' : '設定'}しました`);
   res.json({ success: true, message: hasPassword ? 'パスワードを変更しました。' : 'パスワードを設定しました。' });
 }));
@@ -3876,7 +3879,7 @@ apiRouter.post('/user/email', requireAuth, asyncHandler(async (req: Request, res
   }
 
   // 既に他のユーザーが確認済みで使っているメールは登録できない
-  const taken = await adb.prepare('SELECT id FROM users WHERE email = ? AND email_verified = 1 AND id != ?').get(email, user.id);
+  const taken = await db.prepare('SELECT id FROM users WHERE email = ? AND email_verified = 1 AND id != ?').get(email, user.id);
   if (taken) {
     return res.status(409).json({ error: 'このメールアドレスは既に使用されています。' });
   }
@@ -3884,7 +3887,7 @@ apiRouter.post('/user/email', requireAuth, asyncHandler(async (req: Request, res
   try {
     const code = generateVerificationCode();
     await issueVerificationCode({ userId: user.id, email, purpose: 'verify_email', code });
-    await adb.prepare('UPDATE users SET email = ?, email_verified = 0 WHERE id = ?').run(email, user.id);
+    await db.prepare('UPDATE users SET email = ?, email_verified = 0 WHERE id = ?').run(email, user.id);
 
     const sent = await sendMail({
       to: email,
@@ -3927,7 +3930,7 @@ apiRouter.post('/user/email/verify', requireAuth, asyncHandler(async (req: Reque
     return res.status(400).json({ error: result.error });
   }
 
-  await adb.prepare('UPDATE users SET email = ?, email_verified = 1 WHERE id = ?').run(email, user.id);
+  await db.prepare('UPDATE users SET email = ?, email_verified = 1 WHERE id = ?').run(email, user.id);
   console.log(`[Email] ✅ @${user.id} のメールアドレスを確認しました`);
   res.json({ success: true, message: 'メールアドレスを確認しました。マスターキーを紛失した際に復元できます。' });
 }));
@@ -3935,8 +3938,8 @@ apiRouter.post('/user/email/verify', requireAuth, asyncHandler(async (req: Reque
 // メールアドレスの削除
 apiRouter.delete('/user/email', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  await adb.prepare('DELETE FROM email_verifications WHERE user_id = ?').run(user.id);
-  await adb.prepare("UPDATE users SET email = '', email_verified = 0 WHERE id = ?").run(user.id);
+  await db.prepare('DELETE FROM email_verifications WHERE user_id = ?').run(user.id);
+  await db.prepare("UPDATE users SET email = '', email_verified = 0 WHERE id = ?").run(user.id);
   console.log(`[Email] 🗑️ @${user.id} がメールアドレスを削除しました`);
   res.json({ success: true });
 }));
@@ -3957,7 +3960,7 @@ apiRouter.post('/auth/recovery/request', asyncHandler(async (req: Request, res: 
   }
 
   try {
-    const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
     if (!user || !user.email || user.email.toLowerCase() !== email || Number((user as any).email_verified) !== 1) {
       console.log(`[Recovery] 該当なし（存在秘匿）: id=${userId}`);
       return res.json(genericResponse);
@@ -4005,7 +4008,7 @@ apiRouter.post('/auth/recovery/verify', asyncHandler(async (req: Request, res: R
   }
 
   try {
-    const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
+    const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined;
     if (!user || !user.email || user.email.toLowerCase() !== email || Number((user as any).email_verified) !== 1) {
       return res.status(400).json({ error: 'ユーザーIDまたはメールアドレスが正しくありません。' });
     }
@@ -4036,9 +4039,9 @@ apiRouter.post('/auth/recovery/verify', asyncHandler(async (req: Request, res: R
       return res.status(502).json({ error: `新しいマスターキーの送信に失敗しました: ${sent.error}` });
     }
 
-    await adb.prepare('UPDATE users SET master_key_hash = ? WHERE id = ?').run(hashMasterKey(newMasterKey), user.id);
+    await db.prepare('UPDATE users SET master_key_hash = ? WHERE id = ?').run(hashMasterKey(newMasterKey), user.id);
     // 復元後は既存セッションをすべて無効化する（乗っ取り対策）
-    await adb.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+    await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
 
     console.log(`[Recovery] 🔑 @${user.id} のマスターキーを再発行しました`);
     res.json({
@@ -4069,7 +4072,7 @@ apiRouter.post('/reports', requireAuth, asyncHandler(async (req: Request, res: R
 
     // 投稿への通報: 投稿から投稿者を解決する
     if (targetPostId) {
-      const post = await adb.prepare('SELECT id, user_id, author_url, author_handle, content, is_local FROM posts WHERE id = ?').get(String(targetPostId)) as any;
+      const post = await db.prepare('SELECT id, user_id, author_url, author_handle, content, is_local FROM posts WHERE id = ?').get(String(targetPostId)) as any;
       if (!post) {
         return res.status(404).json({ error: '通報対象の投稿が見つかりません。' });
       }
@@ -4083,7 +4086,7 @@ apiRouter.post('/reports', requireAuth, asyncHandler(async (req: Request, res: R
     if (!targetActorUrl && targetUserId) {
       const identifier = String(targetUserId).trim();
       const localId = identifier.replace(/^@/, '').split('@')[0];
-      const localUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(localId) as unknown as UserRow | undefined;
+      const localUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(localId) as unknown as UserRow | undefined;
       if (localUser && (identifier.startsWith('@') || !identifier.includes('@'))) {
         targetActorUrl = `${config.origin}/users/${localUser.id}`;
         targetHandle = `@${localUser.id}@${config.domain}`;
@@ -4106,7 +4109,7 @@ apiRouter.post('/reports', requireAuth, asyncHandler(async (req: Request, res: R
 
     // 同一対象への連続通報を防ぐ（同じ相手・同じ投稿につき1時間に1回まで）
     const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const recent = await adb.prepare(
+    const recent = await db.prepare(
       `SELECT id FROM reports
        WHERE reporter_actor_url = ? AND target_actor_url = ?
          AND IFNULL(target_post_id, '') = IFNULL(?, '')
@@ -4211,7 +4214,7 @@ apiRouter.post('/push/test', requireAuth, async (req: Request, res: Response) =>
 // アンテナ一覧取得
 apiRouter.get('/antennas', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const rows = await adb.prepare('SELECT * FROM antennas WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as unknown as AntennaRow[];
+  const rows = await db.prepare('SELECT * FROM antennas WHERE user_id = ? ORDER BY created_at DESC').all(user.id) as unknown as AntennaRow[];
   res.json(rows.map((r) => ({
     ...r,
     case_sensitive: Boolean(r.case_sensitive),
@@ -4233,7 +4236,7 @@ apiRouter.post('/antennas', requireAuth, asyncHandler(async (req: Request, res: 
   const validSrc = ['all', 'home', 'users'].includes(src) ? src : 'all';
   const now = new Date().toISOString();
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -4269,7 +4272,7 @@ apiRouter.post('/antennas', requireAuth, asyncHandler(async (req: Request, res: 
 apiRouter.get('/antennas/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
-  const ant = await adb.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  const ant = await db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
   if (!ant) {
     return res.status(404).json({ error: 'アンテナが見つかりません。' });
   }
@@ -4287,7 +4290,7 @@ apiRouter.put('/antennas/:id', requireAuth, asyncHandler(async (req: Request, re
   const antId = String(req.params.id);
   const { name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify } = req.body;
 
-  const ant = await adb.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  const ant = await db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
   if (!ant) {
     return res.status(404).json({ error: 'アンテナが見つかりません。' });
   }
@@ -4301,7 +4304,7 @@ apiRouter.put('/antennas/:id', requireAuth, asyncHandler(async (req: Request, re
   const newWithFile = with_file !== undefined ? (with_file ? 1 : 0) : ant.with_file;
   const newNotify = notify !== undefined ? (notify ? 1 : 0) : ant.notify;
 
-  await adb.prepare(`
+  await db.prepare(`
     UPDATE antennas 
     SET name = ?, src = ?, user_list = ?, keywords = ?, exclude_keywords = ?, case_sensitive = ?, with_file = ?, notify = ?
     WHERE id = ? AND user_id = ?
@@ -4326,7 +4329,7 @@ apiRouter.put('/antennas/:id', requireAuth, asyncHandler(async (req: Request, re
 apiRouter.delete('/antennas/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
-  const resDel = await adb.prepare('DELETE FROM antennas WHERE id = ? AND user_id = ?').run(antId, user.id);
+  const resDel = await db.prepare('DELETE FROM antennas WHERE id = ? AND user_id = ?').run(antId, user.id);
   if (resDel.changes === 0) {
     return res.status(404).json({ error: 'アンテナが見つかりません。' });
   }
@@ -4337,7 +4340,7 @@ apiRouter.delete('/antennas/:id', requireAuth, asyncHandler(async (req: Request,
 apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
-  const ant = await adb.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
+  const ant = await db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
   if (!ant) {
     return res.status(404).json({ error: 'アンテナが見つかりません。' });
   }
@@ -4427,12 +4430,12 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     LIMIT ?
   `;
 
-  const rows = await adb.prepare(sql).all(...params) as any[];
+  const rows = await db.prepare(sql).all(...params) as any[];
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'id');
   // 閲覧権限のない投稿（フォロワー限定など）とミュートワード該当投稿を除外
   const antennaViewer = `${config.origin}/users/${user.id}`;
-  const antennaMutedWords = getMutedWords(user.id);
-  const visibleRows = filterVisiblePosts(pageRows, antennaViewer)
+  const antennaMutedWords = await getMutedWords(user.id);
+  const visibleRows = (await filterVisiblePosts(pageRows, antennaViewer))
     .filter((post) => !postMatchesMutedWords(post, antennaMutedWords));
 
   // 各ノートのリアクション、アンケート、引用、ブックマーク状態の補完
@@ -4446,10 +4449,10 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
 
     // アンケート
     let pollData = null;
-    const pollRow = await adb.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
+    const pollRow = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
     if (pollRow) {
-      const choices = await adb.prepare('SELECT * FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(pollRow.id) as any[];
-      const myVotes = await adb.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(pollRow.id, user.id) as any[];
+      const choices = await db.prepare('SELECT * FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(pollRow.id) as any[];
+      const myVotes = await db.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(pollRow.id, user.id) as any[];
       const myVotedIndices = new Set(myVotes.map((v) => v.choice_index));
       pollData = {
         id: pollRow.id,
@@ -4470,7 +4473,7 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     // 引用投稿
     let quotePostData: any = null;
     if (post.quote_id) {
-      const qRow = await adb.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(post.quote_id) as any;
+      const qRow = await db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(post.quote_id) as any;
       if (qRow) {
         quotePostData = {
           ...qRow,
@@ -4484,7 +4487,7 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     }
 
     // リアクション
-    const reactionRows = await adb.prepare(`
+    const reactionRows = await db.prepare(`
       SELECT reaction, count(*) as count, max(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as me
       FROM reactions
       WHERE post_id = ?
@@ -4492,14 +4495,14 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     `).all(user.id, post.id) as any[];
 
     // リノート集計
-    const announceCount = (await adb.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(post.id) as any).c;
-    const myAnnounced = Boolean((await adb.prepare('SELECT 1 FROM announces WHERE post_id = ? AND user_id = ?').get(post.id, user.id) as any));
+    const announceCount = (await db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(post.id) as any).c;
+    const myAnnounced = Boolean((await db.prepare('SELECT 1 FROM announces WHERE post_id = ? AND user_id = ?').get(post.id, user.id) as any));
 
     // 返信カウント
-    const replyCount = (await adb.prepare('SELECT count(*) as c FROM posts WHERE in_reply_to = ?').get(post.id) as any).c;
+    const replyCount = (await db.prepare('SELECT count(*) as c FROM posts WHERE in_reply_to = ?').get(post.id) as any).c;
 
     // ブックマーク判定
-    const isBookmarked = Boolean((await adb.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(user.id, post.id) as any));
+    const isBookmarked = Boolean((await db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(user.id, post.id) as any));
 
     return {
       ...post,
@@ -4535,7 +4538,7 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
 // 下書き一覧取得
 apiRouter.get('/drafts', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const rows = await adb.prepare('SELECT * FROM drafts WHERE user_id = ? ORDER BY updated_at DESC').all(user.id) as unknown as DraftRow[];
+  const rows = await db.prepare('SELECT * FROM drafts WHERE user_id = ? ORDER BY updated_at DESC').all(user.id) as unknown as DraftRow[];
   res.json(rows.map((r) => ({
     ...r,
     media_attachments: (() => {
@@ -4562,9 +4565,9 @@ apiRouter.post('/drafts', requireAuth, asyncHandler(async (req: Request, res: Re
   const now = new Date().toISOString();
 
   if (draftId) {
-    const existing = await adb.prepare('SELECT id FROM drafts WHERE id = ? AND user_id = ?').get(draftId, user.id);
+    const existing = await db.prepare('SELECT id FROM drafts WHERE id = ? AND user_id = ?').get(draftId, user.id);
     if (existing) {
-      await adb.prepare(`
+      await db.prepare(`
         UPDATE drafts 
         SET content = ?, cw = ?, visibility = ?, media_attachments = ?, poll = ?, in_reply_to = ?, quote_id = ?, updated_at = ?
         WHERE id = ? AND user_id = ?
@@ -4586,7 +4589,7 @@ apiRouter.post('/drafts', requireAuth, asyncHandler(async (req: Request, res: Re
   }
 
   const newId = crypto.randomUUID();
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO drafts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, updated_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(newId, user.id, contentText, cwText, vis, attachmentsJson, pollJson, replyTo, quote, now, now);
@@ -4610,7 +4613,7 @@ apiRouter.post('/drafts', requireAuth, asyncHandler(async (req: Request, res: Re
 apiRouter.delete('/drafts/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const draftId = String(req.params.id);
-  const resDel = await adb.prepare('DELETE FROM drafts WHERE id = ? AND user_id = ?').run(draftId, user.id);
+  const resDel = await db.prepare('DELETE FROM drafts WHERE id = ? AND user_id = ?').run(draftId, user.id);
   if (resDel.changes === 0) {
     return res.status(404).json({ error: '下書きが見つかりません。' });
   }
@@ -4624,7 +4627,7 @@ apiRouter.delete('/drafts/:id', requireAuth, asyncHandler(async (req: Request, r
 // 待機中の予約投稿一覧取得
 apiRouter.get('/scheduled-posts', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT * FROM scheduled_posts 
     WHERE user_id = ? AND status = 'pending'
     ORDER BY scheduled_at ASC
@@ -4671,7 +4674,7 @@ apiRouter.post('/scheduled-posts', requireAuth, asyncHandler(async (req: Request
   const scheduledIso = new Date(scheduledTime).toISOString();
   const now = new Date().toISOString();
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO scheduled_posts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, scheduled_at, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `).run(id, user.id, contentText, cwText, vis, attachmentsJson, pollJson, replyTo, quote, scheduledIso, now);
@@ -4696,7 +4699,7 @@ apiRouter.post('/scheduled-posts', requireAuth, asyncHandler(async (req: Request
 apiRouter.delete('/scheduled-posts/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const postId = String(req.params.id);
-  const resDel = await adb.prepare(`
+  const resDel = await db.prepare(`
     DELETE FROM scheduled_posts 
     WHERE id = ? AND user_id = ? AND status = 'pending'
   `).run(postId, user.id);
@@ -4782,7 +4785,7 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
 // 登録済みパスキー一覧取得 (要認証)
 apiRouter.get('/webauthn/credentials', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT id, device_name, counter, created_at, last_used_at
     FROM webauthn_credentials
     WHERE user_id = ?
@@ -4795,7 +4798,7 @@ apiRouter.get('/webauthn/credentials', requireAuth, asyncHandler(async (req: Req
 apiRouter.delete('/webauthn/credentials/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const credId = String(req.params.id);
-  const resDel = await adb.prepare(`
+  const resDel = await db.prepare(`
     DELETE FROM webauthn_credentials
     WHERE id = ? AND user_id = ?
   `).run(credId, user.id);
@@ -4825,7 +4828,7 @@ apiRouter.get('/channels', asyncHandler(async (req: Request, res: Response) => {
 
   const orderBy = sort === 'newest' ? 'created_at DESC' : 'followers_count DESC, posts_count DESC, created_at DESC';
 
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT c.*,
       CASE WHEN ? IS NOT NULL AND EXISTS(
         SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
@@ -4861,13 +4864,13 @@ apiRouter.post('/channels', requireAuth, asyncHandler(async (req: Request, res: 
   const col = typeof color === 'string' && color.trim() ? color.trim() : '#6366f1';
   const cat = typeof category === 'string' && category.trim() ? category.trim() : 'general';
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO channels (id, user_id, name, description, banner_url, color, category, posts_count, followers_count, is_archived, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, ?)
   `).run(channelId, user.id, trimmedName, desc, banner, col, cat, now);
 
   // 作成者を初期フォロワーとして登録
-  await adb.prepare(`
+  await db.prepare(`
     INSERT OR IGNORE INTO channel_follows (channel_id, user_id, created_at)
     VALUES (?, ?, ?)
   `).run(channelId, user.id, now);
@@ -4893,7 +4896,7 @@ apiRouter.get('/channels/:id', asyncHandler(async (req: Request, res: Response) 
   const chId = String(req.params.id);
   const myUserId = req.user?.id || null;
 
-  const row = await adb.prepare(`
+  const row = await db.prepare(`
     SELECT c.*,
       CASE WHEN ? IS NOT NULL AND EXISTS(
         SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
@@ -4918,7 +4921,7 @@ apiRouter.put('/channels/:id', requireAuth, asyncHandler(async (req: Request, re
   const user = req.rawUser!;
   const chId = String(req.params.id);
 
-  const existing = await adb.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  const existing = await db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
   if (!existing) {
     return res.status(404).json({ error: 'チャンネルが見つかりません。' });
   }
@@ -4935,7 +4938,7 @@ apiRouter.put('/channels/:id', requireAuth, asyncHandler(async (req: Request, re
   const newCat = typeof category === 'string' && category.trim() ? category.trim() : (existing.category || 'general');
   const newArchived = typeof is_archived === 'boolean' ? (is_archived ? 1 : 0) : existing.is_archived;
 
-  await adb.prepare(`
+  await db.prepare(`
     UPDATE channels
     SET name = ?, description = ?, banner_url = ?, color = ?, category = ?, is_archived = ?
     WHERE id = ?
@@ -4957,23 +4960,23 @@ apiRouter.post('/channels/:id/follow', requireAuth, asyncHandler(async (req: Req
   const user = req.rawUser!;
   const chId = String(req.params.id);
 
-  const channel = await adb.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  const channel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
   if (!channel) {
     return res.status(404).json({ error: 'チャンネルが見つかりません。' });
   }
 
-  const existingFollow = await adb.prepare('SELECT 1 FROM channel_follows WHERE channel_id = ? AND user_id = ?').get(chId, user.id);
+  const existingFollow = await db.prepare('SELECT 1 FROM channel_follows WHERE channel_id = ? AND user_id = ?').get(chId, user.id);
 
   if (existingFollow) {
     // 解除
-    await adb.prepare('DELETE FROM channel_follows WHERE channel_id = ? AND user_id = ?').run(chId, user.id);
-    await adb.prepare('UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?').run(chId);
+    await db.prepare('DELETE FROM channel_follows WHERE channel_id = ? AND user_id = ?').run(chId, user.id);
+    await db.prepare('UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?').run(chId);
     return res.json({ following: false, message: 'チャンネルの参加を解除しました。' });
   } else {
     // 参加
     const now = new Date().toISOString();
-    await adb.prepare('INSERT INTO channel_follows (channel_id, user_id, created_at) VALUES (?, ?, ?)').run(chId, user.id, now);
-    await adb.prepare('UPDATE channels SET followers_count = followers_count + 1 WHERE id = ?').run(chId);
+    await db.prepare('INSERT INTO channel_follows (channel_id, user_id, created_at) VALUES (?, ?, ?)').run(chId, user.id, now);
+    await db.prepare('UPDATE channels SET followers_count = followers_count + 1 WHERE id = ?').run(chId);
     return res.json({ following: true, message: 'チャンネルに参加しました！' });
   }
 }));
@@ -4988,7 +4991,7 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
   const cursorCond = page.cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
   const cursorParams = page.cursor ? [page.cursor.at, page.cursor.at, page.cursor.id] : [];
 
-  const channel = await adb.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
+  const channel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
   if (!channel) {
     return res.status(404).json({ error: 'チャンネルが見つかりません。' });
   }
@@ -5029,7 +5032,7 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
     LIMIT ?
   `;
 
-  const rows = await adb.prepare(query).all(chId, ...cursorParams, page.limit + 1) as any[];
+  const rows = await db.prepare(query).all(chId, ...cursorParams, page.limit + 1) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
   const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);

@@ -1,6 +1,7 @@
 import { config } from './config.js';
-import { createDatabase, SqliteDatabase } from './db/driver.js';
+import { SqliteDatabase } from './db/driver.js';
 import { createAsyncDatabase } from './db/asyncDriver.js';
+import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -16,34 +17,17 @@ if (config.dbDriver === 'sqlite') {
 }
 
 /**
- * データベース接続。
- * 既定は SQLite（同期 API をそのまま使う）。`DB_DRIVER=postgres` のときは
- * 同期ファサード経由で PostgreSQL に繋ぐ（server/src/db/driver.ts を参照）。
- */
-export const db = createDatabase({
-  driver: config.dbDriver,
-  dbPath: config.dbPath,
-  connectionString: config.databaseUrl,
-});
-
-/**
- * 非同期のデータベース接続（案A の移行先。server/src/db/asyncDriver.ts）。
+ * データベース接続（非同期 API。server/src/db/asyncDriver.ts）。
  *
- * 変換済みのモジュールはこちらを使う。SQLite のときは `db` と同じ接続を共有するので、
- * 同期版と非同期版が同じデータを見る（PostgreSQL では接続が別になるため、
- * 1 つのトランザクションを両者にまたがらせないこと）。
+ * SQLite のときは接続を 1 本だけ開いて渡す。同じファイルに 2 本繋ぐと
+ * WAL でも書き込みが競合するため、アプリ全体で共有する。
+ * PostgreSQL のときは接続文字列から 1 本のクライアントを作る（遅延接続）。
  */
-export const adb = createAsyncDatabase({
+export const db = createAsyncDatabase({
   driver: config.dbDriver,
-  sqlite: db.kind === 'sqlite' ? (db as SqliteDatabase) : undefined,
+  sqlite: config.dbDriver === 'sqlite' ? new SqliteDatabase(new DatabaseSync(config.dbPath)) : undefined,
   connectionString: config.databaseUrl,
 });
-
-// SQLite のときだけ PRAGMA を設定する（PostgreSQL では不要）
-if (db.kind === 'sqlite') {
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-}
 
 // テーブル初期化＆マイグレーション
 /**
@@ -51,7 +35,7 @@ if (db.kind === 'sqlite') {
  * `npm run db:pg:schema` が生成した server/src/db/schema.pg.sql を読み込んで流す。
  * 生成物は CREATE ... IF NOT EXISTS / CREATE OR REPLACE FUNCTION なので繰り返し実行できる。
  */
-function initPostgresSchema(): void {
+async function initPostgresSchema(): Promise<void> {
   // 開発時は src/db/schema.pg.sql、ビルド後は dist/db/schema.pg.sql（build でコピーされる）
   const schemaPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'db', 'schema.pg.sql');
   if (!fs.existsSync(schemaPath)) {
@@ -63,7 +47,7 @@ function initPostgresSchema(): void {
   }
   const sql = fs.readFileSync(schemaPath, 'utf8');
   try {
-    db.exec(sql);
+    await db.exec(sql);
     console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
   } catch (err: any) {
     throw new Error(`PostgreSQL スキーマの適用に失敗しました: ${err?.message || err}`);
@@ -71,10 +55,10 @@ function initPostgresSchema(): void {
 
   // 索引に入っていない投稿を同期する（SQLite 側と同じ処理）
   try {
-    const ftsCount = Number((db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c);
-    const postsCount = Number((db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c);
+    const ftsCount = Number((await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c);
+    const postsCount = Number((await db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c);
     if (ftsCount < postsCount) {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO posts_fts(post_id, content)
         SELECT id, content FROM posts
         WHERE fts_indexed = 1 AND NOT EXISTS (SELECT 1 FROM posts_fts f WHERE f.post_id = posts.id)
@@ -87,14 +71,32 @@ function initPostgresSchema(): void {
 }
 
 export async function initDatabase(): Promise<void> {
+  await initDatabaseSchema();
+
+  // 設定とインスタンス鍵をメモリへ読み込む
+  // （どちらも読み取りは同期で行えるようにするため。ドライバ共通の後処理）
+  await loadServerSettings();
+  // 循環 import を避けるため動的 import（instanceActor 側も db.ts を参照している）
+  const { loadInstanceActorKeyPair } = await import('./instanceActor.js');
+  await loadInstanceActorKeyPair();
+}
+
+/** スキーマの適用（SQLite は migrations、PostgreSQL は生成済みスキーマ） */
+async function initDatabaseSchema(): Promise<void> {
+  // SQLite のときだけ PRAGMA を設定する（PostgreSQL では不要）
+  if (db.kind === 'sqlite') {
+    await db.exec('PRAGMA journal_mode = WAL;');
+    await db.exec('PRAGMA foreign_keys = ON;');
+  }
+
   // PostgreSQL では、SQLite の migrations ではなく生成済みスキーマを適用する
   // （スキーマの正は db.ts の migrations 側。npm run db:pg:schema で生成する）
   if (db.kind === 'postgres') {
-    initPostgresSchema();
+    await initPostgresSchema();
     return;
   }
 
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -771,7 +773,7 @@ export async function initDatabase(): Promise<void> {
 
   for (const sql of migrations) {
     try {
-      db.exec(sql);
+      await db.exec(sql);
     } catch {
       // すでにカラムやインデックスが存在する場合は無視
     }
@@ -779,11 +781,11 @@ export async function initDatabase(): Promise<void> {
 
   // FTS5 既存投稿データの同期（未同期の過去ノートを一括インデックス化）
   try {
-    const ftsCount = (db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
-    const postsCount = (db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c;
+    const ftsCount = (await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
+    const postsCount = (await db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c;
     if (ftsCount < postsCount) {
       console.log(`[FTS5] 🔄 Syncing existing posts to posts_fts (${ftsCount} -> ${postsCount})...`);
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO posts_fts(post_id, content)
         SELECT id, content FROM posts
         WHERE fts_indexed = 1 AND id NOT IN (SELECT post_id FROM posts_fts)
@@ -793,9 +795,6 @@ export async function initDatabase(): Promise<void> {
   } catch (ftsSyncErr) {
     console.warn('[FTS5 Sync Warning]:', ftsSyncErr);
   }
-
-  // 設定をメモリへ読み込む（読み取りは同期で行えるようにする）
-  await loadServerSettings();
 }
 
 export interface ChannelRow {
@@ -1081,38 +1080,57 @@ export function extractDomain(input: string): string {
  */
 export type DomainBlockSeverity = 'suspend' | 'silence';
 
-function findDomainBlock(domainOrUrl: string): { domain: string; severity: DomainBlockSeverity } | null {
-  const domain = extractDomain(domainOrUrl);
-  if (!domain) return null;
+export interface BlockedDomainRule { domain: string; severity: DomainBlockSeverity }
 
+/**
+ * ブロックリストを一括で読み込む。
+ * 1 件ずつ問い合わせる findDomainBlock と違い、
+ * タイムラインのように多数の投稿をまとめて判定する用途で使う（判定は matchesBlockedDomainRule）。
+ */
+export async function loadBlockedDomainRules(): Promise<BlockedDomainRule[]> {
   try {
-    const rows = db.prepare('SELECT domain, severity FROM blocked_domains').all() as { domain: string; severity?: string }[];
-    for (const row of rows) {
-      const blocked = String(row.domain || '').toLowerCase();
-      if (domain === blocked || domain.endsWith(`.${blocked}`)) {
-        return { domain: blocked, severity: row.severity === 'silence' ? 'silence' : 'suspend' };
-      }
-    }
+    const rows = await db.prepare('SELECT domain, severity FROM blocked_domains').all() as { domain: string; severity?: string }[];
+    return rows.map((row) => ({
+      domain: String(row.domain || '').toLowerCase(),
+      severity: row.severity === 'silence' ? 'silence' as const : 'suspend' as const,
+    }));
   } catch {
     // テーブル未作成時の安全フォールバック
-    return null;
+    return [];
+  }
+}
+
+/**
+ * 読み込み済みのルールに対する同期判定（該当なしなら null）。
+ * 完全一致、またはサブドメイン一致: 例 'bad.com' がブロックされていれば 'sub.bad.com' も該当
+ */
+export function matchesBlockedDomainRule(rules: BlockedDomainRule[], domainOrUrl: string | null | undefined): BlockedDomainRule | null {
+  if (!domainOrUrl) return null;
+  const domain = extractDomain(domainOrUrl);
+  if (!domain) return null;
+  for (const rule of rules) {
+    if (domain === rule.domain || domain.endsWith(`.${rule.domain}`)) return rule;
   }
   return null;
 }
 
+async function findDomainBlock(domainOrUrl: string): Promise<BlockedDomainRule | null> {
+  return matchesBlockedDomainRule(await loadBlockedDomainRules(), domainOrUrl);
+}
+
 /** 完全遮断（suspend）されているか。配送・受信・フォローを止める判定に使う */
-export function isDomainBlocked(domainOrUrl: string): boolean {
-  return findDomainBlock(domainOrUrl)?.severity === 'suspend';
+export async function isDomainBlocked(domainOrUrl: string): Promise<boolean> {
+  return (await findDomainBlock(domainOrUrl))?.severity === 'suspend';
 }
 
 /** 表示から除外すべきか（suspend と silence の両方）。タイムライン・検索の絞り込みに使う */
-export function isDomainHidden(domainOrUrl: string): boolean {
-  return findDomainBlock(domainOrUrl) !== null;
+export async function isDomainHidden(domainOrUrl: string): Promise<boolean> {
+  return (await findDomainBlock(domainOrUrl)) !== null;
 }
 
 /** 指定ドメインの遮断の強さ（未登録なら null） */
-export function getDomainBlockSeverity(domainOrUrl: string): DomainBlockSeverity | null {
-  return findDomainBlock(domainOrUrl)?.severity ?? null;
+export async function getDomainBlockSeverity(domainOrUrl: string): Promise<DomainBlockSeverity | null> {
+  return (await findDomainBlock(domainOrUrl))?.severity ?? null;
 }
 
 /**
@@ -1120,7 +1138,7 @@ export function getDomainBlockSeverity(domainOrUrl: string): DomainBlockSeverity
  */
 export async function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): Promise<void> {
   try {
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO remote_blocks (blocker_actor_url, blocked_actor_url, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(blocker_actor_url, blocked_actor_url) DO NOTHING
@@ -1133,7 +1151,7 @@ export async function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: s
 /** 受信した Block を取り消す（Undo Block） */
 export async function removeRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): Promise<boolean> {
   try {
-    const res = await adb.prepare('DELETE FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').run(blockerActorUrl, blockedActorUrl);
+    const res = await db.prepare('DELETE FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').run(blockerActorUrl, blockedActorUrl);
     return Number(res.changes ?? 0) > 0;
   } catch (err) {
     console.error('[Remote Block] ❌ 削除に失敗:', err);
@@ -1142,10 +1160,10 @@ export async function removeRemoteBlock(blockerActorUrl: string, blockedActorUrl
 }
 
 /** 指定のブロッカーがローカルアクターをブロックしているか */
-export function isBlockedByRemoteActor(blockerActorUrl: string, blockedActorUrl: string): boolean {
+export async function isBlockedByRemoteActor(blockerActorUrl: string, blockedActorUrl: string): Promise<boolean> {
   try {
     return Boolean(
-      db.prepare('SELECT 1 FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').get(blockerActorUrl, blockedActorUrl),
+      await db.prepare('SELECT 1 FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').get(blockerActorUrl, blockedActorUrl),
     );
   } catch {
     return false;
@@ -1159,7 +1177,7 @@ export function isBlockedByRemoteActor(blockerActorUrl: string, blockedActorUrl:
 export async function isInboxBlockingSender(inboxUrl: string, senderActorUrl: string): Promise<boolean> {
   if (!inboxUrl || !senderActorUrl) return false;
   try {
-    const row = await adb.prepare(`
+    const row = await db.prepare(`
       SELECT 1 FROM remote_blocks rb
       JOIN remote_actors ra ON ra.id = rb.blocker_actor_url
       WHERE rb.blocked_actor_url = ? AND (ra.inbox_url = ? OR ra.shared_inbox_url = ?)
@@ -1172,9 +1190,9 @@ export async function isInboxBlockingSender(inboxUrl: string, senderActorUrl: st
 }
 
 /** 受信した Block の一覧（管理・デバッグ用） */
-export function listRemoteBlocks(limit = 100): { blocker_actor_url: string; blocked_actor_url: string; created_at: string }[] {
+export async function listRemoteBlocks(limit = 100): Promise<{ blocker_actor_url: string; blocked_actor_url: string; created_at: string }[]> {
   try {
-    return db.prepare('SELECT * FROM remote_blocks ORDER BY created_at DESC LIMIT ?').all(limit) as {
+    return await db.prepare('SELECT * FROM remote_blocks ORDER BY created_at DESC LIMIT ?').all(limit) as {
       blocker_actor_url: string;
       blocked_actor_url: string;
       created_at: string;
@@ -1194,7 +1212,7 @@ export async function purgeDomainData(domain: string): Promise<{ posts: number; 
   const domainPattern = `%${cleanDomain}%`;
 
   // 1. 該当ドメインの投稿（連合投稿のみ対象。ローカル投稿は絶対に消さない）
-  const postsRes = await adb.prepare(`
+  const postsRes = await db.prepare(`
     DELETE FROM posts 
     WHERE is_local = 0 AND (
       author_handle LIKE ? OR 
@@ -1204,19 +1222,19 @@ export async function purgeDomainData(domain: string): Promise<{ posts: number; 
   `).run(`%@${cleanDomain}`, domainPattern, domainPattern);
 
   // 2. リモートアクターキャッシュの削除
-  const actorsRes = await adb.prepare(`
+  const actorsRes = await db.prepare(`
     DELETE FROM remote_actors 
     WHERE domain = ? OR domain LIKE ? OR id LIKE ?
   `).run(cleanDomain, `%.${cleanDomain}`, domainPattern);
 
   // 3. フォロー関係の削除
-  const followsRes = await adb.prepare(`
+  const followsRes = await db.prepare(`
     DELETE FROM follows 
     WHERE follower_url LIKE ? OR following_url LIKE ?
   `).run(domainPattern, domainPattern);
 
   // 4. 該当ドメインのリレー削除
-  const relaysRes = await adb.prepare(`
+  const relaysRes = await db.prepare(`
     DELETE FROM relays 
     WHERE inbox_url LIKE ? OR actor_url LIKE ?
   `).run(domainPattern, domainPattern);
@@ -1274,8 +1292,8 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
  */
 export async function listStaffUserIds(): Promise<string[]> {
   try {
-    const users = await adb.prepare('SELECT id, role FROM users').all() as unknown as { id: string; role: string }[];
-    const roleRows = await adb.prepare(`
+    const users = await db.prepare('SELECT id, role FROM users').all() as unknown as { id: string; role: string }[];
+    const roleRows = await db.prepare(`
       SELECT ur.user_id AS user_id, r.permissions AS permissions
       FROM user_roles ur JOIN roles r ON r.id = ur.role_id
     `).all() as unknown as { user_id: string; permissions: string }[];
@@ -1297,7 +1315,7 @@ export async function listStaffUserIds(): Promise<string[]> {
 }
 
 export async function getNotificationPrefs(userId: string): Promise<Record<string, boolean>> {
-  const row = await adb.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
+  const row = await db.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
   const prefs: Record<string, boolean> = {};
   for (const type of NOTIFICATION_TYPES) prefs[type] = true;
   if (!row?.notification_prefs) return prefs;
@@ -1319,7 +1337,7 @@ export async function saveNotificationPrefs(userId: string, prefs: Record<string
   for (const type of NOTIFICATION_TYPES) {
     if (typeof prefs[type] === 'boolean') clean[type] = prefs[type] as boolean;
   }
-  await adb.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(JSON.stringify(clean), userId);
+  await db.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(JSON.stringify(clean), userId);
   return await getNotificationPrefs(userId);
 }
 
@@ -1364,7 +1382,7 @@ export async function createNotification(params: {
   }
 
   // 受信者がローカルユーザーとして存在するか
-  const user = await adb.prepare('SELECT id, notification_prefs FROM users WHERE id = ?').get(params.userId) as
+  const user = await db.prepare('SELECT id, notification_prefs FROM users WHERE id = ?').get(params.userId) as
     | { id: string; notification_prefs?: string | null }
     | undefined;
   if (!user) return false;
@@ -1376,7 +1394,7 @@ export async function createNotification(params: {
 
   // 重複防止（フォロー通知は同じ人から未読が既にあれば二重生成しない）
   if (params.type === 'follow') {
-    const existing = await adb.prepare(`
+    const existing = await db.prepare(`
       SELECT id FROM notifications 
       WHERE user_id = ? AND type = 'follow' AND actor_id = ? AND is_read = 0
     `).get(params.userId, params.actorId);
@@ -1385,7 +1403,7 @@ export async function createNotification(params: {
 
   // 同一投稿に対する同一ユーザーからの同一リアクション通知の重複防止
   if (params.type === 'reaction' && params.postId) {
-    const existing = await adb.prepare(`
+    const existing = await db.prepare(`
       SELECT id FROM notifications 
       WHERE user_id = ? AND type = 'reaction' AND actor_id = ? AND post_id = ? AND content = ?
     `).get(params.userId, params.actorId, params.postId, params.content || '');
@@ -1400,7 +1418,7 @@ export async function createNotification(params: {
   const contentSnippet = (params.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 140);
 
   try {
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO notifications (id, user_id, type, actor_id, actor_name, actor_handle, actor_icon, post_id, post_content, content, is_read, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
     `).run(
@@ -1502,7 +1520,7 @@ let settingsCache: Map<string, string> | null = null;
 
 /** 設定をメモリに読み込む（起動時に 1 回。initDatabase から呼ばれる） */
 export async function loadServerSettings(): Promise<void> {
-  const rows = await adb.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
+  const rows = await db.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
   const next = new Map<string, string>();
   for (const row of rows) next.set(row.key, row.value);
   settingsCache = next;
@@ -1529,7 +1547,7 @@ export function getServerSetting(key: string, defaultValue?: string): string | u
  */
 export async function setServerSetting(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO server_settings (key, value, updated_at)
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -1544,7 +1562,7 @@ export async function setServerSetting(key: string, value: string): Promise<void
  */
 export async function getAllServerSettings(): Promise<Record<string, string>> {
   try {
-    const rows = await adb.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
+    const rows = await db.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
     const result: Record<string, string> = {};
     for (const r of rows) {
       result[r.key] = r.value;

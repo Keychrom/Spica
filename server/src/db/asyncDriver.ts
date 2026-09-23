@@ -47,6 +47,8 @@ export interface AsyncSpicaDatabase {
   prepare(sql: string): AsyncSpicaStatement;
   exec(sql: string): Promise<void>;
   close(): Promise<void>;
+  /** 終了前の後始末（SQLite は WAL チェックポイント、PostgreSQL は何もしない） */
+  checkpoint(): Promise<void>;
   /** 接続できることを確認する（起動時に 1 回呼ぶ） */
   ready(): Promise<void>;
 }
@@ -87,6 +89,16 @@ class AsyncSqliteDatabase implements AsyncSpicaDatabase {
       this.inner.close();
     } catch {
       // 同期版が先に閉じている場合がある（同じ接続を共有しているため）
+    }
+    return Promise.resolve();
+  }
+
+  /** WAL をチェックポイントする（終了時にファイルを綺麗に畳む） */
+  checkpoint(): Promise<void> {
+    try {
+      this.inner.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch (err: any) {
+      console.warn('[DB] チェックポイントに失敗:', err?.message || err);
     }
     return Promise.resolve();
   }
@@ -156,8 +168,16 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   private async run(sql: string, params: unknown[]): Promise<PgQueryResult> {
     if (this.closed) throw new Error('データベースは閉じられています');
     await this.ensureConnected();
-    const result = await this.client.query(sql, params as any[]);
-    return { rows: result.rows, rowCount: result.rowCount };
+    try {
+      const result = await this.client.query(sql, params as any[]);
+      return { rows: result.rows, rowCount: result.rowCount };
+    } catch (err: any) {
+      // 方言の取りこぼしを追いやすいように、失敗した SQL を付けて投げ直す
+      const oneLine = sql.replace(/\s+/g, ' ').trim();
+      const shown = oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
+      err.message = `${err.message}\n  SQL: ${shown}`;
+      throw err;
+    }
   }
 
   /**
@@ -258,6 +278,9 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
       // 終了時は握る
     }
   }
+
+  /** PostgreSQL には WAL が無いので何もしない（接続は close が閉じる） */
+  async checkpoint(): Promise<void> {}
 
   /**
    * トランザクション。`fn` の中のクエリは他のリクエストに割り込まれない

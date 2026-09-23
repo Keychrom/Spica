@@ -18,14 +18,14 @@ process.env.DOMAIN = 'spica.test';
 async function runTest() {
   console.log('🧪 === 📡 アンテナ機能 ＆ ⏰ 予約投稿・下書き 総合検証テスト ===\n');
 
-  const { initDatabase, db, createNotification } = await import('../server/src/db.js');
+  const { db, initDatabase, createNotification } = await import('../server/src/db.js');
   await initDatabase();
 
   const { executeCreatePost, isPostMatchingAntenna, checkAntennaMatchesAndNotify } = await import('../server/src/postService.js');
   const { processScheduledPosts } = await import('../server/src/scheduler.js');
 
   // テスト用ユーザー作成
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
     VALUES 
       ('alice', 'Alice', 'テストアリス', 'hash_a', 'user', 0, 'pub_a', 'priv_a', datetime('now')),
@@ -108,14 +108,14 @@ async function runTest() {
   console.log('✅ 大文字小文字の厳密マッチ判定成功');
 
   // アンテナDB保存＆通知生成検証
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(antenna1.id, antenna1.user_id, antenna1.name, antenna1.src, antenna1.user_list, antenna1.keywords, antenna1.exclude_keywords, antenna1.case_sensitive, antenna1.with_file, antenna1.notify, antenna1.created_at);
 
   await checkAntennaMatchesAndNotify(post1);
 
-  const notifs = db.prepare('SELECT * FROM notifications WHERE user_id = ? AND type = ?').all(userA.id, 'antenna') as any[];
+  const notifs = await db.prepare('SELECT * FROM notifications WHERE user_id = ? AND type = ?').all(userA.id, 'antenna') as any[];
   if (notifs.length === 0) {
     throw new Error('アンテナマッチ通知が生成されませんでした');
   }
@@ -126,19 +126,19 @@ async function runTest() {
   // ==========================================
   console.log('--- 2. 📝 下書き機能の検証 ---');
   const draftId = 'draft-test-1';
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO drafts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, updated_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(draftId, userA.id, '下書きテスト本文です', 'ネタバレ注意', 'public', '[]', '', '', '', new Date().toISOString(), new Date().toISOString());
 
-  const userDrafts = db.prepare('SELECT * FROM drafts WHERE user_id = ?').all(userA.id) as any[];
+  const userDrafts = await db.prepare('SELECT * FROM drafts WHERE user_id = ?').all(userA.id) as any[];
   if (userDrafts.length !== 1 || userDrafts[0].content !== '下書きテスト本文です') {
     throw new Error('下書きの取得に失敗しました');
   }
   console.log('✅ 下書き保存および取得成功');
 
-  db.prepare('DELETE FROM drafts WHERE id = ?').run(draftId);
-  const userDraftsAfter = db.prepare('SELECT * FROM drafts WHERE user_id = ?').all(userA.id) as any[];
+  await db.prepare('DELETE FROM drafts WHERE id = ?').run(draftId);
+  const userDraftsAfter = await db.prepare('SELECT * FROM drafts WHERE user_id = ?').all(userA.id) as any[];
   if (userDraftsAfter.length !== 0) {
     throw new Error('下書きの削除に失敗しました');
   }
@@ -152,7 +152,7 @@ async function runTest() {
   const schedId = 'sched-test-1';
   const pastScheduledAt = new Date(Date.now() - 5000).toISOString(); // 5秒前の予約日時
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO scheduled_posts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, scheduled_at, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(schedId, userA.id, 'これは未来から来た自動予約投稿です！ #Spica', '', 'public', '[]', '', '', '', pastScheduledAt, 'pending', new Date().toISOString());
@@ -162,21 +162,21 @@ async function runTest() {
   // スケジューラポーリングを実行
   await processScheduledPosts();
 
-  const schedRow = db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(schedId) as any;
+  const schedRow = await db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(schedId) as any;
   if (!schedRow || schedRow.status !== 'published') {
     throw new Error(`スケジューラ実行後もステータスが published に更新されていません: ${schedRow?.status}`);
   }
   console.log(`✅ スケジューラによる自動公開成功 (status: ${schedRow.status}, published_post_id: ${schedRow.published_post_id})`);
 
   // 実際に posts テーブルに投稿が作成されているか検証
-  const createdPost = db.prepare('SELECT * FROM posts WHERE id = ?').get(schedRow.published_post_id) as any;
+  const createdPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(schedRow.published_post_id) as any;
   if (!createdPost || !createdPost.content.includes('これは未来から来た自動予約投稿です！')) {
     throw new Error('予約投稿の公開ノートが posts テーブルに存在しません');
   }
   console.log(`✅ 投稿コアエンジンによるノート作成成功 (本文: "${createdPost.content}")`);
 
   // 予約投稿完了通知が届いているか検証
-  const schedNotifs = db.prepare('SELECT * FROM notifications WHERE user_id = ? AND type = ?').all(userA.id, 'scheduled_published') as any[];
+  const schedNotifs = await db.prepare('SELECT * FROM notifications WHERE user_id = ? AND type = ?').all(userA.id, 'scheduled_published') as any[];
   if (schedNotifs.length === 0) {
     throw new Error('予約投稿公開の完了通知が届いていません');
   }
@@ -184,7 +184,8 @@ async function runTest() {
 
   console.log('🎉 === すべてのテストに合格しました！ ===');
 
-  // クリーンアップ
+  // クリーンアップ（ファイルを消す前に接続を閉じる）
+  await db.close();
   [TEST_DB_PATH, `${TEST_DB_PATH}-wal`, `${TEST_DB_PATH}-shm`].forEach((p) => {
     if (fs.existsSync(p)) {
       try { fs.unlinkSync(p); } catch {}
@@ -192,7 +193,10 @@ async function runTest() {
   });
 }
 
-runTest().catch((err) => {
-  console.error('❌ テスト失敗:', err);
-  process.exit(1);
-});
+// 明示的に終了する（スケジューラ等の interval が残ってプロセスが終わらないため）
+runTest()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error('❌ テスト失敗:', err);
+    process.exit(1);
+  });

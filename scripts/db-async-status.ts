@@ -1,11 +1,16 @@
 /**
- * 案A（データ層の非同期化）の進捗 (`npm run db:async:status`)
+ * データ層の移行状態 (`npm run db:async:status`)
  *
- * 同期 API（`db.prepare` / `db.exec`）と非同期 API（`adb.prepare` / `adb.exec`）の
- * 呼び出し箇所を数えて、残りを可視化する。移行はこの数字が 0 になるまで続く。
+ *   npx tsx scripts/db-async-status.ts
  *
- *   npm run db:async:status          # 一覧
- *   npm run db:async:status -- --json
+ * 案A（データ層の非同期化）は完了したので、このスクリプトは
+ * 「アプリのコードが非同期ハンドル（db）だけを使っているか」を確認する役割に変わった。
+ * 見ているもの:
+ *   1. `new DatabaseSync` / `wrapSqliteDatabase` — 自前で同期接続を開いている箇所
+ *      （SQLite 専用のメンテナンス CLI だけが許される）
+ *   2. `db.prepare` / `db.exec` の呼び出し箇所（非同期ハンドル。参考値）
+ *
+ * 移行の経緯と手順は docs/POSTGRESQL.md を参照。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,22 +19,33 @@ import { fileURLToPath } from 'node:url';
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC_DIR = path.join(ROOT_DIR, 'server', 'src');
 
+/** 非同期ハンドルの呼び出し（`db.prepare(` / `db.exec(`） */
+const ASYNC_RE = /(?<![A-Za-z0-9_$.])db\.(?:prepare|exec)\s*\(/g;
+/** 自前で開く同期接続 */
+const OWN_CONNECTION_RE = /new DatabaseSync\s*\(|wrapSqliteDatabase\s*\(/g;
+/** トランザクション制御（BEGIN / COMMIT / ROLLBACK） */
+const TRANSACTION_RE = /(?:exec|run)\s*\(\s*['"`]\s*(?:BEGIN|COMMIT|ROLLBACK)/g;
+
+/**
+ * 自前の同期接続を開いてよいファイル（それ以外で見つかったら知らせる）。
+ * dbMaintenance は SQLite 専用の手動メンテナンス CLI で、VACUUM / page_count /
+ * VACUUM INTO のように PostgreSQL に無い操作を扱うため、生の接続を使う。
+ * db.ts は SQLite の接続を 1 本だけ開いて非同期ハンドルに渡す役割。
+ * db/driver.ts は同期 SQLite ラッパー本体（CLI に提供する側）。
+ */
+const ALLOWED_OWN_CONNECTION = new Set([
+  'server/src/db.ts',
+  'server/src/dbMaintenance.ts',
+  'server/src/db/driver.ts',
+  'server/src/db/asyncDriver.ts',
+]);
+
 interface FileStats {
   file: string;
-  sync: number;
   async: number;
-  /** 同期接続を自分で開いている箇所（new DatabaseSync / wrapSqliteDatabase） */
   ownConnection: number;
-  /** トランザクション制御（BEGIN / COMMIT / ROLLBACK） */
   transactions: number;
 }
-
-/** 同期 API の呼び出し（`db.prepare(` / `db.exec(`） */
-const SYNC_RE = /(?<![A-Za-z0-9_$.])db\.(?:prepare|exec)\s*\(/g;
-/** 非同期 API の呼び出し（`adb.prepare(` / `adb.exec(`） */
-const ASYNC_RE = /(?<![A-Za-z0-9_$.])adb\.(?:prepare|exec)\s*\(/g;
-const OWN_CONNECTION_RE = /new DatabaseSync\s*\(|wrapSqliteDatabase\s*\(/g;
-const TRANSACTION_RE = /(?:exec|run)\s*\(\s*['"`]\s*(?:BEGIN|COMMIT|ROLLBACK)/g;
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -52,57 +68,41 @@ function countMatches(text: string, re: RegExp): number {
 }
 
 const stats: FileStats[] = [];
+const unexpectedConnections: string[] = [];
+
 for (const abs of walk(SRC_DIR)) {
   const text = fs.readFileSync(abs, 'utf8');
-  const file = path.relative(ROOT_DIR, abs).replace(/\\/g, '/');
-  const sync = countMatches(text, SYNC_RE);
+  const file = path.relative(ROOT_DIR, abs).split(path.sep).join('/');
   const async = countMatches(text, ASYNC_RE);
   const ownConnection = countMatches(text, OWN_CONNECTION_RE);
   const transactions = countMatches(text, TRANSACTION_RE);
-  // ドライバ自身と非同期層は数えない（実装本体なので）
-  if (file.endsWith('db/driver.ts') || file.endsWith('db/asyncDriver.ts') || file.endsWith('db/pgWorker.ts')) continue;
-  if (sync === 0 && async === 0 && ownConnection === 0) continue;
-  stats.push({ file, sync, async, ownConnection, transactions });
+  if (async === 0 && ownConnection === 0) continue;
+
+  if (ownConnection > 0 && !ALLOWED_OWN_CONNECTION.has(file)) unexpectedConnections.push(file);
+  stats.push({ file, async, ownConnection, transactions });
 }
 
-const totalSync = stats.reduce((sum, s) => sum + s.sync, 0);
 const totalAsync = stats.reduce((sum, s) => sum + s.async, 0);
-const totalOwn = stats.reduce((sum, s) => sum + s.ownConnection, 0);
-const done = totalAsync;
-const remaining = totalSync;
-const percent = done + remaining === 0 ? 100 : (done / (done + remaining)) * 100;
-
-if (process.argv.includes('--json')) {
-  console.log(JSON.stringify({ totalSync, totalAsync, files: stats }, null, 2));
-  process.exit(0);
-}
+const ownConnectionFiles = stats.filter((s) => s.ownConnection > 0);
 
 console.log('==========================================================');
-console.log(' 案A（データ層の非同期化）の進捗');
+console.log(' データ層の移行状態（案A: 非同期化）');
 console.log('==========================================================');
-console.log(`  非同期化済み: ${done} 箇所`);
-console.log(`  残り（同期 API）: ${remaining} 箇所`);
-if (totalOwn > 0) console.log(`  自前で開いている同期接続: ${totalOwn} 箇所`);
-console.log(`  進捗: ${percent.toFixed(1)}%`);
+console.log(`  非同期ハンドル（db）の呼び出し: ${totalAsync} 箇所`);
+console.log(`  自前で同期接続を開いているファイル: ${ownConnectionFiles.length}`);
 console.log('');
-console.log('  残りの多いファイル（上から着手する）:');
 
-const byRemaining = [...stats].filter((s) => s.sync > 0).sort((a, b) => b.sync - a.sync);
-const width = Math.min(60, Math.max(...byRemaining.map((s) => s.file.length), 10));
-for (const s of byRemaining.slice(0, 20)) {
-  const marks: string[] = [];
-  if (s.async > 0) marks.push(`非同期 ${s.async}`);
-  if (s.transactions > 0) marks.push(`トランザクション ${s.transactions}`);
-  if (s.ownConnection > 0) marks.push(`自前接続 ${s.ownConnection}`);
-  console.log(`   ${s.file.padEnd(width)}  残り ${String(s.sync).padStart(3)}${marks.length ? `  (${marks.join(' / ')})` : ''}`);
+console.log('  自前の同期接続（想定どおり）:');
+for (const s of ownConnectionFiles) {
+  const allowed = ALLOWED_OWN_CONNECTION.has(s.file);
+  console.log(`   ${allowed ? '✅' : '⚠️ '} ${s.file}  (${s.ownConnection} 箇所${s.transactions > 0 ? ` / トランザクション ${s.transactions}` : ''})`);
 }
-if (byRemaining.length > 20) console.log(`   … ほか ${byRemaining.length - 20} ファイル`);
 
-const converted = stats.filter((s) => s.sync === 0 && s.async > 0);
-if (converted.length > 0) {
+if (unexpectedConnections.length > 0) {
   console.log('');
-  console.log('  非同期化が完了したファイル:');
-  for (const s of converted) console.log(`   ${s.file}  (${s.async} 箇所)`);
+  console.log('  ⚠️  想定外の箇所で同期接続を開いています（非同期ハンドル db を使ってください）:');
+  for (const file of unexpectedConnections) console.log(`   - ${file}`);
 }
+
 console.log('');
-console.log('※ 手順は docs/POSTGRESQL.md の「案A の進め方」を参照。');
+console.log('※ 移行の経緯・手順は docs/POSTGRESQL.md、await の付け忘れは npm run check:await を参照。');

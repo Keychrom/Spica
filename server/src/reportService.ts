@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { adb, UserRow, createNotification, listStaffUserIds } from './db.js';
+import { db, UserRow, createNotification, listStaffUserIds } from './db.js';
 import { config } from './config.js';
 import { deliverActivity, fetchRemoteActor, ACTIVITYSTREAMS_CONTEXT } from './activitypub.js';
 
@@ -77,7 +77,7 @@ export async function insertReport(params: CreateReportParams): Promise<ReportRo
     ? params.targetPostContent.replace(/<[^>]+>/g, '').trim().slice(0, 300)
     : null;
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO reports (
       id, reporter_actor_url, reporter_user_id, reporter_handle,
       target_actor_url, target_user_id, target_handle,
@@ -100,7 +100,7 @@ export async function insertReport(params: CreateReportParams): Promise<ReportRo
     now,
   );
 
-  const report = await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+  const report = await db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
 
   // 運営メンバー（admin / moderate）へ通知する
   //   ・種類別設定で「通報」を切っている人には届かない（createNotification が弾く）
@@ -177,7 +177,7 @@ export async function forwardReport(report: ReportRow, actorUrl: string, userId?
     };
 
     const senderUser = userId
-      ? (await adb.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined)
+      ? (await db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow | undefined)
       : undefined;
 
     const delivered = await deliverActivity({
@@ -188,7 +188,7 @@ export async function forwardReport(report: ReportRow, actorUrl: string, userId?
     });
 
     if (delivered) {
-      await adb.prepare('UPDATE reports SET forwarded = 1 WHERE id = ?').run(report.id);
+      await db.prepare('UPDATE reports SET forwarded = 1 WHERE id = ?').run(report.id);
       console.log(`[Report] 📤 Forwarded Flag for ${report.target_actor_url} to ${remote.inbox_url}`);
     }
     return delivered;
@@ -226,7 +226,7 @@ export async function ingestRemoteFlag(params: {
   let targetPostContent: string | null = null;
 
   if (postUrl) {
-    const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(postUrl) as
+    const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(postUrl) as
       | { id: string; user_id: string; author_url: string; content: string }
       | undefined;
     if (post) {
@@ -239,7 +239,7 @@ export async function ingestRemoteFlag(params: {
     }
   }
 
-  const localUser = await adb.prepare('SELECT id FROM users WHERE id = ?').get(targetActorUrl.split('/').pop() || '');
+  const localUser = await db.prepare('SELECT id FROM users WHERE id = ?').get(targetActorUrl.split('/').pop() || '');
   if (localUser) {
     targetUserId = (localUser as { id: string }).id;
   }
@@ -264,13 +264,13 @@ export async function ingestRemoteFlag(params: {
 export async function listReports(status?: string): Promise<ReportRow[]> {
   const valid: ReportStatus[] = ['open', 'resolved', 'rejected'];
   if (status && valid.includes(status as ReportStatus)) {
-    return await adb.prepare('SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC LIMIT 300').all(status) as unknown as ReportRow[];
+    return await db.prepare('SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC LIMIT 300').all(status) as unknown as ReportRow[];
   }
-  return await adb.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT 300').all() as unknown as ReportRow[];
+  return await db.prepare('SELECT * FROM reports ORDER BY created_at DESC LIMIT 300').all() as unknown as ReportRow[];
 }
 
 export async function countOpenReports(): Promise<number> {
-  const row = await adb.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get() as { c: number };
+  const row = await db.prepare("SELECT COUNT(*) AS c FROM reports WHERE status = 'open'").get() as { c: number };
   return row?.c ?? 0;
 }
 
@@ -281,20 +281,20 @@ export async function resolveReport(
   adminUserId: string,
   note?: string,
 ): Promise<ReportRow | null> {
-  const existing = await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow | undefined;
+  const existing = await db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow | undefined;
   if (!existing) {
     return null;
   }
 
   if (action === 'reopen') {
-    await adb.prepare("UPDATE reports SET status = 'open', resolved_by = NULL, resolved_at = NULL, resolution_note = NULL WHERE id = ?").run(id);
+    await db.prepare("UPDATE reports SET status = 'open', resolved_by = NULL, resolved_at = NULL, resolution_note = NULL WHERE id = ?").run(id);
   } else {
     const status: ReportStatus = action === 'resolve' ? 'resolved' : 'rejected';
-    await adb.prepare('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ? WHERE id = ?')
+    await db.prepare('UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ?, resolution_note = ? WHERE id = ?')
       .run(status, adminUserId, new Date().toISOString(), note ?? null, id);
   }
 
-  return await adb.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
+  return await db.prepare('SELECT * FROM reports WHERE id = ?').get(id) as unknown as ReportRow;
 }
 
 /**

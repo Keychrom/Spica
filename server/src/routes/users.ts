@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
-import { adb, UserRow, FollowRow, PostRow } from '../db.js';
+import { db, UserRow, FollowRow, PostRow } from '../db.js';
 import { config } from '../config.js';
 import { getVerifiedSigner, isAcceptedFollower } from '../inboxAuth.js';
 import {
@@ -56,7 +56,7 @@ usersRouter.get('/:username', asyncHandler(async (req: Request, res: Response, n
   }
 
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
@@ -70,14 +70,14 @@ usersRouter.get('/:username', asyncHandler(async (req: Request, res: Response, n
 // Followers Collection エンドポイント
 usersRouter.get('/:username/followers', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const followers = await adb.prepare(`
+  const followers = await db.prepare(`
     SELECT follower_url FROM follows WHERE following_url = ? AND status = 'accepted'
   `).all(myActorUrl) as unknown as { follower_url: string }[];
 
@@ -96,14 +96,14 @@ usersRouter.get('/:username/followers', asyncHandler(async (req: Request, res: R
 // Following Collection エンドポイント
 usersRouter.get('/:username/following', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
   const myActorUrl = `${config.origin}/users/${user.id}`;
-  const following = await adb.prepare(`
+  const following = await db.prepare(`
     SELECT following_url FROM follows WHERE follower_url = ? AND status = 'accepted'
   `).all(myActorUrl) as unknown as { following_url: string }[];
 
@@ -122,7 +122,7 @@ usersRouter.get('/:username/following', asyncHandler(async (req: Request, res: R
 // ピン留め投稿のコレクション（Misskey 互換。Mastodon 等は Actor の featured から辿る）
 usersRouter.get('/:username/collections/featured', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
@@ -131,7 +131,7 @@ usersRouter.get('/:username/collections/featured', asyncHandler(async (req: Requ
   const actorUrl = `${config.origin}/users/${user.id}`;
 
   // 公開ノートのみ掲載する（outbox と同じ基準。フォロワー限定は署名が要るため含めない）
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT p.id FROM pinned_posts pp
     JOIN posts p ON p.id = pp.post_id
     WHERE pp.user_id = ? AND p.is_local = 1 AND (p.visibility = 'public' OR p.visibility IS NULL)
@@ -158,7 +158,7 @@ usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response) 
 
   // ブラウザからの通常アクセスかつHTML要求の場合はSPAのルーティング等に任せることも可能だが、
   // ActivityPub / API クライアントは application/activity+json や application/ld+json を要求
-  const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId) as unknown as PostRow | undefined;
+  const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId) as unknown as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
@@ -192,7 +192,7 @@ usersRouter.get('/:username/posts/:postId/activity', async (req: Request, res: R
   const { username, postId } = req.params;
   const canonicalPostId = `${config.origin}/users/${username}/posts/${postId}`;
 
-  const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId) as unknown as PostRow | undefined;
+  const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId) as unknown as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }

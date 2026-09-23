@@ -156,6 +156,12 @@ CREATE TABLE IF NOT EXISTS follows  (
   created_at TEXT NOT NULL,
   UNIQUE(follower_url, following_url)
 );
+CREATE TABLE IF NOT EXISTS instance_actor  (
+  id TEXT PRIMARY KEY,
+  public_key_pem TEXT NOT NULL,
+  private_key_pem TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS invitation_codes  (
   code TEXT PRIMARY KEY,
   created_by TEXT NOT NULL,

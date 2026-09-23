@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { initDatabase, adb, db } from './db.js';
+import { db, initDatabase } from './db.js';
 import { authenticate } from './auth.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
@@ -109,7 +109,7 @@ const healthHandler = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   let dbOk = true;
   try {
-    await adb.prepare('SELECT 1 AS ok').get();
+    await db.prepare('SELECT 1 AS ok').get();
   } catch {
     dbOk = false;
   }
@@ -303,7 +303,7 @@ if (finalDistPath) {
       // 1. ユーザープロフィール
       const usernameParam = (req.params as Record<string, string>).username;
       if (usernameParam) {
-        const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
+        const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
           | { id: string; name: string; summary: string; icon_url: string }
           | undefined;
         if (!user) {
@@ -321,7 +321,7 @@ if (finalDistPath) {
       // 2. 投稿（/?post=<id> または ?postId=<id>）
       const postParam = (req.query.post || req.query.postId) as string | undefined;
       if (postParam) {
-        const post = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(decodeURIComponent(postParam)) as
+        const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(decodeURIComponent(postParam)) as
           | { id: string; author_name: string; author_handle: string; content: string; cw: string | null; visibility: string | null; is_local: number; media_attachments: string }
           | undefined;
 

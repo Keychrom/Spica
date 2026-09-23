@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { adb } from './db.js';
+import { db } from './db.js';
 
 /**
  * 管理操作の監査ログ（admin_actions）
@@ -143,7 +143,7 @@ export async function recordAdminAction(params: {
       : params.detail
         ? summarizeBody(params.detail, {})
         : '';
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO admin_actions (id, actor_id, action, method, path, target_type, target_id, detail, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -250,7 +250,7 @@ export async function listAdminActions(params: {
   }
 
   const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
-  const rows = await adb.prepare(`
+  const rows = await db.prepare(`
     SELECT * FROM admin_actions ${where}
     ORDER BY created_at DESC, id DESC
     LIMIT ?
@@ -260,7 +260,7 @@ export async function listAdminActions(params: {
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   const last = pageRows[pageRows.length - 1];
 
-  const total = Number((await adb.prepare(`SELECT COUNT(*) AS c FROM admin_actions ${where}`).get(...args) as any)?.c ?? 0);
+  const total = Number((await db.prepare(`SELECT COUNT(*) AS c FROM admin_actions ${where}`).get(...args) as any)?.c ?? 0);
 
   return {
     actions: pageRows.map((row) => ({
@@ -277,14 +277,14 @@ export async function listAdminActions(params: {
 export async function pruneAdminActions(retentionDays: number): Promise<number> {
   if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
   const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
-  const result = await adb.prepare('DELETE FROM admin_actions WHERE created_at < ?').run(cutoff);
+  const result = await db.prepare('DELETE FROM admin_actions WHERE created_at < ?').run(cutoff);
   return Number(result.changes ?? 0);
 }
 
 /** 表示に使える操作の種類（フィルタ用） */
 export async function listActionKinds(): Promise<{ action: string; label: string; count: number }[]> {
   try {
-    const rows = await adb.prepare(`
+    const rows = await db.prepare(`
       SELECT action, COUNT(*) AS c FROM admin_actions GROUP BY action ORDER BY c DESC
     `).all() as unknown as { action: string; c: number }[];
     return rows.map((row) => {

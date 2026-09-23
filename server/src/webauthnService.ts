@@ -4,7 +4,7 @@ import {
   generateAuthenticationOptions,
   verifyAuthenticationResponse,
 } from '@simplewebauthn/server';
-import { adb, UserRow, WebAuthnCredentialRow } from './db.js';
+import { db, UserRow, WebAuthnCredentialRow } from './db.js';
 import { config } from './config.js';
 
 // チャレンジの有効期限: 5分
@@ -37,7 +37,7 @@ export function getRPInfo(reqOrigin?: string) {
  */
 export async function saveChallenge(challenge: string, type: 'registration' | 'authentication', userId?: string) {
   const expiresAt = Date.now() + CHALLENGE_TTL_MS;
-  await adb.prepare(`
+  await db.prepare(`
     INSERT OR REPLACE INTO webauthn_challenges (challenge, user_id, type, expires_at)
     VALUES (?, ?, ?, ?)
   `).run(challenge, userId || null, type, expiresAt);
@@ -48,7 +48,7 @@ export async function saveChallenge(challenge: string, type: 'registration' | 'a
  */
 export async function consumeChallenge(challenge: string, type: 'registration' | 'authentication'): Promise<{ userId: string | null }> {
   const now = Date.now();
-  const row = await adb.prepare(`
+  const row = await db.prepare(`
     SELECT * FROM webauthn_challenges 
     WHERE challenge = ? AND type = ? AND expires_at >= ?
   `).get(challenge, type, now) as { challenge: string; user_id: string | null } | undefined;
@@ -57,7 +57,7 @@ export async function consumeChallenge(challenge: string, type: 'registration' |
     throw new Error('チャレンジが無効か、有効期限が切れています。もう一度やり直してください。');
   }
 
-  await adb.prepare('DELETE FROM webauthn_challenges WHERE challenge = ?').run(challenge);
+  await db.prepare('DELETE FROM webauthn_challenges WHERE challenge = ?').run(challenge);
   return { userId: row.user_id };
 }
 
@@ -68,7 +68,7 @@ export async function createWebAuthnRegistrationOptions(user: UserRow, reqOrigin
   const { rpName, rpID } = getRPInfo(reqOrigin);
 
   // すでに登録済みのクレデンシャルを除外リストに入れる
-  const userCreds = await adb.prepare('SELECT id, transports FROM webauthn_credentials WHERE user_id = ?').all(user.id) as { id: string; transports: string }[];
+  const userCreds = await db.prepare('SELECT id, transports FROM webauthn_credentials WHERE user_id = ?').all(user.id) as { id: string; transports: string }[];
   const excludeCredentials = userCreds.map((c) => ({
     id: c.id,
     transports: (() => {
@@ -130,7 +130,7 @@ export async function verifyWebAuthnRegistration(
   const cleanDeviceName = deviceName.trim() || credentialDeviceType || '生体認証デバイス';
   const transportsJson = JSON.stringify(body.credential.response?.transports || []);
 
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO webauthn_credentials (id, user_id, public_key, counter, device_name, transports, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -158,7 +158,7 @@ export async function createWebAuthnAuthenticationOptions(userId?: string, reqOr
 
   let allowCredentials: any[] | undefined = undefined;
   if (userId) {
-    const creds = await adb.prepare('SELECT id, transports FROM webauthn_credentials WHERE user_id = ?').all(userId) as { id: string; transports: string }[];
+    const creds = await db.prepare('SELECT id, transports FROM webauthn_credentials WHERE user_id = ?').all(userId) as { id: string; transports: string }[];
     if (creds.length > 0) {
       allowCredentials = creds.map((c) => ({
         id: c.id,
@@ -192,12 +192,12 @@ export async function verifyWebAuthnAuthentication(body: any, reqOrigin?: string
   const { rpID, origin } = getRPInfo(reqOrigin);
 
   // DBから該当するクレデンシャルを探索
-  const credRow = await adb.prepare('SELECT * FROM webauthn_credentials WHERE id = ?').get(credential.id) as WebAuthnCredentialRow | undefined;
+  const credRow = await db.prepare('SELECT * FROM webauthn_credentials WHERE id = ?').get(credential.id) as WebAuthnCredentialRow | undefined;
   if (!credRow) {
     throw new Error('登録されていないパスキーです。');
   }
 
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(credRow.user_id) as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(credRow.user_id) as UserRow | undefined;
   if (!user) {
     throw new Error('ユーザーが見つかりません。');
   }
@@ -225,7 +225,7 @@ export async function verifyWebAuthnAuthentication(body: any, reqOrigin?: string
 
   // サインカウンターと最終利用日時を更新
   const now = new Date().toISOString();
-  await adb.prepare(`
+  await db.prepare(`
     UPDATE webauthn_credentials 
     SET counter = ?, last_used_at = ?
     WHERE id = ?

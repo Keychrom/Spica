@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { adb, UserRow, PostRow, RelayRow, FollowRow, isDomainBlocked, createNotification, addRemoteBlock, removeRemoteBlock } from '../db.js';
+import { db, UserRow, PostRow, RelayRow, FollowRow, isDomainBlocked, createNotification, addRemoteBlock, removeRemoteBlock } from '../db.js';
 import { config } from '../config.js';
 import {
   fetchRemoteActor,
@@ -36,7 +36,7 @@ async function isLocalActorUrl(actorUrl: string): Promise<boolean> {
   if (!actorUrl) return false;
   if (actorUrl === `${config.origin}/actor`) return true;
   const id = localUsernameFromActorUrl(actorUrl);
-  return Boolean(id && await adb.prepare('SELECT id FROM users WHERE id = ?').get(id));
+  return Boolean(id && await db.prepare('SELECT id FROM users WHERE id = ?').get(id));
 }
 
 /**
@@ -56,7 +56,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
   }
 
   // ドメインブロック判定: 送信元 Actor のドメインがブロックされている場合は 403 で拒絶
-  if (isDomainBlocked(actorUrl)) {
+  if (await isDomainBlocked(actorUrl)) {
     console.log(`[Inbox Blocked] 🚫 Rejected activity (${activity.type}) from blocked domain actor: ${actorUrl}`);
     return res.status(403).json({ error: 'This domain is blocked by server policy.' });
   }
@@ -90,12 +90,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
         let targetUser: UserRow | undefined;
         if (targetUserId) {
-          targetUser = await adb.prepare('SELECT * FROM users WHERE id = ?').get(targetUserId) as unknown as UserRow | undefined;
+          targetUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(targetUserId) as unknown as UserRow | undefined;
         }
 
         // 見つからない場合は最初の管理者ユーザーにフォールバック
         if (!targetUser) {
-          targetUser = await adb.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get() as unknown as UserRow | undefined;
+          targetUser = await db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get() as unknown as UserRow | undefined;
         }
 
         if (!targetUser) {
@@ -134,7 +134,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const isLocked = Number((targetUser as any).is_locked ?? 0) === 1;
         const initialStatus = isLocked ? 'pending' : 'accepted';
 
-        await adb.prepare(`
+        await db.prepare(`
           INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
           VALUES (?, ?, ?, ?, 0, ?, ?)
           ON CONFLICT(follower_url, following_url) DO UPDATE SET
@@ -198,15 +198,15 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         if (targetUrl) {
           if (targetUsername) {
             const followerActor = `${config.origin}/users/${targetUsername.toLowerCase()}`;
-            const result = await adb.prepare('UPDATE follows SET status = ? WHERE following_url = ? AND follower_url = ?')
+            const result = await db.prepare('UPDATE follows SET status = ? WHERE following_url = ? AND follower_url = ?')
               .run('accepted', targetUrl, followerActor);
             if (result.changes === 0) {
               // 個人Inbox宛でもフォロー元が一致しない場合に備え、自ノード発のフォローに限定して更新する
-              await adb.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
+              await db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
             }
           } else {
             // 共有Inbox: 自ノードのユーザーが行ったフォローに限定する
-            await adb.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
+            await db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
           }
         }
 
@@ -216,7 +216,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           const actorHost = parsedActorUrl.host;
 
           // 登録されている全リレーを走査してホスト名が一致するリレーを特定
-          const allRelays = await adb.prepare('SELECT * FROM relays').all() as unknown as RelayRow[];
+          const allRelays = await db.prepare('SELECT * FROM relays').all() as unknown as RelayRow[];
           let matchedRelay: RelayRow | undefined;
 
           for (const relay of allRelays) {
@@ -231,13 +231,13 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           }
 
           if (matchedRelay) {
-            await adb.prepare(`
+            await db.prepare(`
               UPDATE relays SET status = 'accepted', actor_url = ? WHERE inbox_url = ?
             `).run(actorUrl, matchedRelay.inbox_url);
             console.log(`[Inbox Accept] ✅ Relay automatically accepted: ${matchedRelay.inbox_url} (Actor: ${actorUrl})`);
           } else {
             // フォールバック: 完全一致で更新
-            await adb.prepare(`
+            await db.prepare(`
               UPDATE relays SET status = 'accepted' WHERE actor_url = ? OR inbox_url = ?
             `).run(actorUrl, actorUrl);
           }
@@ -256,7 +256,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         }
 
         const noteAuthor = typeof note.attributedTo === 'string' ? note.attributedTo : (note.attributedTo?.id || actorUrl);
-        if (isDomainBlocked(noteAuthor) || (note.id && isDomainBlocked(note.id))) {
+        if (await isDomainBlocked(noteAuthor) || (note.id && await isDomainBlocked(note.id))) {
           console.log(`[Inbox Blocked] 🚫 Ignored Note from blocked domain author: ${noteAuthor}`);
           return res.status(200).json({ status: 'Ignored blocked domain author' });
         }
@@ -286,16 +286,16 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // name に投票した選択肢テキストが格納される（Misskey では id に '#votes/' が含まれることもある）
         if (inReplyTo && note.type === 'Note') {
           // 親投稿を検索（完全一致、末尾スラッシュの有無、ID単体）
-          let parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
+          let parentPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
           if (!parentPost) {
             const cleanUrl = inReplyTo.replace(/\/$/, '');
-            parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ? OR id = ?').get(cleanUrl, `${cleanUrl}/`) as PostRow | undefined;
+            parentPost = await db.prepare('SELECT * FROM posts WHERE id = ? OR id = ?').get(cleanUrl, `${cleanUrl}/`) as PostRow | undefined;
           }
 
           if (parentPost) {
-            const poll = await adb.prepare('SELECT * FROM polls WHERE post_id = ?').get(parentPost.id) as any;
+            const poll = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(parentPost.id) as any;
             if (poll) {
-              const choices = await adb.prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(poll.id) as any[];
+              const choices = await db.prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(poll.id) as any[];
 
               // 投票先選択肢の候補文字列を抽出
               const candidateNames: string[] = [];
@@ -353,14 +353,14 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
                 }
 
                 // 重複投票チェック
-                const existingChoiceVote = await adb.prepare('SELECT id FROM poll_votes WHERE poll_id = ? AND user_id = ? AND choice_index = ?').get(poll.id, actorUrl, matchedChoice.choice_index);
+                const existingChoiceVote = await db.prepare('SELECT id FROM poll_votes WHERE poll_id = ? AND user_id = ? AND choice_index = ?').get(poll.id, actorUrl, matchedChoice.choice_index);
                 if (existingChoiceVote) {
                   console.log(`[Inbox Poll Vote] ⚠️ User already voted for this choice: ${actorUrl}`);
                   return res.status(200).json({ status: 'Choice already voted' });
                 }
 
                 if (!poll.multiple) {
-                  const anyVote = await adb.prepare('SELECT id FROM poll_votes WHERE poll_id = ? AND user_id = ?').get(poll.id, actorUrl);
+                  const anyVote = await db.prepare('SELECT id FROM poll_votes WHERE poll_id = ? AND user_id = ?').get(poll.id, actorUrl);
                   if (anyVote) {
                     console.log(`[Inbox Poll Vote] ⚠️ User already voted on single-choice poll: ${actorUrl}`);
                     return res.status(200).json({ status: 'Already voted' });
@@ -369,12 +369,12 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
                 // データベースに投票を記録
                 const voteId = crypto.randomUUID();
-                await adb.prepare(`
+                await db.prepare(`
                   INSERT INTO poll_votes (id, poll_id, choice_index, user_id, created_at)
                   VALUES (?, ?, ?, ?, ?)
                 `).run(voteId, poll.id, matchedChoice.choice_index, actorUrl, now);
 
-                await adb.prepare(`
+                await db.prepare(`
                   UPDATE poll_choices SET votes_count = votes_count + 1
                   WHERE poll_id = ? AND choice_index = ?
                 `).run(poll.id, matchedChoice.choice_index);
@@ -462,7 +462,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）
         const noteFtsIndexed = await shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
 
-        await adb.prepare(`
+        await db.prepare(`
           INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
@@ -504,7 +504,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             const expiresAt = note.endTime || note.closed || null;
             const now = new Date().toISOString();
 
-            await adb.prepare(`
+            await db.prepare(`
               INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
               VALUES (?, ?, ?, ?, ?)
               ON CONFLICT(post_id) DO UPDATE SET
@@ -513,7 +513,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             `).run(pollId, noteId, isMultiple ? 1 : 0, expiresAt, now);
 
             // 既存選択肢を更新または作成
-            const existingPoll = await adb.prepare('SELECT id FROM polls WHERE post_id = ?').get(noteId) as { id: string };
+            const existingPoll = await db.prepare('SELECT id FROM polls WHERE post_id = ?').get(noteId) as { id: string };
             const effectivePollId = existingPoll ? existingPoll.id : pollId;
 
             const choicesList: any[] = [];
@@ -523,7 +523,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
               const votesCount = choice.replies?.totalItems || 0;
               const choiceId = `choice_${crypto.randomUUID()}`;
 
-              await adb.prepare(`
+              await db.prepare(`
                 INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(poll_id, choice_index) DO UPDATE SET
@@ -556,7 +556,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
         if (inReplyTo) {
           try {
-            const parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as any;
+            const parentPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as any;
             if (parentPost && parentPost.is_local === 1) {
               await createNotification({
                 userId: parentPost.user_id,
@@ -578,7 +578,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // 引用元投稿の解決（あれば）
         let quotePostData: any = null;
         if (quoteId) {
-          const qRow = await adb.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
+          const qRow = await db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
           if (qRow) {
             quotePostData = {
               ...qRow,
@@ -651,7 +651,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         if (object && typeof object === 'object' && object.type === 'Note') {
           const note = object;
           const noteAuthorUrl = typeof note.attributedTo === 'string' ? note.attributedTo : actorUrl;
-          if (isDomainBlocked(noteAuthorUrl) || (note.id && isDomainBlocked(note.id))) {
+          if (await isDomainBlocked(noteAuthorUrl) || (note.id && await isDomainBlocked(note.id))) {
             console.log(`[Inbox Blocked] 🚫 Ignored relayed Note from blocked domain: ${noteAuthorUrl}`);
             return res.status(200).json({ status: 'Ignored blocked domain note' });
           }
@@ -678,7 +678,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
           // キャッシュから著者のアイコンを取得（あれば）
           let authorIcon = '';
-          const cachedActor = await adb.prepare('SELECT icon_url FROM remote_actors WHERE id = ?').get(noteAuthorUrl) as { icon_url?: string } | undefined;
+          const cachedActor = await db.prepare('SELECT icon_url FROM remote_actors WHERE id = ?').get(noteAuthorUrl) as { icon_url?: string } | undefined;
           if (cachedActor?.icon_url) {
             authorIcon = cachedActor.icon_url;
           }
@@ -691,7 +691,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           // リレー経由の投稿は既定では索引しない（索引の肥大化を防ぐ）
           const relayFtsIndexed = await shouldIndexRemotePost({ authorUrl: noteAuthorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
 
-          await adb.prepare(`
+          await db.prepare(`
             INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
@@ -743,7 +743,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             }
 
             const announceId = activity.id || `${actorUrl}/announces/${Date.now()}`;
-            await adb.prepare(`
+            await db.prepare(`
               INSERT INTO announces (id, post_id, user_id, user_name, user_handle, user_icon, is_local, created_at)
               VALUES (?, ?, ?, ?, ?, ?, 0, ?)
               ON CONFLICT(post_id, user_id) DO UPDATE SET
@@ -763,7 +763,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
             // 📡 リアルタイム SSE リノート更新（公開投稿のみ）
             if (await isPublicPost(boostedPostId)) {
-              const announceCountRow = await adb.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(boostedPostId) as any;
+              const announceCountRow = await db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(boostedPostId) as any;
               broadcastAnnounce({
                 postId: boostedPostId,
                 count: announceCountRow ? announceCountRow.c : 1,
@@ -772,7 +772,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
             // ローカル投稿がブーストされた場合、投稿者にリノート通知を送信
             try {
-              const boostedPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(boostedPostId) as any;
+              const boostedPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(boostedPostId) as any;
               if (boostedPost && boostedPost.is_local === 1) {
                 await createNotification({
                   userId: boostedPost.user_id,
@@ -812,7 +812,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             remoteActor = { name: u.pathname.split('/').pop() || 'user', icon_url: '' };
           }
 
-          await adb.prepare(`
+          await db.prepare(`
             INSERT INTO reactions (id, post_id, user_id, user_name, user_icon, reaction, is_local, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(post_id, user_id, reaction) DO UPDATE SET
@@ -831,7 +831,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.log(`[Inbox EmojiReact] 😃 Received reaction "${reaction}" on ${targetPostId} from ${actorUrl}`);
 
           // 📡 リアルタイム SSE リアクション更新
-          const countRow = await adb.prepare('SELECT count(*) as c FROM reactions WHERE post_id = ? AND reaction = ?').get(targetPostId, reaction) as any;
+          const countRow = await db.prepare('SELECT count(*) as c FROM reactions WHERE post_id = ? AND reaction = ?').get(targetPostId, reaction) as any;
           broadcastReaction({
             postId: targetPostId,
             reaction,
@@ -842,7 +842,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
           // ローカル投稿へのリアクションの場合、投稿者に通知を送信
           try {
-            const targetPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
+            const targetPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
             if (targetPost && targetPost.is_local === 1) {
               const u = new URL(actorUrl);
               await createNotification({
@@ -884,7 +884,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             remoteActor = { name: u.pathname.split('/').pop() || 'user', icon_url: '' };
           }
 
-          await adb.prepare(`
+          await db.prepare(`
             INSERT INTO reactions (id, post_id, user_id, user_name, user_icon, reaction, is_local, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(post_id, user_id, reaction) DO UPDATE SET
@@ -903,7 +903,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.log(`[Inbox Like] ❤️ Received like on ${targetPostId} from ${actorUrl}`);
 
           // 📡 リアルタイム SSE リアクション更新
-          const countRow = await adb.prepare('SELECT count(*) as c FROM reactions WHERE post_id = ? AND reaction = ?').get(targetPostId, reaction) as any;
+          const countRow = await db.prepare('SELECT count(*) as c FROM reactions WHERE post_id = ? AND reaction = ?').get(targetPostId, reaction) as any;
           broadcastReaction({
             postId: targetPostId,
             reaction,
@@ -914,7 +914,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
           // ローカル投稿への Like の場合、投稿者に通知を送信
           try {
-            const targetPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
+            const targetPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
             if (targetPost && targetPost.is_local === 1) {
               const u = new URL(actorUrl);
               await createNotification({
@@ -948,18 +948,18 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
         if (innerType === 'Follow') {
           const targetActorUrl = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id;
-          await adb.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(actorUrl, targetActorUrl);
+          await db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(actorUrl, targetActorUrl);
           console.log(`[Inbox Undo] ❌ Follow removed: ${actorUrl} unfollowed ${targetActorUrl}`);
         } else if (innerType === 'Like' || innerType === 'EmojiReact' || !innerType) {
           // リアクション / いいね取り消し
           if (targetObjId) {
-            await adb.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
+            await db.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
             console.log(`[Inbox Undo] ❌ Reaction removed: ${actorUrl} on ${targetObjId}`);
           }
         } else if (innerType === 'Announce') {
           // ブースト取り消し
           if (targetObjId) {
-            await adb.prepare('DELETE FROM announces WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
+            await db.prepare('DELETE FROM announces WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
             console.log(`[Inbox Undo] ❌ Boost removed: ${actorUrl} on ${targetObjId}`);
           }
         } else if (innerType === 'Block') {
@@ -978,14 +978,14 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           if (object.type === 'Person' && object.id) {
             const name = object.name || object.preferredUsername;
             const summary = object.summary || '';
-            await adb.prepare(`
+            await db.prepare(`
               UPDATE remote_actors SET name = COALESCE(?, name), summary = COALESCE(?, summary), updated_at = ?
               WHERE id = ?
             `).run(name, summary, new Date().toISOString(), object.id);
             console.log(`[Inbox Update] 🔄 Profile updated for ${object.id}`);
           } else if (object.type === 'Note' && object.id) {
             const content = object.content || '';
-            await adb.prepare(`
+            await db.prepare(`
               UPDATE posts SET content = ? WHERE id = ?
             `).run(content, object.id);
             console.log(`[Inbox Update] 📝 Note updated: ${object.id}`);
@@ -998,9 +998,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const object = activity.object;
         const targetId = typeof object === 'string' ? object : object?.id;
         if (targetId) {
-          await adb.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
-          await adb.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
-          await adb.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
+          await db.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
+          await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
+          await db.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
           console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId}`);
         }
         return res.status(200).json({ status: 'Delete processed' });
@@ -1054,8 +1054,8 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         // (1) 引っ越し元がローカルユーザー: 移行先を記録する
         //     （フォロワーへの Move 配送は、本人が設定画面から実行したときに行う）
         const localUserId = localUsernameFromActorUrl(oldActorUrl);
-        if (localUserId && await adb.prepare('SELECT id FROM users WHERE id = ?').get(localUserId)) {
-          await adb.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(newActorUrl, localUserId);
+        if (localUserId && await db.prepare('SELECT id FROM users WHERE id = ?').get(localUserId)) {
+          await db.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(newActorUrl, localUserId);
           console.log(`[Inbox Move] 📦 ローカルユーザー @${localUserId} の引っ越し先を記録: ${newActorUrl}`);
           try {
             await createNotification({
@@ -1071,24 +1071,24 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         }
 
         // (2) リモートユーザーが引っ越した: こちらのフォロー関係を新アカウントへ移行する
-        const oldActor = await adb.prepare('SELECT * FROM remote_actors WHERE id = ?').get(oldActorUrl) as any;
+        const oldActor = await db.prepare('SELECT * FROM remote_actors WHERE id = ?').get(oldActorUrl) as any;
         if (!oldActor) {
           console.log(`[Inbox Move] ℹ️ 未知のアクターの Move のため無視: ${oldActorUrl}`);
           return res.status(200).json({ status: 'Move ignored (unknown actor)' });
         }
 
-        await adb.prepare('UPDATE remote_actors SET moved_to = ?, updated_at = ? WHERE id = ?').run(
+        await db.prepare('UPDATE remote_actors SET moved_to = ?, updated_at = ? WHERE id = ?').run(
           newActorUrl,
           new Date().toISOString(),
           oldActorUrl,
         );
 
         const newActor = await fetchRemoteActor(newActorUrl).catch(() => null);
-        const followRows = await adb.prepare('SELECT * FROM follows WHERE following_url = ?').all(oldActorUrl) as unknown as FollowRow[];
+        const followRows = await db.prepare('SELECT * FROM follows WHERE following_url = ?').all(oldActorUrl) as unknown as FollowRow[];
         let migrated = 0;
 
         for (const row of followRows) {
-          await adb.prepare("UPDATE follows SET following_url = ?, inbox_url = ?, status = 'pending' WHERE id = ?").run(
+          await db.prepare("UPDATE follows SET following_url = ?, inbox_url = ?, status = 'pending' WHERE id = ?").run(
             newActorUrl,
             newActor?.inbox_url || row.inbox_url,
             row.id,
@@ -1097,7 +1097,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
           const followerId = localUsernameFromActorUrl(row.follower_url);
           if (!followerId) continue;
-          const follower = await adb.prepare('SELECT * FROM users WHERE id = ?').get(followerId) as UserRow | undefined;
+          const follower = await db.prepare('SELECT * FROM users WHERE id = ?').get(followerId) as UserRow | undefined;
           if (!follower) continue;
 
           // 新しいアカウントへフォローを送り直す（受理されれば以降の投稿が届く）

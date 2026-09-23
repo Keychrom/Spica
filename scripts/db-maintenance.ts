@@ -21,6 +21,7 @@ import path from 'node:path';
 import { config } from '../server/src/config.js';
 import { getFtsIndexScope, getRemoteAnnouncePolicy, readSetting } from '../server/src/searchPolicy.js';
 import { pruneProxyCacheOn } from '../server/src/imageProxy.js';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   MaintenanceOptions,
@@ -188,29 +189,31 @@ async function main(): Promise<number> {
   console.log(`VACUUM      : ${args.vacuum ? 'あり' : 'なし'} / バックアップ: ${args.backup ? 'あり' : 'なし'}`);
   console.log('');
 
-  // 事前調査（接続してから件数を出す）
-  const db = openMaintenanceDb(dbPath);
-  const before = getDbSizeInfo(dbPath, db);
+  // 事前調査（接続してから件数を出す）。CLI は自前の接続を 1 本だけ開き、
+  // 非同期ハンドルで包んで共通の検査（アプリと同じコード）を使う
+  const conn = openMaintenanceDb(dbPath);
+  const db = createAsyncDatabase({ sqlite: conn });
+  const before = await getDbSizeInfo(dbPath, db);
   let plan;
   let policyScope = 'local';
   let policyAnnounce = 'follows';
   let proxyPlan: { removed: number; freedBytes: number; scanned: number; totalBytes: number } | null = null;
   try {
-    plan = planRemotePostRemoval(db, options);
+    plan = await planRemotePostRemoval(db, options);
     // 方針の表示にも同じ接続を使う（サーバーの共有接続を開かないため）
-    policyScope = getFtsIndexScope(db);
-    policyAnnounce = getRemoteAnnouncePolicy(db);
+    policyScope = await getFtsIndexScope(db);
+    policyAnnounce = await getRemoteAnnouncePolicy(db);
 
     // ⑥ 画像プロキシのキャッシュ: まず削除予定だけ数える
     if (args.proxyCache) {
-      const ttlStored = parseInt(readSetting(db, 'image_proxy_ttl_days'), 10);
+      const ttlStored = parseInt(await readSetting(db, 'image_proxy_ttl_days'), 10);
       const ttlDays = Number.isFinite(ttlStored) && ttlStored > 0 ? ttlStored : config.imageProxyTtlDays;
-      const maxStored = parseInt(readSetting(db, 'image_proxy_max_mb'), 10);
+      const maxStored = parseInt(await readSetting(db, 'image_proxy_max_mb'), 10);
       const maxMb = Number.isFinite(maxStored) && maxStored > 0 ? maxStored : config.imageProxyMaxMb;
-      proxyPlan = pruneProxyCacheOn(db, dbPath, ttlDays, maxMb * 1024 * 1024, false);
+      proxyPlan = pruneProxyCacheOn(conn, dbPath, ttlDays, maxMb * 1024 * 1024, false);
     }
   } finally {
-    db.close();
+    conn.close();
   }
 
   console.log('■ 現在のサイズ');
@@ -255,7 +258,7 @@ async function main(): Promise<number> {
     }
   }
 
-  const report = runMaintenance({
+  const report = await runMaintenance({
     dbPath,
     uploadsDir,
     backupDir,

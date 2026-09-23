@@ -39,6 +39,7 @@
     "test:search-policy": "npx tsx scripts/test-search-policy.ts",
     "test:ops-automation": "npx tsx scripts/test-ops-automation.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
+    "check:await": "npx tsx scripts/check-await.ts",
     "test:secret-scan": "npx tsx scripts/test-secret-scan.ts",
     "test:silence-featured": "npx tsx scripts/test-silence-featured.ts",
     "test:image-proxy": "npx tsx scripts/test-image-proxy.ts",

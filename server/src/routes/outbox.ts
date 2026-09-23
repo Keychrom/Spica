@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { adb, UserRow, PostRow } from '../db.js';
+import { db, UserRow, PostRow } from '../db.js';
 import { asyncHandler } from '../asyncHandler.js';
 import { config } from '../config.js';
 import { ACTIVITY_CONTENT_TYPE, ACTIVITYSTREAMS_CONTEXT, buildNote, buildCreateActivity } from '../activitypub.js';
@@ -19,7 +19,7 @@ export const outboxRouter = Router();
  */
 outboxRouter.get('/:username/outbox', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
@@ -33,7 +33,7 @@ outboxRouter.get('/:username/outbox', asyncHandler(async (req: Request, res: Res
   // グローバル公開 (public) の自ノード投稿のみを ActivityPub outbox に掲載
   const publicFilter = `user_id = ? AND is_local = 1 AND (visibility = 'public' OR visibility IS NULL)`;
 
-  const totalRow = await adb.prepare(`SELECT COUNT(*) AS c FROM posts WHERE ${publicFilter}`).get(user.id) as { c: number };
+  const totalRow = await db.prepare(`SELECT COUNT(*) AS c FROM posts WHERE ${publicFilter}`).get(user.id) as { c: number };
   const totalItems = totalRow?.c ?? 0;
 
   // ルート（コレクション）は常に先頭ページを返し、ページ取得時のみカーソルを尊重する
@@ -46,7 +46,7 @@ outboxRouter.get('/:username/outbox', asyncHandler(async (req: Request, res: Res
   const cursorCond = cursor ? ` AND ${cursorPredicate('published_at', 'id')}` : '';
   const cursorParams = cursor ? [cursor.at, cursor.at, cursor.id] : [];
 
-  const posts = await adb.prepare(`
+  const posts = await db.prepare(`
     SELECT * FROM posts
     WHERE ${publicFilter}${cursorCond}
     ORDER BY published_at DESC, id DESC

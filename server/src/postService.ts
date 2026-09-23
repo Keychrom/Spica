@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { adb, UserRow, PostRow, createNotification, AntennaRow } from './db.js';
+import { db, UserRow, PostRow, createNotification, AntennaRow } from './db.js';
 import { config } from './config.js';
 import { broadcastNote } from './streaming.js';
 import {
@@ -77,7 +77,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   if (emojiMatches.length > 0) {
     const emojiNames = emojiMatches.map((m: string) => m.slice(1, -1).toLowerCase());
     const placeholders = emojiNames.map(() => '?').join(',');
-    const foundEmojis = await adb.prepare(`
+    const foundEmojis = await db.prepare(`
       SELECT name, url FROM custom_emojis WHERE name IN (${placeholders})
     `).all(...emojiNames) as unknown as { name: string; url: string }[];
 
@@ -101,16 +101,16 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
 
   // 引用元が閲覧できない投稿（フォロワー限定など）は引用を拒否する
   if (quoteId) {
-    const quoteTarget = await adb.prepare('SELECT id, author_url, visibility FROM posts WHERE id = ?').get(quoteId) as
+    const quoteTarget = await db.prepare('SELECT id, author_url, visibility FROM posts WHERE id = ?').get(quoteId) as
       | { id: string; author_url: string; visibility: string | null }
       | undefined;
-    if (quoteTarget && !canViewPost(quoteTarget, actorUrl)) {
+    if (quoteTarget && !(await canViewPost(quoteTarget, actorUrl))) {
       throw new Error('この投稿は引用できません。');
     }
   }
 
   // 1. ローカルDBに投稿保存
-  await adb.prepare(`
+  await db.prepare(`
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at, channel_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now, channelId);
@@ -122,8 +122,8 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   let channelData: any = null;
   if (channelId) {
     try {
-      await adb.prepare('UPDATE channels SET posts_count = posts_count + 1 WHERE id = ?').run(channelId);
-      channelData = await adb.prepare('SELECT id, name, description, banner_url, color FROM channels WHERE id = ?').get(channelId);
+      await db.prepare('UPDATE channels SET posts_count = posts_count + 1 WHERE id = ?').run(channelId);
+      channelData = await db.prepare('SELECT id, name, description, banner_url, color FROM channels WHERE id = ?').get(channelId);
     } catch (e) {
       console.error('[Post] Failed to update channel posts count:', e);
     }
@@ -132,7 +132,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   // 引用元投稿の解決（あれば）
   let quotePostData: any = null;
   if (quoteId) {
-    const qRow = await adb.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
+    const qRow = await db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(quoteId) as any;
     if (qRow) {
       quotePostData = {
         ...qRow,
@@ -157,12 +157,12 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
       expiresAt = new Date(Date.now() + poll.expires_in * 1000).toISOString();
     }
 
-    await adb.prepare(`
+    await db.prepare(`
       INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(pollId, postId, multiple, expiresAt, now);
 
-    const insertChoice = await adb.prepare(`
+    const insertChoice = await db.prepare(`
       INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
       VALUES (?, ?, ?, ?, 0)
     `);
@@ -248,7 +248,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
 
   if (inReplyTo) {
     try {
-      const parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
+      const parentPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
       if (parentPost && parentPost.is_local === 1) {
         replyParentUserId = parentPost.user_id;
         await createNotification({
@@ -291,7 +291,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     }
 
     for (const mentionedId of mentionedIds) {
-      const target = await adb.prepare('SELECT id FROM users WHERE id = ?').get(mentionedId);
+      const target = await db.prepare('SELECT id FROM users WHERE id = ?').get(mentionedId);
       if (!target) {
         continue;
       }
@@ -338,21 +338,21 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   });
 
   // 4. 配信先 Inbox の収集: フォロワー(承認済みのみ) + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
-  const followerInboxes = (await adb.prepare(`
+  const followerInboxes = (await db.prepare(`
     SELECT DISTINCT inbox_url FROM follows
     WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
   `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
   // リレーは不特定多数のサーバーへ再配信するため、フォロワー限定投稿では使用しない
   const relayInboxes = visibility === 'public'
-    ? (await adb.prepare(`
+    ? (await db.prepare(`
         SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
       `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
     : [];
 
   const directInboxes: string[] = [];
   if (inReplyTo) {
-    const parentPost = await adb.prepare('SELECT author_url FROM posts WHERE id = ?').get(inReplyTo) as { author_url: string } | undefined;
+    const parentPost = await db.prepare('SELECT author_url FROM posts WHERE id = ?').get(inReplyTo) as { author_url: string } | undefined;
     if (parentPost && !parentPost.author_url.startsWith(config.origin)) {
       try {
         const remoteActor = await fetchRemoteActor(parentPost.author_url);
@@ -361,7 +361,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     }
   }
   if (quoteId) {
-    const quotedPost = await adb.prepare('SELECT author_url FROM posts WHERE id = ?').get(quoteId) as { author_url: string } | undefined;
+    const quotedPost = await db.prepare('SELECT author_url FROM posts WHERE id = ?').get(quoteId) as { author_url: string } | undefined;
     if (quotedPost && !quotedPost.author_url.startsWith(config.origin)) {
       try {
         const remoteActor = await fetchRemoteActor(quotedPost.author_url);
@@ -396,7 +396,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
  */
 export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
   try {
-    const antennas = await adb.prepare('SELECT * FROM antennas WHERE notify = 1').all() as unknown as AntennaRow[];
+    const antennas = await db.prepare('SELECT * FROM antennas WHERE notify = 1').all() as unknown as AntennaRow[];
     if (!antennas || antennas.length === 0) return;
 
     for (const ant of antennas) {
@@ -435,7 +435,7 @@ export async function isPostMatchingAntenna(post: any, ant: AntennaRow): Promise
   // 2. ソース範囲フィルタ
   if (ant.src === 'home') {
     // アンテナ所有者のフォロー対象かチェック
-    const isFollowing = await adb.prepare(`
+    const isFollowing = await db.prepare(`
       SELECT 1 FROM follows 
       WHERE follower_url = ? AND following_url = ?
     `).get(`${config.origin}/users/${ant.user_id}`, post.author_url);

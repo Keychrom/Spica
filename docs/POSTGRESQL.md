@@ -1,9 +1,8 @@
 # 🐘 PostgreSQL 対応（現状と手順）
 
 > [!IMPORTANT]
-> **アプリ本体も PostgreSQL で動きます（実験的）。** `DB_DRIVER=postgres DATABASE_URL=...` で起動すると、
-> 同期 API のまま PostgreSQL に接続します（同期ファサード）。
-> 恒久的にはデータ層の非同期化（下の「案A」）へ移す前提で、まず動く状態を作った段階です。
+> **アプリ本体も PostgreSQL で動きます。** `DB_DRIVER=postgres DATABASE_URL=...` で起動すると、
+> 非同期データ層（下の「歩んだ道」）が PostgreSQL に接続します。
 > **既定は SQLite のまま**で、切り替えない限り何も変わりません。
 >
 > | 項目 | 状態 | 使い方 |
@@ -12,12 +11,12 @@
 > | PostgreSQL スキーマの生成 | ✅ 実装済み | `npm run db:pg:schema` |
 > | スキーマの適用 | ✅ 実装済み | `npm run db:pg:init -- --dsn "$DATABASE_URL"` |
 > | SQLite → PostgreSQL のデータ移送 | ✅ 実装済み | `npm run db:pg:migrate -- --from ... --dsn ... --verify` |
-> | **アプリ本体のドライバ（PG で起動する）** | ✅ 実装済み（同期ファサード） | `DB_DRIVER=postgres DATABASE_URL=... npm start` |
+> | **アプリ本体のドライバ（PG で起動する）** | ✅ 実装済み（非同期データ層） | `DB_DRIVER=postgres DATABASE_URL=... npm start` |
 > | SQL 翻訳の単体検証 | ✅ 実装済み | `npm run test:pg-translate`（PG 不要） |
-> | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
+> | 非同期データ層（案A） | ✅ 完了（610 箇所） | `npm run test:db-async` / 状態は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
-> | 既存テストスイートの PG 対応 | 🚧 一部 | 11 スイートが PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（89% / 543 箇所） | 恒久対応。手順は下の「案A の進め方」 |
+> | 既存テストスイートの PG 対応 | ✅ 主要どころ | 16 スイートが PG でも全項目緑（下記に個別の状態） |
+> | データ層の非同期化（案A） | ✅ 完了（同期ファサード・worker は削除済み） | 経緯は下の「歩んだ道」 |
 
 ---
 
@@ -40,6 +39,7 @@
 | `IFNULL` | 2 | 置換（`COALESCE` へ。通報の重複判定で使っていた） |
 | `LIKE` | 41 | 置換（`ILIKE` へ。SQLite の LIKE は ASCII で大文字小文字を区別しないため） |
 | `BEGIN IMMEDIATE` | 1 | 置換（`BEGIN` へ。保持期間の削除で使っていた。PostgreSQL には IMMEDIATE が無い） |
+| 2 引数の `MAX` / `MIN` | 1 | 置換（`GREATEST` / `LEAST` へ。SQLite のスカラー関数。チャンネルのフォロワー数で使っていた） |
 
 > [!IMPORTANT]
 > `db.exec(...)` も `prepare` と同じ翻訳を通します（`BEGIN IMMEDIATE` や `temp.` は exec 側で使われるため）。
@@ -64,39 +64,29 @@
 最大の論点は構文の置換ではなく**同期 API**です。Spica は `node:sqlite` の同期 API（573 箇所）を使っており、
 PostgreSQL のクライアントは非同期なので、ここで道が 2 つに分かれます。
 
-### 実装した道: 同期ファサード（案B）
+### 歩んだ道
 
-`server/src/db/driver.ts` + `server/src/db/pgWorker.ts`。
+1. **案B（足場・削除済み）**: `server/src/db/driver.ts` + `server/src/db/pgWorker.ts` に、worker thread と
+   `SharedArrayBuffer` + `Atomics.wait` で PostgreSQL を**同期 API のまま**使うファサードを用意した。
+   573 箇所を書き換えずに「PG でも動く」状態を作るための足場で、正しさの検証（スキーマ・移送・翻訳）を
+   先に済ませるために使った。
+2. **案A（本命・完了）**: データ層を非同期化し、案B のファサードと worker は**削除した**。
 
-- worker thread に `pg` の接続を 1 本持ち、メインスレッドは `SharedArrayBuffer` + `Atomics.wait` で結果を待つ。
-  既存の 573 箇所は**一切変更していない**（`db.prepare(...).get/all/run` の形がそのまま動く）。
-- 1 接続なのでトランザクション（BEGIN / COMMIT）もそのまま効く。SQLite と同じ「1 クエリごとにブロックする」
-  性質で、構造的な劣化ではない（レイテンシはネットワーク分だけ増える）。
-- 結果は JSON で運び、16MB を超えたら必要なサイズで再試行（上限 256MB）。Buffer / Date / BigInt は専用の表現に変換。
-- 起動に失敗した worker を無限に作り直さないよう、3 回失敗したら明示的なエラーにする。
-- worker に渡す node オプションは**ローダー指定だけ**に絞る（`--max-old-space-size` や `--inspect` を渡すと起動に失敗する）。
-
-### 残っている道: データ層の非同期化（案A）
-
-SQL をリポジトリ層へ集約し、呼び出しを `await` に変えていく。573 箇所に加えて呼び出し元
-（ルートハンドラ、サービス、スケジューラ、CLI）まで連鎖し、**数週間規模**。テストを両方の DB で
-回せる状態を保ちながら段階的に進めるのが安全です。
-
-> [!TIP]
-> いまは案Bで「PG でも動く」状態にあり、案A は恒久対応として残しています。両案で必要な
-> スキーマ・移送・検証は先に済ませてあります。
-
-#### 案A の進め方（2026-09 着手）
-
-移行先は `server/src/db/asyncDriver.ts` の非同期インターフェースです。SQLite は既存の同期接続を
-そのまま包み、PostgreSQL は `pg` クライアントに直列化して投げます（worker も `Atomics.wait` も使わない）。
+いまアプリが使うのは `server/src/db/asyncDriver.ts` の非同期インターフェースだけです。
+SQLite は `node:sqlite` の同期接続を 1 本だけ開いて包み、PostgreSQL は `pg` クライアントに
+直列化して投げます（worker も `Atomics.wait` も使わない）。
 
 ```ts
-import { adb } from './db.js';               // 同期版の db と並べて公開している
+import { db } from './db.js';
 
-const row = await adb.prepare('SELECT ... WHERE id = ?').get(id);   // await が付くだけ
-await adb.prepare('UPDATE ...').run(value, id);
+const row = await db.prepare('SELECT ... WHERE id = ?').get(id);
+await db.prepare('UPDATE ...').run(value, id);
+await db.exec('PRAGMA journal_mode = WAL;');   // SQLite のときだけ意味がある（PG では無視される）
 ```
+
+#### 案A の進め方（記録・2026-09 完了）
+
+移行は「葉 → 中核 → ルート → db.ts」の順で、1 ファイルずつ進めました。
 
 手順（1 ファイルずつ、下から上へ）:
 
@@ -124,9 +114,17 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | ✅ 中核 | `postService`（投稿作成）/ `auth`（セッション・権限）/ `activitypub`（配送とアクター取得）/ `scheduler`（予約投稿）/ `mailService` / `exportService` |
 | ✅ 読み取りの要 | `routes/api.ts` のタイムライン整形（`enrichAndFilterPosts`）。リンクプレビューは行ごとではなく 1 回のクエリでまとめて取る |
 | ✅ ルート | `routes/api.ts`（231 箇所）/ `admin.ts`（67）/ `inbox.ts`（50）/ `users.ts`（9）— ハンドラ単位の機械的な変換で移行 |
-| 🚧 中核（最後） | `db.ts` の残りは起動時のマイグレーション DDL（14 箇所）。**設定はメモリのキャッシュから同期で読む方式に移行済み**（`loadServerSettings` を起動時に呼び、書き込みは write-through）。残りは `instanceActor`（起動時のテーブル作成と鍵）/ `webfinger` / `shutdown` |
-| ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
-| — | `dbMaintenance.ts`（48）は **SQLite 専用の手動メンテナンス CLI**。自前の接続を開く設計なので変換しない |
+| ✅ 仕上げ | `db.ts`（32）/ `instanceActor` / `webfinger` / `shutdown`。**設定とインスタンス鍵は起動時にメモリへ読み込む方式**にした（`loadServerSettings` / `loadInstanceActorKeyPair`）ので、読み取りは同期のまま |
+| ✅ 完了処理 | 同期ファサード（worker / `Atomics.wait` / `pgWorker.ts`）と同期 `db` を削除し、`adb` を `db` に改名（610 箇所） |
+| ✅ メンテナンス系 | `dbMaintenance` の共通部分（削除計画・実行・孤立メディア・DB サイズ）も非同期化。SQLite 専用の操作（VACUUM / `VACUUM INTO` / ページ数）だけを生の接続に残した |
+
+同期のまま残す場所（設定・鍵・表示判定のように、同期であることが設計上都合のよいもの）:
+
+| 場所 | 理由 |
+| :--- | :--- |
+| `getServerSetting()` / `getInstanceActorKeyPair()` | 起動時にメモリへ読み込む（`loadServerSettings` / `loadInstanceActorKeyPair`）。`config` と同じ扱いでリクエスト処理中に同期で読める |
+| `dbMaintenance` の SQLite 専用操作 | `VACUUM` / `VACUUM INTO` / `wal_checkpoint` / ページ数は PostgreSQL に無い。生の接続（`DatabaseSync`）のまま |
+| `dbMaintenance` の `readSetting(conn, key)` | 接続を渡せばその接続から、渡さなければメモリのキャッシュから読む（どちらも非同期） |
 
 > [!IMPORTANT]
 > 非同期にした関数は、**呼び出し側にも `await` を伝播させる**こと。付け忘れると
@@ -136,8 +134,10 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 > Express 4 は非同期の失敗を拾わず、包まないとプロセスが落ちる。
 
 > [!NOTE]
-> 移行中は PostgreSQL の接続が 2 本（同期ファサードと非同期クライアント）になる。
-> **1 つのトランザクションを両者にまたがらせないこと。** トランザクションのある範囲はまとめて変換する。
+> 接続は 1 本だけです（SQLite も PostgreSQL も）。トランザクションは `withTransaction(db, async () => {...})` で
+> 囲み、その中は他リクエストのクエリが割り込みません。
+> **同期接続と非同期接続を 1 つのトランザクションにまたがらせないこと**は変わりませんが、いま同期接続を持つのは
+> SQLite 専用のメンテナンス CLI（`dbMaintenance`）だけです。
 
 ---
 
@@ -295,20 +295,31 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 
 ### テストスイートを PG で回す場合
 
-各スイートは「まっさらな SQLite ファイル」を前提にしているので、PG では**実行の前に DB を作り直します。**
+各スイートは「まっさらな DB」を前提にしているので、PG では**実行の前に DB を作り直します。**
+まとめて回すためのスクリプトを用意してあります（各スイートの前で `db:pg:init --reset` を実行）。
 
 ```bash
+bash scripts/run-suites-pg.sh                 # PG で回せるスイートを順に実行
+bash scripts/run-suites-pg.sh admin-audit     # 個別に実行
+
+# 手で 1 本だけ回す場合
 npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-スイート側に手当てが要るものもあります。
+**いま PG でも緑になるスイート（16 本）**: `pg-port`（27 項目）/ `pg-translate`（28）/
+`db-async`（41）/ `admin-audit` / `email-notify` / `image-proxy` / `ops-automation` / `reports` /
+`silence-featured` / `pagination` / `announcements` / `antennas-and-scheduler` / `account-deletion` /
+`fts-push` / `export-and-rules` / `theme-channels-webauthn` / `db-maintenance`
+
+SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でまとめて回せます。
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| `test-admin-audit` / `test-email-notify` / `test-image-proxy` / `test-ops-automation` / `test-reports` / `test-silence-featured` | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
-| `test-pagination` / `test-announcements` | ✅ そのまま通る |
+| 上記 16 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-password-auth` | 🚧 HTTP の検査（登録・ログイン・マスターキー・拒否）は全部通る。最後の「平文で保存されない」検査だけが **SQLite ファイルを直接開く**ため PG では開けずに失敗する |
+| `test-search-policy` | 🚧 直近の `posts_fts` を直接いじる検査があり、SQLite 前提（PG では trigram 索引側の検査として `test-pg-port` が担当） |
+| `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む SQLite 専用のスイート。PG 側の保全は `db:maintenance` ではなく `pg_dump` + 手動 SQL |
 | `test-federation` | ❌ 2 つのノードが別々の SQLite ファイルを消して回る作り。PG ではノードごとに DB を分ける改造が要る |
 
 > [!NOTE]
@@ -316,6 +327,8 @@ DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 > 開いて `no such table` で落ちます。`createAsyncDatabase({ driver: process.env.DB_DRIVER, connectionString:
 > process.env.DATABASE_URL, dbPath: ... })` に置き換えると、どちらの DB でも同じ検査が流せます
 > （`test-admin-audit.ts` / `test-email-notify.ts` が実例）。
+> 逆に「SQLite ファイルを直接開いて中身を確かめる」検査（`test-password-auth` など）は PG では
+> そのままでは動かないので、`createAsyncDatabase` 経由の確認に置き換えていきます。
 
 ---
 
@@ -340,16 +353,19 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 
 ## 🔧 7. 残っている手作業（メモ）
 
-- `postVisibility.ts` の `canViewPost` / `filterVisiblePosts` は同期のまま（同期の判定関数から呼ばれるため）。
-- `instanceActor.ts` は起動時にテーブルを作る関係で同期のまま（鍵のキャッシュを起動時に温める設計にすると移行できる）。
-- `searchPolicy.ts` の `conn` を引数に取る関数は、SQLite 専用のメンテナンス CLI が使うため同期のまま。
+データ層の非同期化（案A）は完了しました。いま同期のまま残っているのは次の 2 つだけです。
 
+- `getServerSetting()` / `getInstanceActorKeyPair()` — 起動時にメモリへ読み込む。`config` と同じ扱い。
+- `dbMaintenance` の SQLite 専用操作（`VACUUM` / `VACUUM INTO` / `wal_checkpoint` / ページ数） —
+  PostgreSQL に無い操作なので、生の接続（`DatabaseSync`）のまま。共通部分は非同期化済み。
+
+運用・方針として残るもの:
 
 - **二重対応の恒久保守はしない。** SQLite と PG の両方で動くコードを維持し続けると、テストも運用も 2 倍になる。
   いまは SQLite が既定で、PG は「選んだときだけ使う道」。常用するならどちらかに寄せる。
-- **同期ファサード（案B）を恒久の解にしない。** いまアプリはこの方式で PG に繋がっているが、これは
-  573 箇所を書き換えずに移行できるようにするための足場。常用するなら案A（データ層の非同期化）へ移す。
 - **エクスポート / インポートをノード移行に使わない。** ユーザー単位のアーカイブなので全データは移らない（付録）。
+- **PG の保全は `pg_dump`。** SQLite 用の `npm run db:maintenance`（VACUUM / バックアップ）は SQLite 専用。
+  自動メンテナンス（保持期間の削除・索引方針の適用）はどちらの DB でも動く。
 
 ---
 
@@ -358,7 +374,7 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 | 規模の目安 | 推奨 |
 | :--- | :--- |
 | 数十人のアクティブ | **SQLite のままで問題ない。** 伸びてきたら保持期間・索引方針・メディア外部化（S3/R2）で調整する |
-| 数百人の日次アクティブ / 書き込み競合が見え始めた | PostgreSQL へ切り替える（スキーマ・移送・起動は準備済み）。それでも足りなければ案Aへ |
+| 数百人の日次アクティブ / 書き込み競合が見え始めた | PostgreSQL へ切り替える（スキーマ・移送・起動は準備済み。データ層は非同期化済み） |
 | 数千人以上 | Mastodon / Misskey が適所（Spica の設計思想とは別の用途） |
 
 ---

@@ -18,7 +18,7 @@ process.env.DOMAIN = 'spica.test';
 async function runTest() {
   console.log('🧪 === 🎨 チャンネル機能 ＆ 🔐 WebAuthn / パスキー 総合検証テスト ===\n');
 
-  const { initDatabase, db } = await import('../server/src/db.js');
+  const { db, initDatabase } = await import('../server/src/db.js');
   await initDatabase();
 
   const { executeCreatePost } = await import('../server/src/postService.js');
@@ -31,7 +31,7 @@ async function runTest() {
   } = await import('../server/src/webauthnService.js');
 
   // テスト用ユーザー作成
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
     VALUES 
       ('alice', 'Alice', 'テストアリス', 'hash_a', 'user', 0, 'pub_a', 'priv_a', datetime('now')),
@@ -48,12 +48,12 @@ async function runTest() {
   // ==========================================
   console.log('--- 1. 📢 チャンネル作成と情報取得の検証 ---');
   const channelId = 'chan-tech-talk';
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO channels (id, name, description, color, banner_url, category, is_archived, user_id, posts_count, followers_count, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, 0, datetime('now'))
   `).run(channelId, '技術談義', 'テクノロジーや開発に関する雑談部屋', '#3b82f6', null, 'tech', userA.id);
 
-  const createdChannel = db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
+  const createdChannel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
   if (!createdChannel || createdChannel.name !== '技術談義') {
     throw new Error('❌ チャンネル作成の検証に失敗しました');
   }
@@ -64,19 +64,19 @@ async function runTest() {
   // ==========================================
   console.log('\n--- 2. 📢 チャンネルフォロー/アンフォローの検証 ---');
   // Bob がチャンネルをフォロー
-  db.prepare('INSERT INTO channel_follows (channel_id, user_id, created_at) VALUES (?, ?, datetime(\'now\'))').run(channelId, userB.id);
-  db.prepare('UPDATE channels SET followers_count = followers_count + 1 WHERE id = ?').run(channelId);
+  await db.prepare('INSERT INTO channel_follows (channel_id, user_id, created_at) VALUES (?, ?, datetime(\'now\'))').run(channelId, userB.id);
+  await db.prepare('UPDATE channels SET followers_count = followers_count + 1 WHERE id = ?').run(channelId);
 
-  let updatedChannel = db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
+  let updatedChannel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
   if (updatedChannel.followers_count !== 1) {
     throw new Error(`❌ フォロワー数の更新に失敗しました: expected 1, got ${updatedChannel.followers_count}`);
   }
   console.log(`✅ Bob がチャンネルをフォロー: フォロワー数 = ${updatedChannel.followers_count}`);
 
   // Bob がアンフォロー
-  db.prepare('DELETE FROM channel_follows WHERE channel_id = ? AND user_id = ?').run(channelId, userB.id);
-  db.prepare('UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?').run(channelId);
-  updatedChannel = db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
+  await db.prepare('DELETE FROM channel_follows WHERE channel_id = ? AND user_id = ?').run(channelId, userB.id);
+  await db.prepare('UPDATE channels SET followers_count = MAX(0, followers_count - 1) WHERE id = ?').run(channelId);
+  updatedChannel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(channelId) as any;
   if (updatedChannel.followers_count !== 0) {
     throw new Error(`❌ アンフォロー時のフォロワー数更新に失敗しました: expected 0, got ${updatedChannel.followers_count}`);
   }
@@ -101,7 +101,7 @@ async function runTest() {
     throw new Error(`❌ 投稿オブジェクト内の channel 情報に失敗しました: ${JSON.stringify(post1.channel)}`);
   }
 
-  const chanAfterPost = db.prepare('SELECT posts_count FROM channels WHERE id = ?').get(channelId) as any;
+  const chanAfterPost = await db.prepare('SELECT posts_count FROM channels WHERE id = ?').get(channelId) as any;
   if (chanAfterPost.posts_count !== 1) {
     throw new Error(`❌ チャンネルの posts_count インクリメントに失敗しました: expected 1, got ${chanAfterPost.posts_count}`);
   }
@@ -109,7 +109,7 @@ async function runTest() {
   console.log(`✅ チャンネル投稿数カウントアップ確認: posts_count = ${chanAfterPost.posts_count}`);
 
   // チャンネル専用タイムライン取得クエリ検証
-  const timelinePosts = db.prepare(`
+  const timelinePosts = await db.prepare(`
     SELECT * FROM posts WHERE channel_id = ? ORDER BY published_at DESC
   `).all(channelId);
   if (timelinePosts.length !== 1 || (timelinePosts[0] as any).id !== post1.id) {
@@ -128,7 +128,7 @@ async function runTest() {
   console.log(`✅ RP情報抽出成功: rpID = ${rpInfo.rpID}, origin = ${rpInfo.origin}`);
 
   // 登録オプション生成
-  const userARow = db.prepare('SELECT * FROM users WHERE id = ?').get(userA.id) as any;
+  const userARow = await db.prepare('SELECT * FROM users WHERE id = ?').get(userA.id) as any;
   const regOptions = await createWebAuthnRegistrationOptions(userARow, 'https://spica.test');
   if (!regOptions.challenge || !regOptions.user || regOptions.user.name !== userA.name) {
     throw new Error('❌ WebAuthn 登録オプションの生成に失敗しました');
@@ -136,7 +136,7 @@ async function runTest() {
   console.log(`✅ 登録オプション生成成功: challenge = ${regOptions.challenge.substring(0, 16)}...`);
 
   // DBにチャレンジが記録されたことを確認
-  const storedChallenge = db.prepare('SELECT * FROM webauthn_challenges WHERE challenge = ?').get(regOptions.challenge) as any;
+  const storedChallenge = await db.prepare('SELECT * FROM webauthn_challenges WHERE challenge = ?').get(regOptions.challenge) as any;
   if (!storedChallenge || storedChallenge.user_id !== userA.id || storedChallenge.type !== 'registration') {
     throw new Error('❌ webauthn_challenges テーブルへの登録チャレンジ記録に失敗しました');
   }
@@ -150,7 +150,7 @@ async function runTest() {
   console.log(`✅ 認証オプション生成成功: challenge = ${authOptions.challenge.substring(0, 16)}...`);
 
   // DBに認証チャレンジが記録されたことを確認
-  const storedAuthChallenge = db.prepare('SELECT * FROM webauthn_challenges WHERE challenge = ?').get(authOptions.challenge) as any;
+  const storedAuthChallenge = await db.prepare('SELECT * FROM webauthn_challenges WHERE challenge = ?').get(authOptions.challenge) as any;
   if (!storedAuthChallenge || storedAuthChallenge.type !== 'authentication') {
     throw new Error('❌ webauthn_challenges テーブルへの認証チャレンジ記録に失敗しました');
   }
@@ -161,34 +161,40 @@ async function runTest() {
   // ==========================================
   console.log('\n--- 5. 🔐 WebAuthn クレデンシャル管理の検証 ---');
   const dummyCredId = 'dummy-credential-id-xyz';
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO webauthn_credentials (id, user_id, public_key, counter, device_name, transports, created_at, last_used_at)
     VALUES (?, ?, ?, 0, ?, ?, datetime('now'), datetime('now'))
   `).run(dummyCredId, userA.id, 'dummy_public_key_hex', 'Windows Hello (Laptop)', '["internal"]');
 
-  const userCreds = db.prepare('SELECT * FROM webauthn_credentials WHERE user_id = ?').all(userA.id) as any[];
+  const userCreds = await db.prepare('SELECT * FROM webauthn_credentials WHERE user_id = ?').all(userA.id) as any[];
   if (userCreds.length !== 1 || userCreds[0].device_name !== 'Windows Hello (Laptop)') {
     throw new Error('❌ クレデンシャル一覧取得に失敗しました');
   }
   console.log(`✅ クレデンシャル取得成功: [${userCreds[0].id}] デバイス: ${userCreds[0].device_name}`);
 
   // 削除テスト
-  const delRes = db.prepare('DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?').run(dummyCredId, userA.id);
+  const delRes = await db.prepare('DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?').run(dummyCredId, userA.id);
   if (delRes.changes !== 1) {
     throw new Error('❌ クレデンシャル削除に失敗しました');
   }
-  const userCredsAfterDelete = db.prepare('SELECT * FROM webauthn_credentials WHERE user_id = ?').all(userA.id) as any[];
+  const userCredsAfterDelete = await db.prepare('SELECT * FROM webauthn_credentials WHERE user_id = ?').all(userA.id) as any[];
   if (userCredsAfterDelete.length !== 0) {
     throw new Error('❌ 削除後のクレデンシャル残存チェックに失敗しました');
   }
   console.log('✅ クレデンシャル削除成功');
+
+  // ファイルを消す前に接続を閉じる（後片付けの直前に呼ぶ）
+  await db.close();
 
   console.log('\n🎉 ==========================================');
   console.log('🎉 全テスト正常完了！チャンネル＆WebAuthnの動作が完全に検証されました');
   console.log('🎉 ==========================================\n');
 }
 
-runTest().catch((err) => {
-  console.error('❌ テストエラー:', err);
-  process.exit(1);
-});
+// 明示的に終了する（バックグラウンドのワーカーが残ってプロセスが終わらないため）
+runTest()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error('❌ テストエラー:', err);
+    process.exit(1);
+  });

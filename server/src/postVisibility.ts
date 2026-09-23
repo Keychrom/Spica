@@ -1,4 +1,4 @@
-import { adb, db } from './db.js';
+import { db } from './db.js';
 
 /**
  * 投稿の公開範囲
@@ -33,7 +33,7 @@ interface PostVisibilityFields {
 /**
  * viewer が author の承認済みフォロワーか（または本人か）
  */
-export function isViewerAuthorizedForAuthor(authorActorUrl: string | null, viewerActorUrl: string | null): boolean {
+export async function isViewerAuthorizedForAuthor(authorActorUrl: string | null, viewerActorUrl: string | null): Promise<boolean> {
   if (!authorActorUrl) {
     return true;
   }
@@ -44,7 +44,7 @@ export function isViewerAuthorizedForAuthor(authorActorUrl: string | null, viewe
     return true;
   }
   try {
-    const row = db
+    const row = await db
       .prepare("SELECT 1 FROM follows WHERE follower_url = ? AND following_url = ? AND status = 'accepted'")
       .get(viewerActorUrl, authorActorUrl);
     return Boolean(row);
@@ -57,11 +57,11 @@ export function isViewerAuthorizedForAuthor(authorActorUrl: string | null, viewe
  * 単一の投稿を viewer が閲覧できるか。
  * 'followers' のみ制限し、'public' / 'local' は従来どおり許可する。
  */
-export function canViewPost(post: PostVisibilityFields, viewerActorUrl: string | null): boolean {
+export async function canViewPost(post: PostVisibilityFields, viewerActorUrl: string | null): Promise<boolean> {
   if (normalizeVisibility(post.visibility) !== 'followers') {
     return true;
   }
-  return isViewerAuthorizedForAuthor(post.author_url ?? null, viewerActorUrl);
+  return await isViewerAuthorizedForAuthor(post.author_url ?? null, viewerActorUrl);
 }
 
 /**
@@ -69,7 +69,7 @@ export function canViewPost(post: PostVisibilityFields, viewerActorUrl: string |
  * フォロー関係は「対象となる投稿の著者」をまとめて1クエリで解決するため、
  * 行数が多くてもクエリは1回で済む。
  */
-export function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], viewerActorUrl: string | null): T[] {
+export async function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], viewerActorUrl: string | null): Promise<T[]> {
   const restrictedAuthors = new Set<string>();
   for (const row of rows) {
     if (normalizeVisibility(row.visibility) === 'followers' && row.author_url) {
@@ -85,7 +85,7 @@ export function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], vi
     const authors = [...restrictedAuthors];
     const placeholders = authors.map(() => '?').join(',');
     try {
-      const followed = db
+      const followed = await db
         .prepare(
           `SELECT following_url FROM follows
            WHERE follower_url = ? AND status = 'accepted' AND following_url IN (${placeholders})`,
@@ -116,7 +116,7 @@ export function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], vi
  */
 export async function isPublicPost(postId: string): Promise<boolean> {
   try {
-    const row = await adb.prepare('SELECT visibility FROM posts WHERE id = ?').get(postId) as
+    const row = await db.prepare('SELECT visibility FROM posts WHERE id = ?').get(postId) as
       | { visibility?: string | null }
       | undefined;
     if (!row) {

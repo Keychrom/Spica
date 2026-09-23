@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   MaintenanceOptions,
@@ -159,8 +160,9 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
 // ---------------------------------------------------------------------------
 const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: 30 };
 {
-  const db = openMaintenanceDb(dbPath);
-  const plan = planRemotePostRemoval(db, options);
+  const conn = openMaintenanceDb(dbPath);
+  const db = createAsyncDatabase({ sqlite: conn });
+  const plan = await planRemotePostRemoval(db, options);
   check('削除対象は古いリモート投稿のみ (2000件)', plan.byAge === 2000, `byAge=${plan.byAge}`);
   check('保持期間内の投稿は対象外', plan.total === 2000, `total=${plan.total}`);
   check('ブックマークされた投稿は残す', plan.keptByReason['ブックマーク'] === 1);
@@ -172,36 +174,38 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('フォロー中アクターの投稿は残す', plan.keptByReason['フォロー中アクターの投稿'] === 1);
 
   // 件数上限の計画
-  const capPlan = planRemotePostRemoval(db, { ...options, retentionDays: 0, maxRemotePosts: 100 });
+  const capPlan = await planRemotePostRemoval(db, { ...options, retentionDays: 0, maxRemotePosts: 100 });
   check('件数上限でも削除計画が出る', capPlan.byCount > 0, `byCount=${capPlan.byCount}`);
-  db.close();
+  conn.close();
 }
 
 // ---------------------------------------------------------------------------
 // ② 孤立メディア（ドライラン → 実行）
 // ---------------------------------------------------------------------------
 {
-  const db = openMaintenanceDb(dbPath);
-  const dry = cleanupOrphanMedia(db, uploadsDir, options, false);
+  const conn = openMaintenanceDb(dbPath);
+  const db = createAsyncDatabase({ sqlite: conn });
+  const dry = await cleanupOrphanMedia(db, uploadsDir, options, false);
   check('孤立メディアを検出する (2件)', dry.orphanFiles === 2, `orphan=${dry.orphanFiles} samples=${dry.samples.join(',')}`);
   check('参照されているファイルは孤立扱いしない', !dry.samples.includes('alice/kept.png'));
   check('新しすぎるファイルは見送る', dry.skippedYoung === 1, `skippedYoung=${dry.skippedYoung}`);
   check('ドライランでは削除しない', fs.existsSync(path.join(uploadsDir, 'alice/orphan.png')));
 
-  const applied = cleanupOrphanMedia(db, uploadsDir, options, true);
+  const applied = await cleanupOrphanMedia(db, uploadsDir, options, true);
   check('実行で孤立メディアを削除する', applied.orphanFiles === 2 && !fs.existsSync(path.join(uploadsDir, 'alice/orphan.png')), `orphan=${applied.orphanFiles}`);
   check('参照ファイルは残る', fs.existsSync(path.join(uploadsDir, 'alice/kept.png')));
   check('新しいファイルも残る', fs.existsSync(path.join(uploadsDir, 'alice/fresh.png')));
-  db.close();
+  conn.close();
 }
 
 // ---------------------------------------------------------------------------
 // ③ + ④ 削除と VACUUM、バックアップ
 // ---------------------------------------------------------------------------
 {
-  const db = openMaintenanceDb(dbPath);
-  const sizeBefore = getDbSizeInfo(dbPath, db);
-  const backup = backupDatabase(db, dbPath, backupDir);
+  const conn = openMaintenanceDb(dbPath);
+  const db = createAsyncDatabase({ sqlite: conn });
+  const sizeBefore = await getDbSizeInfo(dbPath, db);
+  const backup = backupDatabase(conn, dbPath, backupDir);
   check('VACUUM INTO でバックアップが作られる', fs.existsSync(backup.path) && backup.bytes > 0, `${backup.path} ${backup.bytes}`);
 
   // バックアップは削除前の状態なので、対象投稿がまだ残っている（復元可能性の確認）
@@ -209,7 +213,7 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('バックアップは削除前の内容を保持している', (bdb.prepare('SELECT COUNT(*) c FROM posts').get() as any).c > 250);
   bdb.close();
 
-  const removed = applyRemotePostRemoval(db, options);
+  const removed = await applyRemotePostRemoval(db, options);
   check('2000 件のリモート投稿を削除', removed.posts === 2000, `posts=${removed.posts}`);
   check('FTS 索引も同時に削除', removed.fts === 2000, `fts=${removed.fts}`);
   check('従属するリアクションを削除', removed.reactions === 1, `reactions=${removed.reactions}`);
@@ -217,35 +221,35 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('従属する通知を削除（ローカル投稿宛は残す）', removed.notifications === 1, `notifications=${removed.notifications}`);
   check('従属するアンケートを削除', removed.polls === 1, `polls=${removed.polls}`);
 
-  const remaining = (sql: string): number => Number((db.prepare(sql).get() as any).c);
-  check('ローカル投稿は残っている', remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1') === 4, `local=${remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1')}`);
-  check('保持対象のリモート投稿は残っている', remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0') === 57, `remote=${remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0')}`);
-  check('ブックマークされた投稿が残っている', remaining("SELECT COUNT(*) c FROM posts WHERE id = 'remote-bookmarked'") === 1);
-  check('FTS からも消えている', remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id LIKE 'remote-old-%'") === 0);
-  check('FTS に残す投稿は残っている', remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'local-1'") === 1);
-  check('ローカル投稿宛の通知は残る', remaining("SELECT COUNT(*) c FROM notifications WHERE id = 'n2'") === 1);
-  check('ローカル投稿は削除されていない（整合性）', remaining("SELECT COUNT(*) c FROM posts WHERE id IN ('local-1','local-2','local-reply','local-quote')") === 4);
-  check('孤立 FTS 行が残っていない', remaining('SELECT COUNT(*) c FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)') === 0);
+  const remaining = async (sql: string): Promise<number> => Number((await db.prepare(sql).get() as any).c);
+  check('ローカル投稿は残っている', await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1') === 4, `local=${await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1')}`);
+  check('保持対象のリモート投稿は残っている', await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0') === 57, `remote=${await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0')}`);
+  check('ブックマークされた投稿が残っている', await remaining("SELECT COUNT(*) c FROM posts WHERE id = 'remote-bookmarked'") === 1);
+  check('FTS からも消えている', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id LIKE 'remote-old-%'") === 0);
+  check('FTS に残す投稿は残っている', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'local-1'") === 1);
+  check('ローカル投稿宛の通知は残る', await remaining("SELECT COUNT(*) c FROM notifications WHERE id = 'n2'") === 1);
+  check('ローカル投稿は削除されていない（整合性）', await remaining("SELECT COUNT(*) c FROM posts WHERE id IN ('local-1','local-2','local-reply','local-quote')") === 4);
+  check('孤立 FTS 行が残っていない', await remaining('SELECT COUNT(*) c FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)') === 0);
 
   // FTS 同期トリガが元に戻っていること（今後の投稿で壊れないこと）
-  const triggers = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_ad'").all() as any[]).length;
+  const triggers = ((await db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_ad'").all()) as any[]).length;
   check('FTS 同期トリガが復元されている', triggers === 1, `triggers=${triggers}`);
-  db.prepare(`INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, media_attachments, published_at)
+  await db.prepare(`INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, media_attachments, published_at)
     VALUES ('after-maint', 'alice', 'Alice', 'http://local/users/alice', '@alice@local', 'メンテナンス後の投稿', 1, '[]', ?)`).run(new Date().toISOString());
-  check('メンテナンス後の投稿が FTS に入る', remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'after-maint'") === 1);
-  db.prepare("DELETE FROM posts WHERE id = 'after-maint'").run();
-  check('メンテナンス後の削除で FTS からも消える', remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'after-maint'") === 0);
+  check('メンテナンス後の投稿が FTS に入る', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'after-maint'") === 1);
+  await db.prepare("DELETE FROM posts WHERE id = 'after-maint'").run();
+  check('メンテナンス後の削除で FTS からも消える', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'after-maint'") === 0);
 
-  const optimized = optimizeDatabase(db);
+  const optimized = optimizeDatabase(conn);
   check('wal_checkpoint + VACUUM が成功する', optimized.checkpointed && optimized.vacuumed, JSON.stringify(optimized));
   check('FTS セグメントのマージも行う', optimized.ftsOptimized, JSON.stringify(optimized));
-  const sizeAfter = getDbSizeInfo(dbPath, db);
+  const sizeAfter = await getDbSizeInfo(dbPath, db);
   console.log(
     `[info] DB: ${formatBytes(sizeBefore.dbBytes)} -> ${formatBytes(sizeAfter.dbBytes)} ` +
       `/ ページ ${sizeBefore.pageCount}(空き ${sizeBefore.freelistCount}) -> ${sizeAfter.pageCount}(空き ${sizeAfter.freelistCount})`,
   );
   check('VACUUM で DB が縮む', sizeAfter.dbBytes < sizeBefore.dbBytes, `${formatBytes(sizeBefore.dbBytes)} -> ${formatBytes(sizeAfter.dbBytes)}`);
-  db.close();
+  conn.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +274,7 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
 // runMaintenance（CLI が使う入口・ドライランと実行）
 // ---------------------------------------------------------------------------
 {
-  const dry = runMaintenance({
+  const dry = await runMaintenance({
     dbPath,
     uploadsDir,
     backupDir,
@@ -283,7 +287,7 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('ドライランでは削除しない', dry.applied === false && dry.removed.posts === 0);
   check('ドライランでも孤立メディアを数える', dry.media.orphanFiles === 0, `orphan=${dry.media.orphanFiles}`);
 
-  const run = runMaintenance({
+  const run = await runMaintenance({
     dbPath,
     uploadsDir,
     backupDir,
