@@ -576,7 +576,7 @@ adminRouter.post('/blocks', asyncHandler(async (req: Request, res: Response) => 
     // （既定で有効。ただし silence は「隠すだけ」なので、データは残す）
     let purgeStats = null;
     if (purgeData !== false && cleanSeverity === 'suspend') {
-      purgeStats = purgeDomainData(cleanDomain);
+      purgeStats = await purgeDomainData(cleanDomain);
     }
 
     console.log(

@@ -703,7 +703,7 @@ export async function attemptDelivery(params: {
     params.useInstanceActor || !params.senderUser
       ? `${config.origin}/actor`
       : `${config.origin}/users/${params.senderUser.id}`;
-  if (isInboxBlockingSender(params.inboxUrl, senderActorUrl)) {
+  if (await isInboxBlockingSender(params.inboxUrl, senderActorUrl)) {
     console.log(`[Delivery Skipped] 🚫 相手がブロックしているためスキップ: ${senderActorUrl} -> ${params.inboxUrl}`);
     return { ok: false, status: null, error: '相手にブロックされています', retryable: false };
   }

@@ -251,7 +251,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
       const parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as PostRow | undefined;
       if (parentPost && parentPost.is_local === 1) {
         replyParentUserId = parentPost.user_id;
-        createNotification({
+        await createNotification({
           userId: parentPost.user_id,
           type: 'reply',
           actorId: user.id,
@@ -295,7 +295,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
       if (!target) {
         continue;
       }
-      createNotification({
+      await createNotification({
         userId: mentionedId,
         type: 'mention',
         actorId: user.id,
@@ -404,7 +404,7 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
       if (ant.user_id === post.user_id) continue;
 
       if (await await isPostMatchingAntenna(post, ant)) {
-        createNotification({
+        await createNotification({
           userId: ant.user_id,
           type: 'antenna',
           actorId: post.user_id || 'remote',

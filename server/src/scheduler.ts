@@ -95,7 +95,7 @@ export async function processScheduledPosts(): Promise<number> {
         console.log(`[Scheduler] ✅ Scheduled post published successfully: ${item.id} -> ${result.post.id}`);
 
         // ユーザーに予約投稿完了通知を送信
-        createNotification({
+        await createNotification({
           userId: user.id,
           type: 'scheduled_published',
           actorId: user.id,

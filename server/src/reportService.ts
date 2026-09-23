@@ -116,7 +116,7 @@ export async function insertReport(params: CreateReportParams): Promise<ReportRo
 
 /** 通報を運営メンバー全員に通知する */
 export async function notifyStaffOfReport(report: ReportRow): Promise<number> {
-  const staffIds = listStaffUserIds();
+  const staffIds = await listStaffUserIds();
   if (staffIds.length === 0) return 0;
 
   const categoryLabels: Record<string, string> = {
@@ -131,7 +131,7 @@ export async function notifyStaffOfReport(report: ReportRow): Promise<number> {
 
   let created = 0;
   for (const staffId of staffIds) {
-    const ok = createNotification({
+    const ok = await createNotification({
       userId: staffId,
       type: 'report',
       actorId: report.reporter_user_id || report.reporter_actor_url,

@@ -1115,9 +1115,9 @@ export function getDomainBlockSeverity(domainOrUrl: string): DomainBlockSeverity
 /**
  * 相手（リモート）がローカルアクターをブロックしたことを記録する
  */
-export function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): void {
+export async function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): Promise<void> {
   try {
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO remote_blocks (blocker_actor_url, blocked_actor_url, created_at)
       VALUES (?, ?, ?)
       ON CONFLICT(blocker_actor_url, blocked_actor_url) DO NOTHING
@@ -1128,9 +1128,9 @@ export function addRemoteBlock(blockerActorUrl: string, blockedActorUrl: string)
 }
 
 /** 受信した Block を取り消す（Undo Block） */
-export function removeRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): boolean {
+export async function removeRemoteBlock(blockerActorUrl: string, blockedActorUrl: string): Promise<boolean> {
   try {
-    const res = db.prepare('DELETE FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').run(blockerActorUrl, blockedActorUrl);
+    const res = await adb.prepare('DELETE FROM remote_blocks WHERE blocker_actor_url = ? AND blocked_actor_url = ?').run(blockerActorUrl, blockedActorUrl);
     return Number(res.changes ?? 0) > 0;
   } catch (err) {
     console.error('[Remote Block] ❌ 削除に失敗:', err);
@@ -1153,10 +1153,10 @@ export function isBlockedByRemoteActor(blockerActorUrl: string, blockedActorUrl:
  * 配送先 Inbox の持ち主が senderActorUrl をブロックしているか（配送抑制に使う）
  * ※ remote_blocks のブロッカーは remote_actors.id（= Actor URL）で保持している
  */
-export function isInboxBlockingSender(inboxUrl: string, senderActorUrl: string): boolean {
+export async function isInboxBlockingSender(inboxUrl: string, senderActorUrl: string): Promise<boolean> {
   if (!inboxUrl || !senderActorUrl) return false;
   try {
-    const row = db.prepare(`
+    const row = await adb.prepare(`
       SELECT 1 FROM remote_blocks rb
       JOIN remote_actors ra ON ra.id = rb.blocker_actor_url
       WHERE rb.blocked_actor_url = ? AND (ra.inbox_url = ? OR ra.shared_inbox_url = ?)
@@ -1184,14 +1184,14 @@ export function listRemoteBlocks(limit = 100): { blocker_actor_url: string; bloc
 /**
  * ブロックされたドメインに関するリモート投稿、アクターキャッシュ、フォロー関係を一括パージ（消去）
  */
-export function purgeDomainData(domain: string): { posts: number; actors: number; follows: number; relays: number } {
+export async function purgeDomainData(domain: string): Promise<{ posts: number; actors: number; follows: number; relays: number }> {
   const cleanDomain = extractDomain(domain);
   if (!cleanDomain) return { posts: 0, actors: 0, follows: 0, relays: 0 };
 
   const domainPattern = `%${cleanDomain}%`;
 
   // 1. 該当ドメインの投稿（連合投稿のみ対象。ローカル投稿は絶対に消さない）
-  const postsRes = db.prepare(`
+  const postsRes = await adb.prepare(`
     DELETE FROM posts 
     WHERE is_local = 0 AND (
       author_handle LIKE ? OR 
@@ -1201,19 +1201,19 @@ export function purgeDomainData(domain: string): { posts: number; actors: number
   `).run(`%@${cleanDomain}`, domainPattern, domainPattern);
 
   // 2. リモートアクターキャッシュの削除
-  const actorsRes = db.prepare(`
+  const actorsRes = await adb.prepare(`
     DELETE FROM remote_actors 
     WHERE domain = ? OR domain LIKE ? OR id LIKE ?
   `).run(cleanDomain, `%.${cleanDomain}`, domainPattern);
 
   // 3. フォロー関係の削除
-  const followsRes = db.prepare(`
+  const followsRes = await adb.prepare(`
     DELETE FROM follows 
     WHERE follower_url LIKE ? OR following_url LIKE ?
   `).run(domainPattern, domainPattern);
 
   // 4. 該当ドメインのリレー削除
-  const relaysRes = db.prepare(`
+  const relaysRes = await adb.prepare(`
     DELETE FROM relays 
     WHERE inbox_url LIKE ? OR actor_url LIKE ?
   `).run(domainPattern, domainPattern);
@@ -1269,10 +1269,10 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
  * 運営メンバー（admin / moderate 権限を持つローカルユーザー）の ID 一覧。
  * 通報の通知など、管理者向けの配布先として使う。
  */
-export function listStaffUserIds(): string[] {
+export async function listStaffUserIds(): Promise<string[]> {
   try {
-    const users = db.prepare('SELECT id, role FROM users').all() as unknown as { id: string; role: string }[];
-    const roleRows = db.prepare(`
+    const users = await adb.prepare('SELECT id, role FROM users').all() as unknown as { id: string; role: string }[];
+    const roleRows = await adb.prepare(`
       SELECT ur.user_id AS user_id, r.permissions AS permissions
       FROM user_roles ur JOIN roles r ON r.id = ur.role_id
     `).all() as unknown as { user_id: string; permissions: string }[];
@@ -1293,8 +1293,8 @@ export function listStaffUserIds(): string[] {
   }
 }
 
-export function getNotificationPrefs(userId: string): Record<string, boolean> {
-  const row = db.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
+export async function getNotificationPrefs(userId: string): Promise<Record<string, boolean>> {
+  const row = await adb.prepare('SELECT notification_prefs FROM users WHERE id = ?').get(userId) as { notification_prefs?: string | null } | undefined;
   const prefs: Record<string, boolean> = {};
   for (const type of NOTIFICATION_TYPES) prefs[type] = true;
   if (!row?.notification_prefs) return prefs;
@@ -1311,13 +1311,13 @@ export function getNotificationPrefs(userId: string): Record<string, boolean> {
   return prefs;
 }
 
-export function saveNotificationPrefs(userId: string, prefs: Record<string, unknown>): Record<string, boolean> {
+export async function saveNotificationPrefs(userId: string, prefs: Record<string, unknown>): Promise<Record<string, boolean>> {
   const clean: Record<string, boolean> = {};
   for (const type of NOTIFICATION_TYPES) {
     if (typeof prefs[type] === 'boolean') clean[type] = prefs[type] as boolean;
   }
-  db.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(JSON.stringify(clean), userId);
-  return getNotificationPrefs(userId);
+  await adb.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(JSON.stringify(clean), userId);
+  return await getNotificationPrefs(userId);
 }
 
 /** 生の JSON 値から、その種類の通知が有効かを判定する（createNotification 用） */
@@ -1336,15 +1336,15 @@ export function isNotificationTypeEnabled(rawPrefs: string | null | undefined, t
 }
 
 /** 無効にされている通知の種類（通知一覧のフィルタ用） */
-export function getDisabledNotificationTypes(userId: string): string[] {
-  const prefs = getNotificationPrefs(userId);
+export async function getDisabledNotificationTypes(userId: string): Promise<string[]> {
+  const prefs = await getNotificationPrefs(userId);
   return NOTIFICATION_TYPES.filter((type) => !prefs[type]);
 }
 
 /**
  * 通知を作成して DB に保存
  */
-export function createNotification(params: {
+export async function createNotification(params: {
   userId: string;
   type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
   actorId: string;
@@ -1354,14 +1354,14 @@ export function createNotification(params: {
   postId?: string;
   postContent?: string;
   content?: string;
-}): boolean {
+}): Promise<boolean> {
   // 自分自身に対するアクションは通知しない (予約投稿の自動公開など、システム自己通知は許可)
   if (params.type !== 'scheduled_published' && (params.userId === params.actorId || params.actorHandle.startsWith(`@${params.userId}@`))) {
     return false;
   }
 
   // 受信者がローカルユーザーとして存在するか
-  const user = db.prepare('SELECT id, notification_prefs FROM users WHERE id = ?').get(params.userId) as
+  const user = await adb.prepare('SELECT id, notification_prefs FROM users WHERE id = ?').get(params.userId) as
     | { id: string; notification_prefs?: string | null }
     | undefined;
   if (!user) return false;
@@ -1373,7 +1373,7 @@ export function createNotification(params: {
 
   // 重複防止（フォロー通知は同じ人から未読が既にあれば二重生成しない）
   if (params.type === 'follow') {
-    const existing = db.prepare(`
+    const existing = await adb.prepare(`
       SELECT id FROM notifications 
       WHERE user_id = ? AND type = 'follow' AND actor_id = ? AND is_read = 0
     `).get(params.userId, params.actorId);
@@ -1382,7 +1382,7 @@ export function createNotification(params: {
 
   // 同一投稿に対する同一ユーザーからの同一リアクション通知の重複防止
   if (params.type === 'reaction' && params.postId) {
-    const existing = db.prepare(`
+    const existing = await adb.prepare(`
       SELECT id FROM notifications 
       WHERE user_id = ? AND type = 'reaction' AND actor_id = ? AND post_id = ? AND content = ?
     `).get(params.userId, params.actorId, params.postId, params.content || '');
@@ -1397,7 +1397,7 @@ export function createNotification(params: {
   const contentSnippet = (params.content || '').replace(/<[^>]+>/g, '').trim().slice(0, 140);
 
   try {
-    db.prepare(`
+    await adb.prepare(`
       INSERT INTO notifications (id, user_id, type, actor_id, actor_name, actor_handle, actor_icon, post_id, post_content, content, is_read, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
     `).run(
@@ -1512,9 +1512,9 @@ export function setServerSetting(key: string, value: string): void {
 /**
  * 全サーバー設定の取得（DB）
  */
-export function getAllServerSettings(): Record<string, string> {
+export async function getAllServerSettings(): Promise<Record<string, string>> {
   try {
-    const rows = db.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
+    const rows = await adb.prepare('SELECT key, value FROM server_settings').all() as { key: string; value: string }[];
     const result: Record<string, string> = {};
     for (const r of rows) {
       result[r.key] = r.value;

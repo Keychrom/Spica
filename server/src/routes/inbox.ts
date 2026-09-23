@@ -146,7 +146,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         `).run(followId, actorUrl, canonicalTargetActorUrl, remoteActor.inbox_url, initialStatus, now);
 
         try {
-          createNotification({
+          await createNotification({
             userId: targetUser.id,
             type: 'follow',
             actorId: actorUrl,
@@ -382,7 +382,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
                 console.log(`[Inbox Poll Vote Success] ✅ Vote successfully recorded: poll ${poll.id}, choice ${matchedChoice.choice_index} (+1)`);
 
                 // 📡 リアルタイム SSE ブロードキャスト（画面上のアンケート表示を即座に更新）
-                const updatedPoll = getPollDataForPost(parentPost.id, null);
+                const updatedPoll = await getPollDataForPost(parentPost.id, null);
                 if (updatedPoll) {
                   broadcastPoll({
                     postId: parentPost.id,
@@ -393,7 +393,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
                 // 投稿者がローカルユーザーの場合、通知を作成
                 if (parentPost.is_local === 1) {
                   try {
-                    createNotification({
+                    await createNotification({
                       userId: parentPost.user_id,
                       type: 'reply',
                       actorId: actorUrl,
@@ -558,7 +558,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           try {
             const parentPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as any;
             if (parentPost && parentPost.is_local === 1) {
-              createNotification({
+              await createNotification({
                 userId: parentPost.user_id,
                 type: 'reply',
                 actorId: actorUrl,
@@ -774,7 +774,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             try {
               const boostedPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(boostedPostId) as any;
               if (boostedPost && boostedPost.is_local === 1) {
-                createNotification({
+                await createNotification({
                   userId: boostedPost.user_id,
                   type: 'renote',
                   actorId: actorUrl,
@@ -845,7 +845,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             const targetPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
             if (targetPost && targetPost.is_local === 1) {
               const u = new URL(actorUrl);
-              createNotification({
+              await createNotification({
                 userId: targetPost.user_id,
                 type: 'reaction',
                 actorId: actorUrl,
@@ -917,7 +917,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             const targetPost = await adb.prepare('SELECT * FROM posts WHERE id = ?').get(targetPostId) as any;
             if (targetPost && targetPost.is_local === 1) {
               const u = new URL(actorUrl);
-              createNotification({
+              await createNotification({
                 userId: targetPost.user_id,
                 type: 'reaction',
                 actorId: actorUrl,
@@ -965,7 +965,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         } else if (innerType === 'Block') {
           // ブロックの解除: 配送抑制をやめる
           const blockedUrl = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id;
-          if (blockedUrl && removeRemoteBlock(actorUrl, blockedUrl)) {
+          if (blockedUrl && (await removeRemoteBlock(actorUrl, blockedUrl))) {
             console.log(`[Inbox Undo] ✅ ブロックを解除: ${actorUrl} -> ${blockedUrl}（配送を再開）`);
           }
         }
@@ -1025,7 +1025,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.warn(`[Inbox Block] ⚠️ ブロッカーの取得に失敗: ${actorUrl} (${e?.message || e})`);
         }
 
-        addRemoteBlock(actorUrl, objectUrl);
+        await addRemoteBlock(actorUrl, objectUrl);
         console.log(`[Inbox Block] 🚫 受信したブロックを記録: ${actorUrl} が ${objectUrl} をブロック（以後の配送を停止）`);
         return res.status(200).json({ status: 'Block recorded' });
       }
@@ -1058,7 +1058,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           await adb.prepare('UPDATE users SET moved_to = ? WHERE id = ?').run(newActorUrl, localUserId);
           console.log(`[Inbox Move] 📦 ローカルユーザー @${localUserId} の引っ越し先を記録: ${newActorUrl}`);
           try {
-            createNotification({
+            await createNotification({
               userId: localUserId,
               type: 'move',
               actorId: newActorUrl,
@@ -1111,7 +1111,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
           try {
             const newHandle = newActor ? `@${newActor.username}@${newActor.domain}` : newActorUrl;
-            createNotification({
+            await createNotification({
               userId: follower.id,
               type: 'move',
               actorId: newActorUrl,
