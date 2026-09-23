@@ -173,7 +173,7 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
 
 > [!NOTE]
 > 手順 1〜5 はすべて実行できます（アプリは `DB_DRIVER=postgres` で起動します）。手順 5 のあとの
-> テスト実行と、PG 側の運用（バックアップ）だけが未整備です。
+> テスト実行（`bash scripts/run-suites-pg.sh`）とバックアップ（`npm run db:pg:backup`）も用意してあります。
 
 1. PostgreSQL 16+ を用意し、専用ロールと DB を作る（アプリに superuser を使わせない）。
    ```sql
@@ -182,6 +182,12 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
    \c spica
    CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- 管理者権限が必要（1 回だけ）
    ```
+
+   > [!NOTE]
+   > `pg_trgm` を作れない環境（アプリのロールが DB の所有者でないマネージド PostgreSQL など）でも
+   > **起動できます。** その場合、日本語の部分一致検索は索引なしで動きます（結果は同じ・遅くなるだけ）。
+   > 適用時に `pg_trgm を有効化できませんでした` と警告が出ます。管理者が `CREATE EXTENSION pg_trgm;` を
+   > 実行して再起動すると索引が作られます。
 2. `.env` に接続先を設定する（`DB_PATH` は使わない）。**この値は公開ツリーに置かないでください**（SN-SNS 側の `.env` のみ）。
    ```
    DB_DRIVER=postgres
@@ -212,8 +218,18 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
    ログには `[DB] PostgreSQL との接続が切れました（n 回目）。次のクエリで再接続します:` が出ます。
    なお **実行中だったクエリは再実行しません**（書き込みが二重になる可能性があるため）。
    呼び出し元はエラーを 1 回受け取り、次のクエリから復帰します。
-7. バックアップは `pg_dump` の cron に置き換える。保持期間削除・保存方針の適用（アプリ内の自動メンテナンス）は
-   PG でもそのまま動きます。**`npm run db:maintenance`（手動 CLI）は SQLite 専用**なので、PG では使いません。
+7. バックアップは `pg_dump` を呼ぶ。SQLite の `db:maintenance` に相当するものを用意してあり、
+   **アプリ内の自動メンテナンス（既定で有効）でも毎日 1 回取ります**。
+   ```bash
+   npm run db:pg:backup                      # 手動で 1 回取る
+   npm run db:pg:backup -- --out /backup --keep 5
+   # 復元
+   pg_restore --clean --if-exists -d "$DATABASE_URL" data/backups/spica-YYYYMMDD-HHMMSSmmm.dump
+   ```
+   認証情報は環境変数で `pg_dump` に渡すので、`ps` からパスワードは見えません。
+   `pg_dump` が見つからない環境では**警告してスキップ**します（`PG_BIN_DIR` で場所を指定できます）。
+   保持期間削除・保存方針の適用（アプリ内の自動メンテナンス）は PG でもそのまま動きます。
+   **`npm run db:maintenance`（手動 CLI）は SQLite 専用**なので、PG では使いません。
 8. `VACUUM` 相当の作業は不要（autovacuum）。
 
 ---
@@ -293,7 +309,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | :--- | :--- | :--- |
 | **書き込みが直列** | worker も接続も 1 本。同時リクエストはクエリ単位で並ぶ | 読み取り中心のノードでは SQLite より遅くなりうる（1 クエリごとにスレッド間往復が入る） |
 | **大きな結果** | 結果は JSON でコピーする | 巨大な `BLOB` を大量に読む処理は苦手。投稿やユーザーの一覧は問題なし |
-| **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump` を使う。アプリ内の自動バックアップは PG では動かない（スキップする） |
+| **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump -Fc` を使う（`npm run db:pg:backup`。自動メンテナンスでも毎日取る）。`pg_dump` が無い環境では警告してスキップする |
 | **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する（下記） |
 | **自動メンテナンス** | 保持期間の削除・方針適用はどちらの DB でも動く | PG では削除のときに FTS 同期トリガを外さない（SQLite のトリガ定義を流すと構文エラーになるため修正済み） |
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
@@ -316,16 +332,17 @@ npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-**いま PG でも緑になるスイート（16 本）**: `pg-port`（27 項目）/ `pg-translate`（28）/
-`db-async`（41）/ `admin-audit` / `email-notify` / `image-proxy` / `ops-automation` / `reports` /
-`silence-featured` / `pagination` / `announcements` / `antennas-and-scheduler` / `account-deletion` /
-`fts-push` / `export-and-rules` / `theme-channels-webauthn` / `db-maintenance`
+**いま PG でも緑になるスイート（17 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
+`pg-translate`（28）/ `db-async`（46）/ `admin-audit` / `email-notify` / `image-proxy` /
+`ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
+`antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
+`theme-channels-webauthn`
 
 SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でまとめて回せます。
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| 上記 16 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
+| 上記 17 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-password-auth` | 🚧 HTTP の検査（登録・ログイン・マスターキー・拒否）は全部通る。最後の「平文で保存されない」検査だけが **SQLite ファイルを直接開く**ため PG では開けずに失敗する |
 | `test-search-policy` | 🚧 直近の `posts_fts` を直接いじる検査があり、SQLite 前提（PG では trigram 索引側の検査として `test-pg-port` が担当） |
 | `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む SQLite 専用のスイート。PG 側の保全は `db:maintenance` ではなく `pg_dump` + 手動 SQL |
@@ -373,8 +390,9 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 - **二重対応の恒久保守はしない。** SQLite と PG の両方で動くコードを維持し続けると、テストも運用も 2 倍になる。
   いまは SQLite が既定で、PG は「選んだときだけ使う道」。常用するならどちらかに寄せる。
 - **エクスポート / インポートをノード移行に使わない。** ユーザー単位のアーカイブなので全データは移らない（付録）。
-- **PG の保全は `pg_dump`。** SQLite 用の `npm run db:maintenance`（VACUUM / バックアップ）は SQLite 専用。
-  自動メンテナンス（保持期間の削除・索引方針の適用）はどちらの DB でも動く。
+- **PG の保全は `pg_dump`**（`npm run db:pg:backup` と自動メンテナンス）。SQLite 用の
+  `npm run db:maintenance`（VACUUM / バックアップ）は SQLite 専用。保持期間の削除・索引方針の適用は
+  どちらの DB でも動く。
 
 ---
 

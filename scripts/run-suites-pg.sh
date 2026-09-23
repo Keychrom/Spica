@@ -21,7 +21,7 @@ export TEST_DATABASE_URL="$DSN"
 
 # PG でも通るスイート（docs/POSTGRESQL.md の「テストスイートを PG で回す場合」を参照）
 DEFAULT_SUITES=(
-  pg-port pg-translate db-async admin-audit email-notify image-proxy ops-automation
+  pg-port pg-backup pg-translate db-async admin-audit email-notify image-proxy ops-automation
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
 )

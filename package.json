@@ -50,6 +50,8 @@
     "db:port-report": "npx tsx scripts/db-port-report.ts",
     "db:pg:schema": "npx tsx scripts/pg-schema.ts",
     "db:pg:init": "npx tsx scripts/pg-init.ts",
+    "db:pg:backup": "npx tsx scripts/pg-backup.ts",
+    "test:pg-backup": "npx tsx scripts/test-pg-backup.ts",
     "db:pg:migrate": "npx tsx scripts/pg-migrate.ts",
     "test:pg-port": "npx tsx scripts/test-pg-port.ts",
     "test:pg-translate": "npx tsx scripts/test-pg-translate.ts",

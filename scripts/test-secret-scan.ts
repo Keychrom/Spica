@@ -55,6 +55,8 @@ const FAKE = {
   github: ['ghp', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('_'),
   slack: ['xoxb', '123456789012', 'abcdefghijklmnop'].join('-'),
   basicAuthUrl: ['https://admin:', 'p4ssw0rd', '@example.com/api'].join(''),
+  // パスワード部分だけを単体でも使えるようにしておく（例示用ホストと組み合わせて検査する）
+  basicAuthPassword: ['p4ssw0rd', 'XyZ9'].join(''),
   env: ['S3_SECRET_ACCESS_KEY', 'AbCdEf0123456789XyZ'].join('='),
   smtp: ['SMTP_PASS', 'sup3r-s3cret-pass'].join('='),
   masterKey: ['MASTER_KEY', '0123456789abcdef0123456789abcdef'].join('='),
@@ -183,6 +185,19 @@ try {
     'DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica',
   ].join('\n'));
   check('例示用の接続文字列は検出しない', findingsFor('db.md').length, 0);
+
+  // ── ソース中の例示用 DSN（テストが実行時に組み立てる形）───────
+  // ホストが例示用（example.com など）でパスワードがプレースホルダなら、コード中でも検出しない。
+  // テンプレートで埋め込む形（`postgres://user:${var}@example.com/...`）も同じ扱いにする。
+  writeFixture('scripts/probe.ts', [
+    'const dsn = `postgres://spica:${encodedPassword}@example.com:5432/spica`;',
+    "const fixed = 'postgres://spica:password@localhost:5432/spica';",
+  ].join('\n'));
+  check('コード中の例示用 DSN は検出しない', findingsFor('probe.ts').length, 0);
+
+  // 例示用ホストでもパスワードが本物らしければ検出する（見逃し防止）
+  writeFixture('scripts/probe-real.ts', `const dsn = 'postgres://spica:${FAKE.basicAuthPassword}@example.com/db';\n`);
+  check('例示用ホストでも本物のパスワードなら検出する', findingsFor('probe-real.ts').some((f) => f.rule === 'basic-auth-url'), true);
 
   // 本物らしい接続文字列も、ソースに実在の形で残らないよう実行時に組み立てる
   writeFixture('docs/leak.md', `${FAKE.realLookingDsn}\n`);

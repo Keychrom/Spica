@@ -149,7 +149,18 @@ function generate(objects: SqliteObject[]): string {
   lines.push('-- 適用: npm run db:pg:init -- --dsn "$DATABASE_URL"');
   lines.push('');
   lines.push('-- pg_trgm: 日本語を含む部分一致検索（FTS5 の trigram 相当）に使う');
-  lines.push('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
+  lines.push('-- 権限が無い環境（マネージド PostgreSQL など）でも適用が止まらないよう、');
+  lines.push('-- 拡張が無ければ索引を作らずに進む（検索は動くが全走査になる）。');
+  lines.push('DO $$');
+  lines.push('BEGIN');
+  lines.push("  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN");
+  lines.push('    BEGIN');
+  lines.push('      CREATE EXTENSION IF NOT EXISTS pg_trgm;');
+  lines.push('    EXCEPTION WHEN insufficient_privilege THEN');
+  lines.push("      RAISE WARNING 'pg_trgm を有効化できませんでした（管理者権限が必要です）。日本語の部分一致検索は索引なしで動きます。';");
+  lines.push('    END;');
+  lines.push('  END IF;');
+  lines.push('END $$;');
   lines.push('');
 
   // 参照される側を先に作る（PostgreSQL は外部キーの参照先が先に必要）
@@ -167,7 +178,13 @@ function generate(objects: SqliteObject[]): string {
       // FTS5 の仮想テーブル → 普通のテーブル + GIN(trigram) 索引
       lines.push(`-- ${table.name}: FTS5 仮想テーブルを通常テーブル + pg_trgm 索引に置き換え`);
       lines.push(`CREATE TABLE IF NOT EXISTS ${table.name} (\n  post_id TEXT PRIMARY KEY,\n  content TEXT\n);`);
-      lines.push(`CREATE INDEX IF NOT EXISTS idx_${table.name}_trgm ON ${table.name} USING gin (content gin_trgm_ops);`);
+      // 索引は pg_trgm が無いと作れない（operator class が無いため）。拡張があるときだけ作る
+      lines.push('DO $$');
+      lines.push('BEGIN');
+      lines.push("  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN");
+      lines.push(`    CREATE INDEX IF NOT EXISTS idx_${table.name}_trgm ON ${table.name} USING gin (content gin_trgm_ops);`);
+      lines.push('  END IF;');
+      lines.push('END $$;');
       lines.push('');
       continue;
     }

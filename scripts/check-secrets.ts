@@ -70,7 +70,8 @@ const PLACEHOLDER_RE = /^(?:x+|\*+|\.+|-+|<[^>]*>|\$\{[^}]*\}|your[-_ ]|change[-
  * どちらか一方でも本物らしければ検出対象のまま（実パスワードを見逃さない）。
  */
 function isExampleConnectionString(value: string): boolean {
-  const match = /^[a-z][a-z0-9+.-]*:\/\/([^:@/]+):([^@]*)@(.+)$/i.exec(value);
+  // scheme 付き（postgres://…）と、パターン検出が拾う scheme 無し（//…）の両方を受ける
+  const match = /^(?:[a-z][a-z0-9+.-]*:)?\/\/([^:@/]+):([^@]*)@(.+)$/i.exec(value);
   if (!match) return false;
   const password = match[2];
   const host = match[3].split('/')[0].replace(/^\[|\]$/g, '').split(':')[0].toLowerCase();
@@ -382,6 +383,9 @@ export function scanForSecrets(options: ScanOptions = {}): ScanResult {
       for (const rule of RULES) {
         const m = rule.re.exec(line);
         if (m) {
+          // 例示用（example.com などのホスト + プレースホルダのパスワード）は検出しない。
+          // ドキュメントやテストに `postgres://user:password@example.com/...` を書けるようにするため
+          if (rule.id === 'basic-auth-url' && isExampleConnectionString(m[0])) continue;
           findings.push({
             file: rel,
             line: i + 1,

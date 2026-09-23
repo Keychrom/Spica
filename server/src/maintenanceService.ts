@@ -14,6 +14,7 @@ import {
 import { getMediaQuotaBytes } from './mediaService.js';
 import { getProxyStats, pruneProxyCache } from './imageProxy.js';
 import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy } from './searchPolicy.js';
+import { backupPostgresDatabase } from './pgBackup.js';
 
 /**
  * 運用の自動化（サーバー常駐プロセス側）
@@ -156,7 +157,7 @@ export async function runScheduledMaintenance(): Promise<{
 
   // ① バックアップ（既定で有効）
   let backup: { path: string; bytes: number } | null = null;
-  // バックアップは SQLite 専用（PostgreSQL は pg_dump を使う。docs/POSTGRESQL.md）
+  // SQLite は VACUUM INTO、PostgreSQL は pg_dump（pg_dump が無ければ警告してスキップ）
   if (config.autoBackup !== false && db.kind === 'sqlite') {
     try {
       const result = backupDatabase(db as unknown as DatabaseSync, config.dbPath, backupDir());
@@ -168,6 +169,24 @@ export async function runScheduledMaintenance(): Promise<{
       );
     } catch (err: any) {
       console.error('[Auto Maintenance] バックアップに失敗しました:', err?.message || err);
+    }
+  } else if (config.autoBackup !== false && db.kind === 'postgres') {
+    try {
+      const result = await backupPostgresDatabase({
+        dsn: config.databaseUrl,
+        backupDir: backupDir(),
+        keep: config.backupsKeep,
+        log: (line) => console.log(`[Auto Maintenance] ${line}`),
+      });
+      if (result) {
+        backup = { path: result.path, bytes: result.bytes };
+        console.log(
+          `[Auto Maintenance] 💾 バックアップ (pg_dump): ${path.basename(result.path)} (${(result.bytes / 1024 / 1024).toFixed(1)}MB)` +
+            (result.removed.length > 0 ? ` / 古い世代を削除: ${result.removed.length} 件` : ''),
+        );
+      }
+    } catch (err: any) {
+      console.error('[Auto Maintenance] バックアップ (pg_dump) に失敗しました:', err?.message || err);
     }
   }
 

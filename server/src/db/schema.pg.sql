@@ -6,7 +6,18 @@
 -- 適用: npm run db:pg:init -- --dsn "$DATABASE_URL"
 
 -- pg_trgm: 日本語を含む部分一致検索（FTS5 の trigram 相当）に使う
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- 権限が無い環境（マネージド PostgreSQL など）でも適用が止まらないよう、
+-- 拡張が無ければ索引を作らずに進む（検索は動くが全走査になる）。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE WARNING 'pg_trgm を有効化できませんでした（管理者権限が必要です）。日本語の部分一致検索は索引なしで動きます。';
+    END;
+  END IF;
+END $$;
 
 -- ==== テーブル ====
 CREATE TABLE IF NOT EXISTS admin_actions  (
@@ -309,7 +320,12 @@ CREATE TABLE IF NOT EXISTS posts_fts (
   post_id TEXT PRIMARY KEY,
   content TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_posts_fts_trgm ON posts_fts USING gin (content gin_trgm_ops);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+    CREATE INDEX IF NOT EXISTS idx_posts_fts_trgm ON posts_fts USING gin (content gin_trgm_ops);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS proxy_cache  (
   url_hash TEXT PRIMARY KEY,
