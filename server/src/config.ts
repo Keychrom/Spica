@@ -87,6 +87,16 @@ export interface AppConfig {
   dbDriver: 'sqlite' | 'postgres';
   /** PostgreSQL の接続文字列（DB_DRIVER=postgres のとき必須。DATABASE_URL） */
   databaseUrl: string;
+  /**
+   * PostgreSQL の 1 クエリの上限（ミリ秒。0 で無効）。既定 30000。
+   * 直列化した 1 接続なので、重いクエリやロック待ちがノード全体を止めないための保険。
+   */
+  databaseStatementTimeoutMs: number;
+  /**
+   * アイドル状態のトランザクションを切るまでの時間（ミリ秒。0 で無効）。既定 60000。
+   * トランザクションを握ったまま落ちた処理がロックを保持し続けるのを防ぐ。
+   */
+  databaseIdleTimeoutMs: number;
   /** 画像プロキシ（リモート画像の直リンクを避け、このノード経由で配信する）既定 true */
   imageProxy: boolean;
   /** 画像プロキシのキャッシュ上限（MB）既定 512 */
@@ -120,6 +130,9 @@ const rawDriver = (process.env.DB_DRIVER || 'sqlite').trim().toLowerCase();
 const DB_DRIVER: 'sqlite' | 'postgres' =
   rawDriver === 'postgres' || rawDriver === 'postgresql' || rawDriver === 'pg' ? 'postgres' : 'sqlite';
 const DATABASE_URL = process.env.DATABASE_URL || '';
+// 直列化した 1 接続なので、1 本の重いクエリが全体を止めないよう上限を入れておく（0 で無効）
+const DATABASE_STATEMENT_TIMEOUT_MS = Number(process.env.DATABASE_STATEMENT_TIMEOUT_MS ?? 30_000);
+const DATABASE_IDLE_TIMEOUT_MS = Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 60_000);
 const INSTANCE_NAME = process.env.INSTANCE_NAME || 'Spica';
 const INSTANCE_DESCRIPTION = process.env.INSTANCE_DESCRIPTION || 'Spica - A decentralized, sovereign social network node built from scratch with ActivityPub.';
 
@@ -246,6 +259,8 @@ export const config: AppConfig = {
   backupsKeep: BACKUPS_KEEP,
   dbDriver: DB_DRIVER,
   databaseUrl: DATABASE_URL,
+  databaseStatementTimeoutMs: Number.isFinite(DATABASE_STATEMENT_TIMEOUT_MS) ? DATABASE_STATEMENT_TIMEOUT_MS : 30_000,
+  databaseIdleTimeoutMs: Number.isFinite(DATABASE_IDLE_TIMEOUT_MS) ? DATABASE_IDLE_TIMEOUT_MS : 60_000,
   imageProxy: IMAGE_PROXY,
   imageProxyMaxMb: IMAGE_PROXY_MAX_MB,
   imageProxyTtlDays: IMAGE_PROXY_TTL_DAYS,

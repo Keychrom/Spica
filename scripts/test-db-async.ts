@@ -186,9 +186,70 @@ await sqliteAsync.exec('DROP TABLE shared_probe');
 // 参照側は SQLite の同期ラッパー（同じ操作で同じ値が返るはず。ドライバ間の一致を見る）
 let skippedPg = false;
 if (DSN) {
-  const pgAsync = createAsyncDatabase({ driver: 'postgres', connectionString: DSN });
+  const pgAsync = createAsyncDatabase({
+    driver: 'postgres',
+    connectionString: DSN,
+    statementTimeoutMs: 30_000,
+    idleInTransactionTimeoutMs: 60_000,
+  });
   await pgAsync.ready();
   await inspect('PostgreSQL', pgAsync);
+
+  // ── セッション設定（タイムアウト）が効いていること ──────
+  console.log('\n── PostgreSQL: セッション設定 ───────────');
+  check(
+    'statement_timeout が設定されている',
+    ((await pgAsync.prepare('SHOW statement_timeout').get()) as any).statement_timeout,
+    '30s',
+  );
+  check(
+    'idle_in_transaction_session_timeout が設定されている',
+    ((await pgAsync.prepare('SHOW idle_in_transaction_session_timeout').get()) as any).idle_in_transaction_session_timeout,
+    '1min',
+  );
+
+  // ── 接続が切れても落ちず、次のクエリで復帰すること ────────
+  // 管理者が PostgreSQL を再起動した / ネットワークが瞬断した、に相当する状況を作る。
+  // （pg は切断時に 'error' を emit する。受け手がいないと Node はプロセスごと落とす）
+  console.log('\n── PostgreSQL: 接続断からの復帰 ───────────');
+  const { Client } = await import('pg');
+  const killer = new Client({ connectionString: DSN });
+  await killer.connect();
+  const pid = ((await pgAsync.prepare('SELECT pg_backend_pid() AS pid').get()) as any).pid;
+
+  // 実行中のクエリはエラーとして返る（ハングしない・プロセスも落ちない）
+  let inFlightError: string | null = null;
+  const slow = pgAsync.prepare('SELECT pg_sleep(5)').get().catch((err: any) => {
+    inFlightError = String(err?.message || err);
+    return null;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await killer.query('SELECT pg_terminate_backend($1)', [pid]);
+  await slow;
+  check('切断時に実行中だったクエリはエラーになる', Boolean(inFlightError), true);
+
+  // 次のクエリは再接続して成功する（ここで例外が出たり落ちたりしたら失敗）
+  let recovered: number | null = null;
+  let recoveryError: string | null = null;
+  try {
+    recovered = Number(((await pgAsync.prepare('SELECT 1 AS ok').get()) as any).ok);
+  } catch (err: any) {
+    recoveryError = String(err?.message || err);
+  }
+  check('切断後のクエリは再接続して成功する', recovered, 1);
+  if (recoveryError) console.log(`     再試行時のエラー: ${recoveryError.split('\n')[0]}`);
+
+  // 新しい接続でもセッション設定は入り直す（SET は接続ごと）
+  check(
+    '再接続後も statement_timeout が設定されている',
+    ((await pgAsync.prepare('SHOW statement_timeout').get()) as any).statement_timeout,
+    '30s',
+  );
+
+  const secondPid = ((await pgAsync.prepare('SELECT pg_backend_pid() AS pid').get()) as any).pid;
+  check('接続が張り直されている（別のバックエンド）', secondPid !== pid, true);
+  await killer.end();
+
   await pgAsync.close();
 } else {
   skippedPg = true;

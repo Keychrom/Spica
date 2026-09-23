@@ -24,6 +24,8 @@ fi
 # ※ README.md は公開ツリー側にだけ Alpha 警告の一文があるので、丸ごとコピーしない。
 #    差分が数行なら手で当てる（下の「手で当てるファイル」を参照）。
 FILES=(
+  .env.example
+  docs/CONFIGURATION.md
   docs/POSTGRESQL.md
   package.json
 )

@@ -27,6 +27,8 @@ export const db = createAsyncDatabase({
   driver: config.dbDriver,
   sqlite: config.dbDriver === 'sqlite' ? new SqliteDatabase(new DatabaseSync(config.dbPath)) : undefined,
   connectionString: config.databaseUrl,
+  statementTimeoutMs: config.databaseStatementTimeoutMs,
+  idleInTransactionTimeoutMs: config.databaseIdleTimeoutMs,
 });
 
 // テーブル初期化＆マイグレーション
