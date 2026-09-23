@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { SpicaDatabase } from './db/driver.js';
-import { db, getServerSetting, setServerSetting } from './db.js';
+import { adb, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 
 /**
@@ -91,10 +91,10 @@ export function setRemoteAnnouncePolicy(policy: unknown): RemoteAnnouncePolicy {
 }
 
 /** ローカルユーザーがそのアクターをフォローしているか */
-export function isFollowedByLocal(actorUrl: string | null | undefined): boolean {
+export async function isFollowedByLocal(actorUrl: string | null | undefined): Promise<boolean> {
   if (!actorUrl) return false;
   try {
-    const row = db
+    const row = await adb
       .prepare("SELECT 1 FROM follows WHERE following_url = ? AND status = 'accepted' LIMIT 1")
       .get(actorUrl);
     return Boolean(row);
@@ -104,10 +104,10 @@ export function isFollowedByLocal(actorUrl: string | null | undefined): boolean 
 }
 
 /** ローカル投稿への返信（または引用）か */
-export function isReplyToLocalPost(inReplyTo: string | null | undefined): boolean {
+export async function isReplyToLocalPost(inReplyTo: string | null | undefined): Promise<boolean> {
   if (!inReplyTo) return false;
   try {
-    const row = db.prepare('SELECT 1 FROM posts WHERE id = ? AND is_local = 1').get(inReplyTo);
+    const row = await adb.prepare('SELECT 1 FROM posts WHERE id = ? AND is_local = 1').get(inReplyTo);
     return Boolean(row);
   } catch {
     return false;
@@ -118,12 +118,12 @@ export function isReplyToLocalPost(inReplyTo: string | null | undefined): boolea
  * 受信したリモート投稿を FTS 索引に入れるか。
  * 挿入時に posts.fts_indexed へ保存し、トリガがそれを見て索引するかどうかを決める。
  */
-export function shouldIndexRemotePost(params: { authorUrl?: string | null; inReplyTo?: string | null }): boolean {
+export async function shouldIndexRemotePost(params: { authorUrl?: string | null; inReplyTo?: string | null }): Promise<boolean> {
   switch (getFtsIndexScope()) {
     case 'all':
       return true;
     case 'follows':
-      return isFollowedByLocal(params.authorUrl) || isReplyToLocalPost(params.inReplyTo);
+      return (await isFollowedByLocal(params.authorUrl)) || (await isReplyToLocalPost(params.inReplyTo));
     case 'local':
     default:
       return false;
@@ -131,7 +131,7 @@ export function shouldIndexRemotePost(params: { authorUrl?: string | null; inRep
 }
 
 /** 受信したリモートのブースト（Announce）を保存するか */
-export function shouldStoreRemoteAnnounce(actorUrl: string | null | undefined): boolean {
+export async function shouldStoreRemoteAnnounce(actorUrl: string | null | undefined): Promise<boolean> {
   switch (getRemoteAnnouncePolicy()) {
     case 'all':
       return true;
@@ -139,7 +139,7 @@ export function shouldStoreRemoteAnnounce(actorUrl: string | null | undefined): 
       return false;
     case 'follows':
     default:
-      return isFollowedByLocal(actorUrl);
+      return await isFollowedByLocal(actorUrl);
   }
 }
 

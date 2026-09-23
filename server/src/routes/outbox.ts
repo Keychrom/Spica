@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { db, UserRow, PostRow } from '../db.js';
+import { adb, UserRow, PostRow } from '../db.js';
+import { asyncHandler } from '../asyncHandler.js';
 import { config } from '../config.js';
 import { ACTIVITY_CONTENT_TYPE, ACTIVITYSTREAMS_CONTEXT, buildNote, buildCreateActivity } from '../activitypub.js';
 import { applyPageHeaders, cursorPredicate, encodeCursor, parsePageQuery } from '../pagination.js';
@@ -16,9 +17,9 @@ export const outboxRouter = Router();
  *   - 続きがある場合は next を返す
  * という形にします（以前は first === last の単一ページで、総数も1ページ分のみでした）。
  */
-outboxRouter.get('/:username/outbox', (req: Request, res: Response) => {
+outboxRouter.get('/:username/outbox', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
+  const user = await adb.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
   if (!user) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
@@ -32,7 +33,7 @@ outboxRouter.get('/:username/outbox', (req: Request, res: Response) => {
   // グローバル公開 (public) の自ノード投稿のみを ActivityPub outbox に掲載
   const publicFilter = `user_id = ? AND is_local = 1 AND (visibility = 'public' OR visibility IS NULL)`;
 
-  const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM posts WHERE ${publicFilter}`).get(user.id) as { c: number };
+  const totalRow = await adb.prepare(`SELECT COUNT(*) AS c FROM posts WHERE ${publicFilter}`).get(user.id) as { c: number };
   const totalItems = totalRow?.c ?? 0;
 
   // ルート（コレクション）は常に先頭ページを返し、ページ取得時のみカーソルを尊重する
@@ -45,7 +46,7 @@ outboxRouter.get('/:username/outbox', (req: Request, res: Response) => {
   const cursorCond = cursor ? ` AND ${cursorPredicate('published_at', 'id')}` : '';
   const cursorParams = cursor ? [cursor.at, cursor.at, cursor.id] : [];
 
-  const posts = db.prepare(`
+  const posts = await adb.prepare(`
     SELECT * FROM posts
     WHERE ${publicFilter}${cursorCond}
     ORDER BY published_at DESC, id DESC
@@ -115,4 +116,4 @@ outboxRouter.get('/:username/outbox', (req: Request, res: Response) => {
     orderedItems: activities,
     ...(nextUrl ? { next: nextUrl } : {}),
   });
-});
+}));

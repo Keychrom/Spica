@@ -17,7 +17,7 @@
 > | 非同期データ層（案A の土台） | 🚧 実装済み・移行中 | `npm run test:db-async` / 進捗は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
 > | 既存テストスイートの PG 対応 | 🚧 一部 | 11 スイートが PG でも全項目緑（下記に個別の状態） |
-> | データ層の非同期化（案A） | 🚧 進行中（24% / 148 箇所） | 恒久対応。手順は下の「案A の進め方」 |
+> | データ層の非同期化（案A） | 🚧 進行中（78% / 478 箇所） | 恒久対応。手順は下の「案A の進め方」 |
 
 ---
 
@@ -123,7 +123,7 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 | ✅ 葉のモジュール | `auditLog` / `emailNotifier` / `imageProxy` / `maintenanceService` / `pushService` / `linkPreview` / `reportService` / `webauthnService` / `mediaService` / `accountService` / `deliveryQueue` |
 | ✅ 中核 | `postService`（投稿作成）/ `auth`（セッション・権限）/ `activitypub`（配送とアクター取得）/ `scheduler`（予約投稿）/ `mailService` / `exportService` |
 | ✅ 読み取りの要 | `routes/api.ts` のタイムライン整形（`enrichAndFilterPosts`）。リンクプレビューは行ごとではなく 1 回のクエリでまとめて取る |
-| ⬜ ルート | `routes/api.ts`（231 箇所）/ `admin.ts`（67）/ `inbox.ts`（50）/ `users.ts`（9） |
+| ✅ ルート | `routes/api.ts`（231 箇所）/ `admin.ts`（67）/ `inbox.ts`（50）/ `users.ts`（9）— ハンドラ単位の機械的な変換で移行 |
 | ⬜ 中核（最後） | `db.ts`（32 箇所）。ここを変換すると全呼び出し元に波及する |
 | ⬜ 完了処理 | 同期ファサード（worker）と `db` の同期 API を削除し、`adb` を `db` に改名する |
 | — | `dbMaintenance.ts`（48）は **SQLite 専用の手動メンテナンス CLI**。自前の接続を開く設計なので変換しない |
@@ -338,7 +338,12 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 
 ---
 
-## 🚫 7. やらないこと
+## 🔧 7. 残っている手作業（メモ）
+
+- `postVisibility.ts` の `canViewPost` / `filterVisiblePosts` は同期のまま（同期の判定関数から呼ばれるため）。
+- `instanceActor.ts` は起動時にテーブルを作る関係で同期のまま（鍵のキャッシュを起動時に温める設計にすると移行できる）。
+- `searchPolicy.ts` の `conn` を引数に取る関数は、SQLite 専用のメンテナンス CLI が使うため同期のまま。
+
 
 - **二重対応の恒久保守はしない。** SQLite と PG の両方で動くコードを維持し続けると、テストも運用も 2 倍になる。
   いまは SQLite が既定で、PG は「選んだときだけ使う道」。常用するならどちらかに寄せる。

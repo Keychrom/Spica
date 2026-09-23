@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db, UserRow } from './db.js';
+import { adb, UserRow } from './db.js';
 import { config } from './config.js';
 import { normalizeVisibility, PostVisibility } from './postVisibility.js';
 
@@ -160,7 +160,7 @@ export function parseArchive(data: any): { format: ImportFormat; notes: Normaliz
  * 正規化済みノートをDBへ取り込む
  * ※ 連合配送・通知・アンテナ判定・SSE は行わない（過去ログの復元のため）
  */
-export function importNotes(user: UserRow, notes: NormalizedNote[]): Omit<ImportResult, 'format'> {
+export async function importNotes(user: UserRow, notes: NormalizedNote[]): Promise<Omit<ImportResult, 'format'>> {
   const actorUrl = `${config.origin}/users/${user.id}`;
   const authorHandle = `@${user.id}@${config.domain}`;
   const authorIcon = user.icon_url || '';
@@ -170,7 +170,7 @@ export function importNotes(user: UserRow, notes: NormalizedNote[]): Omit<Import
   let failed = 0;
   const errors: string[] = [];
 
-  const insert = db.prepare(`
+  const insert = await adb.prepare(`
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at, channel_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, '[]', NULL, NULL, ?, '[]', ?, ?, NULL)
   `);
@@ -180,7 +180,7 @@ export function importNotes(user: UserRow, notes: NormalizedNote[]): Omit<Import
   for (const note of targets) {
     try {
       const postId = buildImportedPostId(actorUrl, note.sourceId);
-      const existing = db.prepare('SELECT id FROM posts WHERE id = ?').get(postId);
+      const existing = await adb.prepare('SELECT id FROM posts WHERE id = ?').get(postId);
       if (existing) {
         skipped++;
         continue;

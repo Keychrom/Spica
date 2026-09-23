@@ -460,7 +460,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         }
 
         // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）
-        const noteFtsIndexed = shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+        const noteFtsIndexed = await shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
 
         await adb.prepare(`
           INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
@@ -689,7 +689,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           const relayQuoteId = typeof note._misskey_quote === 'string' ? note._misskey_quote : (typeof note.quoteUrl === 'string' ? note.quoteUrl : null);
 
           // リレー経由の投稿は既定では索引しない（索引の肥大化を防ぐ）
-          const relayFtsIndexed = shouldIndexRemotePost({ authorUrl: noteAuthorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+          const relayFtsIndexed = await shouldIndexRemotePost({ authorUrl: noteAuthorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
 
           await adb.prepare(`
             INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
@@ -737,7 +737,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             }
 
             // リモートのブーストは方針で保存可否を決める（既定はフォロー中アクターのみ）
-            if (!shouldStoreRemoteAnnounce(actorUrl)) {
+            if (!(await shouldStoreRemoteAnnounce(actorUrl))) {
               console.log(`[Inbox] 🔇 フォロー外のリモートブーストを保存しません: ${actorUrl}`);
               return res.status(202).json({ status: 'ignored', reason: 'remote boost policy' });
             }
@@ -762,7 +762,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             console.log(`[Inbox Boost] 🔁 Recorded boost on ${boostedPostId} by @${boosterActor.username}@${boosterActor.domain}`);
 
             // 📡 リアルタイム SSE リノート更新（公開投稿のみ）
-            if (isPublicPost(boostedPostId)) {
+            if (await isPublicPost(boostedPostId)) {
               const announceCountRow = await adb.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(boostedPostId) as any;
               broadcastAnnounce({
                 postId: boostedPostId,

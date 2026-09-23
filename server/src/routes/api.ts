@@ -1374,7 +1374,7 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
   console.log(`[Post Delete] Post ${postId} deleted by @${user.id}`);
 
   // 📡 全クライアントに投稿削除をブロードキャスト（公開投稿のみ）
-  if (isPublicPost(postId)) {
+  if (await isPublicPost(postId)) {
     broadcastDeletePost(postId);
   }
 
@@ -1481,7 +1481,7 @@ apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Req
   const updatedPoll = getPollDataForPost(postId, user.id);
 
   // 📡 全クライアントにアンケート更新をブロードキャスト（公開投稿のみ）
-  if (updatedPoll && isPublicPost(postId)) {
+  if (updatedPoll && (await isPublicPost(postId))) {
     broadcastPoll({
       postId,
       poll: updatedPoll,
@@ -1630,7 +1630,7 @@ apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request
   const targetReaction = reactionsList.find((r) => r.reaction === reaction);
 
   // 📡 全クライアントにリアクション変化をブロードキャスト（公開投稿のみ）
-  if (isPublicPost(postId)) {
+  if (await isPublicPost(postId)) {
     broadcastReaction({
       postId,
       reaction,
@@ -1767,7 +1767,7 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
   const announceCount = (await adb.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(postId) as any).c;
 
   // 📡 全クライアントにリノート変化をブロードキャスト（公開投稿のみ）
-  if (isPublicPost(postId)) {
+  if (await isPublicPost(postId)) {
     broadcastAnnounce({
       postId,
     count: announceCount,
@@ -3758,7 +3758,7 @@ const archiveUpload = multer({
   },
 });
 
-apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), (req: Request, res: Response) => {
+apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const file = (req as Request & { file?: { buffer: Buffer } }).file;
   if (!file) {
@@ -3780,7 +3780,7 @@ apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), 
       return res.status(400).json({ error: '取り込める投稿が見つかりませんでした（ファイル形式をご確認ください）。', format });
     }
 
-    const result = importNotes(user, notes);
+    const result = await importNotes(user, notes);
     console.log(
       `[Import] 📥 @${user.id} が投稿を取り込み: imported=${result.imported} skipped=${result.skipped} failed=${result.failed} (format=${format})`,
     );
@@ -3795,7 +3795,7 @@ apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), 
     console.error('[Import Error]:', err);
     res.status(500).json({ error: err.message || 'インポートに失敗しました。' });
   }
-});
+}));
 
 // 📧 メールアドレスの登録（任意・マスターキー方式のサーバー向け）
 //     ※ ログインには使わず、マスターキーを紛失したときの復元手段としてのみ利用する

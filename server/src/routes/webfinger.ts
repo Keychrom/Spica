@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { db, UserRow } from '../db.js';
+import { adb, db, UserRow } from '../db.js';
 import { config } from '../config.js';
 
 export const webfingerRouter = Router();

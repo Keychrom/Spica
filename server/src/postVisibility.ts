@@ -1,4 +1,4 @@
-import { db } from './db.js';
+import { adb, db } from './db.js';
 
 /**
  * 投稿の公開範囲
@@ -114,9 +114,9 @@ export function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], vi
  * リアルタイム配信（SSE）して良い投稿か。
  * 公開範囲が 'public' 以外の投稿は全クライアントへ配信しない（存在自体が漏れるため）。
  */
-export function isPublicPost(postId: string): boolean {
+export async function isPublicPost(postId: string): Promise<boolean> {
   try {
-    const row = db.prepare('SELECT visibility FROM posts WHERE id = ?').get(postId) as
+    const row = await adb.prepare('SELECT visibility FROM posts WHERE id = ?').get(postId) as
       | { visibility?: string | null }
       | undefined;
     if (!row) {
