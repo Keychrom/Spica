@@ -203,6 +203,7 @@ try {
     'DATABASE_URL=postgres://spica:password@127.0.0.1:5432/spica',
     'REDIS_URL=redis://user:password@localhost:6379/0',
     'REDIS_URL=redis://:password@127.0.0.1:6379',
+    'DATABASE_URL=postgres://spica:パスワード@127.0.0.1:5432/spica',
     'DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica',
   ].join('\n'));
   check('例示用の接続文字列は検出しない', findingsFor('db.md').length, 0);

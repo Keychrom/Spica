@@ -1,7 +1,7 @@
 # ✨ Spica の機能一覧 (FEATURES.md)
 
 [README](../README.md) の「主な特徴」から移設した詳細版です。実装済みの機能をカテゴリ別にまとめています。
-環境変数の詳細は [CONFIGURATION.md](CONFIGURATION.md)、設置手順は [SETUP.md](SETUP.md) を参照してください。
+環境変数の詳細は [CONFIGURATION.md](CONFIGURATION.md)、設置手順は [SETUP.md](SETUP.md)（通常構成は [SETUP_Normal.md](SETUP_Normal.md)、PostgreSQL + Redis 構成は [SETUP_PostgreSQL_Redis.md](SETUP_PostgreSQL_Redis.md)）を参照してください。
 
 - [1. 投稿とタイムライン](#1-投稿とタイムライン)
 - [2. メディアとドライブ](#2-メディアとドライブ)
@@ -123,7 +123,7 @@
 
 | 機能 | 説明 |
 | :--- | :--- |
-| **DB メンテナンス** | `npm run db:maintenance`。①古いリモート投稿の保持期間削除、②孤立メディアの削除、③FTS セグメントのマージ＋wal_checkpoint＋VACUUM、④`VACUUM INTO` によるバックアップ。既定はドライランで、`--apply` で実行します。詳細は [SETUP.md](SETUP.md)。 |
+| **DB メンテナンス** | `npm run db:maintenance`。①古いリモート投稿の保持期間削除、②孤立メディアの削除、③FTS セグメントのマージ＋wal_checkpoint＋VACUUM、④`VACUUM INTO` によるバックアップ。既定はドライランで、`--apply` で実行します（PostgreSQL ではこの CLI は使わず、自動メンテナンスと `npm run db:pg:backup` を使います）。詳細は [SETUP_Normal.md](SETUP_Normal.md)。 |
 | **毎日の自動整理** | サーバー常駐のまま、既定で毎日 4 時以降に「バックアップ → 方針適用 → 保持期間を超えたリモート投稿の削除」を実行します（管理画面から ON/OFF・時刻変更・即時実行が可能）。VACUUM だけは手動（サーバー停止時）です。 |
 | **自動バックアップ** | 整理の前に `VACUUM INTO` でスナップショットを取り、`server/data/backups/` に既定 3 世代保持します。`db:maintenance --backup-only` で単独実行もできます。 |
 | **容量ダッシュボード** | 管理画面のダッシュボードに DB サイズ・WAL・投稿数（ローカル/リモート）・索引行数・ドライブ使用量・画像プロキシのキャッシュ・削除予定件数・バックアップ世代を表示します。 |

@@ -28,6 +28,7 @@ FILES=(
   docs/CONFIGURATION.md
   docs/POSTGRESQL.md
   docs/REDIS.md
+  docs/SCALE.md
   package.json
   # 依存は server ワークスペース側にある（redis のように追加したものが公開ツリーへ入らないと
   # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
@@ -79,7 +80,8 @@ done
 echo ""
 echo "■ 手で当てるファイル（丸ごとコピーしない）"
 echo "  README.md … 公開ツリーの Alpha 警告を残したまま、差分だけを手で当てる"
-echo "  docs/SETUP.md / docs/UPGRADE.md / docs/ABOUT_SPICA.md … 公開ツリー側が本番向けの別版"
+echo "  docs/SETUP.md / docs/SETUP_Normal.md / docs/SETUP_PostgreSQL_Redis.md … 公開ツリー側が本番向けの別版"
+echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 同上"
 
 echo ""
 echo "■ 公開ツリーにしかないファイル（削除の確認）"

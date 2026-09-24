@@ -80,13 +80,15 @@ Spicaの思想・アーキテクチャ、本番運用やサーバー設置に関
   - 自立分散型ソーシャルネットワーク（Fediverse / ActivityPub）の仕組み
   - 巨大テックの中央集権からの解放とデータ主権の理念
   - 超軽量・自己完結型アーキテクチャ、暗号署名、パスキー生体認証、PWA
-- 🛠️ **[サーバー設置・導入ガイド (docs/SETUP.md)](docs/SETUP.md)**
+- 🛠️ **[サーバー設置・導入ガイド (docs/SETUP.md)](docs/SETUP.md)** — 2 つの構成から選べます
+  - 🌱 **[通常構成 (docs/SETUP_Normal.md)](docs/SETUP_Normal.md)** — SQLite・1 プロセス（〜数十人。**迷ったらこちら**）
+  - 🐘 **[PostgreSQL + Redis 構成 (docs/SETUP_PostgreSQL_Redis.md)](docs/SETUP_PostgreSQL_Redis.md)** — 複数プロセス（数百人〜）
   - Linux / Ubuntu サーバーへのセットアップ手順
   - Nginx リバースプロキシ・SSL証明書（Let's Encrypt）の設定
   - Cloudflare Tunnel での公開手順
   - Cloudflare R2 / S3 ストレージの設定方法
   - PM2 / systemd による自動起動・常駐化
-  - DB メンテナンスとバックアップ（`npm run db:maintenance`）
+  - DB メンテナンスとバックアップ（`npm run db:maintenance` / `npm run db:pg:backup`）
 - 🔄 **[バージョンアップ手順書 (docs/UPGRADE.md)](docs/UPGRADE.md)**
   - `git pull` からの安全なアップデート手順
   - ゼロダウンタイム再起動とマイグレーション
