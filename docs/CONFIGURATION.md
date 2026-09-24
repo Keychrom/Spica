@@ -37,7 +37,8 @@ Spica の設定は **2 か所**に分かれています。
 | `DB_PATH` | `data_astrabit.sqlite` | SQLite ファイルのパス。相対パスは `server/` 基準で解決されます |
 | `DB_DRIVER` | `sqlite` | `sqlite` または `postgres`。**既定は SQLite** で、書かなければ従来どおりです |
 | `DATABASE_URL` | （なし） | `DB_DRIVER=postgres` のときの接続文字列。**パスワードを含むため公開リポジトリに置かないでください**（[POSTGRESQL.md](POSTGRESQL.md)） |
-| `DATABASE_STATEMENT_TIMEOUT_MS` | `30000` | PostgreSQL の 1 クエリの上限（ミリ秒。`0` で無効）。直列化した 1 接続なので、重いクエリやロック待ちがノード全体を止めないための保険 |
+| `DATABASE_POOL_MAX` | `5` | PostgreSQL のコネクションプールの本数。同時に走るクエリの上限でもある。相手の DB を圧迫する場合は減らす（`1` で 1 本ずつ直列に戻る） |
+| `DATABASE_STATEMENT_TIMEOUT_MS` | `30000` | PostgreSQL の 1 クエリの上限（ミリ秒。`0` で無効）。重いクエリやロック待ちが 1 本の接続を長時間占有し続けないための保険 |
 | `DATABASE_IDLE_TIMEOUT_MS` | `60000` | アイドル状態のトランザクションを切るまでの時間（ミリ秒。`0` で無効）。トランザクションを握ったまま落ちた処理がロックを保持し続けるのを防ぐ |
 | `PG_BIN_DIR` | （なし） | `pg_dump` / `pg_restore` のあるディレクトリ（例: `/usr/lib/postgresql/18/bin`）。PATH と標準のインストール先を探しても見つからない場合に指定する（PostgreSQL のバックアップで使う） |
 | `INSTANCE_NAME` | `Spica` | 既定のインスタンス表示名（初回起動時に DB へ保存され、以後は管理画面の値が優先されます） |

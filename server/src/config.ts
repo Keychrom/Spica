@@ -97,6 +97,8 @@ export interface AppConfig {
    * トランザクションを握ったまま落ちた処理がロックを保持し続けるのを防ぐ。
    */
   databaseIdleTimeoutMs: number;
+  /** PostgreSQL の同時接続数（プールの上限）。既定 5 */
+  databasePoolMax: number;
   /** 画像プロキシ（リモート画像の直リンクを避け、このノード経由で配信する）既定 true */
   imageProxy: boolean;
   /** 画像プロキシのキャッシュ上限（MB）既定 512 */
@@ -133,6 +135,7 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 // 直列化した 1 接続なので、1 本の重いクエリが全体を止めないよう上限を入れておく（0 で無効）
 const DATABASE_STATEMENT_TIMEOUT_MS = Number(process.env.DATABASE_STATEMENT_TIMEOUT_MS ?? 30_000);
 const DATABASE_IDLE_TIMEOUT_MS = Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 60_000);
+const DATABASE_POOL_MAX = Number(process.env.DATABASE_POOL_MAX ?? 5);
 const INSTANCE_NAME = process.env.INSTANCE_NAME || 'Spica';
 const INSTANCE_DESCRIPTION = process.env.INSTANCE_DESCRIPTION || 'Spica - A decentralized, sovereign social network node built from scratch with ActivityPub.';
 
@@ -261,6 +264,7 @@ export const config: AppConfig = {
   databaseUrl: DATABASE_URL,
   databaseStatementTimeoutMs: Number.isFinite(DATABASE_STATEMENT_TIMEOUT_MS) ? DATABASE_STATEMENT_TIMEOUT_MS : 30_000,
   databaseIdleTimeoutMs: Number.isFinite(DATABASE_IDLE_TIMEOUT_MS) ? DATABASE_IDLE_TIMEOUT_MS : 60_000,
+  databasePoolMax: Number.isFinite(DATABASE_POOL_MAX) && DATABASE_POOL_MAX >= 1 ? Math.floor(DATABASE_POOL_MAX) : 5,
   imageProxy: IMAGE_PROXY,
   imageProxyMaxMb: IMAGE_PROXY_MAX_MB,
   imageProxyTtlDays: IMAGE_PROXY_TTL_DAYS,

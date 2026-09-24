@@ -89,7 +89,9 @@ export interface PushPayload {
  */
 export async function sendPushToUser(userId: string, payload: PushPayload): Promise<void> {
   try {
-    getOrCreateVapidKeys(); // VAPID詳細の初期化を確実に実行
+    // VAPID の詳細設定は送信より先に済ませる（await しないと webpush.setVapidDetails が
+    // 間に合わず、鍵が未生成のノードで最初の 1 通だけ送信に失敗する）
+    await getOrCreateVapidKeys();
 
     const cleanUserId = userId.toLowerCase();
     const subs = await db.prepare('SELECT * FROM push_subscriptions WHERE LOWER(user_id) = ?').all(cleanUserId) as unknown as PushSubscriptionRow[];

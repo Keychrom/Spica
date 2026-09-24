@@ -16,7 +16,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DatabaseSync } from 'node:sqlite';
-import { Client, types } from 'pg';
+import { Pool, type PoolClient, types } from 'pg';
 import {
   PRAGMA_NOOP_RE,
   PRAGMA_TABLE_INFO_RE,
@@ -51,6 +51,14 @@ export interface AsyncSpicaDatabase {
   checkpoint(): Promise<void>;
   /** 接続できることを確認する（起動時に 1 回呼ぶ） */
   ready(): Promise<void>;
+  /**
+   * 同じ接続（セッション）を使って `fn` を実行する。
+   *
+   * PostgreSQL はプールから 1 本を借りて固定するので、**セッションに紐づく状態**
+   * （一時テーブル・SET・トランザクション）が `fn` の中で一貫する。
+   * SQLite は元から 1 接続なので、そのまま実行する。
+   */
+  withSession<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +101,11 @@ class AsyncSqliteDatabase implements AsyncSpicaDatabase {
     return Promise.resolve();
   }
 
+  /** SQLite は元から 1 接続なので、固定するものは何もない */
+  withSession<T>(fn: () => Promise<T>): Promise<T> {
+    return fn();
+  }
+
   /** WAL をチェックポイントする（終了時にファイルを綺麗に畳む） */
   checkpoint(): Promise<void> {
     try {
@@ -121,77 +134,63 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   readonly kind = 'postgres' as const;
 
   /**
-   * 現在の接続。**切断されたら捨てて作り直す**（下の dropConnection を参照）。
-   * pg の Client は接続が異常終了すると再利用できないため、差し替えられるようにしている。
+   * 接続プール。1 本の接続に直列化していたのをやめ、**独立したクエリは並行に走らせる**
+   * （SQLite は元から 1 接続だが、PostgreSQL はここが同時実行数の上限になる）。
+   * 接続は最初のクエリまで開かない（import しただけで接続を張らない）。
    */
-  private client: Client;
-  /** 接続は最初のクエリまで遅らせる（import しただけで接続を開かないため） */
-  private connecting: Promise<void> | null = null;
-  /** 直前のクエリの完了を待たせて順序を守る（1 接続なので直列が前提） */
-  private queue: Promise<unknown> = Promise.resolve();
-  /** トランザクション中かどうか（中はキューを握っているので直接実行する） */
-  private readonly inTransaction = new AsyncLocalStorage<true>();
+  private readonly pool: Pool;
+  /**
+   * セッション（接続）を固定している間のクライアント。
+   * 一時テーブル・SET・トランザクションのように**接続に紐づく状態**を使う処理は、
+   * `withSession()` でこのコンテキストに入れてから実行する。
+   */
+  private readonly pinned = new AsyncLocalStorage<{ client: PoolClient; release: (err?: Error) => void }>();
   /** テーブルごとの主キー列（INSERT OR REPLACE の ON CONFLICT に使う） */
   private readonly primaryKeys = new Map<string, string[]>();
   private primaryKeysLoaded = false;
   private closed = false;
-  /** 一度でも接続に成功したか（close でソケットを閉じるべきかの判断に使う） */
-  private everConnected = false;
   /** 接続が切れた回数（ログと異常時の切り分け用） */
   private disconnects = 0;
 
   constructor(
     private readonly connectionString: string,
-    /** 1 クエリの上限（ミリ秒。0 で無効）。PostgreSQL 側の statement_timeout に渡す */
+    /** 1 クエリの上限（ミリ秒。0 で無効） */
     private readonly statementTimeoutMs = 0,
     /** アイドル状態のトランザクションを切るまでの時間（ミリ秒。0 で無効） */
     private readonly idleInTransactionTimeoutMs = 0,
+    /** 同時に張る接続の上限（既定 5） */
+    poolMax = 5,
   ) {
-    this.client = this.createClient();
-  }
+    // タイムアウトは接続時のパラメータ（options）で入れる。
+    // 接続後に SET すると、借りた直後の 1 文が設定前になる余地があるため
+    const startupOptions = [
+      this.statementTimeoutMs > 0 ? `-c statement_timeout=${Math.floor(this.statementTimeoutMs)}` : '',
+      this.idleInTransactionTimeoutMs > 0
+        ? `-c idle_in_transaction_session_timeout=${Math.floor(this.idleInTransactionTimeoutMs)}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
 
-  /**
-   * 接続を作る。**error リスナーを必ず付ける**のがこの関数の役目:
-   * pg は接続が異常終了すると `emit('error')` するが、受け手がいないと
-   * Node は未処理のエラーとしてプロセスごと落とす（管理者が PG を再起動した、
-   * ネットワークが瞬断した、といっただけで落ちないようにする）。
-   */
-  private createClient(): Client {
-    const client = new Client({
-      connectionString: this.connectionString,
+    this.pool = new Pool({
+      connectionString,
       // pg_stat_activity でどのプロセスか分かるようにしておく
       application_name: 'spica',
+      max: Math.max(1, Math.floor(poolMax)),
+      ...(startupOptions ? { options: startupOptions } : {}),
     });
-    client.on('error', (err) => {
-      // 実行中のクエリは pg 側が reject する（呼び出し元はエラーを受け取る）。
-      // ここでは「次に問い合わせが来たら張り直す」準備だけをする。
-      this.dropConnection(client, err);
+
+    // アイドル中の接続が切れたとき（PostgreSQL の再起動・ネットワーク瞬断など）。
+    // 受け手がいないと Node は未処理のエラーとしてプロセスごと落とす
+    this.pool.on('error', (err) => {
+      this.disconnects++;
+      console.error(
+        `[DB] PostgreSQL の接続が切れました（${this.disconnects} 回目）。プールが張り直します: ${err?.message || err}`,
+      );
     });
-    return client;
   }
 
-  /**
-   * 壊れた接続を捨てて、次のクエリで張り直せる状態にする。
-   *
-   * 「捨てる（新しい Client に差し替える）」のは、pg の Client が異常終了後に再利用できないため
-   * （同じインスタンスで connect() すると "Client has already been connected" になる）。
-   * **既に差し替え済みの古い接続からの通知は無視する**のが要点:
-   * 切断時は「実行中クエリの失敗」と「ソケットの end による error」が別々に届くので、
-   * 後から来た古い通知で新しい接続を捨ててしまうと、復帰した直後にまた切れてしまう。
-   */
-  private dropConnection(client: Client, reason?: unknown): void {
-    if (this.closed || this.client !== client) return;
-    this.disconnects++;
-    const message = String((reason as any)?.message || reason || '');
-    console.error(
-      `[DB] PostgreSQL との接続が切れました（${this.disconnects} 回目）。次のクエリで再接続します:${message ? ` ${message.split('\n')[0]}` : ''}`,
-    );
-    this.client = this.createClient();
-    this.connecting = null;
-    this.primaryKeysLoaded = false;
-  }
-
-  /** 接続側の問題で失敗したか（接続を捨てて、次のクエリで復帰させる対象） */
+  /** 接続側の問題で失敗したか（壊れた接続を捨てる対象） */
   private static isConnectionError(err: any): boolean {
     const code = String(err?.code || '');
     // 08xxx: 接続の異常 / 57Pxx: サーバーの停止・再起動
@@ -202,82 +201,52 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
     );
   }
 
-  private ensureConnected(): Promise<void> {
-    if (!this.connecting) {
-      const client = this.client;
-      this.connecting = client
-        .connect()
-        .then(() => this.applySessionSettings(client))
-        .then(() => {
-          this.everConnected = true;
-        })
-        .catch((err) => {
-          // 失敗したら次回また試せるようにする（張りっぱなしにしない）。
-          // 接続に失敗した Client も再利用できないので作り直す。
-          this.connecting = null;
-          if (!this.closed) {
-            this.client = this.createClient();
-            this.primaryKeysLoaded = false;
-          }
-          throw err;
-        });
-      // 失敗は呼び出し時に投げ直す（ここで unhandled rejection にしない）
-      this.connecting.catch(() => {});
-    }
-    return this.connecting;
+  async ready(): Promise<void> {
+    await this.pool.query('SELECT 1');
   }
 
   /**
-   * セッション単位の設定。`SET` は接続ごとなので、張り直すたびに流す。
-   * 直列化した 1 接続なので、1 本の重いクエリやロック待ちが全体を止めないよう上限を入れる。
+   * プールから 1 本借りて固定する。`fn` の中のクエリはすべて同じ接続で実行される。
+   * 入れ子で呼ばれた場合は、外側の固定をそのまま使う。
    */
-  private async applySessionSettings(client: Client): Promise<void> {
+  async withSession<T>(fn: () => Promise<T>): Promise<T> {
+    const current = this.pinned.getStore();
+    if (current) return fn();
+    if (this.closed) throw new Error('データベースは閉じられています');
+
+    const client = await this.pool.connect();
+    let released = false;
+    const release = (err?: Error): void => {
+      if (released) return;
+      released = true;
+      client.release(err);
+    };
     try {
-      if (this.statementTimeoutMs > 0) {
-        await client.query(`SET statement_timeout = ${Math.floor(this.statementTimeoutMs)}`);
-      }
-      if (this.idleInTransactionTimeoutMs > 0) {
-        await client.query(`SET idle_in_transaction_session_timeout = ${Math.floor(this.idleInTransactionTimeoutMs)}`);
-      }
-    } catch (err: any) {
-      // 設定できなくても動作は続けられる（権限やサーバー設定で拒否されることがある）
-      console.warn('[DB] セッション設定を適用できませんでした:', err?.message || err);
+      return await this.pinned.run({ client, release }, fn);
+    } finally {
+      release();
     }
   }
 
-  async ready(): Promise<void> {
-    await this.ensureConnected();
-  }
-
-  private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(() => task());
-    // 失敗しても後続は流す（キュー自体は常に成功で閉じる）
-    this.queue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
-  /** トランザクション内は既にキューを握っているので、そのまま実行する（待つと固まる） */
-  private execute<T>(task: () => Promise<T>): Promise<T> {
-    if (this.inTransaction.getStore()) return task();
-    return this.enqueue(task);
-  }
-
+  /** 接続に紐づく状態を使わない 1 文は、プールに任せて並行に流す */
   private async run(sql: string, params: unknown[]): Promise<PgQueryResult> {
     if (this.closed) throw new Error('データベースは閉じられています');
-    await this.ensureConnected();
-    // 接続が切れて張り直された直後でも、いま繋がっているクライアントを使う
-    const client = this.client;
+    const session = this.pinned.getStore();
     try {
-      const result = await client.query(sql, params as any[]);
+      const result = session
+        ? await session.client.query(sql, params as any[])
+        : await this.pool.query(sql, params as any[]);
       return { rows: result.rows, rowCount: result.rowCount };
     } catch (err: any) {
-      // 接続側の失敗はここで捨てておく。こうしないと、ソケットの end が届く前に次のクエリが
-      // 来たときに死んだ接続へ投げてしまい、復帰が 1 クエリ分遅れる。
+      // 接続側の失敗はここで捨てる。固定している接続を使い回すと、次のクエリも同じ失敗を繰り返す
       // （クエリ自体は再実行しない。書き込みが二重になる可能性があるため）
-      if (AsyncPostgresDatabase.isConnectionError(err)) this.dropConnection(client);
+      if (AsyncPostgresDatabase.isConnectionError(err)) {
+        this.disconnects++;
+        console.error(
+          `[DB] PostgreSQL との接続が切れました（${this.disconnects} 回目）: ${String(err?.message || err).split('\n')[0]}`,
+        );
+        if (session) session.release(err);
+      }
       // 方言の取りこぼしを追いやすいように、失敗した SQL を付けて投げ直す
       const oneLine = sql.replace(/\s+/g, ' ').trim();
       const shown = oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
@@ -305,16 +274,14 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   }
 
   private async loadPrimaryKeys(): Promise<void> {
-    const result = await this.enqueue(() =>
-      this.run(
-        `SELECT c.relname AS table_name, a.attname AS column_name
-           FROM pg_index i
-           JOIN pg_class c ON c.oid = i.indrelid
-           JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-          WHERE i.indisprimary AND c.relnamespace = 'public'::regnamespace
-          ORDER BY c.relname, array_position(i.indkey, a.attnum)`,
-        [],
-      ),
+    const result = await this.run(
+      `SELECT c.relname AS table_name, a.attname AS column_name
+         FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indrelid
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indisprimary AND c.relnamespace = 'public'::regnamespace
+        ORDER BY c.relname, array_position(i.indkey, a.attnum)`,
+      [],
     );
     this.primaryKeys.clear();
     for (const row of result.rows as { table_name: string; column_name: string }[]) {
@@ -347,14 +314,14 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
     // PRAGMA table_info(x) は information_schema で代替する
     const tableInfo = PRAGMA_TABLE_INFO_RE.exec(trimmed);
     if (tableInfo) {
-      return this.execute(() => this.run(TABLE_INFO_SQL, [tableInfo[1]]));
+      return this.run(TABLE_INFO_SQL, [tableInfo[1]]);
     }
     if (PRAGMA_NOOP_RE.test(trimmed)) {
       return { rows: [], rowCount: 0 };
     }
 
     const translated = await this.translate(trimmed, params);
-    return this.execute(() => this.run(translated.sql, translated.params));
+    return this.run(translated.sql, translated.params);
   }
 
   private async query(sql: string, params: unknown[], mode: 'get' | 'all'): Promise<any> {
@@ -368,18 +335,15 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
     const statements = splitExecStatements(sql);
     if (statements.length === 0) return;
     const translated = statements.map((statement) => translateSqlForPostgres(statement, []).sql);
-    await this.execute(() => this.run(translated.map((statement) => `${statement};`).join('\n'), []));
+    await this.run(translated.map((statement) => `${statement};`).join('\n'), []);
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    // 一度も接続していなければ閉じるものは無い（import しただけのプロセスを終わらせる）
-    if (!this.everConnected) return;
-    // 実行中のクエリの完了を待ってから閉じる
+    // 借りている接続が返るのを待ってから閉じる（プールが面倒を見る）
     try {
-      await this.queue;
-      await this.client.end();
+      await this.pool.end();
     } catch {
       // 終了時は握る
     }
@@ -389,22 +353,21 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   async checkpoint(): Promise<void> {}
 
   /**
-   * トランザクション。`fn` の中のクエリは他のリクエストに割り込まれない
-   * （キューを 1 枠占有したまま実行するため）。
+   * トランザクション。`fn` の中のクエリは 1 本の接続に固定され、
+   * 他のリクエストのクエリが混ざらない。
    * 入れ子には対応しない（SQLite / PostgreSQL どちらも暗黙の入れ子は危険なため）。
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.inTransaction.getStore()) throw new Error('トランザクションは入れ子にできません');
-    return this.enqueue(async () => {
-      await this.ensureConnected();
-      await this.client.query('BEGIN');
+    if (this.pinned.getStore()) throw new Error('トランザクションは入れ子にできません');
+    return this.withSession(async () => {
+      await this.exec('BEGIN');
       try {
-        const result = await this.inTransaction.run(true, fn);
-        await this.client.query('COMMIT');
+        const result = await fn();
+        await this.exec('COMMIT');
         return result;
       } catch (err) {
         try {
-          await this.client.query('ROLLBACK');
+          await this.exec('ROLLBACK');
         } catch {
           // ロールバックに失敗しても元のエラーを優先する
         }
@@ -437,6 +400,8 @@ export interface CreateAsyncDatabaseOptions {
   statementTimeoutMs?: number;
   /** アイドル状態のトランザクションを切るまでの時間（ミリ秒。0 で無効） */
   idleInTransactionTimeoutMs?: number;
+  /** 同時に張る接続の上限（PostgreSQL のみ。既定 5） */
+  poolMax?: number;
 }
 
 export function createAsyncDatabase(options: CreateAsyncDatabaseOptions = {}): AsyncSpicaDatabase {
@@ -451,6 +416,7 @@ export function createAsyncDatabase(options: CreateAsyncDatabaseOptions = {}): A
       connectionString,
       options.statementTimeoutMs ?? Number(process.env.DATABASE_STATEMENT_TIMEOUT_MS ?? 0),
       options.idleInTransactionTimeoutMs ?? Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 0),
+      options.poolMax ?? Number(process.env.DATABASE_POOL_MAX ?? 5),
     );
   }
 

@@ -29,6 +29,7 @@ export const db = createAsyncDatabase({
   connectionString: config.databaseUrl,
   statementTimeoutMs: config.databaseStatementTimeoutMs,
   idleInTransactionTimeoutMs: config.databaseIdleTimeoutMs,
+  poolMax: config.databasePoolMax,
 });
 
 // テーブル初期化＆マイグレーション

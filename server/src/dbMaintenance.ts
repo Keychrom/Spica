@@ -296,6 +296,12 @@ export async function planRemotePostRemoval(db: AsyncSpicaDatabase, opts: Mainte
  * あとから対象 ID をまとめて FTS から消して整合させる（1 回の走査で済む）。
  */
 export async function applyRemotePostRemoval(db: AsyncSpicaDatabase, opts: MaintenanceOptions): Promise<RemovalCounts> {
+  // 一時テーブルとバッチは**同じ接続**で実行する必要がある（PostgreSQL はプールなので、
+  // 接続が変わると一時テーブルが見えない）。SQLite では単にそのまま実行される
+  return db.withSession(() => applyRemotePostRemovalInSession(db, opts));
+}
+
+async function applyRemotePostRemovalInSession(db: AsyncSpicaDatabase, opts: MaintenanceOptions): Promise<RemovalCounts> {
   const total = await materializeTargets(db, opts);
   const counts: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, polls: 0, fts: 0 };
   if (total === 0) {

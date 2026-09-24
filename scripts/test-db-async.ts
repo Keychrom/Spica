@@ -248,6 +248,128 @@ if (DSN) {
 
   const secondPid = ((await pgAsync.prepare('SELECT pg_backend_pid() AS pid').get()) as any).pid;
   check('接続が張り直されている（別のバックエンド）', secondPid !== pid, true);
+
+  // ── プール: セッション固定と並行実行 ────────────────────
+  console.log('\n── PostgreSQL: セッション固定と並行実行 ───────────');
+  {
+    const pidOf = async (): Promise<number> =>
+      Number(((await pgAsync.prepare('SELECT pg_backend_pid() AS pid').get()) as any).pid);
+
+    // (1) withSession の中は同じ接続に固定される（一時テーブルが使える）
+    const inside = await pgAsync.withSession(async () => {
+      const a = await pidOf();
+      await pgAsync.exec('CREATE TEMP TABLE pool_probe (id TEXT)');
+      await pgAsync.exec("INSERT INTO pool_probe (id) VALUES ('x')");
+      const b = await pidOf();
+      const count = Number(((await pgAsync.prepare('SELECT COUNT(*) AS c FROM pool_probe').get()) as any).c);
+      return { a, b, count };
+    });
+    check('セッション内は同じ接続に固定される', inside.a === inside.b, true);
+    check('セッション内では一時テーブルが見える', inside.count, 1);
+
+    // (2) 同時に走る 2 つのセッションは別の接続で、一時テーブルも混ざらない
+    //（同じ名前の一時テーブルを同時に作っても衝突しないこと＝接続が分かれている証拠）
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const [s1, s2] = await Promise.all([
+      pgAsync.withSession(async () => {
+        await pgAsync.exec('CREATE TEMP TABLE pool_iso (id TEXT)');
+        await pgAsync.prepare("INSERT INTO pool_iso (id) VALUES ('a')").run();
+        await sleep(300); // もう一方が同時に動けるように待つ
+        const pid = await pidOf();
+        const rows = (await pgAsync.prepare('SELECT id FROM pool_iso ORDER BY id').all()) as { id: string }[];
+        return { pid, ids: rows.map((r) => r.id) };
+      }),
+      pgAsync.withSession(async () => {
+        await sleep(50); // 1 本目がテーブルを作るのを待ってから同じ名前で作る
+        await pgAsync.exec('CREATE TEMP TABLE pool_iso (id TEXT)');
+        await pgAsync.prepare("INSERT INTO pool_iso (id) VALUES ('b')").run();
+        const pid = await pidOf();
+        const rows = (await pgAsync.prepare('SELECT id FROM pool_iso ORDER BY id').all()) as { id: string }[];
+        return { pid, ids: rows.map((r) => r.id) };
+      }),
+    ]);
+    check('同時セッションは別の接続を使う', s1.pid !== s2.pid, true);
+    check('一時テーブルはセッションごとに独立している', [s1.ids.join(','), s2.ids.join(',')], ['a', 'b']);
+
+    // (3) 入れ子の withSession は同じ接続を使う（デッドロックしない）
+    const nested = await pgAsync.withSession(async () => {
+      const a = await pidOf();
+      const b = await pgAsync.withSession(pidOf);
+      return { a, b };
+    });
+    check('入れ子の withSession も同じ接続を使う', nested.a === nested.b, true);
+
+    // (4) 独立したクエリはプールで並行に走る（1 接続に直列化されていない）
+    const started = Date.now();
+    const slept = await Promise.all(
+      [0, 1, 2].map(() => pgAsync.prepare('SELECT pg_sleep(0.3) AS s, pg_backend_pid() AS pid').get()),
+    );
+    const elapsed = Date.now() - started;
+    const pids = new Set(slept.map((row: any) => Number(row.pid)));
+    check('並行に投げた 3 クエリが 2 本以上の接続に分かれる', pids.size >= 2, true);
+    check('直列化されていない（3×0.3 秒より十分速い）', elapsed < 700, true);
+
+    // (5) トランザクションも 1 接続に固定される
+    const inTx = await withTransaction(pgAsync, async () => {
+      const a = await pidOf();
+      const b = await pidOf();
+      return { a, b };
+    });
+    check('トランザクション内も同じ接続', inTx.a === inTx.b, true);
+  }
+
+  // ── 一時テーブルを使うメンテナンスが、プールでも壊れないこと ──
+  // （接続が変わると一時テーブルが見えなくなる。実際に削除まで走らせて確かめる）
+  console.log('\n── PostgreSQL: 一時テーブルを使う削除 ───────────');
+  {
+    const { DEFAULT_MAINTENANCE_OPTIONS, planRemotePostRemoval, applyRemotePostRemoval } = await import(
+      '../server/src/dbMaintenance.js'
+    );
+    const now = Date.now();
+    const old = new Date(now - 90 * 86400_000).toISOString();
+    const fresh = new Date(now - 1 * 86400_000).toISOString();
+    const seedPost = (id: string, isLocal: number, publishedAt: string) =>
+      pgAsync
+        .prepare(
+          `INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, visibility, emojis, media_attachments, published_at, fts_indexed)
+           VALUES (?, 'u1', 't', 'https://remote.test/users/eve', '@eve@remote.test', '本文', ?, 'public', '[]', '[]', ?, 0)
+           ON CONFLICT (id) DO UPDATE SET published_at = EXCLUDED.published_at`,
+        )
+        .run(id, isLocal, publishedAt);
+
+    await seedPost('pool-old-1', 0, old);
+    await seedPost('pool-old-2', 0, old);
+    await seedPost('pool-new-1', 0, fresh);
+    await seedPost('pool-local-1', 1, old);
+
+    const options = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: 30, pruneMedia: false, applyPolicy: false };
+    const plan = await planRemotePostRemoval(pgAsync, options);
+    check('削除計画に古いリモート投稿が入る', plan.byAge >= 2, true);
+
+    const removed = await applyRemotePostRemoval(pgAsync, options);
+    check('古いリモート投稿が削除される', removed.posts >= 2, true);
+
+    const remaining = async (id: string): Promise<number> =>
+      Number(((await pgAsync.prepare('SELECT COUNT(*) AS c FROM posts WHERE id = ?').get(id)) as any).c);
+    check('保持期間内のリモート投稿は残る', await remaining('pool-new-1'), 1);
+    check('ローカル投稿は削除されない', await remaining('pool-local-1'), 1);
+    check('削除対象は残らない', await remaining('pool-old-1'), 0);
+
+    // 一時テーブルが残留していない（次の実行が同じ名前で作れる）
+    const reused = await pgAsync.withSession(async () => {
+      await pgAsync.exec('CREATE TEMP TABLE _maintenance_targets (id TEXT PRIMARY KEY)');
+      const count = Number(((await pgAsync.prepare('SELECT COUNT(*) AS c FROM _maintenance_targets').get()) as any).c);
+      await pgAsync.exec('DROP TABLE IF EXISTS temp._maintenance_targets');
+      return count;
+    });
+    check('一時テーブルは残留していない（作り直せる）', reused, 0);
+
+    // 後片付け
+    for (const id of ['pool-new-1', 'pool-local-1']) {
+      await pgAsync.prepare('DELETE FROM posts WHERE id = ?').run(id);
+    }
+  }
+
   await killer.end();
 
   await pgAsync.close();

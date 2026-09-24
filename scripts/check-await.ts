@@ -65,9 +65,11 @@ for (const file of allFiles) {
   const text = lines.join('\n');
   const candidates = new Set<string>();
   for (const [owner, names] of asyncExports) {
-    if (owner === file) continue;
-    const ownerModule = './' + path.relative(path.dirname(file), owner).replace(/\\/g, '/').replace(/\.ts$/, '.js');
-    if (!text.includes(ownerModule) && !text.includes(path.basename(owner, '.ts') + '.js')) continue;
+    const sameFile = owner === file;
+    if (!sameFile) {
+      const ownerModule = './' + path.relative(path.dirname(file), owner).replace(/\\/g, '/').replace(/\.ts$/, '.js');
+      if (!text.includes(ownerModule) && !text.includes(path.basename(owner, '.ts') + '.js')) continue;
+    }
     for (const n of names) if (new RegExp(`(?<![A-Za-z0-9_$.])${n}\\s*\\(`).test(text)) candidates.add(n);
   }
   if (candidates.size === 0) continue;

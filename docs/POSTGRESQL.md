@@ -73,8 +73,8 @@ PostgreSQL のクライアントは非同期なので、ここで道が 2 つに
 2. **案A（本命・完了）**: データ層を非同期化し、案B のファサードと worker は**削除した**。
 
 いまアプリが使うのは `server/src/db/asyncDriver.ts` の非同期インターフェースだけです。
-SQLite は `node:sqlite` の同期接続を 1 本だけ開いて包み、PostgreSQL は `pg` クライアントに
-直列化して投げます（worker も `Atomics.wait` も使わない）。
+SQLite は `node:sqlite` の同期接続を 1 本だけ開いて包み、PostgreSQL は `pg.Pool` の
+コネクションプール（既定 5 本。`DATABASE_POOL_MAX`）に投げます（worker も `Atomics.wait` も使わない）。
 
 ```ts
 import { db } from './db.js';
@@ -100,10 +100,11 @@ await db.exec('PRAGMA journal_mode = WAL;');   // SQLite のときだけ意味�
 5. `npx tsc -p server/tsconfig.json --noEmit` → 既存スイートを SQLite と PostgreSQL の両方で実行。
 6. `npm run db:async:status` で数字が減ったことを確認。
 
-トランザクション: 変換した範囲では `withTransaction(adb, async () => {...})` を使います。
-PostgreSQL では 1 接続に直列化しているので `fn` の中に他のクエリが割り込みません。
+トランザクション: `withTransaction(db, async () => {...})` を使います。
+PostgreSQL では `withSession()`（`AsyncLocalStorage`）がプールから借りた 1 本を `fn` の間ずっと固定するので、
+中のクエリは必ず同じ接続に届き、他のリクエストは別の接続で並行に進みます。
 **1 つのトランザクションを同期版と非同期版にまたがらせないこと**（接続が別なので、書き込み前の
-データが非同期側から見えない）。トランザクションのある範囲はまとめて変換します（アプリ内は 2 箇所だけ）。
+データが非同期側から見えない）。トランザクションのある範囲はまとめて変換します。
 
 進捗の目安（数字は `npm run db:async:status` の出力）:
 
@@ -134,8 +135,11 @@ PostgreSQL では 1 接続に直列化しているので `fn` の中に他のク
 > Express 4 は非同期の失敗を拾わず、包まないとプロセスが落ちる。
 
 > [!NOTE]
-> 接続は 1 本だけです（SQLite も PostgreSQL も）。トランザクションは `withTransaction(db, async () => {...})` で
-> 囲み、その中は他リクエストのクエリが割り込みません。
+> SQLite の接続は 1 本だけ、PostgreSQL はプール（既定 5 本）です。トランザクションは
+> `withTransaction(db, async () => {...})` で囲み、その中は `withSession()` が固定した 1 接続で実行されるため
+> 他リクエストのクエリが割り込みません（`withSession()` の中では `pg_backend_pid()` も同じ値になります）。
+> **1 接続に依存する処理は必ず `withSession()` の中で**実行してください。たとえば一時テーブルを作って
+> 後続のクエリで読む処理（`applyRemotePostRemoval` など）は、外で作ると別の接続に載って見つかりません。
 > **同期接続と非同期接続を 1 つのトランザクションにまたがらせないこと**は変わりませんが、いま同期接続を持つのは
 > SQLite 専用のメンテナンス CLI（`dbMaintenance`）だけです。
 
@@ -284,22 +288,22 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 
 ### 仕組み
 
-`db.prepare(sql).get() / .all() / .run()` の形は SQLite とまったく同じです。違いは中身で、PG のときは
-別スレッドの worker に投げて `Atomics.wait` で待ちます。**呼び出し側のコードは 1 行も変わっていません。**
+`db.prepare(sql).get() / .all() / .run()` の形は SQLite とまったく同じで、どちらも `await` で待ちます。
 
 | 項目 | SQLite | PostgreSQL |
 | :--- | :--- | :--- |
-| 接続 | プロセス内のファイル | worker スレッド内の `pg` クライアント 1 本 |
-| 待ち方 | 同期（そのまま） | 同期（`SharedArrayBuffer` + `Atomics.wait`） |
-| トランザクション | `BEGIN` / `COMMIT` | 同じ（1 接続なのでそのまま効く） |
-| 並列度 | なし（1 クエリずつ） | なし（1 接続に直列化。プールは使っていない） |
-| 結果の受け渡し | 参照 | JSON に変換してコピー（16MB 超は必要サイズで再試行、上限 256MB） |
+| 接続 | プロセス内のファイル 1 本 | `pg.Pool`（既定 5 本。`DATABASE_POOL_MAX` で変更） |
+| 待ち方 | 非同期（中身は同期なので待ちは発生しない） | 非同期（`pg` クライアント） |
+| トランザクション | `BEGIN` / `COMMIT` | 同じ（`withSession()` が 1 本を固定するのでそのまま効く） |
+| 並列度 | なし（1 クエリずつ） | あり（プールの本数まで。リクエストは別の接続で進む） |
+| セッション固定 | 不要（接続が 1 本しかない） | `withSession()` の中は同じ接続、外は空いている接続に載る |
+| 結果の受け渡し | 参照（`Uint8Array`） | `pg` が行を組み立てて返す（`Buffer`） |
 
 ### 検証済みの範囲（2026-09-22）
 
 - **HTTP で完結するテストスイート**: `test-pagination` と `test-announcements` が全項目パス。
 - **手動の一巡**: 登録 → ログイン → 投稿 → タイムライン → 検索（日本語の部分一致）→ 通知 → 管理画面。
-- **ビルド成果物でも起動**: `npm run build` 後の `dist` で PG 起動を確認（worker は `.js` を選ぶ）。
+- **ビルド成果物でも起動**: `npm run build` 後の `dist` で PG 起動を確認。
 - **実データ**: ライブノードの 187,072 行を移送した DB で起動し、タイムラインと検索が返ること。
 - **SQL 翻訳**: `npm run test:pg-translate`（17 項目、PG 不要）。
 
@@ -307,7 +311,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 
 | 制約 | 内容 | 影響 |
 | :--- | :--- | :--- |
-| **書き込みが直列** | worker も接続も 1 本。同時リクエストはクエリ単位で並ぶ | 読み取り中心のノードでは SQLite より遅くなりうる（1 クエリごとにスレッド間往復が入る） |
+| **接続が複数** | プール（既定 5 本）なので同時に複数のクエリが走る。SQLite は 1 クエリずつ | 順序に依存する処理はトランザクションに入れる。1 接続に依存する処理（一時テーブル）は `withSession()` で囲む。重いクエリを同時に 5 本流すと相手の DB を圧迫しうるので `DATABASE_POOL_MAX` で絞れる |
 | **大きな結果** | 結果は JSON でコピーする | 巨大な `BLOB` を大量に読む処理は苦手。投稿やユーザーの一覧は問題なし |
 | **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump -Fc` を使う（`npm run db:pg:backup`。自動メンテナンスでも毎日取る）。`pg_dump` が無い環境では警告してスキップする |
 | **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する（下記） |
@@ -315,7 +319,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
 | **短い検索語** | trigram 索引は 3 文字未満だと効きにくい | 1〜2 文字の検索は全走査になる。機能は同じで遅いだけ |
 | **バイナリ列** | SQLite は `Uint8Array`、PG は `Buffer` で返る | 現在のスキーマにバイナリ列は無い（鍵や画像は TEXT の base64）。増やすときは注意 |
-| **接続断** | 接続が切れたら捨てて、次のクエリで張り直す（アプリは落ちない） | 実行中だったクエリはエラーになる（再実行はしない。書き込みの二重実行を避けるため）。`DATABASE_STATEMENT_TIMEOUT_MS` / `DATABASE_IDLE_TIMEOUT_MS` で 1 クエリとアイドル中のトランザクションに上限を掛けている |
+| **接続断** | 切れた接続は捨ててプールが張り直す（アプリは落ちない）。他の接続はそのまま使える | 実行中だったクエリはエラーになる（再実行はしない。書き込みの二重実行を避けるため）。`DATABASE_STATEMENT_TIMEOUT_MS` / `DATABASE_IDLE_TIMEOUT_MS` を起動パラメータで渡し、1 クエリとアイドル中のトランザクションに上限を掛けている |
 | **セッション** | 移送後にテーブルは引き継がれる | とはいえ移行時は再ログインを促すのが安全 |
 
 ### テストスイートを PG で回す場合
