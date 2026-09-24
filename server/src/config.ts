@@ -66,6 +66,10 @@ export interface AppConfig {
   redisUrl: string;
   /** Redis のキー・チャンネルの接頭辞。同じ Redis を複数のノードで共有するときに分ける */
   redisPrefix: string;
+  /** 配送再送ワーカーの同時実行数（既定 5。相手サーバーごとに違うので並べると速い） */
+  deliveryConcurrency: number;
+  /** タイムラインの読み取りキャッシュの TTL（秒。**既定 0 = 無効**。有効にすると可視性の変化が TTL ぶん遅れる） */
+  timelineCacheTtlSec: number;
   /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
@@ -240,6 +244,20 @@ const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe'
 const REDIS_URL = process.env.REDIS_URL?.trim() || '';
 const REDIS_PREFIX = process.env.REDIS_PREFIX?.trim() || 'spica';
 
+// 配送再送の同時実行数（ネットワーク待ちが主なので、並べると同じ時間で多く送れる）
+const DELIVERY_CONCURRENCY = (() => {
+  const parsed = parseInt(process.env.DELIVERY_CONCURRENCY || '', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, 50) : 5;
+})();
+
+// タイムラインの読み取りキャッシュ（秒）。**既定は 0 = 無効**。
+// 有効にすると「同じ画面を何度も開いたときの組み立て」を省けるが、ブロック・削除・フォローの
+// 反映が TTL ぶん遅れる（権限はキャッシュ時点のもので判定されるので、他人に漏れることはない）
+const TIMELINE_CACHE_TTL_SEC = (() => {
+  const parsed = parseInt(process.env.TIMELINE_CACHE_TTL_SEC || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+})();
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -265,6 +283,8 @@ export const config: AppConfig = {
   rateLimitDisabled: RATE_LIMIT_DISABLED,
   redisUrl: REDIS_URL,
   redisPrefix: REDIS_PREFIX,
+  deliveryConcurrency: DELIVERY_CONCURRENCY,
+  timelineCacheTtlSec: TIMELINE_CACHE_TTL_SEC,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
   ffmpegPath: FFMPEG_PATH,

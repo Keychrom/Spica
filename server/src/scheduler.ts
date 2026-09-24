@@ -1,20 +1,26 @@
 ﻿import { db, UserRow, ScheduledPostRow, createNotification } from './db.js';
+import { config } from './config.js';
 import { executeCreatePost } from './postService.js';
 import { attemptDelivery } from './activitypub.js';
 import { maybeRunScheduledMaintenance } from './maintenanceService.js';
 import { runExclusively } from './redis.js';
+import { runWithConcurrency, runJobsOnce, getJobKinds } from './jobs.js';
 import {
   listDueDeliveries,
   markDeliveryDelivered,
   markDeliveryFailed,
   markDeliveryDead,
   pruneDeliveries,
+  claimDelivery,
+  reclaimStaleDeliveries,
+  type OutboxDeliveryRow,
 } from './deliveryQueue.js';
 
 let schedulerTimer: NodeJS.Timeout | null = null;
 let isRunning = false;
 
 let deliveryTimer: NodeJS.Timeout | null = null;
+let jobTimer: NodeJS.Timeout | null = null;
 let isDeliveryRunning = false;
 let lastPruneAt = 0;
 
@@ -132,6 +138,66 @@ export async function processScheduledPosts(): Promise<number> {
  * 指数バックオフの予定に従って再送する。成功したら配信済み、恒久的な失敗や
  * 試行回数の上限に達したものは失敗として確定させる。
  */
+/**
+ * 1 件の配送を処理する。**先に「自分がやる」と宣言**してから送る
+ * （宣言に失敗した行は、他のプロセス・他のワーカーが担当している）。
+ */
+async function deliverOne(row: OutboxDeliveryRow): Promise<boolean> {
+  if (!(await claimDelivery(row.id))) return false;
+
+  try {
+    let activity: any;
+    try {
+      activity = JSON.parse(row.activity);
+    } catch {
+      await markDeliveryDead(row, { error: '保存された Activity を解析できませんでした' });
+      return false;
+    }
+
+    // 送信元ユーザー（署名鍵）を解決する。インスタンスアクターなら不要
+    let senderUser: UserRow | undefined;
+    if (!row.use_instance_actor && row.sender_user_id) {
+      senderUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
+      if (!senderUser) {
+        await markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
+        return false;
+      }
+    }
+
+    const result = await attemptDelivery({
+      inboxUrl: row.inbox_url,
+      activity,
+      senderUser,
+      useInstanceActor: Boolean(row.use_instance_actor),
+    });
+
+    if (result.ok) {
+      await markDeliveryDelivered(row.id);
+      console.log(`[Delivery Queue] ✅ 再送に成功: ${row.activity_type || 'Activity'} -> ${row.inbox_url}`);
+      return true;
+    }
+
+    if (!result.retryable) {
+      await markDeliveryDead(row, { status: result.status, error: result.error });
+      console.warn(`[Delivery Queue] ⛔ 再送を断念（恒久的な失敗）: ${row.inbox_url} (${result.error})`);
+      return false;
+    }
+
+    const outcome = await markDeliveryFailed(row, { status: result.status, error: result.error });
+    if (outcome.dead) {
+      console.warn(`[Delivery Queue] 💀 試行回数の上限に達したため断念: ${row.inbox_url} (${row.attempts + 1}回失敗)`);
+    } else {
+      console.log(
+        `[Delivery Queue] ⏳ 再送を予約: ${row.inbox_url} (${row.attempts + 1}回目の失敗 / 次回 ${outcome.nextAttemptAt})`,
+      );
+    }
+    return false;
+  } catch (err) {
+    console.error(`[Delivery Queue] 再送処理でエラー (${row.inbox_url}):`, err);
+    return false;
+  }
+}
+
 export async function processDeliveryQueue(): Promise<number> {
   if (isDeliveryRunning) return 0;
   isDeliveryRunning = true;
@@ -144,6 +210,10 @@ export async function processDeliveryQueue(): Promise<number> {
       await pruneDeliveries();
     }
 
+    // 落ちたプロセスが掴んだままの行を戻す（`delivering` のまま残ったもの）
+    const reclaimed = await reclaimStaleDeliveries();
+    if (reclaimed > 0) console.warn(`[Delivery Queue] ♻️ 滞留していた配送を待機中に戻しました: ${reclaimed}件`);
+
     const due = await listDueDeliveries(DELIVERY_BATCH_LIMIT);
     if (due.length === 0) {
       return 0;
@@ -151,58 +221,10 @@ export async function processDeliveryQueue(): Promise<number> {
 
     console.log(`[Delivery Queue] 🔁 再送の期限が来た配送を処理します (${due.length}件)...`);
 
-    for (const row of due) {
-      try {
-        let activity: any;
-        try {
-          activity = JSON.parse(row.activity);
-        } catch {
-          await markDeliveryDead(row, { error: '保存された Activity を解析できませんでした' });
-          continue;
-        }
-
-        // 送信元ユーザー（署名鍵）を解決する。インスタンスアクターなら不要
-        let senderUser: UserRow | undefined;
-        if (!row.use_instance_actor && row.sender_user_id) {
-          senderUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(row.sender_user_id) as UserRow | undefined;
-          if (!senderUser) {
-            await markDeliveryDead(row, { error: '送信元ユーザーが存在しません' });
-            continue;
-          }
-        }
-
-        const result = await attemptDelivery({
-          inboxUrl: row.inbox_url,
-          activity,
-          senderUser,
-          useInstanceActor: Boolean(row.use_instance_actor),
-        });
-
-        if (result.ok) {
-          await markDeliveryDelivered(row.id);
-          deliveredCount++;
-          console.log(`[Delivery Queue] ✅ 再送に成功: ${row.activity_type || 'Activity'} -> ${row.inbox_url}`);
-          continue;
-        }
-
-        if (!result.retryable) {
-          await markDeliveryDead(row, { status: result.status, error: result.error });
-          console.warn(`[Delivery Queue] ⛔ 再送を断念（恒久的な失敗）: ${row.inbox_url} (${result.error})`);
-          continue;
-        }
-
-        const outcome = await markDeliveryFailed(row, { status: result.status, error: result.error });
-        if (outcome.dead) {
-          console.warn(`[Delivery Queue] 💀 試行回数の上限に達したため断念: ${row.inbox_url} (${row.attempts + 1}回失敗)`);
-        } else {
-          console.log(
-            `[Delivery Queue] ⏳ 再送を予約: ${row.inbox_url} (${row.attempts + 1}回目の失敗 / 次回 ${outcome.nextAttemptAt})`,
-          );
-        }
-      } catch (err) {
-        console.error(`[Delivery Queue] 再送処理でエラー (${row.inbox_url}):`, err);
-      }
-    }
+    // 配送はネットワーク待ちが主なので、同時に複数送る（相手サーバーごとに遅い速いが違う）。
+    // 同じ行を二重に送らないことは claimDelivery が保証する
+    const results = await runWithConcurrency(due, config.deliveryConcurrency, deliverOne);
+    deliveredCount = results.filter(Boolean).length;
   } catch (err) {
     console.error('[Delivery Queue] Error in processDeliveryQueue:', err);
   } finally {
@@ -235,18 +257,43 @@ export function startScheduler(intervalMs = 10000): void {
 /**
  * 配送再送ワーカーの起動 (既定 60秒間隔でポーリング)
  *
- * 複数プロセスで動かすとき（Redis あり）は、**1 プロセスだけ**が 1 回分を実行する。
- * そうしないと未送信の配送を二重に送ってしまう。
+ * 複数プロセスで動かしても**二重送信にはならない**。1 件ずつ `claimDelivery` で
+ * 「自分が送る」と宣言してから送るため（Redis のロックは要らない＝並列に送れる）。
  */
 export function startDeliveryQueueWorker(intervalMs = 60000): void {
   if (deliveryTimer) return;
-  console.log(`[Delivery Queue] ⏱️ 配送再送ワーカーを開始しました (interval: ${intervalMs}ms)`);
+  console.log(`[Delivery Queue] ⏱️ 配送再送ワーカーを開始しました (interval: ${intervalMs}ms, 同時実行: ${config.deliveryConcurrency})`);
   deliveryTimer = setInterval(() => {
-    void runExclusively('delivery-queue', 300_000, async () => {
-      await processDeliveryQueue();
-    }).catch((err) => {
+    void processDeliveryQueue().catch((err) => {
       console.error('[Delivery Queue Interval Error]:', err);
     });
+  }, intervalMs);
+}
+
+/**
+ * ジョブキュー（汎用の背景処理）の起動 (既定 15秒間隔でポーリング)
+ *
+ * 登録されている種類ごとに 1 回分を実行する。複数プロセスで動かしても
+ * `claimJob` が 1 つしか取らないので二重実行にはならない。
+ */
+export function startJobWorker(intervalMs = 15000): void {
+  if (jobTimer) return;
+  const kinds = getJobKinds();
+  if (kinds.length === 0) return;
+  console.log(`[Jobs] ⏱️ ジョブワーカーを開始しました (interval: ${intervalMs}ms, 種類: ${kinds.join(', ')})`);
+  jobTimer = setInterval(() => {
+    void (async () => {
+      for (const kind of getJobKinds()) {
+        try {
+          const result = await runJobsOnce(kind, { limit: 20, concurrency: 3 });
+          if (result.processed > 0) {
+            console.log(`[Jobs] 🧰 ${kind}: 実行 ${result.processed} 件（成功 ${result.ok} / 失敗 ${result.failed}）`);
+          }
+        } catch (err) {
+          console.error(`[Jobs] ジョブの実行でエラー (${kind}):`, err);
+        }
+      }
+    })();
   }, intervalMs);
 }
 
@@ -263,5 +310,10 @@ export function stopScheduler(): void {
     clearInterval(deliveryTimer);
     deliveryTimer = null;
     console.log('[Delivery Queue] ⏹️ 配送再送ワーカーを停止しました');
+  }
+  if (jobTimer) {
+    clearInterval(jobTimer);
+    jobTimer = null;
+    console.log('[Jobs] ⏹️ ジョブワーカーを停止しました');
   }
 }

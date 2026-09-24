@@ -61,7 +61,8 @@
     "test:db-async": "npx tsx scripts/test-db-async.ts",
     "db:async:status": "npx tsx scripts/db-async-status.ts",
     "db:maintenance": "npx tsx scripts/db-maintenance.ts",
-    "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts"
+    "test:db-maintenance": "npx tsx scripts/test-db-maintenance.ts",
+    "db:pg:stats": "npx tsx scripts/pg-stats.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

@@ -55,6 +55,7 @@ import {
   broadcastDeletePost,
 } from '../streaming.js';
 import { parseStreams } from '../streamRouting.js';
+import { cacheGet, cacheSet, isTimelineCacheEnabled } from '../timelineCache.js';
 import {
   buildNote,
   buildCreateActivity,
@@ -907,11 +908,36 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     LIMIT ?
   `;
 
+  // 読み取りの結果を短い TTL でキャッシュする（同じ画面を何度も開いたときの組み立てを省く）。
+  // **ユーザーごと**に鍵を分ける（リアクション・ブックマーク・投票の状態が混ざるため）。
+  const cacheKey = [
+    'timeline',
+    req.user?.id || 'guest',
+    mode || 'all',
+    tag,
+    encodeURIComponent(Array.isArray(req.query.cursor) ? String(req.query.cursor[0]) : String(req.query.cursor || '')),
+    String(page.limit),
+  ].join('|');
+
+  if (isTimelineCacheEnabled()) {
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      res.setHeader('X-Timeline-Cache', 'HIT');
+      return res.json(cached);
+    }
+  }
+
   const rows = await db.prepare(query).all(...params, ...announceParams, page.limit + 1) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
   const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+
+  if (isTimelineCacheEnabled()) {
+    res.setHeader('X-Timeline-Cache', 'MISS');
+    // 保存の完了は待たない（応答を遅らせない）
+    void cacheSet(cacheKey, enriched, config.timelineCacheTtlSec);
+  }
 
   res.json(enriched);
 }));

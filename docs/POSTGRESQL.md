@@ -379,7 +379,48 @@ CI のように `.env` が無い場所でもスイートが回ります。
 
 ---
 
-## ✅ 6. 検証（`npm run test:pg-port`）
+## 📊 6. 計測（どこが重いかを見る）
+
+「なんとなく重い」を「ここが詰まっている」に変えるための道具を用意してあります。
+
+```bash
+npm run db:pg:stats                 # 実行時間の合計 / 1 回あたりが遅いクエリ・テーブルと索引のサイズ
+npm run db:pg:stats -- --limit 50   # 件数を増やす
+```
+
+出るもの:
+
+| 項目 | 見かた |
+| :--- | :--- |
+| 実行時間の合計が大きいクエリ | 呼び出し回数 × 平均時間。タイムラインの整形など、**よく通る道**が上に来ます |
+| 1 回あたりが遅いクエリ | たまにしか呼ばれないが重いもの（管理画面の集計など） |
+| テーブルと索引のサイズ | 索引が重すぎないか（`posts` の索引は数十 MB になります） |
+| 使われていない索引 | 統計がリセットされた直後は全部 0 なので、**数日動かしてから**見ること |
+| 長く開いているトランザクション | アイドル・長すぎるものはロックを握っていないか確認 |
+
+クエリの統計には **`pg_stat_statements` が必要**です（この拡張が無いときは、その部分だけスキップして
+有効化の案内を出します）。有効化は管理者の作業です:
+
+```conf
+# postgresql.conf
+shared_preload_libraries = 'pg_stat_statements'
+```
+
+```sql
+-- 再起動後に 1 回だけ（管理者権限）
+CREATE EXTENSION pg_stat_statements;
+```
+
+アプリ側の滞留は `/health` で見えます（有効なセッショントークンを付けて叩くと、DB サイズ・
+配送キューの滞留（`pending` / `delivering`）・ジョブキュー・自動整理の状況が返ります）:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" https://your-domain/health | jq '{deliveryQueue, jobs, timelineCache, redis, sseClients}'
+```
+
+---
+
+## ✅ 7. 検証（`npm run test:pg-port`）
 
 PostgreSQL を用意して実行します（未設定なら終了コード 2 でスキップ）。
 
@@ -398,7 +439,7 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 
 ---
 
-## 🔧 7. 残っている手作業（メモ）
+## 🔧 8. 残っている手作業（メモ）
 
 データ層の非同期化（案A）は完了しました。いま同期のまま残っているのは次の 2 つだけです。
 
@@ -417,7 +458,7 @@ TEST_DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica_test npm run test:pg
 
 ---
 
-## 📌 8. 現状の推奨（2026-09 時点）
+## 📌 9. 現状の推奨（2026-09 時点）
 
 | 規模の目安 | 推奨 |
 | :--- | :--- |

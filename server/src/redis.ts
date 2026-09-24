@@ -357,3 +357,31 @@ export async function runExclusively(key: string, ttlMs: number, fn: () => Promi
 export function getRedisStatus(): { configured: boolean; ready: boolean; prefix: string } {
   return { configured: isRedisConfigured(), ready, prefix: config.redisPrefix };
 }
+
+/**
+ * 短命なキャッシュの取り出し（JSON）。
+ * キャッシュ用途なので、失敗したときは null を返して呼び出し側に計算させる。
+ */
+export async function redisGetJson(key: string): Promise<unknown | null> {
+  if (!ready || !commandClient) return null;
+  try {
+    const raw = await commandClient.get(redisKey(`cache:${key}`));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (err) {
+    logError('キャッシュの取得に失敗しました', err);
+    return null;
+  }
+}
+
+/** 短命なキャッシュの保存（TTL 秒）。失敗しても false を返すだけ */
+export async function redisSetJson(key: string, value: unknown, ttlSec: number): Promise<boolean> {
+  if (!ready || !commandClient || ttlSec <= 0) return false;
+  try {
+    await commandClient.set(redisKey(`cache:${key}`), JSON.stringify(value), { EX: Math.floor(ttlSec) });
+    return true;
+  } catch (err) {
+    logError('キャッシュの保存に失敗しました', err);
+    return false;
+  }
+}

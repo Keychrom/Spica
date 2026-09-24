@@ -19,10 +19,12 @@ import { actorRouter } from './routes/actor.js';
 import { discoveryRouter } from './routes/discovery.js';
 import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
-import { startScheduler, startDeliveryQueueWorker } from './scheduler.js';
+import { startScheduler, startDeliveryQueueWorker, startJobWorker } from './scheduler.js';
 import { registerGracefulShutdown } from './shutdown.js';
 import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
 import { getDeliveryQueueStats } from './deliveryQueue.js';
+import { getJobStats } from './jobs.js';
+import { getTimelineCacheStats } from './timelineCache.js';
 import {
   mediaProxyMiddleware,
   isImageProxyEnabled,
@@ -52,6 +54,9 @@ startScheduler();
 
 // 配送再送（指数バックオフ）ワーカーの起動
 startDeliveryQueueWorker();
+
+// ジョブキュー（リンクプレビュー取得などの背景処理）の起動
+startJobWorker();
 
 const app = express();
 
@@ -137,6 +142,7 @@ const healthHandler = async (req: Request, res: Response) => {
     // Redis は任意。configured が true で ready が false のときは「設定されているが繋がっていない」
     redis: getRedisStatus(),
     sseClients: getStreamClientCount(),
+    timelineCache: getTimelineCacheStats(),
   };
 
   // 認証済みなら運用の詳細も返す（監視ツールはヘッダーなしで叩ける）
@@ -145,11 +151,13 @@ const healthHandler = async (req: Request, res: Response) => {
     try {
       const stats = await getMaintenanceStats();
       const queue = await getDeliveryQueueStats();
+      const jobs = await getJobStats();
       return res.status(dbOk ? 200 : 503).json({
         ...base,
         db: { ...base.db, sizeBytes: stats.db.sizeBytes, walBytes: stats.db.walBytes },
         posts: stats.posts,
         deliveryQueue: queue,
+        jobs,
         automation: stats.automation,
         backups: stats.backups,
       });

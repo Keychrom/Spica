@@ -123,6 +123,42 @@ export async function listDueDeliveries(limit = 50): Promise<OutboxDeliveryRow[]
   }
 }
 
+/**
+ * 1 行を「自分が処理する」と宣言する（条件付き UPDATE で、取れるのは 1 つだけ）。
+ *
+ * 複数プロセス・複数ワーカーで同じ行を二重に送らないための要。`FOR UPDATE SKIP LOCKED`
+ * （PostgreSQL 専用）は使わない — 条件付き UPDATE が取れたかどうかが判定そのもので、
+ * SQLite でも同じコードで動くため。
+ */
+export async function claimDelivery(id: string): Promise<boolean> {
+  try {
+    const result = await db.prepare(
+      "UPDATE outbox_deliveries SET status = 'delivering', updated_at = ? WHERE id = ? AND status = 'pending'",
+    ).run(new Date().toISOString(), id);
+    return Number(result.changes ?? 0) === 1;
+  } catch (err) {
+    console.error('[Delivery Queue] ❌ 配送の割り当てに失敗:', err);
+    return false;
+  }
+}
+
+/**
+ * 処理中（`delivering`）のまま残った行を待機中に戻す。
+ * プロセスが落ちた・強制終了したときに、その行が永久に処理されなくなるのを防ぐ。
+ */
+export async function reclaimStaleDeliveries(olderThanMs = 10 * 60 * 1000): Promise<number> {
+  try {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const result = await db.prepare(
+      "UPDATE outbox_deliveries SET status = 'pending', updated_at = ? WHERE status = 'delivering' AND updated_at < ?",
+    ).run(new Date().toISOString(), cutoff);
+    return Number(result.changes ?? 0);
+  } catch (err) {
+    console.error('[Delivery Queue] ❌ 滞留した配送の復帰に失敗:', err);
+    return 0;
+  }
+}
+
 /** 再送に成功した行を配信済みにする */
 export async function markDeliveryDelivered(id: string): Promise<void> {
   try {
@@ -199,9 +235,13 @@ export async function pruneDeliveries(): Promise<number> {
 
 export interface DeliveryQueueStats {
   pending: number;
+  /** いま処理中（`delivering`）。複数ワーカーで動かすときに滞留の目安になる */
+  delivering: number;
   delivered: number;
   failed: number;
   nextAttemptAt: string | null;
+  /** 一番古い待機中の予定時刻（滞留が長いほど過去になる） */
+  oldestPendingAt: string | null;
 }
 
 /** 管理画面向けの集計 */
@@ -214,12 +254,14 @@ export async function getDeliveryQueueStats(): Promise<DeliveryQueueStats> {
     ).get() as { next_attempt_at: string } | undefined;
     return {
       pending: await count('pending'),
+      delivering: await count('delivering'),
       delivered: await count('delivered'),
       failed: await count('failed'),
       nextAttemptAt: next?.next_attempt_at ?? null,
+      oldestPendingAt: next?.next_attempt_at ?? null,
     };
   } catch {
-    return { pending: 0, delivered: 0, failed: 0, nextAttemptAt: null };
+    return { pending: 0, delivering: 0, delivered: 0, failed: 0, nextAttemptAt: null, oldestPendingAt: null };
   }
 }
 

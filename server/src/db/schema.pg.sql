@@ -182,6 +182,19 @@ CREATE TABLE IF NOT EXISTS invitation_codes  (
   memo TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS jobs  (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts BIGINT NOT NULL DEFAULT 0,
+  max_attempts BIGINT NOT NULL DEFAULT 5,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT DEFAULT '',
+  dedupe_key TEXT DEFAULT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS link_previews  (
   url TEXT PRIMARY KEY,
   title TEXT,
@@ -500,6 +513,8 @@ CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(u
 CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_url);
 CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_url);
 CREATE INDEX IF NOT EXISTS idx_invitation_codes_created_by ON invitation_codes(created_by);
+CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_list_members_list ON list_members(list_id);
 CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);
 CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);

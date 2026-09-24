@@ -1,5 +1,6 @@
 import { db } from './db.js';
 import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
+import { enqueueJob, registerJobHandler } from './jobs.js';
 
 /**
  * リンクプレビュー（OGP / oEmbed）カード
@@ -239,14 +240,38 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
   }
 }
 
-/** 投稿本文中の URL のプレビューを非同期で取得する（投稿作成時に呼ぶ） */
+/**
+ * 投稿本文中の URL のプレビュー取得を始める（投稿作成時に呼ぶ）。
+ *
+ * **まずその場で 1 回取りに行く**（以前と同じ体感。数秒でカードが出る）。
+ * 取れなかったときだけジョブキューに積み、バックオフつきで再試行する
+ * （相手が落ちていた・OGP が無いなどで諦めていた分が、あとから埋まる）。
+ */
 export function queueLinkPreviewFetch(content: string | null | undefined): void {
   const url = extractFirstUrl(content);
   if (!url) {
     return;
   }
-  fetchAndCacheLinkPreview(url).catch(() => {});
+  void (async () => {
+    try {
+      const preview = await fetchAndCacheLinkPreview(url);
+      if (preview) return; // 取れたので終わり
+    } catch {
+      // 失敗したらキューへ
+    }
+    // 同じ URL は（前の取得が終わるまで）二重に積まない
+    await enqueueJob('link_preview', { url }, { dedupeKey: `link_preview:${url}`, maxAttempts: 3 });
+  })().catch(() => {});
 }
+
+// ジョブキューから呼ばれる本体（ハンドラは自分のモジュールで登録する）
+registerJobHandler('link_preview', async (payload: { url?: string }) => {
+  const url = String(payload?.url || '');
+  if (!url) return;
+  const preview = await fetchAndCacheLinkPreview(url);
+  // 取得できなかった（OGP が無い・相手が落ちている等）ときは再試行の対象にする
+  if (!preview) throw new Error(`プレビューを取得できませんでした: ${url}`);
+});
 
 /** 本文に含まれる URL のキャッシュ済みプレビューを返す */
 export async function attachPreviewForContent(content: string | null | undefined): Promise<LinkPreview | null> {

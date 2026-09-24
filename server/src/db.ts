@@ -700,6 +700,24 @@ async function initDatabaseSchema(): Promise<void> {
     );`,
     "CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_due ON outbox_deliveries(status, next_attempt_at);",
     "CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_target ON outbox_deliveries(activity_id, inbox_url);",
+    // 汎用のジョブキュー（予約投稿・配送・メンテナンス以外の背景処理をここにまとめる）
+    //   status: pending（待機）→ running（実行中）→ done / failed
+    //   取り出しは条件付き UPDATE で宣言するので、複数プロセスでも二重に実行しない
+    `CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      next_attempt_at TEXT NOT NULL,
+      last_error TEXT DEFAULT '',
+      dedupe_key TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);",
     // 相手（リモート）がこちらをブロックした記録: 配送抑制と表示制御に使う
     `CREATE TABLE IF NOT EXISTS remote_blocks (
       blocker_actor_url TEXT NOT NULL,
