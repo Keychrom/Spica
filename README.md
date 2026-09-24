@@ -5,6 +5,8 @@
 >
 > ⚠️ **現在は Alpha 版の開発中ソフトウェアです。実運用（本番環境での利用）は想定されていません。**
 > ⚠️ **本ドキュメントに記載されている手順は、理論上可能な手順を書いているだけであり、実際に導入可能かどうかなどは一切検証していません。**
+>
+> 🌱 **1 人の学生がメインで開発しているプロジェクトです。大人数でのテストができていないため、規模を大きくすると不安定になる可能性があります**（詳しくは [docs/SCALE.md](docs/SCALE.md)）。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
@@ -90,6 +92,10 @@ Spicaの思想・アーキテクチャ、本番運用やサーバー設置に関
   - ゼロダウンタイム再起動とマイグレーション
 - ⚙️ **[設定リファレンス (docs/CONFIGURATION.md)](docs/CONFIGURATION.md)**
   - `.env` で設定可能なすべてのパラメータの詳細解説
+- 🌱 **[規模と安定性について (docs/SCALE.md)](docs/SCALE.md)**
+  - **このプロジェクトは 1 人の学生がメインで開発しています。大人数でのテストはできていません**
+  - なぜ大人数に向かないのか（単一プロセス・ジョブキューなし・SQLite 既定など）と、規模ごとの見通し
+  - 大人数で使う場合の緩和策と、まだ実装されていないこと
 
 ---
 
