@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
@@ -62,6 +63,21 @@ const app = express();
 
 // Cloudflare Tunnel 等のリバースプロキシ用設定
 app.set('trust proxy', true);
+
+// 応答の圧縮（gzip）。クライアントの JS は 1 ファイルで 500KB を超え、API も JSON なので効果が大きい。
+//  - 1KB 未満は圧縮しない（オーバーヘッドの方が大きい）
+//  - **SSE（text/event-stream）は絶対に圧縮しない** — 圧縮はバッファリングするので配信が止まる
+app.use(
+  compression({
+    threshold: 1024,
+    filter: (req: Request, res: Response) => {
+      const contentType = String(res.getHeader('Content-Type') || '');
+      if (contentType.includes('text/event-stream')) return false;
+      // 画像・動画などは元から圧縮されているので既定の判定に任せる
+      return compression.filter(req, res);
+    },
+  }),
+);
 
 // CORS設定
 app.use(cors({
@@ -388,7 +404,20 @@ if (finalDistPath) {
   });
 
   // ビルド済みフロントエンドの静的配信（index.html は OGP 注入側で扱うため対象外）
-  app.use(express.static(finalDistPath, { index: false }));
+  //   Vite は `assets/名前-ハッシュ.js` の形で出すので、**内容が変わらないものは 1 年キャッシュ**してよい。
+  //   index.html や sw.js など（名前が固定のもの）は毎回確認させる（キャッシュすると更新が届かない）。
+  app.use(
+    express.static(finalDistPath, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (/(^|[\\/])assets[\\/]/.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          res.setHeader('Cache-Control', 'no-cache');
+        }
+      },
+    }),
+  );
 
   // SPA用のフォールバックルーティング (HTMLリクエストは常にindex.htmlへ)
   app.get('*', (req: Request, res: Response, next: NextFunction) => {

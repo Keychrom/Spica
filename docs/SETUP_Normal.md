@@ -131,6 +131,11 @@ server {
 
     # メディアアップロード用の最大ファイルサイズ
     client_max_body_size 50M;
+    # 転送量を減らす（アプリも gzip して返しますが、nginx が直接返すものにも掛けておくと確実です）
+    gzip on;
+    gzip_types text/plain text/css application/javascript application/json application/manifest+json image/svg+xml;
+    gzip_min_length 1024;
+    gzip_vary on;
 
     # リクエストログ
     access_log /var/log/nginx/spica.access.log;
