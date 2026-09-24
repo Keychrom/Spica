@@ -22,12 +22,19 @@ export DB_DRIVER=postgres
 export DATABASE_URL="$DSN"
 export TEST_DATABASE_URL="$DSN"
 
+# Redis の検査も回す（接続先は環境変数 → .env の順。無ければ in-memory の検査だけになる）
+TEST_REDIS_URL="${TEST_REDIS_URL:-}"
+if [ -z "$TEST_REDIS_URL" ] && [ -f .env ]; then
+  TEST_REDIS_URL="$(sed -e 's/^\xEF\xBB\xBF//' -e 's/\r$//' .env | grep -E '^TEST_REDIS_URL=' | head -1 | cut -d= -f2-)"
+fi
+export TEST_REDIS_URL
+
 # PG でも通るスイート（docs/POSTGRESQL.md の「テストスイートを PG で回す場合」を参照）
 DEFAULT_SUITES=(
   pg-port pg-backup pg-translate db-async admin-audit email-notify image-proxy ops-automation
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
-  password-auth federation search-policy
+  password-auth federation search-policy redis
 )
 
 SUITES=("$@")

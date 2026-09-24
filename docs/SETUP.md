@@ -210,6 +210,13 @@ pm2 startup
 pm2 logs spica
 ```
 
+> [!NOTE]
+> 上のコマンドは**1 プロセス**で動かします（Spica の既定）。同じノードを複数のプロセスで動かしたい場合は、
+> Redis を設定したうえで `pm2 start npm --name "spica" -i 2 -- run start`（cluster モード）にしてください。
+> その場合は DB を PostgreSQL にし、メディアを Cloudflare R2 / S3 に置く必要があります。
+> 手順と制限は **[Redis を使う (docs/REDIS.md)](REDIS.md)** にまとめています。
+> 人数が少ないうちは 1 プロセスのままで構いません（Redis を入れる必要はありません）。
+
 ### 方法 2: systemd を使用する場合
 
 `/etc/systemd/system/spica.service` を作成します：

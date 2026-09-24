@@ -58,6 +58,15 @@ export interface AppConfig {
   /** レート制限を無効化する（既定 false。テストや特殊な運用時のみ true） */
   rateLimitDisabled: boolean;
   /**
+   * Redis の接続先（例: redis://127.0.0.1:6379）。
+   * **未設定なら Redis を一切使わない**（今までどおりインメモリ実装＝単一プロセス前提）。
+   * 設定すると、レート制限・リアルタイム更新・設定の反映・定期処理の単一実行が Redis 経由になり、
+   * 複数プロセスで動かせるようになる（docs/REDIS.md）。
+   */
+  redisUrl: string;
+  /** Redis のキー・チャンネルの接頭辞。同じ Redis を複数のノードで共有するときに分ける */
+  redisPrefix: string;
+  /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
    */
@@ -227,6 +236,10 @@ const BACKUPS_KEEP = (() => {
 const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
 const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
 
+// Redis（任意）。未設定ならインメモリ実装のまま＝単一プロセス前提で今までどおり動く
+const REDIS_URL = process.env.REDIS_URL?.trim() || '';
+const REDIS_PREFIX = process.env.REDIS_PREFIX?.trim() || 'spica';
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -250,6 +263,8 @@ export const config: AppConfig = {
   allowPrivateRemoteFetch: ALLOW_PRIVATE_REMOTE_FETCH,
   authorizedFetch: AUTHORIZED_FETCH,
   rateLimitDisabled: RATE_LIMIT_DISABLED,
+  redisUrl: REDIS_URL,
+  redisPrefix: REDIS_PREFIX,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
   ffmpegPath: FFMPEG_PATH,

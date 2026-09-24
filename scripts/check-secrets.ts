@@ -57,7 +57,7 @@ const SECRET_KEYS = [
   'SECRET_ACCESS_KEY', 'ACCESS_KEY_ID', 'SECRET_KEY', 'API_KEY', 'APIKEY',
   'SMTP_PASS', 'SMTP_PASSWORD', 'SMTP_USER', 'MAIL_PASSWORD',
   'MASTER_KEY', 'ADMIN_KEY', 'SESSION_SECRET', 'JWT_SECRET', 'ENCRYPTION_KEY',
-  'DB_PASSWORD', 'DATABASE_URL', 'PRIVATE_KEY', 'VAPID_PRIVATE_KEY',
+  'DB_PASSWORD', 'DATABASE_URL', 'REDIS_URL', 'REDIS_PASSWORD', 'PRIVATE_KEY', 'VAPID_PRIVATE_KEY',
 ];
 
 /** プレースホルダ（これらが値なら検出しない） */
@@ -70,8 +70,9 @@ const PLACEHOLDER_RE = /^(?:x+|\*+|\.+|-+|<[^>]*>|\$\{[^}]*\}|your[-_ ]|change[-
  * どちらか一方でも本物らしければ検出対象のまま（実パスワードを見逃さない）。
  */
 function isExampleConnectionString(value: string): boolean {
-  // scheme 付き（postgres://…）と、パターン検出が拾う scheme 無し（//…）の両方を受ける
-  const match = /^(?:[a-z][a-z0-9+.-]*:)?\/\/([^:@/]+):([^@]*)@(.+)$/i.exec(value);
+  // scheme 付き（postgres://…）と、パターン検出が拾う scheme 無し（//…）の両方を受ける。
+  // ユーザー名は省略可（`redis://:password@host` の形があるため）
+  const match = /^(?:[a-z][a-z0-9+.-]*:)?\/\/([^:@/]*):([^@]*)@(.+)$/i.exec(value);
   if (!match) return false;
   const password = match[2];
   const host = match[3].split('/')[0].replace(/^\[|\]$/g, '').split(':')[0].toLowerCase();
@@ -100,6 +101,20 @@ function isReferenceValue(value: string): boolean {
   // 閉じ括弧は無くてもよい。ただし**呼び出しの中に文字列リテラルがある場合は除く**:
   // `atob('c2VjcmV0')` のように、秘密そのものが書かれている可能性があるため
   return /^[A-Za-z_$][A-Za-z0-9_$.]*\s*\([^'"]*\)?$/.test(value);
+}
+
+/** 値が URL になるキー（認証情報が無ければ秘密ではないので、下の緩和を使う） */
+const URL_VALUED_KEYS = new Set(['DATABASE_URL', 'REDIS_URL', 'TEST_DATABASE_URL', 'TEST_REDIS_URL']);
+
+/**
+ * 認証情報を含まない URL かどうか（`redis://127.0.0.1:6379` のような形）。
+ * 接続先そのものは秘密ではない（パスワードがあれば `user:pass@host` の形で入るので、
+ * そのときは今までどおり検出する）。
+ */
+function isCredentialFreeUrl(value: string): boolean {
+  const authority = /^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i.exec(value);
+  if (!authority) return false;
+  return !authority[0].includes('@');
 }
 
 /** 検出ルール本体 */
@@ -407,12 +422,18 @@ export function scanForSecrets(options: ScanOptions = {}): ScanResult {
 
       const keyed = keyedRule(line);
       const keyedValue = keyed ? keyed.value.trim() : '';
+      // 接続先の URL は、認証情報（user:pass@）が無ければ秘密ではない
+      // （ドキュメントに `REDIS_URL=redis://127.0.0.1:6379` と書けるようにする）
+      const credentialFreeUrl = keyed !== null
+        && URL_VALUED_KEYS.has(keyed.key)
+        && isCredentialFreeUrl(keyedValue);
       if (
         keyed
         && keyedValue.length >= 12
         && !PLACEHOLDER_RE.test(keyedValue)
         && !isReferenceValue(keyedValue)
         && !isExampleConnectionString(keyedValue)
+        && !credentialFreeUrl
       ) {
         findings.push({
           file: rel,

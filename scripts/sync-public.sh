@@ -27,7 +27,12 @@ FILES=(
   .env.example
   docs/CONFIGURATION.md
   docs/POSTGRESQL.md
+  docs/REDIS.md
   package.json
+  # 依存は server ワークスペース側にある（redis のように追加したものが公開ツリーへ入らないと
+  # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
+  package-lock.json
+  server/package.json
 )
 DIRS=(
   .github/workflows

@@ -12,11 +12,18 @@ DEFAULT_SUITES=(
   dm-policy drive notification-prefs video-thumbnail search-policy ops-automation
   secret-scan silence-featured image-proxy email-notify admin-audit
   antennas-and-scheduler account-deletion export-and-rules fts-push
-  theme-channels-webauthn db-maintenance pg-translate db-async
+  theme-channels-webauthn db-maintenance pg-translate db-async redis
 )
 
 SUITES=("$@")
 if [ ${#SUITES[@]} -eq 0 ]; then SUITES=("${DEFAULT_SUITES[@]}"); fi
+
+# Redis の検査は接続先があれば実物でも回す（環境変数 → .env の順。無くても in-memory の検査は通る）
+TEST_REDIS_URL="${TEST_REDIS_URL:-}"
+if [ -z "$TEST_REDIS_URL" ] && [ -f .env ]; then
+  TEST_REDIS_URL="$(sed -e 's/^\xEF\xBB\xBF//' -e 's/\r$//' .env | grep -E '^TEST_REDIS_URL=' | head -1 | cut -d= -f2-)"
+fi
+export TEST_REDIS_URL
 
 LOG_DIR="${LOG_DIR:-/tmp/spica-suites}"
 mkdir -p "$LOG_DIR"

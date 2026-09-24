@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sendNotificationToUser } from './streaming.js';
+import { publishEvent } from './redis.js';
 import { fileURLToPath } from 'node:url';
 
 // データベースディレクトリが存在することを確認（SQLite のときだけ必要）
@@ -1558,6 +1559,10 @@ export async function setServerSetting(key: string, value: string): Promise<void
   // キャッシュ未ロードでも、この後の読み取りが同じプロセスで見えるようにする
   if (!settingsCache) settingsCache = new Map();
   settingsCache.set(key, value);
+
+  // 他のプロセスにも「変わった」を知らせる（Redis 未設定なら何もしない）。
+  // 受け取った側は loadServerSettings() でキャッシュを読み直す（index.ts が購読している）。
+  void publishEvent('settings', { key });
 }
 
 /**

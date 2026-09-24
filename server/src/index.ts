@@ -4,7 +4,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { db, initDatabase } from './db.js';
+import { db, initDatabase, loadServerSettings } from './db.js';
+import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
+import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
 import { authenticate } from './auth.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
@@ -30,6 +32,20 @@ import {
 
 // データベースの初期化
 await initDatabase();
+
+// Redis（任意）。REDIS_URL が設定されているときだけ繋ぎ、プロセスをまたぐ仕組みを有効にする。
+// 繋がらなくても起動は続く（インメモリ実装のまま＝今までどおり単一プロセス前提で動く）。
+await initRedis();
+
+// 他プロセスが配ったリアルタイム更新を、このプロセスのクライアントへ届ける
+await subscribeEvent('stream', handleRemoteStreamEvent);
+
+// 他プロセスで設定が変わったら、このプロセスの設定キャッシュを読み直す
+await subscribeEvent('settings', () => {
+  void loadServerSettings().catch((err) => {
+    console.warn('[Redis] 設定の読み直しに失敗しました:', err?.message || err);
+  });
+});
 
 // 予約投稿バックグラウンドワーカーの起動
 startScheduler();
@@ -118,6 +134,9 @@ const healthHandler = async (req: Request, res: Response) => {
     status: dbOk ? 'ok' : 'degraded',
     uptimeSeconds: Math.round(process.uptime()),
     db: { ok: dbOk, latencyMs: Date.now() - startedAt },
+    // Redis は任意。configured が true で ready が false のときは「設定されているが繋がっていない」
+    redis: getRedisStatus(),
+    sseClients: getStreamClientCount(),
   };
 
   // 認証済みなら運用の詳細も返す（監視ツールはヘッダーなしで叩ける）

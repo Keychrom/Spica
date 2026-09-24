@@ -202,9 +202,23 @@ try {
   writeFixture('docs/db.md', [
     'DATABASE_URL=postgres://spica:password@127.0.0.1:5432/spica',
     'REDIS_URL=redis://user:password@localhost:6379/0',
+    'REDIS_URL=redis://:password@127.0.0.1:6379',
     'DATABASE_URL=postgres://spica:…@127.0.0.1:5432/spica',
   ].join('\n'));
   check('例示用の接続文字列は検出しない', findingsFor('db.md').length, 0);
+
+  // Redis の DSN も Postgres と同じ扱い（例示は通し、実物らしければ検出する）。
+  // 値は実行時に組み立てる（このファイル自身が走査対象なので、実在させない）
+  const fakeRedisDsn = ['redis://default:', FAKE.basicAuthPassword, '@redis.internal:6379'].join('');
+  writeFixture('src/redis.ts', [`${['REDIS', '_URL'].join('')}=${fakeRedisDsn}`].join('\n'));
+  check('実物らしい Redis の DSN を検出', findingsFor('redis.ts').length > 0, true);
+
+  // 認証情報の無い接続先は秘密ではない（ドキュメントに書けるようにする）
+  writeFixture('docs/redis.md', [
+    `${['REDIS', '_URL'].join('')}=redis://127.0.0.1:6379`,
+    `${['DATABASE', '_URL'].join('')}=postgres://db.internal:5432/spica`,
+  ].join('\n'));
+  check('認証情報の無い接続先は検出しない', findingsFor('redis.md').length, 0);
 
   // ── ソース中の例示用 DSN（テストが実行時に組み立てる形）───────
   // ホストが例示用（example.com など）でパスワードがプレースホルダなら、コード中でも検出しない。

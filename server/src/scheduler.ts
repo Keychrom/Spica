@@ -2,6 +2,7 @@
 import { executeCreatePost } from './postService.js';
 import { attemptDelivery } from './activitypub.js';
 import { maybeRunScheduledMaintenance } from './maintenanceService.js';
+import { runExclusively } from './redis.js';
 import {
   listDueDeliveries,
   markDeliveryDelivered,
@@ -213,29 +214,37 @@ export async function processDeliveryQueue(): Promise<number> {
 
 /**
  * 予約投稿スケジューラの起動 (10秒間隔でポーリング)
+ *
+ * 複数プロセスで動かすとき（Redis あり）は、**1 プロセスだけ**が 1 回分を実行する。
+ * そうしないと同じ予約投稿を二重に公開してしまう。
  */
 export function startScheduler(intervalMs = 10000): void {
   if (schedulerTimer) return;
   console.log(`[Scheduler] ⏱️ Scheduled post background worker started (interval: ${intervalMs}ms)`);
   schedulerTimer = setInterval(() => {
-    processScheduledPosts().catch((err) => {
+    void runExclusively('scheduler', 60_000, async () => {
+      await processScheduledPosts();
+      // 予約時刻を過ぎていれば 1 日 1 回だけ自動整理を実行する（実行可否は内部で判定）
+      await maybeRunScheduledMaintenance();
+    }).catch((err) => {
       console.error('[Scheduler Interval Error]:', err);
-    });
-    // 予約時刻を過ぎていれば 1 日 1 回だけ自動整理を実行する（実行可否は内部で判定）
-    maybeRunScheduledMaintenance().catch((err) => {
-      console.error('[Auto Maintenance Error]:', err);
     });
   }, intervalMs);
 }
 
 /**
  * 配送再送ワーカーの起動 (既定 60秒間隔でポーリング)
+ *
+ * 複数プロセスで動かすとき（Redis あり）は、**1 プロセスだけ**が 1 回分を実行する。
+ * そうしないと未送信の配送を二重に送ってしまう。
  */
 export function startDeliveryQueueWorker(intervalMs = 60000): void {
   if (deliveryTimer) return;
   console.log(`[Delivery Queue] ⏱️ 配送再送ワーカーを開始しました (interval: ${intervalMs}ms)`);
   deliveryTimer = setInterval(() => {
-    processDeliveryQueue().catch((err) => {
+    void runExclusively('delivery-queue', 300_000, async () => {
+      await processDeliveryQueue();
+    }).catch((err) => {
       console.error('[Delivery Queue Interval Error]:', err);
     });
   }, intervalMs);

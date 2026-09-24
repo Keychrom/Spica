@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import { db } from './db.js';
 import { stopScheduler } from './scheduler.js';
 import { closeAllStreams } from './streaming.js';
+import { closeRedis } from './redis.js';
 
 /**
  * グレースフルシャットダウン
@@ -69,8 +70,10 @@ export function createGracefulShutdown(deps: GracefulShutdownDeps): (signal: str
     // DB の後始末。WAL をチェックポイントしてから接続を閉じる
     // （PostgreSQL では checkpoint は何もしない）。終了の完了は待つが、
     // 待ち続けて終われない場合に備えて上の forceExit が上限として働く。
-    db
-      .checkpoint()
+    // Redis を使っていれば、購読を止めてから DB を閉じる。
+    void closeRedis()
+      .catch(() => {})
+      .then(() => db.checkpoint())
       .catch(() => {})
       .then(() => db.close())
       .catch(() => {})
