@@ -1,6 +1,12 @@
 import { Response } from 'express';
 import crypto from 'node:crypto';
 import { isRedisReady, publishEvent } from './redis.js';
+import {
+  buildNoteRouting,
+  shouldDeliverNote,
+  type NoteRouting,
+  type RoutableNote,
+} from './streamRouting.js';
 
 /**
  * リアルタイム更新（SSE）
@@ -8,6 +14,10 @@ import { isRedisReady, publishEvent } from './redis.js';
  * `REDIS_URL` が設定されているときは、イベントを Redis の Pub/Sub に流して**全プロセス**に届ける
  * （どのプロセスに接続した利用者にも同じ更新が見える）。未設定なら今までどおり自分のプロセス内の
  * クライアントにだけ配る。Redis への配信に失敗したときも、その場は自プロセスへ配って終わる。
+ *
+ * **新着投稿（note）は必要な人にだけ配る。** クライアントは接続時に見たいストリームを申告し
+ * （`?streams=local,home,tag:foo`）、`streamRouting.ts` の判定に通ったクライアントにだけ送る。
+ * 申告が無い（古いクライアント）ときは今までどおり全部に配る。
  *
  * 取りこぼしについて: Pub/Sub は「その瞬間に繋がっている相手」にしか届かない（履歴を持たない）。
  * リアルタイム更新は接続中のクライアントに届けばよく、クライアントは再接続時に取り直す前提なので、
@@ -19,13 +29,15 @@ interface StreamClient {
   userId?: string | null;
   res: Response;
   createdAt: number;
+  /** 受け取りたいストリーム（`*` なら全部） */
+  streams: Set<string>;
 }
 
 const clients = new Map<string, StreamClient>();
 
 /** プロセスをまたぐときに Pub/Sub へ流すメッセージ */
 type StreamMessage =
-  | { k: 'event'; e: string; d: any }
+  | { k: 'event'; e: string; d: any; r?: NoteRouting }
   | { k: 'user'; u: string; d: any };
 
 // 定期ハートビート（25秒ごとに ping を送り、プロキシ・ルーターによるタイムアウト切断を防止）
@@ -43,8 +55,11 @@ setInterval(() => {
 
 /**
  * SSE クライアントを登録
+ *
+ * `streams` は接続時に申告された「見たいストリーム」（`streamRouting.parseStreams` でパース済み）。
+ * 省略したときは全部（`*`）＝今までどおりの配信。
  */
-export function addStreamClient(res: Response, userId?: string | null): string {
+export function addStreamClient(res: Response, userId?: string | null, streams?: Set<string>): string {
   const clientId = crypto.randomUUID();
 
   // SSE ヘッダー設定
@@ -64,6 +79,7 @@ export function addStreamClient(res: Response, userId?: string | null): string {
     userId: userId ? userId.toLowerCase() : null,
     res,
     createdAt: Date.now(),
+    streams: streams && streams.size > 0 ? streams : new Set(['*']),
   });
 
   console.log(`[Streaming] 📡 Client connected: ${clientId} (user: ${userId || 'guest'}). Total clients: ${clients.size}`);
@@ -80,11 +96,19 @@ export function removeStreamClient(clientId: string): void {
   }
 }
 
-/** 自プロセスの全クライアントへ配る */
-function deliverLocalEvent(eventName: string, data: any): void {
+/**
+ * 自プロセスの全クライアントへ配る。
+ * `eventName` が `note` で `routing` があるときは、必要なクライアントにだけ配る。
+ */
+function deliverLocalEvent(eventName: string, data: any, routing?: NoteRouting): void {
   if (clients.size === 0) return;
   const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+  const note = eventName === 'note' && routing ? (data as RoutableNote) : null;
+
   for (const [id, client] of clients.entries()) {
+    if (note && routing && !shouldDeliverNote({ userId: client.userId ?? null, streams: client.streams }, note, routing)) {
+      continue;
+    }
     try {
       client.res.write(payload);
     } catch {
@@ -94,7 +118,30 @@ function deliverLocalEvent(eventName: string, data: any): void {
 }
 
 /**
- * 全接続クライアントにイベントをブロードキャスト。
+ * 📡 新着ノートを配信する。
+ * ローカル投稿はローカル/ホームを購読している人へ、リモート投稿は「連合を見ている人」と
+ * 「作者をフォローしている人」へだけ届ける（材料は `streamRouting.ts` が作る）。
+ */
+export function broadcastNote(post: RoutableNote & Record<string, any>): void {
+  void buildNoteRouting(post)
+    .then((routing) => {
+      if (isRedisReady()) {
+        const message: StreamMessage = { k: 'event', e: 'note', d: post, r: routing };
+        return publishEvent('stream', message).then((sent) => {
+          if (!sent) deliverLocalEvent('note', post, routing);
+        });
+      }
+      deliverLocalEvent('note', post, routing);
+    })
+    .catch((err) => {
+      // 判定に失敗したら今までどおり全員へ（取りこぼすよりは良い）
+      console.warn('[Streaming] 配信先の判定に失敗しました。全クライアントへ配ります:', err?.message || err);
+      deliverLocalEvent('note', post);
+    });
+}
+
+/**
+ * 全接続クライアントにイベントをブロードキャスト（note 以外の小さな更新: リアクション・リノート数など）。
  * Redis が使えるときは全プロセスへ配る（配れなかったときだけ自プロセスへ配る）
  */
 export function broadcastEvent(eventName: string, data: any): void {
@@ -116,20 +163,22 @@ export function handleRemoteStreamEvent(raw: string): void {
   } catch {
     return; // 壊れたメッセージは無視する
   }
-  if (message?.k === 'event') deliverLocalEvent(message.e, message.d);
+  if (message?.k === 'event') deliverLocalEvent(message.e, message.d, message.r);
   else if (message?.k === 'user') deliverLocalUserNotification(String(message.u).toLowerCase(), message.d);
 }
 
-/** 接続中の SSE クライアント数（/health と検査で使う） */
+/** 接続中の SSE クライアント数（`/health` と検査で使う） */
 export function getStreamClientCount(): number {
   return clients.size;
 }
 
-/**
- * 📡 新着ノート（投稿）をブロードキャスト
- */
-export function broadcastNote(post: any): void {
-  broadcastEvent('note', post);
+/** 検査用: 接続中のクライアントのストリーム（どのストリームを購読しているか） */
+export function getStreamSubscriptions(): { id: string; userId: string | null; streams: string[] }[] {
+  return [...clients.values()].map((client) => ({
+    id: client.id,
+    userId: client.userId ?? null,
+    streams: [...client.streams],
+  }));
 }
 
 /**

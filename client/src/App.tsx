@@ -5894,11 +5894,31 @@ export default function App() {
     }
   }, [currentView, notificationFilter, settingsTab]);
 
+  // 📡 SSE で受け取りたいストリームの申告
+  //    サーバーはこれを見て配信先を絞る（リモート投稿の洪水を全員に流さないため）。
+  //    アンテナは本文の条件で絞る仕組みなので、全部受け取ってクライアント側で判定する。
+  const sseStreams = useMemo(() => {
+    if (currentView === 'channels') {
+      return selectedChannel ? `channel:${selectedChannel.id}` : 'all';
+    }
+    switch (timelineMode) {
+      case 'local':
+        return 'local';
+      case 'home':
+        return 'home';
+      case 'tag':
+        return activeHashtag ? `tag:${activeHashtag.replace(/^#/, '')}` : 'all';
+      case 'antenna':
+      default:
+        return 'all';
+    }
+  }, [currentView, timelineMode, activeHashtag, selectedChannel]);
+
   // 📡 リアルタイム SSE (Server-Sent Events) ストリーミング接続
   useEffect(() => {
     const sseUrl = authToken
-      ? `/api/streaming?token=${encodeURIComponent(authToken)}`
-      : '/api/streaming';
+      ? `/api/streaming?token=${encodeURIComponent(authToken)}&streams=${encodeURIComponent(sseStreams)}`
+      : `/api/streaming?streams=${encodeURIComponent(sseStreams)}`;
 
     let eventSource: EventSource | null = null;
     let reconnectTimeout: any = null;
@@ -6088,7 +6108,7 @@ export default function App() {
       if (eventSource) eventSource.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [authToken, authUser?.id]);
+  }, [authToken, authUser?.id, sseStreams]);
 
   // 新着通知トーストの自動非表示タイマー (4.5秒)
   useEffect(() => {

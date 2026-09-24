@@ -54,6 +54,7 @@ import {
   broadcastPoll,
   broadcastDeletePost,
 } from '../streaming.js';
+import { parseStreams } from '../streamRouting.js';
 import {
   buildNote,
   buildCreateActivity,
@@ -420,13 +421,14 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
 
 // ==========================================
 // 📡 リアルタイムストリーミング (SSE) エンドポイント
+//    ?streams=local,home,tag:foo で「受け取りたいもの」を申告する（省略時は全部＝従来どおり）
 // ==========================================
 apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => {
   let user = req.user;
   if (!user && req.query.token && typeof req.query.token === 'string') {
     user = await getUserFromToken(req.query.token) || undefined;
   }
-  const clientId = addStreamClient(res, user?.id);
+  const clientId = addStreamClient(res, user?.id, parseStreams(req.query.streams));
   req.on('close', () => {
     removeStreamClient(clientId);
   });

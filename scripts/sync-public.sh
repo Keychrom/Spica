@@ -26,6 +26,7 @@ fi
 FILES=(
   .env.example
   docs/CONFIGURATION.md
+  docs/FEATURES.md
   docs/POSTGRESQL.md
   docs/REDIS.md
   docs/SCALE.md
@@ -37,6 +38,7 @@ FILES=(
 )
 DIRS=(
   .github/workflows
+  client/src
   server/src
   scripts
 )

@@ -12,7 +12,7 @@ DEFAULT_SUITES=(
   dm-policy drive notification-prefs video-thumbnail search-policy ops-automation
   secret-scan silence-featured image-proxy email-notify admin-audit
   antennas-and-scheduler account-deletion export-and-rules fts-push
-  theme-channels-webauthn db-maintenance pg-translate db-async redis
+  theme-channels-webauthn db-maintenance pg-translate db-async redis stream-scope
 )
 
 SUITES=("$@")
