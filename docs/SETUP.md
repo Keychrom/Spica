@@ -16,7 +16,7 @@
 | **CPU** | 2コア以上 | 1コア |
 | **メモリ (RAM)** | 2GB 以上 | 1GB |
 | **ストレージ** | SSD 20GB 以上 (メディア保存量による) | SSD 10GB |
-| **Node.js** | v20.x または v22.x LTS (v24も対応) | v20.0.0+ |
+| **Node.js** | v22.13 以降（v24 LTS 推奨） | v22.13.0（`node:sqlite` を使うため。v20 では動作しません） |
 | **外部通信** | ポート 80 / 443 (HTTPS 必須) | - |
 | **ドメイン** | 独自ドメイン (例: `spica.example.com`) | - |
 
@@ -27,19 +27,25 @@
 
 ## 🚀 ステップ 1: Node.js のインストール
 
-Node.js v20 または v22 LTS をインストールします（NodeSource を利用する例）：
+Node.js **v22.13 以降**（推奨は v24 LTS）をインストールします（NodeSource を利用する例）：
+
+> [!IMPORTANT]
+> Spica は `node:sqlite` を使うため、**v22.13.0 以上**（または v23.4.0 以上）が必要です。
+> v22.5〜v22.12 と v23.0〜v23.3 では `--experimental-sqlite` が必要で、
+> **v20 以前では起動しません。**
 
 ```bash
 # パッケージリスト更新と必要ツールのインストール
 sudo apt update && sudo apt install -y curl git build-essential
 
-# Node.js 22.x リポジトリの追加
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+# Node.js 24.x（推奨）のリポジトリを追加
+# ※ v22 系でも 22.13 以降なら動きます（22.12 以前は node:sqlite が有効になりません）
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 
 # Node.js のインストール
 sudo apt install -y nodejs
 
-# バージョン確認 (v20.0.0 以上であることを確認)
+# バージョン確認 (v22.13.0 以上であることを確認)
 node -v
 npm -v
 ```

@@ -27,7 +27,7 @@ DEFAULT_SUITES=(
   pg-port pg-backup pg-translate db-async admin-audit email-notify image-proxy ops-automation
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
-  password-auth federation
+  password-auth federation search-policy
 )
 
 SUITES=("$@")

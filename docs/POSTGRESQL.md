@@ -332,11 +332,11 @@ npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-**いま PG でも緑になるスイート（19 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
+**いま PG でも緑になるスイート（20 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
 `pg-translate`（28）/ `db-async`（46）/ `admin-audit` / `email-notify` / `image-proxy` /
 `ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
 `antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
-`theme-channels-webauthn` / `password-auth` / `federation`
+`theme-channels-webauthn` / `password-auth` / `federation` / `search-policy`
 
 `test-federation` はノードごとに**別のデータベース**（`<db>_node_a` / `<db>_node_b`）を作って
 2 ノードを立てます。作る権限が無い場合は理由を出してスキップします
@@ -347,9 +347,8 @@ SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でま�
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| 上記 19 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
-| `test-search-policy` | 🚧 直近の `posts_fts` を直接いじる検査があり、SQLite 前提（PG では trigram 索引側の検査として `test-pg-port` が担当） |
-| `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む SQLite 専用のスイート。PG 側の保全は `db:maintenance` ではなく `pg_dump` + 手動 SQL |
+| 上記 20 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
+| `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む **SQLite 専用**のスイート（PG の保全は `db:pg:backup` = `pg_dump`） |
 
 > [!NOTE]
 > スイートが `new DatabaseSync(...)` で直接 SQLite を開いて seed していると、PG では空のファイルを

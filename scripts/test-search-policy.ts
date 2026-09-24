@@ -3,8 +3,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
-import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
+import { createAsyncDatabase, type AsyncSpicaDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // リモートコンテンツの保存・索引ポリシーの検証
@@ -39,6 +38,15 @@ const PUBLIC = 'https://www.w3.org/ns/activitystreams#Public';
 // テストプロセス内で server/src/db.ts を読み込む場合に備え、必ずテスト用DBを指す
 // （未設定のままだと cwd の別のDBを開いてしまうため）
 process.env.DB_PATH = path.resolve(ROOT_DIR, 'server', TEST_DB);
+
+/** 検査用の接続。DB_DRIVER に合わせて SQLite / PostgreSQL のどちらでも開ける */
+function openInspectDb(): AsyncSpicaDatabase {
+  return createAsyncDatabase({
+    driver: process.env.DB_DRIVER,
+    connectionString: process.env.DATABASE_URL,
+    dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+  });
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 let failures = 0;
@@ -159,18 +167,18 @@ async function run(): Promise<void> {
     const token = alice.sessionToken as string;
 
     const keys = generateTestKeyPair();
-    const db = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    db.exec('PRAGMA busy_timeout = 10000');
-    const seedActor = (id: string, username: string, publicKeyPem: string) => {
-      db.prepare(
+    const db = openInspectDb();
+    await db.exec('PRAGMA busy_timeout = 10000');
+    const seedActor = async (id: string, username: string, publicKeyPem: string) => {
+      await db.prepare(
         `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
          VALUES (?, ?, 'remote.test', ?, '', '', '', ?, NULL, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
       ).run(id, username, username, `${id}/inbox`, `${id}#main-key`, publicKeyPem, new Date().toISOString());
     };
-    seedActor(REMOTE_ACTOR, 'eve', keys.publicKeyPem);
+    await seedActor(REMOTE_ACTOR, 'eve', keys.publicKeyPem);
     // alice が eve をフォロー（ローカル→リモートのフォロー）
-    db.prepare(
+    await db.prepare(
       `INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
        VALUES (?, ?, ?, ?, 1, 'accepted', ?)
        ON CONFLICT(follower_url, following_url) DO UPDATE SET status = 'accepted'`,
@@ -201,8 +209,9 @@ async function run(): Promise<void> {
       return fetch(`${BASE}/inbox`, { method: 'POST', headers: signInboxRequest(body, `${REMOTE_ACTOR}#main-key`, keys.privateKeyPem), body });
     };
 
-    const ftsRow = (postId: string) => db.prepare('SELECT COUNT(*) AS c FROM posts_fts WHERE post_id = ?').get(postId) as { c: number };
-    const postRow = (postId: string) => db.prepare('SELECT fts_indexed FROM posts WHERE id = ?').get(postId) as { fts_indexed: number } | undefined;
+    const ftsRow = async (postId: string) => (await db.prepare('SELECT COUNT(*) AS c FROM posts_fts WHERE post_id = ?').get(postId)) as { c: number };
+    const postRow = async (postId: string) =>
+      (await db.prepare('SELECT fts_indexed FROM posts WHERE id = ?').get(postId)) as { fts_indexed: number } | undefined;
     const makeLocalPost = async (content: string) => {
       const res = await fetch(`${BASE}/api/posts`, {
         method: 'POST',
@@ -217,9 +226,9 @@ async function run(): Promise<void> {
     const local1 = await makeLocalPost('ローカルの検索テスト投稿');
     await deliverNote(`${REMOTE_ACTOR}/notes/r1`, 'リモートの検索テスト投稿（フォロー中）');
     await sleep(500);
-    check('ローカル投稿は索引される', ftsRow(local1).c, 1);
-    check('フォロー中でもリモート投稿は索引しない（既定）', ftsRow(`${REMOTE_ACTOR}/notes/r1`).c, 0);
-    check('リモート投稿の fts_indexed は 0', postRow(`${REMOTE_ACTOR}/notes/r1`)?.fts_indexed, 0);
+    check('ローカル投稿は索引される', (await ftsRow(local1)).c, 1);
+    check('フォロー中でもリモート投稿は索引しない（既定）', (await ftsRow(`${REMOTE_ACTOR}/notes/r1`)).c, 0);
+    check('リモート投稿の fts_indexed は 0', (await postRow(`${REMOTE_ACTOR}/notes/r1`))?.fts_indexed, 0);
     const searchLocal = await (await fetch(`${BASE}/api/search?q=検索テスト投稿`, { headers: { Authorization: `Bearer ${token}` } })).json();
     const foundIds = (searchLocal.posts || []).map((p: any) => p.id);
     check('検索でローカル投稿は見つかる', foundIds.includes(local1), true);
@@ -239,12 +248,12 @@ async function run(): Promise<void> {
     console.log('\n🔎 [2] FTS=follows: フォロー中アクターの投稿は索引する');
     await deliverNote(`${REMOTE_ACTOR}/notes/r2`, 'フォロー中の人のリモート投稿');
     await sleep(500);
-    check('フォロー中のリモート投稿は索引される', ftsRow(`${REMOTE_ACTOR}/notes/r2`).c, 1);
+    check('フォロー中のリモート投稿は索引される', (await ftsRow(`${REMOTE_ACTOR}/notes/r2`)).c, 1);
 
     // フォローしていないアクターからの投稿
     const otherKeys = generateTestKeyPair();
     const OTHER_ACTOR = 'https://remote.test/users/mallory';
-    seedActor(OTHER_ACTOR, 'mallory', otherKeys.publicKeyPem);
+    await seedActor(OTHER_ACTOR, 'mallory', otherKeys.publicKeyPem);
     const otherActivity = {
       '@context': ['https://www.w3.org/ns/activitystreams'],
       id: `${OTHER_ACTOR}/activities/x1`,
@@ -256,7 +265,7 @@ async function run(): Promise<void> {
     const otherBody = JSON.stringify(otherActivity);
     await fetch(`${BASE}/inbox`, { method: 'POST', headers: signInboxRequest(otherBody, `${OTHER_ACTOR}#main-key`, otherKeys.privateKeyPem), body: otherBody });
     await sleep(500);
-    check('フォロー外のリモート投稿は索引しない', ftsRow(`${OTHER_ACTOR}/notes/x1`).c, 0);
+    check('フォロー外のリモート投稿は索引しない', (await ftsRow(`${OTHER_ACTOR}/notes/x1`)).c, 0);
 
     console.log('\n🔎 [3] FTS=all: すべて索引する（従来挙動）');
     await fetch(`${BASE}/api/admin/content-policy`, {
@@ -266,16 +275,17 @@ async function run(): Promise<void> {
     });
     await deliverNote(`${REMOTE_ACTOR}/notes/r3`, '全索引モードのリモート投稿');
     await sleep(500);
-    check('all ではリモート投稿も索引される', ftsRow(`${REMOTE_ACTOR}/notes/r3`).c, 1);
+    check('all ではリモート投稿も索引される', (await ftsRow(`${REMOTE_ACTOR}/notes/r3`)).c, 1);
 
     // ------------------------------------------------------------------
     console.log('\n🔇 [4] ブースト方針（既定 follows）: フォロー外のブーストは保存しない');
     const target = await makeLocalPost('ブースト対象のローカル投稿');
     const annFollowed = await deliverAnnounce(`${REMOTE_ACTOR}/announces/a1`, target);
     await sleep(400);
-    const announceCount = (actor: string) => Number((db.prepare('SELECT COUNT(*) AS c FROM announces WHERE user_id = ?').get(actor) as any).c);
+    const announceCount = async (actor: string) =>
+      Number(((await db.prepare('SELECT COUNT(*) AS c FROM announces WHERE user_id = ?').get(actor)) as any).c);
     check('フォロー中のブーストは受理される', annFollowed.status >= 200 && annFollowed.status < 300, true);
-    check('フォロー中のブーストは保存される', announceCount(REMOTE_ACTOR), 1);
+    check('フォロー中のブーストは保存される', await announceCount(REMOTE_ACTOR), 1);
 
     const otherAnnounce = {
       '@context': ['https://www.w3.org/ns/activitystreams'],
@@ -289,7 +299,7 @@ async function run(): Promise<void> {
     const otherAnnRes = await fetch(`${BASE}/inbox`, { method: 'POST', headers: signInboxRequest(otherAnnBody, `${OTHER_ACTOR}#main-key`, otherKeys.privateKeyPem), body: otherAnnBody });
     await sleep(400);
     check('フォロー外のブーストは 202（受理するが保存しない）', otherAnnRes.status, 202);
-    check('フォロー外のブーストは保存されない', announceCount(OTHER_ACTOR), 0);
+    check('フォロー外のブーストは保存されない', await announceCount(OTHER_ACTOR), 0);
 
     console.log('\n🔇 [5] ブースト方針 all / none');
     await fetch(`${BASE}/api/admin/content-policy`, {
@@ -299,7 +309,7 @@ async function run(): Promise<void> {
     });
     await fetch(`${BASE}/inbox`, { method: 'POST', headers: signInboxRequest(otherAnnBody, `${OTHER_ACTOR}#main-key`, otherKeys.privateKeyPem), body: otherAnnBody });
     await sleep(400);
-    check('all ではフォロー外のブーストも保存される', announceCount(OTHER_ACTOR), 1);
+    check('all ではフォロー外のブーストも保存される', await announceCount(OTHER_ACTOR), 1);
 
     await fetch(`${BASE}/api/admin/content-policy`, {
       method: 'POST',
@@ -308,7 +318,7 @@ async function run(): Promise<void> {
     });
     await deliverAnnounce(`${REMOTE_ACTOR}/announces/a2`, target);
     await sleep(400);
-    check('none ではリモートのブーストを保存しない', announceCount(REMOTE_ACTOR), 1);
+    check('none ではリモートのブーストを保存しない', await announceCount(REMOTE_ACTOR), 1);
 
     // ------------------------------------------------------------------
     console.log('\n🧹 [6] 遡及適用（db:maintenance の新しい手順）');
@@ -325,9 +335,8 @@ async function run(): Promise<void> {
 
     const { applyFtsPolicy, applyAnnouncePolicy } = await import('../server/src/searchPolicy.js');
     // 実際のメンテナンスと同じく、専用の接続を渡して適用する
-    const policyConn = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
-    policyConn.exec('PRAGMA busy_timeout = 10000');
-    const policyDb = createAsyncDatabase({ sqlite: policyConn });
+    const policyDb = openInspectDb();
+    await policyDb.exec('PRAGMA busy_timeout = 10000');
 
     const ftsApplied = await applyFtsPolicy(policyDb);
     check('方針に反する索引が外される（リモート分）', ftsApplied.toUnindex >= 2, true);
@@ -338,7 +347,7 @@ async function run(): Promise<void> {
     const annApplied = await applyAnnouncePolicy(policyDb);
     check('方針に反するブーストが削除される', annApplied.toRemove, 1);
     check('フォロー中のブーストは残る', annApplied.remaining, 1);
-    policyConn.close();
+    await policyDb.close();
 
     completed = true;
   } finally {
