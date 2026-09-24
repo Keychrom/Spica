@@ -319,6 +319,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
 | **短い検索語** | trigram 索引は 3 文字未満だと効きにくい | 1〜2 文字の検索は全走査になる。機能は同じで遅いだけ |
 | **バイナリ列** | SQLite は `Uint8Array`、PG は `Buffer` で返る | 現在のスキーマにバイナリ列は無い（鍵や画像は TEXT の base64）。増やすときは注意 |
+| **索引の追加** | スキーマは起動時にも適用されるので、新しい索引は起動時に作られる（`CREATE INDEX IF NOT EXISTS`） | 大きい DB では `CREATE INDEX` がテーブルをロックし、その間の書き込みが待ちます。**先に手で `CREATE INDEX CONCURRENTLY` を流しておけば、起動時は `IF NOT EXISTS` で素通りします**（例: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);`。`CONCURRENTLY` はトランザクション内では使えません） |
 | **接続断** | 切れた接続は捨ててプールが張り直す（アプリは落ちない）。他の接続はそのまま使える | 実行中だったクエリはエラーになる（再実行はしない。書き込みの二重実行を避けるため）。`DATABASE_STATEMENT_TIMEOUT_MS` / `DATABASE_IDLE_TIMEOUT_MS` を起動パラメータで渡し、1 クエリとアイドル中のトランザクションに上限を掛けている |
 | **セッション** | 移送後にテーブルは引き継がれる | とはいえ移行時は再ログインを促すのが安全 |
 

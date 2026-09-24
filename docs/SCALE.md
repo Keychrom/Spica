@@ -116,6 +116,22 @@ Spica は**追加のミドルウェアを増やさず、1 つのプロセスで�
 
 ### 3. DB を育てる
 
+- ✅ **索引の見直し（2026-09 に実測して追加）** — `posts(author_url, published_at DESC)` と
+  `posts(is_local, published_at DESC)`。ライブデータのコピー（SQLite 20 万行 / PostgreSQL 17.8 万行）で測った結果:
+
+  | クエリ | 索引なし | 索引あり |
+  | :--- | :--- | :--- |
+  | ローカルタイムライン | 155ms（SQLite）/ 44ms（PostgreSQL） | **0.1ms / 0.09ms** |
+  | プロフィール（1 人分の投稿） | 147ms / 36ms | **0.0ms / 0.08ms** |
+  | ホームタイムライン | 138ms / 38ms | 27ms / **34ms（PostgreSQL では効かない）** |
+
+  - **PostgreSQL ではホームタイムラインに効きません。** 条件が「`is_local = 1` **または** フォロー中の
+    `author_url`」の並べ替え付きなので、索引では解決せず、**次の一手は読み取りキャッシュ**（下の 8 番）です。
+    SQLite では 2 本揃うと OR 最適化（MULTI-INDEX OR）が効いて 138ms → 27ms になります。
+  - 教訓: 索引は「効くはず」で貼らず、`EXPLAIN` と実測で確かめること。ホームは予想に反して効きませんでした。
+  - 既に大きい DB では、起動時に作られる前に `CREATE INDEX CONCURRENTLY` を手で流してください
+    （[POSTGRESQL.md](POSTGRESQL.md) の制約表）。
+
 - **読み取りレプリカ** — タイムライン・検索・プロフィール表示は読み取り中心です。読み取り専用の接続先を用意して
   振り分けます（`withSession()` を使わない読み取りだけを向ける）。書き込みはプライマリのままです。
 - **パーティション** — `posts` / `notifications` / `outbox_deliveries` を日付でパーティション化すると、

@@ -514,8 +514,10 @@ CREATE INDEX IF NOT EXISTS idx_pinned_posts_user ON pinned_posts(user_id, create
 CREATE INDEX IF NOT EXISTS idx_poll_choices_poll ON poll_choices(poll_id, choice_index);
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_user ON poll_votes(poll_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_polls_post ON polls(post_id);
+CREATE INDEX IF NOT EXISTS idx_posts_author_published ON posts(author_url, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_in_reply_to ON posts(in_reply_to);
+CREATE INDEX IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);
 CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at);

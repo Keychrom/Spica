@@ -440,6 +440,12 @@ async function initDatabaseSchema(): Promise<void> {
     END;
 
     CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at DESC);
+    -- ホームタイムラインとプロフィールは author_url で絞ってから published_at 順に並べる
+    -- （author_url の索引が無いと、並べ替えの索引を頼りに走査して捨てることになる）
+    CREATE INDEX IF NOT EXISTS idx_posts_author_published ON posts(author_url, published_at DESC);
+    -- ローカルタイムライン（is_local = 1）。リレーを購読していると大半がリモートなので、
+    -- 少数派のローカルを索引で直接拾えるようにしておく
+    CREATE INDEX IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);
     CREATE INDEX IF NOT EXISTS idx_posts_in_reply_to ON posts(in_reply_to);
     CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_url);
     CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_url);
