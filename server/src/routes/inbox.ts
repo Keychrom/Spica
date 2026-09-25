@@ -19,6 +19,7 @@ import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
+import { fallbackActivityId } from '../ids.js';
 
 export const inboxRouter = Router();
 
@@ -273,7 +274,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           };
         }
 
-        const noteId = note.id || `${actorUrl}/posts/${Date.now()}`;
+        const noteId = note.id || fallbackActivityId(actorUrl, 'posts');
         const rawContent = note.content || '';
         const publishedAt = note.published || new Date().toISOString();
         const inReplyTo = note.inReplyTo || null;
@@ -664,7 +665,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             authorUsername = u.pathname.split('/').pop() || 'user';
           } catch {}
 
-          const noteId = note.id || `${noteAuthorUrl}/posts/${Date.now()}`;
+          const noteId = note.id || fallbackActivityId(noteAuthorUrl, 'posts');
           const rawContent = note.content || '';
           const publishedAt = note.published || new Date().toISOString();
           const inReplyTo = note.inReplyTo || null;
@@ -742,7 +743,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
               return res.status(202).json({ status: 'ignored', reason: 'remote boost policy' });
             }
 
-            const announceId = activity.id || `${actorUrl}/announces/${Date.now()}`;
+            const announceId = activity.id || fallbackActivityId(actorUrl, 'announces');
             await db.prepare(`
               INSERT INTO announces (id, post_id, user_id, user_name, user_handle, user_icon, is_local, created_at)
               VALUES (?, ?, ?, ?, ?, ?, 0, ?)
@@ -801,7 +802,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         const targetPostId = typeof activity.object === 'string' ? activity.object : activity.object?.id;
         if (!targetPostId) return res.status(400).json({ error: 'object is missing' });
         const reaction = activity.content || activity._misskey_reaction || '👍';
-        const reactionId = activity.id || `${actorUrl}/reactions/${Date.now()}`;
+        const reactionId = activity.id || fallbackActivityId(actorUrl, 'reactions');
 
         try {
           let remoteActor;
@@ -873,7 +874,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         if (!targetPostId) return res.status(400).json({ error: 'object is missing' });
         // Misskey からの _misskey_reaction や content があれば優先、なければ '❤️'
         const reaction = activity._misskey_reaction || activity.content || '❤️';
-        const reactionId = activity.id || `${actorUrl}/likes/${Date.now()}`;
+        const reactionId = activity.id || fallbackActivityId(actorUrl, 'likes');
 
         try {
           let remoteActor;

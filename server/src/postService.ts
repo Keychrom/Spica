@@ -9,6 +9,7 @@ import {
   fetchRemoteActor,
 } from './activitypub.js';
 import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibility.js';
+import { localPostId } from './ids.js';
 import { queueLinkPreviewFetch } from './linkPreview.js';
 import { linkMediaToPost } from './mediaService.js';
 
@@ -54,7 +55,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   const isSensitive = Boolean(is_sensitive);
   const cwText = typeof cw === 'string' && cw.trim() ? cw.trim() : null;
   const actorUrl = `${config.origin}/users/${user.id}`;
-  const postId = `${actorUrl}/posts/${Date.now()}`;
+  const postId = localPostId(actorUrl);
   const now = new Date().toISOString();
   const authorHandle = `@${user.id}@${config.domain}`;
   const authorIcon = user.icon_url || '';
