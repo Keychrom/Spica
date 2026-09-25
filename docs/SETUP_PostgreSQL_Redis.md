@@ -237,7 +237,6 @@ upstream spica_backend {
 server {
     server_name spica.example.com;
     client_max_body_size 50M;
-
     # 転送量を減らす（アプリも gzip して返しますが、nginx が直接返すものにも掛けておくと確実です）
     gzip on;
     gzip_types text/plain text/css application/javascript application/json application/manifest+json image/svg+xml;
@@ -266,6 +265,19 @@ server {
 > - **メディアは R2 / S3 に**置いてください。ローカルディスクは別のホストとは共有されません。
 > - `DATABASE_POOL_MAX` × プロセス数が PostgreSQL の `max_connections`（既定 100）を超えないようにします。
 > - 長期の SSE 接続が増えると 1 プロセスのメモリを圧迫します。必要なら配信を別プロセスに分けます（未実装・[SCALE.md](SCALE.md)）。
+
+> [!TIP]
+> PostgreSQL 側の設定も見直してください。既定のままだと 128MB（`shared_buffers`）しか使わず、
+> DB 全体がメモリに載りません。**メモリの 25% 程度**が目安です（`postgresql.conf`）。
+>
+> ```conf
+> shared_buffers = 2GB          # メモリの 25% 程度
+> effective_cache_size = 6GB    # メモリの 75% 程度
+> max_parallel_workers_per_gather = 0   # 短いクエリを大量にさばくなら 0 も有効
+> ```
+>
+> 負荷試験（[SCALE.md](SCALE.md)）では PostgreSQL を**既定のまま**測っているので、
+> 上の数字はチューニング前のものです。
 
 ---
 
@@ -307,13 +319,15 @@ SQLite ファイルを消していなければ、そのまま元のデータで�
 
 ## 9. ⚠️ この構成でも残る制限
 
-- **配送は並列になりません。** Redis のロックで「1 プロセスだけが実行する」ようにしているだけです
-  （二重送信は防げますが、速くはなりません）。
+- **配送は並列に送れますが、上限は相手サーバー次第です。** 1 件ずつ「自分が送る」と宣言してから送るので
+  二重送信にはなりません（`DELIVERY_CONCURRENCY`、既定 5）。ただし相手が遅いとそこが上限になります。
 - **検索の順位は近似**です（`bm25` の代わりに `published_at`）。
-- **タイムラインのキャッシュはありません。** 読み取りが重い場合の次の一手は
-  [SCALE.md](SCALE.md) の「重い処理をリクエストから追い出す」です。
+- **タイムラインのキャッシュを使いたい場合は明示的に有効化**します（`TIMELINE_CACHE_TTL_SEC`、既定 0 = 無効）。
+  読み取りが重いと感じたら 15〜30 秒あたりから試してください。Redis を入れているので全プロセスで共有されます
+  （`/health` の `timelineCache` でヒット率が見えます）。ブロック・削除の反映が TTL ぶん遅れる点は許容してください。
 - **複数プロセスでの大人数の検証は、まだ誰もしていません。** 兆候（どこが詰まるか）を自分で見られるように、
-  まずは `/health` と配送キューの滞留を見てください。
+  まずは `/health`（`redis` / `sseClients` / `timelineCache` / `deliveryQueue` / `jobs`）と
+  `npm run db:pg:stats`（遅いクエリ・テーブルと索引のサイズ）を見てください。
 
 ---
 

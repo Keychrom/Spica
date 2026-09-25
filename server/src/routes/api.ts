@@ -803,6 +803,15 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   const params: any[] = [];
   const announceParams: any[] = [];
 
+  // ホームの「フォロー中」判定は follows を JOIN して行う。
+  // `author_url IN (SELECT following_url FROM follows ...)` と書くと、PostgreSQL は
+  // published_at の索引で「21 件そろった時点で止まる」ことができず、候補（数千〜10 万件）を
+  // 全部読んでから並べ替える。JOIN にすると両エンジンとも索引の逆順走査で止まれる
+  // （実測: 596ms → 0.1ms / PostgreSQL 265ms → 0.7ms）。
+  let postFollowJoin = '';
+  let announceFollowJoin = '';
+  let followParam: string | null = null;
+
   if (mode === 'tag' && tag) {
     postConds.push('(p.content LIKE ? OR p.content LIKE ?)');
     announceConds.push('(p.content LIKE ? OR p.content LIKE ?)');
@@ -814,10 +823,11 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   } else if (mode === 'home') {
     const myActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
     if (myActorUrl) {
-      postConds.push('(p.is_local = 1 OR p.author_url IN (SELECT following_url FROM follows WHERE follower_url = ?))');
-      announceConds.push('(a.is_local = 1 OR a.user_id IN (SELECT following_url FROM follows WHERE follower_url = ?))');
-      params.push(myActorUrl);
-      announceParams.push(myActorUrl);
+      postFollowJoin = 'LEFT JOIN follows f ON f.following_url = p.author_url AND f.follower_url = ?';
+      announceFollowJoin = 'LEFT JOIN follows f ON f.following_url = a.user_id AND f.follower_url = ?';
+      postConds.push('(p.is_local = 1 OR f.follower_url IS NOT NULL)');
+      announceConds.push('(a.is_local = 1 OR f.follower_url IS NOT NULL)');
+      followParam = myActorUrl;
     } else {
       postConds.push('p.is_local = 1');
       announceConds.push('a.is_local = 1');
@@ -835,7 +845,14 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   const postWhere = postConds.length > 0 ? ` WHERE ${postConds.join(' AND ')}` : '';
   const announceWhere = announceConds.length > 0 ? ` WHERE ${announceConds.join(' AND ')}` : '';
 
+  // 枝ごとに ORDER BY + LIMIT を押し込む。PostgreSQL は `UNION ALL` の外側に ORDER BY があると
+  // 枝を全部読んでから並べ替える（LIMIT が押し込まれない）ため、投稿が増えるほど遅くなる。
+  // 枝の中で並べ替えておけば、索引の逆順走査で「必要な件数だけ」読んで止まれる
+  // （実測: 連合 812ms → 0.8ms、ローカル 226ms → 0.3ms。SQLite は元々 MERGE で流していた）。
+  const branchLimit = page.limit + 1;
+
   const query = `
+    SELECT * FROM (
     SELECT 
       p.id AS post_id,
       p.user_id,
@@ -864,11 +881,14 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       NULL AS renoted_by_url,
       p.published_at AS timeline_at
     FROM posts p
+    ${postFollowJoin}
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
     LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
     ${postWhere}
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT ?
 
-    UNION ALL
+    ) UNION ALL SELECT * FROM (
 
     SELECT 
       p.id AS post_id,
@@ -899,11 +919,15 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       a.created_at AS timeline_at
     FROM announces a
     JOIN posts p ON a.post_id = p.id
+    ${announceFollowJoin}
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
     LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
     LEFT JOIN users ru ON a.is_local = 1 AND a.user_id = ru.id
     ${announceWhere}
+    ORDER BY a.created_at DESC, p.id DESC
+    LIMIT ?
 
+    )
     ORDER BY timeline_at DESC, post_id DESC
     LIMIT ?
   `;
@@ -927,7 +951,10 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const rows = await db.prepare(query).all(...params, ...announceParams, page.limit + 1) as any[];
+  // パラメータは SQL に現れる順に並べる（枝の中の JOIN → 条件 → 枝の LIMIT、最後に外側の LIMIT）
+  const postsBranchParams = [...(followParam ? [followParam] : []), ...params, branchLimit];
+  const announcesBranchParams = [...(followParam ? [followParam] : []), ...announceParams, branchLimit];
+  const rows = await db.prepare(query).all(...postsBranchParams, ...announcesBranchParams, branchLimit) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
@@ -2568,10 +2595,33 @@ apiRouter.get('/followers', asyncHandler(async (req: Request, res: Response) => 
 }));
 
 // サーバー公開情報
+/**
+ * インスタンスの件数（`/api/server-info` の stats）。
+ *
+ * `COUNT(*) FROM posts WHERE is_local = 0` はリモート投稿の全件走査になる。実測で SQLite 12ms、
+ * PostgreSQL 242ms（並列 seq scan）かかり、画面を開くたびに踏むには重すぎる。公開統計なので
+ * 60 秒だけ覚えておく（負荷試験では読みの 3 分の 1 がこのエンドポイントだった）。
+ */
+const SERVER_INFO_COUNTS_TTL_MS = 60_000;
+let serverInfoCountsCache: { at: number; users: number; localPosts: number; federatedPosts: number } | null = null;
+
+async function getServerInfoCounts(): Promise<{ users: number; localPosts: number; federatedPosts: number }> {
+  const now = Date.now();
+  if (serverInfoCountsCache && now - serverInfoCountsCache.at < SERVER_INFO_COUNTS_TTL_MS) {
+    return serverInfoCountsCache;
+  }
+  // 3 本は互いに独立なので並行に投げる（PostgreSQL ではプールから別々の接続で走る）
+  const [users, localPosts, federatedPosts] = await Promise.all([
+    db.prepare('SELECT COUNT(*) as c FROM users').get() as Promise<{ c: number }>,
+    db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as Promise<{ c: number }>,
+    db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as Promise<{ c: number }>,
+  ]);
+  serverInfoCountsCache = { at: now, users: Number(users.c), localPosts: Number(localPosts.c), federatedPosts: Number(federatedPosts.c) };
+  return serverInfoCountsCache;
+}
+
 apiRouter.get('/server-info', asyncHandler(async (req: Request, res: Response) => {
-  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
-  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
-  const federatedPostCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
+  const counts = await getServerInfoCounts();
   const instanceInfo = getInstanceInfo();
 
   res.json({
@@ -2591,9 +2641,9 @@ apiRouter.get('/server-info', asyncHandler(async (req: Request, res: Response) =
     domain: config.domain,
     port: config.port,
     stats: {
-      users: userCount,
-      totalPosts: postCount,
-      federatedPosts: federatedPostCount,
+      users: counts.users,
+      totalPosts: counts.localPosts,
+      federatedPosts: counts.federatedPosts,
     },
   });
 }));

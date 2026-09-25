@@ -30,6 +30,10 @@ FILES=(
   docs/POSTGRESQL.md
   docs/REDIS.md
   docs/SCALE.md
+  # セットアップ手順は 2026-09-25 に両ツリーで同一にした（公開側だけ古い記述が残って
+  # 「配送は並列になりません」などと書かれていた）。以後は丸ごとコピーで揃える
+  docs/SETUP_Normal.md
+  docs/SETUP_PostgreSQL_Redis.md
   package.json
   # 依存は server ワークスペース側にある（redis のように追加したものが公開ツリーへ入らないと
   # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
@@ -82,7 +86,7 @@ done
 echo ""
 echo "■ 手で当てるファイル（丸ごとコピーしない）"
 echo "  README.md … 公開ツリーの Alpha 警告を残したまま、差分だけを手で当てる"
-echo "  docs/SETUP.md / docs/SETUP_Normal.md / docs/SETUP_PostgreSQL_Redis.md … 公開ツリー側が本番向けの別版"
+echo "  docs/SETUP.md … 公開ツリー側が本番向けの別版"
 echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 同上"
 
 echo ""
