@@ -53,14 +53,50 @@ await subscribeEvent('settings', () => {
   });
 });
 
-// 予約投稿バックグラウンドワーカーの起動
-startScheduler();
+// ==========================================
+// 🧩 プロセスの役割（PROCESS_ROLE）
+//   all（既定）… HTTP も定期処理も 1 プロセス。今までどおりの動かし方
+//   web        … HTTP だけ。読み取りを横に増やすための役割
+//   worker     … 定期処理だけ。HTTP を開かない（ポートを掴まない）
+// ==========================================
+const runsHttp = config.processRole !== 'worker';
+const runsWorkers = config.processRole !== 'web';
 
-// 配送再送（指数バックオフ）ワーカーの起動
-startDeliveryQueueWorker();
+/**
+ * 役割を分けたときに「静かに壊れる」組み合わせを起動時に知らせる。
+ * 止めはしない（設定を直すまで 1 プロセスで動かす、という逃げ道を残す）。
+ */
+function warnOnRoleMisconfiguration(): void {
+  if (config.processRole === 'all') return;
+  if (!config.redisUrl) {
+    console.warn(`
+⚠️  [PROCESS_ROLE=${config.processRole}] REDIS_URL が未設定です。
+    プロセスをまたぐ仕組み（レート制限・SSE・設定の反映・定期処理の多重実行防止）が
+    効かないため、同じ DB を複数のプロセスで使うと**予約投稿が二重に公開され得ます**。
+    役割を分けるときは Redis（REDIS_URL）と PostgreSQL（DB_DRIVER=postgres）を併用してください。
+`);
+  }
+  if (config.dbDriver === 'sqlite') {
+    console.warn(`
+⚠️  [PROCESS_ROLE=${config.processRole}] DB_DRIVER=sqlite のまま役割を分けています。
+    SQLite は書き込みが 1 本に直列化されるので、プロセスを増やしても書き込みは速くなりません
+    （増やしたぶんロック待ちが増えます）。横に増やすなら PostgreSQL を推奨します。
+`);
+  }
+}
 
-// ジョブキュー（リンクプレビュー取得などの背景処理）の起動
-startJobWorker();
+if (runsWorkers) {
+  // 予約投稿バックグラウンドワーカーの起動
+  startScheduler(config.schedulerIntervalMs);
+
+  // 配送再送（指数バックオフ）ワーカーの起動
+  startDeliveryQueueWorker(config.deliveryIntervalMs);
+
+  // ジョブキュー（リンクプレビュー取得などの背景処理）の起動
+  startJobWorker(config.jobIntervalMs);
+}
+
+warnOnRoleMisconfiguration();
 
 const app = express();
 
@@ -166,6 +202,8 @@ const healthHandler = async (req: Request, res: Response) => {
   const base = {
     status: dbOk ? 'ok' : 'degraded',
     uptimeSeconds: Math.round(process.uptime()),
+    // 役割を分けて動かしているとき、どのプロセスが何を担っているかを監視から見分ける
+    role: config.processRole,
     db: { ok: dbOk, latencyMs: Date.now() - startedAt },
     // Redis は任意。configured が true で ready が false のときは「設定されているが繋がっていない」
     redis: getRedisStatus(),
@@ -239,6 +277,7 @@ app.get('/metrics', async (req: Request, res: Response) => {
   res.send(formatPrometheus({
     dbOk,
     dbLatencyMs: Date.now() - startedAt,
+    role: config.processRole,
     sseClients: getStreamClientCount(),
     redis: getRedisStatus(),
     timelineCache: getTimelineCacheStats(),
@@ -659,11 +698,13 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: err.message || 'Internal Server Error' });
 });
 
-// サーバー起動
-const server = app.listen(config.port, config.bindHost, () => {
+// サーバー起動（PROCESS_ROLE=worker のときは HTTP を開かない＝ポートを掴まない）
+const server = runsHttp
+  ? app.listen(config.port, config.bindHost, () => {
     console.log(`
 =====================================================
 ✨ Spica is running!
+🧩 Role: ${config.processRole}
 🌐 URL: ${config.origin}
 📦 ActivityPub Inbox: ${config.origin}/inbox
 🔍 WebFinger: ${config.origin}/.well-known/webfinger
@@ -682,7 +723,20 @@ const server = app.listen(config.port, config.bindHost, () => {
     本番運用では INBOX_SIGNATURE_MODE=strict（既定値）を使用してください。
 `);
     }
-});
+  })
+  : null;
+
+if (!runsHttp) {
+  console.log(`
+=====================================================
+🧰 Spica worker is running! (PROCESS_ROLE=worker)
+📦 DB: ${config.dbDriver}${config.dbDriver === 'sqlite' ? ` (${config.dbPath})` : ''}
+🔁 定期処理: 予約投稿 / 配送再送 / 背景ジョブ
+   ※ HTTP は開きません（受けるのは PROCESS_ROLE=web のプロセス）
+=====================================================
+  `);
+  logAutomationSettings();
+}
 
 export default app;
 
@@ -691,5 +745,7 @@ export default app;
 //   SIGTERM / SIGINT で新規接続を止め、SSE を閉じ、WAL をチェックポイントして終了する
 //   （POSIX 環境でのみシグナルが配送される。Windows は強制終了だが WAL なので壊れない）
 // ==========================================
-registerGracefulShutdown({ server });
+registerGracefulShutdown(
+  server ? { server } : { server: { close: () => { /* worker は HTTP を持たない */ } } },
+);
 

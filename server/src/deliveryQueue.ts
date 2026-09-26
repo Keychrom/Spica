@@ -129,12 +129,17 @@ export async function listDueDeliveries(limit = 50): Promise<OutboxDeliveryRow[]
  * 複数プロセス・複数ワーカーで同じ行を二重に送らないための要。`FOR UPDATE SKIP LOCKED`
  * （PostgreSQL 専用）は使わない — 条件付き UPDATE が取れたかどうかが判定そのもので、
  * SQLite でも同じコードで動くため。
+ *
+ * 条件は一覧（`listDueDeliveries`）と同じ「待機中かつ実行の期限が来ている」。
+ * 期限まで条件に入れるのは、**一覧してから掴むまでの間**に別のワーカーが失敗させて
+ * 次の試行を先へ延ばすことがあるため（そのまま掴むとバックオフを飛ばして即再送してしまう）。
  */
 export async function claimDelivery(id: string): Promise<boolean> {
   try {
+    const now = new Date().toISOString();
     const result = await db.prepare(
-      "UPDATE outbox_deliveries SET status = 'delivering', updated_at = ? WHERE id = ? AND status = 'pending'",
-    ).run(new Date().toISOString(), id);
+      "UPDATE outbox_deliveries SET status = 'delivering', updated_at = ? WHERE id = ? AND status = 'pending' AND next_attempt_at <= ?",
+    ).run(now, id, now);
     return Number(result.changes ?? 0) === 1;
   } catch (err) {
     console.error('[Delivery Queue] ❌ 配送の割り当てに失敗:', err);

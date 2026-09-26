@@ -41,6 +41,7 @@
     "test:video-thumbnail": "npx tsx scripts/test-video-thumbnail.ts",
     "test:search-policy": "npx tsx scripts/test-search-policy.ts",
     "test:ops-automation": "npx tsx scripts/test-ops-automation.ts",
+    "test:process-roles": "npx tsx scripts/test-process-roles.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
     "check:await": "npx tsx scripts/check-await.ts",
     "test:secret-scan": "npx tsx scripts/test-secret-scan.ts",

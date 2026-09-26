@@ -136,12 +136,17 @@ export async function listDueJobs(kind: string, limit = 20): Promise<JobRow[]> {
 /**
  * 1 件を「自分が実行する」と宣言する（取れるのは 1 つだけ）。
  * 戻り値の `attempts` は**加算後**の値（取り出し時の値を使うと、上限の判定が 1 回ずれる）。
+ *
+ * 条件は `listDueJobs` と同じ「待機中かつ実行の期限が来ている」。
+ * 期限まで条件に入れるのは、**一覧してから掴むまでの間**に別のワーカーが失敗させて
+ * 次の試行を先へ延ばすことがあるため（そのまま掴むとバックオフを飛ばして即再実行してしまう）。
  */
 export async function claimJob(id: string): Promise<{ claimed: boolean; attempts: number }> {
   try {
+    const now = new Date().toISOString();
     const result = await db.prepare(
-      "UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'pending'",
-    ).run(new Date().toISOString(), id);
+      "UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ? AND status = 'pending' AND next_attempt_at <= ?",
+    ).run(now, id, now);
     if (Number(result.changes ?? 0) !== 1) return { claimed: false, attempts: 0 };
     const fresh = (await db.prepare('SELECT attempts FROM jobs WHERE id = ?').get(id)) as { attempts: number } | undefined;
     return { claimed: true, attempts: Number(fresh?.attempts ?? 1) };

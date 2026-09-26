@@ -41,10 +41,34 @@ export async function loadInstanceActorKeyPair(): Promise<KeyPair> {
   const keyPair = generateKeyPair();
   const now = new Date().toISOString();
 
-  await db.prepare(`
-    INSERT INTO instance_actor (id, public_key_pem, private_key_pem, created_at)
-    VALUES (?, ?, ?, ?)
-  `).run('instance', keyPair.publicKeyPem, keyPair.privateKeyPem, now);
+  // 同時に起動した別のプロセスが先に作っていたら、**そちらを使う**。
+  // ここで自分の鍵を持ち続けると、インスタンス Actor の鍵が 2 つになり、
+  // 片方で署名した Activity が相手側で検証に失敗する（プロセスを増やすときだけ起きる）。
+  //
+  // 失敗の現れ方がドライバで違うので、両方を見る:
+  //   SQLite      … 重複は例外（UNIQUE 制約）
+  //   PostgreSQL  … 素の INSERT は `ON CONFLICT DO NOTHING` に翻訳され、例外ではなく changes=0
+  let inserted = false;
+  try {
+    const result = await db.prepare(`
+      INSERT INTO instance_actor (id, public_key_pem, private_key_pem, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run('instance', keyPair.publicKeyPem, keyPair.privateKeyPem, now);
+    inserted = Number(result.changes ?? 0) === 1;
+  } catch {
+    inserted = false;
+  }
+
+  if (!inserted) {
+    const existing = (await db.prepare('SELECT * FROM instance_actor WHERE id = ?').get('instance')) as
+      | { public_key_pem: string; private_key_pem: string }
+      | undefined;
+    if (existing) {
+      console.warn('[InstanceActor] 別のプロセスが先に作った鍵を使います（多重起動時の競合）');
+      cachedKeyPair = { publicKeyPem: existing.public_key_pem, privateKeyPem: existing.private_key_pem };
+      return cachedKeyPair;
+    }
+  }
 
   cachedKeyPair = keyPair;
   return keyPair;

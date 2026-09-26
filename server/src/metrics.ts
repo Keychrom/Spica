@@ -90,6 +90,8 @@ export function resetMetrics(): void {
 export function formatPrometheus(extra: {
   dbOk: boolean;
   dbLatencyMs: number;
+  /** このプロセスの役割（all / web / worker）。増やしたプロセスの見分け用 */
+  role: string;
   sseClients: number;
   redis: { configured: boolean; ready: boolean };
   timelineCache: { enabled: boolean; backend: string; entries: number; hits: number; misses: number };
@@ -108,6 +110,10 @@ export function formatPrometheus(extra: {
 
   metric('spica_uptime_seconds', '起動してからの秒数', 'gauge');
   lines.push(`spica_uptime_seconds ${snapshot.process.uptimeSeconds}`);
+
+  // 役割は値ではなくラベルで出す（`count by (role)` で台数を数えられる）
+  metric('spica_process_role_info', 'このプロセスの役割（all / web / worker）', 'gauge');
+  lines.push(`spica_process_role_info{role="${extra.role}"} 1`);
 
   metric('spica_db_up', 'DB に問い合わせられるか（1 = ok）', 'gauge');
   lines.push(`spica_db_up ${bool(extra.dbOk)}`);

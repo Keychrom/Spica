@@ -147,6 +147,19 @@ try {
   const parallel = await jobs.runJobsOnce('test_job', { limit: 20, concurrency: 4 });
   check('並列でも 1 件ずつ実行する（重複が無い）', [new Set(seen).size === seen.length, parallel.ok >= 10], [true, true]);
 
+  // 一覧してから掴むまでの間に、別のワーカーが失敗させた場合。
+  // 期限（next_attempt_at）を条件に入れていないと、バックオフを飛ばして即再実行してしまう
+  // （複数ワーカーで回したときに実際に起きた: 30 秒待つはずの仕事が 30 ミリ秒後に再実行された）
+  const raceId = (await jobs.enqueueJob('test_job', { id: 'race' })) as string;
+  const listedByA = (await jobs.listDueJobs('test_job')).find((row) => row.id === raceId);
+  const listedByB = (await jobs.listDueJobs('test_job')).find((row) => row.id === raceId);
+  check('同じ仕事を 2 つのワーカーが一覧できる', Boolean(listedByA && listedByB), true);
+  check('A が掴める', listedByA ? (await jobs.claimJob(listedByA.id)).claimed : false, true);
+  // A が失敗させた → 状態は待機中に戻るが、次回は 30 秒後
+  await jobs.failJob({ ...(listedByA as any), attempts: 1 }, new Error('わざと失敗させています'));
+  check('B はバックオフ中の仕事を掴めない', listedByB ? (await jobs.claimJob(listedByB.id)).claimed : true, false);
+  check('試行回数も増えない', ((await db.prepare('SELECT attempts FROM jobs WHERE id = ?').get(raceId)) as any).attempts, 1);
+
   // ── 4. 滞留の復帰 ─────────────────────────────────────────
   console.log('\n── 4. 滞留の復帰 ──────────');
   const stuckId = await jobs.enqueueJob('test_job', { id: 'stuck' });
@@ -169,7 +182,17 @@ try {
       )
       .run(id, `https://remote.example/inbox/${id}`, nowIso, nowIso, nowIso);
   }
+  // 失敗して次の試行が先に延びた行（バックオフ中）。一覧にも出ないし、掴んでもいけない
+  const futureIso = new Date(Date.now() + 60_000).toISOString();
+  await db
+    .prepare(
+      `INSERT INTO outbox_deliveries (id, activity_id, activity_type, inbox_url, activity, sender_user_id, use_instance_actor, attempts, next_attempt_at, status, created_at, updated_at)
+       VALUES (?, '', 'Create', ?, '{}', NULL, 1, 1, ?, 'pending', ?, ?)`,
+    )
+    .run('dq3', 'https://remote.example/inbox/dq3', futureIso, nowIso, nowIso);
   check('期限が来た配送が取れる', (await delivery.listDueDeliveries()).length >= 2, true);
+  check('バックオフ中の配送は一覧に出ない', (await delivery.listDueDeliveries()).some((d) => d.id === 'dq3'), false);
+  check('バックオフ中の配送は掴めない', await delivery.claimDelivery('dq3'), false);
   check('配送を宣言できる', await delivery.claimDelivery('dq1'), true);
   check('同じ配送は二度宣言できない', await delivery.claimDelivery('dq1'), false);
   await db.prepare("UPDATE outbox_deliveries SET updated_at = ? WHERE id = 'dq1'").run(new Date(Date.now() - 60 * 60 * 1000).toISOString());

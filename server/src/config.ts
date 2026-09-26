@@ -27,6 +27,18 @@ export interface StorageConfig {
 export type InboxSignatureMode = 'strict' | 'log';
 export type InboxForwardedPolicy = 'relay' | 'any';
 
+/**
+ * このプロセスの役割。
+ *   all    … HTTP も定期処理も 1 プロセスで回す（既定・従来どおり）
+ *   web    … HTTP だけ。定期処理（予約投稿・配送再送・ジョブ）は動かさない
+ *   worker … 定期処理だけ。HTTP を開かない（ポートを掴まない）
+ *
+ * `web` を N 個・`worker` を M 個、同じ DB と Redis を共有して並べられる。
+ * 読み取りは横に増やせるが、DB は 1 つなので「書き込みに DB が耐えるか」が上限になる
+ * （docs/ARCHITECTURE.md）。
+ */
+export type ProcessRole = 'all' | 'web' | 'worker';
+
 export interface AppConfig {
   port: number;
   bindHost: string;
@@ -130,6 +142,14 @@ export interface AppConfig {
   emailBatchSeconds: number;
   /** 同じユーザーへメールを送る最短間隔（分）既定 5 */
   emailThrottleMinutes: number;
+  /** このプロセスの役割（all / web / worker）。既定 all = 従来どおり 1 プロセスで全部 */
+  processRole: ProcessRole;
+  /** 予約投稿の確認間隔（ミリ秒・既定 10000） */
+  schedulerIntervalMs: number;
+  /** 配送再送の確認間隔（ミリ秒・既定 60000） */
+  deliveryIntervalMs: number;
+  /** 背景ジョブの確認間隔（ミリ秒・既定 15000） */
+  jobIntervalMs: number;
 }
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -283,6 +303,25 @@ const RECENT_SCAN_POSTS = (() => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20000;
 })();
 
+// プロセスの役割。既定 all = HTTP も定期処理も 1 プロセス（従来どおり）。
+// 表記ゆれ（WEB / Web / http / worker / job …）を吸収し、知らない値は all に倒す。
+const rawProcessRole = (process.env.PROCESS_ROLE || 'all').trim().toLowerCase();
+const PROCESS_ROLE: ProcessRole =
+  rawProcessRole === 'web' || rawProcessRole === 'http'
+    ? 'web'
+    : rawProcessRole === 'worker' || rawProcessRole === 'jobs'
+      ? 'worker'
+      : 'all';
+
+/** 定期処理の確認間隔。既定は現行と同じで、詰めたいときだけ下げる（負荷と相談） */
+const intervalMs = (raw: string | undefined, fallback: number, min: number): number => {
+  const parsed = parseInt(raw || '', 10);
+  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
+};
+const SCHEDULER_INTERVAL_MS = intervalMs(process.env.SCHEDULER_INTERVAL_MS, 10_000, 1_000);
+const DELIVERY_INTERVAL_MS = intervalMs(process.env.DELIVERY_INTERVAL_MS, 60_000, 1_000);
+const JOB_INTERVAL_MS = intervalMs(process.env.JOB_INTERVAL_MS, 15_000, 1_000);
+
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
@@ -334,4 +373,8 @@ export const config: AppConfig = {
   emailNotifications: EMAIL_NOTIFICATIONS,
   emailBatchSeconds: EMAIL_BATCH_SECONDS,
   emailThrottleMinutes: EMAIL_THROTTLE_MINUTES,
+  processRole: PROCESS_ROLE,
+  schedulerIntervalMs: SCHEDULER_INTERVAL_MS,
+  deliveryIntervalMs: DELIVERY_INTERVAL_MS,
+  jobIntervalMs: JOB_INTERVAL_MS,
 };

@@ -33,6 +33,8 @@ FILES=(
   docs/POSTGRESQL.md
   docs/REDIS.md
   docs/SCALE.md
+  # 設計（プロセスと状態の置き場所）。PROCESS_ROLE の説明はここが正
+  docs/ARCHITECTURE.md
   # セットアップ手順は 2026-09-25 に両ツリーで同一にした（公開側だけ古い記述が残って
   # 「配送は並列になりません」などと書かれていた）。以後は丸ごとコピーで揃える
   docs/SETUP_Normal.md
