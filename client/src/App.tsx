@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import DOMPurify from 'dompurify';
 import {
   Globe,
@@ -1547,6 +1548,97 @@ function AntennaManageModal({
   );
 }
 
+// 📋 投稿の「その他」メニュー（三点リーダー）
+//
+// カードは角丸のため `overflow-hidden` を付けており、中に置いた absolute のメニューは
+// **カードの外側で切り取られてしまう**（下端の項目が見えない）。そこで本体（document.body）へ
+// 描き出し、ボタンの位置に fixed で置く。下に入らなければ上に開き、画面外へはみ出さない。
+function PostOptionsMenu({
+  isOpen,
+  onToggle,
+  onClose,
+  children,
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPosition(null);
+      return;
+    }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 192; // w-48
+    const height = menuRef.current?.offsetHeight || 0;
+    let top = rect.bottom + 4;
+    if (height && top + height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - height - 4);
+    }
+    const left = Math.min(Math.max(8, rect.right - width), Math.max(8, window.innerWidth - width - 8));
+    setPosition({ top, left });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    // スクロールや画面幅の変化でボタンとずれるので、その時は閉じる（開き直せば正しい位置に出る）
+    const close = () => onClose();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || buttonRef.current?.contains(target)) return;
+      onClose();
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onPointerDown, true);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onPointerDown, true);
+    };
+  }, [isOpen, onClose]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        className="p-1 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition"
+        title="その他の操作"
+      >
+        <MoreHorizontal className="w-4 h-4" />
+      </button>
+
+      {isOpen &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="fixed z-[70] w-48 bg-slate-900 border border-slate-750 rounded-2xl shadow-2xl p-1.5 space-y-0.5 text-xs animate-in fade-in zoom-in-95 duration-100"
+            style={{ top: position?.top ?? -9999, left: position?.left ?? -9999 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {children}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 // 👥 フォロワー / フォロー中の一覧モーダル
 //    プロフィールの数字は数えるだけで、誰なのかが見られなかった（`/api/followers` は
 //    実装済みなのにクライアントから一度も呼ばれていなかった）。
@@ -1830,7 +1922,7 @@ function MiAuthApproval({
   };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-[90] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 my-8">
         <div className="flex items-center space-x-2 text-indigo-400">
           <Lock className="w-5 h-5" />
@@ -8416,20 +8508,14 @@ export default function App() {
             )}
 
             {/* 投稿オプションメニュー (三点リーダー) */}
-            <div className="relative">
-              <button
-                onClick={() => setActiveMenuPostId(activeMenuPostId === (post.feed_id || post.id) ? null : (post.feed_id || post.id))}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition"
-                title="その他の操作"
-              >
-                <MoreHorizontal className="w-4 h-4" />
-              </button>
+            <PostOptionsMenu
+              isOpen={activeMenuPostId === (post.feed_id || post.id)}
+              onToggle={() =>
+                setActiveMenuPostId(activeMenuPostId === (post.feed_id || post.id) ? null : (post.feed_id || post.id))
+              }
+              onClose={() => setActiveMenuPostId(null)}
+            >
 
-              {activeMenuPostId === (post.feed_id || post.id) && (
-                <div
-                  className="absolute right-0 top-full mt-1 z-30 w-48 bg-slate-900 border border-slate-750 rounded-2xl shadow-2xl p-1.5 space-y-0.5 text-xs animate-in fade-in zoom-in-95 duration-100"
-                  onClick={(e) => e.stopPropagation()}
-                >
                       <button
                         onClick={() => {
                           void sharePost(post);
@@ -8500,9 +8586,7 @@ export default function App() {
                       </button>
                     </>
                   )}
-                </div>
-              )}
-            </div>
+            </PostOptionsMenu>
           </div>
         </div>
 
@@ -16403,7 +16487,7 @@ export default function App() {
 
       {/* 🌟 Spica 主権型ソーシャルポータル画面 */}
       {showAuthPortal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950 flex flex-col justify-between animate-in fade-in duration-300">
+        <div className="fixed inset-0 z-[90] overflow-y-auto bg-slate-950 flex flex-col justify-between animate-in fade-in duration-300">
           {/* 背景バナーエリア (コズミック・星空スプリットレイアウト) */}
           <div className="fixed inset-0 pointer-events-none overflow-hidden">
             {serverStats?.banner_url ? (
@@ -17674,9 +17758,11 @@ export default function App() {
         </div>
       )}
 
-      {/* 返信モーダル (モバイルでは全画面100dvhシート、PCではモーダル) */}
+      {/* 返信モーダル (モバイルでは全画面100dvhシート、PCではモーダル)
+          ⚠️ 会話スレッド（z-50）の**上**に出す。どちらも z-50 だと、DOM の順番が
+             早いこちらがスレッドに隠れて「返信画面が出ない」状態になる */}
       {replyTargetPost && (
-        <div className="fixed inset-0 z-50 flex flex-col sm:items-center sm:justify-center sm:p-4 bg-slate-950 sm:bg-black/80 sm:backdrop-blur-sm h-[100dvh] sm:h-auto overflow-hidden animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[60] flex flex-col sm:items-center sm:justify-center sm:p-4 bg-slate-950 sm:bg-black/80 sm:backdrop-blur-sm h-[100dvh] sm:h-auto overflow-hidden animate-in fade-in duration-200">
           <div className="bg-slate-950 sm:bg-slate-900 border-0 sm:border sm:border-slate-800 sm:rounded-3xl w-full sm:max-w-lg shadow-2xl flex flex-col flex-1 sm:flex-initial sm:max-h-[85vh] overflow-hidden">
             {/* ヘッダー: 左にキャンセル、中央にタイトル、右に返信ボタン */}
             <div className="p-3 sm:p-4 border-b border-slate-800/80 flex items-center justify-between shrink-0 bg-slate-950 sm:bg-slate-900">
@@ -18018,7 +18104,7 @@ export default function App() {
       {/* 🎨 リッチ絵文字・カスタム絵文字ピッカーモーダル */}
       {showRichEmojiPicker && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
+          className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
           onClick={() => setShowRichEmojiPicker(null)}
         >
           <div
@@ -19846,7 +19932,7 @@ export default function App() {
       {/* 🖼️ 画像拡大・プレビューモーダル (Lightbox) */}
       {previewMediaUrl && (
         <div
-          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200"
+          className="fixed inset-0 z-[80] bg-black/95 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200"
           onClick={() => setPreviewMediaUrl(null)}
         >
           <button
