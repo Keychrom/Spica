@@ -236,6 +236,16 @@ CREATE TABLE IF NOT EXISTS media  (
   post_id TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS miauth_sessions  (
+  id TEXT PRIMARY KEY,
+  app_name TEXT NOT NULL DEFAULT '',
+  callback TEXT NOT NULL DEFAULT '',
+  permissions TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  approved_user_id TEXT,
+  token TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS muted_words  (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -521,6 +531,7 @@ CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);
 CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
 CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);
 CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_miauth_created ON miauth_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_muted_words_user ON muted_words(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);

@@ -35,7 +35,7 @@ DEFAULT_SUITES=(
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
   password-auth federation search-policy redis stream-scope job-queue multiprocess
-  discovery profile-lists
+  discovery profile-lists misskey
 )
 
 SUITES=("$@")

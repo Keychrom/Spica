@@ -488,7 +488,8 @@ export async function getPollDataForPost(postId: string, currentUserId?: string 
 // ==========================================
 
 // 投稿リストにリアクション・RT・返信情報を付与し、ブロック済みドメインを除外する共通ヘルパー
-async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, currentUserId?: string | null) {
+/** タイムラインの行を表示用に整形する（Misskey 互換 API からも同じものを使う） */
+export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string | null, currentUserId?: string | null) {
   if (rows.length === 0) return [];
 
   const postIds = Array.from(new Set(rows.map((r) => r.post_id || r.id)));
@@ -1264,96 +1265,113 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
 // メディアアップロード (S3 / Cloudflare R2 / ローカル)
 // ==========================================
 
+/**
+ * アップロードされたファイルを保存し、ドライブの台帳に記録する（応答は書かない）。
+ * 通常の API（`/api/media/upload`）と **Misskey 互換 API（`drive/files/create`）**の
+ * 両方から呼ぶ（容量上限・台帳・サムネイルの扱いを二重実装しないため）。
+ */
+export async function saveUploadedMediaFiles(
+  userId: string,
+  files: Express.Multer.File[] | undefined,
+): Promise<{ ok: true; mediaRows: any[] } | { ok: false; status: number; error: string }> {
+  if (!files || files.length === 0) {
+    return { ok: false, status: 400, error: 'アップロードするメディアファイルを選択してください。' };
+  }
+  if (files.length > 4) {
+    return { ok: false, status: 400, error: '一度にアップロードできるファイルは最大4件までです。' };
+  }
+
+  // 動画・音声はサイズが大きいため1件までに制限する
+  const avFiles = files.filter((f) => f.mimetype.startsWith('video/') || f.mimetype.startsWith('audio/'));
+  if (avFiles.length > 1) {
+    return { ok: false, status: 400, error: '動画・音声は1件まで添付できます。' };
+  }
+
+  // 画像は従来どおり 15MB まで
+  const oversizedImage = files.find((f) => f.mimetype.startsWith('image/') && f.size > IMAGE_MAX_BYTES);
+  if (oversizedImage) {
+    return { ok: false, status: 400, error: '画像サイズが大きすぎます (最大15MBまで)。' };
+  }
+
+  try {
+    // ドライブの容量上限（MEDIA_QUOTA_MB。0 なら無制限）
+    const incomingBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    const quota = await checkMediaQuota(userId, incomingBytes);
+    if (!quota.ok) {
+      return { ok: false, status: 413, error: quota.error || 'ドライブの容量上限を超えています。' };
+    }
+
+    const uploaded = await Promise.all(
+      files.map((file) =>
+        uploadMediaFile({
+          buffer: file.buffer,
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+          userId,
+        })
+      )
+    );
+
+    // ドライブの台帳に記録する（投稿に添付されなくても一覧・削除できるようにする）
+    const mediaRows = await Promise.all(
+      uploaded.map(async (item) =>
+        toClientMedia(await recordMedia({
+          userId,
+          url: item.url,
+          key: item.key,
+          mediaType: item.mediaType,
+          size: item.size,
+          name: item.name,
+          thumbnailUrl: item.thumbnailUrl,
+          thumbnailKey: item.thumbnailKey,
+          width: item.width,
+          height: item.height,
+          duration: item.duration,
+        }))
+      )
+    );
+
+    return { ok: true, mediaRows };
+  } catch (err: any) {
+    console.error('[Media Upload Error]:', err);
+    return { ok: false, status: 500, error: err.message || 'メディアのアップロードに失敗しました。' };
+  }
+}
+
+/** multer のミドルウェア（Misskey 互換 API のドライブもこれを使う） */
+export const mediaUploadMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  upload.any()(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: `ファイルサイズが大きすぎます (上限 ${Math.floor(MEDIA_MAX_BYTES / (1024 * 1024))}MB)。` });
+        }
+        return res.status(400).json({ error: `アップロードエラー: ${err.message}` });
+      }
+      return res.status(400).json({ error: err.message || 'アップロード処理中にエラーが発生しました。' });
+    }
+    next();
+  });
+};
+
 // メディアアップロード (画像 最大4枚 / 動画・音声 は1件まで)
 apiRouter.post(
   '/media/upload',
   requireAuth,
-  (req: Request, res: Response, next: NextFunction) => {
-    upload.any()(req, res, (err: any) => {
-      if (err) {
-        if (err instanceof multer.MulterError) {
-          if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: `ファイルサイズが大きすぎます (上限 ${Math.floor(MEDIA_MAX_BYTES / (1024 * 1024))}MB)。` });
-          }
-          return res.status(400).json({ error: `アップロードエラー: ${err.message}` });
-        }
-        return res.status(400).json({ error: err.message || 'アップロード処理中にエラーが発生しました。' });
-      }
-      next();
-    });
-  },
+  mediaUploadMiddleware,
   async (req: Request, res: Response) => {
     const user = req.rawUser!;
     const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
-
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: 'アップロードするメディアファイルを選択してください。' });
+    const result = await saveUploadedMediaFiles(user.id, files);
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error });
     }
-
-    if (files.length > 4) {
-      return res.status(400).json({ error: '一度にアップロードできるファイルは最大4件までです。' });
-    }
-
-    // 動画・音声はサイズが大きいため1件までに制限する
-    const avFiles = files.filter((f) => f.mimetype.startsWith('video/') || f.mimetype.startsWith('audio/'));
-    if (avFiles.length > 1) {
-      return res.status(400).json({ error: '動画・音声は1件まで添付できます。' });
-    }
-
-    // 画像は従来どおり 15MB まで
-    const oversizedImage = files.find((f) => f.mimetype.startsWith('image/') && f.size > IMAGE_MAX_BYTES);
-    if (oversizedImage) {
-      return res.status(400).json({ error: '画像サイズが大きすぎます (最大15MBまで)。' });
-    }
-
-    try {
-      // ドライブの容量上限（MEDIA_QUOTA_MB。0 なら無制限）
-      const incomingBytes = files.reduce((sum, f) => sum + (f.size || 0), 0);
-      const quota = await checkMediaQuota(user.id, incomingBytes);
-      if (!quota.ok) {
-        return res.status(413).json({ error: quota.error });
-      }
-
-      const uploaded = await Promise.all(
-        files.map((file) =>
-          uploadMediaFile({
-            buffer: file.buffer,
-            originalname: file.originalname,
-            mimetype: file.mimetype,
-            size: file.size,
-            userId: user.id,
-          })
-        )
-      );
-
-      // ドライブの台帳に記録する（投稿に添付されなくても一覧・削除できるようにする）
-      const mediaRows = await Promise.all(
-        uploaded.map(async (item) =>
-          toClientMedia(await recordMedia({
-            userId: user.id,
-            url: item.url,
-            key: item.key,
-            mediaType: item.mediaType,
-            size: item.size,
-            name: item.name,
-            thumbnailUrl: item.thumbnailUrl,
-            thumbnailKey: item.thumbnailKey,
-            width: item.width,
-            height: item.height,
-            duration: item.duration,
-          }))
-        )
-      );
-
-      res.json({
-        success: true,
-        media: mediaRows,
-        attachment: mediaRows[0], // 1ファイルアップロード時の互換性
-      });
-    } catch (err: any) {
-      console.error('[Media Upload Error]:', err);
-      res.status(500).json({ error: err.message || 'メディアのアップロードに失敗しました。' });
-    }
+    res.json({
+      success: true,
+      media: result.mediaRows,
+      attachment: result.mediaRows[0], // 1ファイルアップロード時の互換性
+    });
   }
 );
 
@@ -1404,7 +1422,11 @@ apiRouter.delete('/drive/:id', requireAuth, async (req: Request, res: Response) 
 });
 
 // 新規投稿作成（認証必須・公開範囲選択・返信・画像添付・アンケート・引用・センシティブ対応）
-apiRouter.post('/posts', requireAuth, async (req: Request, res: Response) => {
+/**
+ * 投稿の作成。**Misskey 互換 API からも同じ関数を呼ぶ**（バリデーション・連合・アンテナ通知を
+ * 二重に実装しないため）。呼び出し側は `req.body` を通常の投稿と同じ形にしてから呼ぶこと。
+ */
+export const handleCreatePost = async (req: Request, res: Response) => {
   try {
     const { content, in_reply_to, attachments, cw, poll, quote_id, is_sensitive, visibility, channel_id } = req.body;
     const result = await executeCreatePost({
@@ -1427,10 +1449,11 @@ apiRouter.post('/posts', requireAuth, async (req: Request, res: Response) => {
     console.error('[Post Error]:', err);
     res.status(400).json({ error: err.message || '投稿の作成に失敗しました。' });
   }
-});
+};
+apiRouter.post('/posts', requireAuth, handleCreatePost);
 
 // 投稿の削除 (作成者本人または管理者)
-apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleDeletePost = asyncHandler(async (req: Request, res: Response) => {
   const rawPostId = String(req.params.id);
   const postId = decodeURIComponent(rawPostId);
   const user = (req.rawUser || req.user)!;
@@ -1491,10 +1514,11 @@ apiRouter.delete('/posts/:id', requireAuth, asyncHandler(async (req: Request, re
   }
 
   res.json({ success: true, message: '投稿を削除しました。' });
-}));
+});
+apiRouter.delete('/posts/:id', requireAuth, handleDeletePost);
 
 // 📊 アンケートへの投票 (認証必須)
-apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleVotePoll = asyncHandler(async (req: Request, res: Response) => {
   const rawPostId = String(req.params.id);
   const postId = decodeURIComponent(rawPostId);
   const user = (req.rawUser || req.user)!;
@@ -1577,10 +1601,11 @@ apiRouter.post('/posts/:id/poll/vote', requireAuth, asyncHandler(async (req: Req
   federatePollUpdate({ postId });
 
   res.json({ success: true, poll: updatedPoll });
-}));
+});
+apiRouter.post('/posts/:id/poll/vote', requireAuth, handleVotePoll);
 
 // 絵文字リアクションの付与 / 解除 (Misskey & Mastodon 相互互換)
-apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleReactToPost = asyncHandler(async (req: Request, res: Response) => {
   const rawPostId = String(req.params.id);
   const postId = decodeURIComponent(rawPostId);
   const reaction = String(req.body.reaction || '👍').trim();
@@ -1730,10 +1755,11 @@ apiRouter.post('/posts/:id/react', requireAuth, asyncHandler(async (req: Request
     added,
     reactions: reactionsList,
   });
-}));
+});
+apiRouter.post('/posts/:id/react', requireAuth, handleReactToPost);
 
 // RT (ブースト / Announce) の付与 / 解除
-apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleAnnouncePost = asyncHandler(async (req: Request, res: Response) => {
   const rawPostId = String(req.params.id);
   const postId = decodeURIComponent(rawPostId);
   const user = req.rawUser!;
@@ -1872,7 +1898,8 @@ apiRouter.post('/posts/:id/announce', requireAuth, asyncHandler(async (req: Requ
     announced,
     announce_count: announceCount,
   });
-}));
+});
+apiRouter.post('/posts/:id/announce', requireAuth, handleAnnouncePost);
 
 // 会話スレッド（親投稿・対象投稿・返信一覧）取得
 apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Response) => {
@@ -1940,7 +1967,8 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
 }));
 
 // リモートまたはローカルユーザーのフォロー（認証必須）
-apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+/** フォロー。Misskey 互換 API（`following/create`）からも同じ関数を呼ぶ */
+export const handleFollow = asyncHandler(async (req: Request, res: Response) => {
   const { targetHandle } = req.body;
   if (!targetHandle) {
     return res.status(400).json({ error: 'targetHandle が必要です。例: "@user@mastodon.social"' });
@@ -2058,10 +2086,11 @@ apiRouter.post('/follow', requireAuth, asyncHandler(async (req: Request, res: Re
     console.error('[Follow Error]:', err);
     res.status(500).json({ error: err.message || 'フォローに失敗しました。' });
   }
-}));
+});
+apiRouter.post('/follow', requireAuth, handleFollow);
 
 // フォロー解除
-apiRouter.post('/unfollow', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleUnfollow = asyncHandler(async (req: Request, res: Response) => {
   const { targetHandle, targetActorUrl: explicitTargetUrl } = req.body;
   const user = req.rawUser!;
   const myActorUrl = `${config.origin}/users/${user.id}`;
@@ -2121,7 +2150,8 @@ apiRouter.post('/unfollow', requireAuth, asyncHandler(async (req: Request, res: 
     console.error('[Unfollow Error]:', err);
     res.status(500).json({ error: err.message || 'フォロー解除に失敗しました。' });
   }
-}));
+});
+apiRouter.post('/unfollow', requireAuth, handleUnfollow);
 
 // 自プロフィール更新 (名前, bio, アイコンURL, ヘッダーURL, 鍵アカウント設定)
 apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, res: Response) => {
@@ -2973,7 +3003,8 @@ async function toggleBookmarkPost(userId: string, targetPostId: string) {
 }
 
 // 🔖 投稿のブックマーク追加 / 解除 (トグル - 推奨: Request Body)
-apiRouter.post('/bookmarks/toggle', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+/** ブックマーク（Misskey の favorite）。Misskey 互換 API からも同じ関数を呼ぶ */
+export const handleToggleBookmark = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const postId = String(req.body?.postId || req.query?.postId || '').trim();
 
@@ -2999,7 +3030,8 @@ apiRouter.post('/bookmarks/toggle', requireAuth, asyncHandler(async (req: Reques
     console.error('[Bookmark Error]:', err);
     res.status(500).json({ error: 'ブックマーク処理に失敗しました。' });
   }
-}));
+});
+apiRouter.post('/bookmarks/toggle', requireAuth, handleToggleBookmark);
 
 // 🔖 投稿のブックマーク追加 / 解除 (後方互換: パスパラメータ)
 apiRouter.post('/posts/:id/bookmark', requireAuth, asyncHandler(async (req: Request, res: Response) => {

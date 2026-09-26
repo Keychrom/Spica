@@ -1768,6 +1768,193 @@ function ChannelEditModal({
   );
 }
 
+// 🔐 MiAuth の承認画面（Misskey 互換クライアントがブラウザで開く URL）
+//    クライアントは `/miauth/<session>?name=…&permission=…` を開き、承認されると
+//    `/api/miauth/<session>/check` でトークンを受け取る。
+function MiAuthApproval({
+  session,
+  token,
+  isLoggedIn,
+  onClose,
+  onRequestLogin,
+}: {
+  session: string;
+  token: string | null;
+  isLoggedIn: boolean;
+  onClose: () => void;
+  onRequestLogin: () => void;
+}) {
+  const [info, setInfo] = useState<{ name: string; callback: string; permissions: string[]; status: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [done, setDone] = useState<'approved' | 'denied' | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!isLoggedIn || !token) {
+        setIsLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(`/miauth/${encodeURIComponent(session)}/info`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('この承認リクエストは見つかりませんでした。');
+        const data = await res.json();
+        if (!cancelled) setInfo(data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : '読み込みに失敗しました。');
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, token, isLoggedIn]);
+
+  const respond = async (action: 'approve' | 'deny') => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/miauth/${encodeURIComponent(session)}/${action}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('操作に失敗しました。');
+      setDone(action === 'approve' ? 'approved' : 'denied');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '操作に失敗しました。');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 my-8">
+        <div className="flex items-center space-x-2 text-indigo-400">
+          <Lock className="w-5 h-5" />
+          <h3 className="font-bold text-base text-slate-100">アプリの連携を許可しますか？</h3>
+        </div>
+
+        {!isLoggedIn ? (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-300">
+              このアプリを使うには、先に Spica にログインしてください。
+            </p>
+            <p className="text-xs text-slate-500">
+              承認すると、アプリはあなたのアカウントで読み書きできるようになります（投稿・通知・フォローなど）。
+            </p>
+            <div className="flex items-center justify-end space-x-2 pt-1">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+              >
+                あとで
+              </button>
+              <button
+                type="button"
+                onClick={onRequestLogin}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition"
+              >
+                ログインする
+              </button>
+            </div>
+          </div>
+        ) : done ? (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-200">
+              {done === 'approved'
+                ? '承認しました。アプリの画面に戻ってください。'
+                : '拒否しました。アプリにはトークンが渡りません。'}
+            </p>
+            <div className="flex items-center justify-end space-x-2">
+              {done === 'approved' && info?.callback && (
+                <a
+                  href={info.callback}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition"
+                >
+                  アプリに戻る
+                </a>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        ) : isLoading ? (
+          <p className="text-sm text-slate-400 py-4 text-center">読み込み中…</p>
+        ) : error ? (
+          <div className="space-y-3">
+            <p className="text-sm text-rose-400">{error}</p>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-4 space-y-1.5">
+              <p className="text-xs text-slate-500">連携しようとしているアプリ</p>
+              <p className="text-sm font-bold text-slate-100 break-all">{info?.name || '不明なアプリ'}</p>
+              {info?.callback && (
+                <p className="text-[11px] text-slate-500 font-mono break-all">{info.callback}</p>
+              )}
+            </div>
+
+            {info?.permissions && info.permissions.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-xs text-slate-500">要求されている権限</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {info.permissions.map((permission) => (
+                    <span key={permission} className="px-2 py-0.5 rounded-lg bg-slate-800 text-[11px] font-mono text-slate-300">
+                      {permission}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Spica はアプリごとに権限を分けていません。承認すると、このアプリは
+              <strong className="text-slate-400">あなたのアカウントでできること全部</strong>
+              （投稿・削除・フォロー・通知の閲覧など）ができるようになります。
+              不要になったら「設定 → セッション・ログアウト」からログアウトしてください。
+            </p>
+
+            <div className="flex items-center justify-end space-x-2">
+              <button
+                type="button"
+                onClick={() => void respond('deny')}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+              >
+                拒否
+              </button>
+              <button
+                type="button"
+                onClick={() => void respond('approve')}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition"
+              >
+                許可する
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // 📝 下書き一覧モーダル
 function DraftsModal({
   drafts,
@@ -5206,6 +5393,9 @@ export default function App() {
   // 🛠 チャンネル設定（作成者・管理者のみ）
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
 
+  // 🔐 MiAuth: Misskey 互換クライアントの承認画面（/miauth/<session> で開く）
+  const [miAuthSession, setMiAuthSession] = useState<string | null>(null);
+
   // 🚩 自分の通報一覧
   const [myReports, setMyReports] = useState<
     { id: string; target_handle: string; target_post_preview: string | null; category: string; comment: string; status: string; resolution_note: string; created_at: string; resolved_at: string | null }[]
@@ -6164,6 +6354,15 @@ export default function App() {
       if (pathname === '/search') {
         setCurrentView('search');
         return;
+      }
+
+      // MiAuth（Misskey 互換クライアントのログイン承認）
+      if (pathname.startsWith('/miauth/')) {
+        const session = decodeURIComponent(pathname.replace('/miauth/', '')).replace(/\/.*$/, '');
+        if (session) {
+          setMiAuthSession(session);
+          return;
+        }
       }
 
       if (pathname === '/settings') {
@@ -18183,6 +18382,22 @@ export default function App() {
       {/* 🛠 チャンネル設定 */}
       {editingChannel && (
         <ChannelEditModal channel={editingChannel} onSave={saveChannelEdit} onClose={() => setEditingChannel(null)} />
+      )}
+
+      {/* 🔐 MiAuth の承認画面（クライアントがブラウザで開く） */}
+      {miAuthSession && (
+        <MiAuthApproval
+          session={miAuthSession}
+          token={authToken}
+          isLoggedIn={Boolean(authToken)}
+          onClose={() => {
+            setMiAuthSession(null);
+            try {
+              window.history.pushState({}, '', '/');
+            } catch {}
+          }}
+          onRequestLogin={() => setShowLoginModal(true)}
+        />
       )}
 
       {/* 👥 ユーザーディレクトリ */}

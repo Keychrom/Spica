@@ -181,8 +181,12 @@ async function runSqliteDrill(): Promise<void> {
   check('バックアップのサイズが 0 より大きい', backup.bytes > 0, true);
 
   // ② 復元（ファイルをコピーするだけ。実際の運用手順と同じ）
+  //    ⚠️ `-wal` / `-shm` を残したまま本体だけを差し替えると、SQLite が**前回の書き込みを
+  //       復元した DB に適用**してしまい「壊れている」ように見える（docs/UPGRADE.md の落とし穴）。
   const restored = path.join(WORK_DIR, 'restored.sqlite');
-  if (fs.existsSync(restored)) fs.unlinkSync(restored);
+  for (const p of [restored, `${restored}-wal`, `${restored}-shm`]) {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
   fs.copyFileSync(backup.path, restored);
   check('復元したファイルができた', fs.existsSync(restored), true);
 

@@ -733,6 +733,19 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE jobs ADD COLUMN result TEXT DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);",
+    // MiAuth（Misskey 互換のクライアント連携）: クライアントが作ったセッション ID ごとに
+    // アプリ名・権限・承認状態を持つ。承認されると通常のセッションと同じトークンを発行する
+    `CREATE TABLE IF NOT EXISTS miauth_sessions (
+      id TEXT PRIMARY KEY,
+      app_name TEXT NOT NULL DEFAULT '',
+      callback TEXT NOT NULL DEFAULT '',
+      permissions TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      approved_user_id TEXT,
+      token TEXT,
+      created_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_miauth_created ON miauth_sessions(created_at DESC);",
     // 相手（リモート）がこちらをブロックした記録: 配送抑制と表示制御に使う
     `CREATE TABLE IF NOT EXISTS remote_blocks (
       blocker_actor_url TEXT NOT NULL,

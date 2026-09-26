@@ -18,6 +18,7 @@ import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
 import { discoveryRouter } from './routes/discovery.js';
+import { misskeyRouter, miauthRouter } from './routes/misskey.js';
 import { postPermalink, canonicalPostId } from './postLinks.js';
 import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
@@ -252,6 +253,12 @@ app.get('/metrics', async (req: Request, res: Response) => {
 app.use(mediaProxyMiddleware());
 app.use('/api', apiRouter);
 app.use('/api/admin', adminRouter);
+// Misskey 互換 API（サードパーティ製クライアント向け）。Spica 自身の API とはパスが重ならない
+app.use('/api', misskeyRouter);
+// MiAuth: クライアントがブラウザで開く承認ページ（画面は SPA 側、API はここ）
+//   `/miauth/<session>` に加えて、Misskey 標準の `/api/miauth/<session>/check` でも受ける
+app.use('/miauth', miauthRouter);
+app.use('/api/miauth', miauthRouter);
 
 /**
  * 画像プロキシ本体。署名付き URL のみ受け付ける（開放プロキシにしない）。
