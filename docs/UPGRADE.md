@@ -94,6 +94,42 @@ sudo systemctl status spica
 
 ---
 
+## 📦 git を使わずに配置している場合（フォルダをコピーして設置したとき）
+
+`git clone` ではなく、アーカイブやフォルダのコピーで配置している場合は `git pull` が使えません。
+その場合は、**GitHub のアーカイブを上書きで重ねてから再ビルド**します（やっていることは
+「最新のソースに置き換える」というだけです）。
+
+```bash
+cd /opt/spica            # ← 実際の配置先に読み替えてください
+
+# 1. バックアップ（DB は WAL を含む 1 ファイル。稼働中でOK）
+npm run db:maintenance -- --apply
+cp .env .env.bak_$(date +%Y%m%d_%H%M%S)
+
+# 2. 最新のアーカイブを取得して重ねる
+curl -L -o /tmp/spica.tar.gz https://github.com/Keychrom/Spica/archive/refs/heads/main.tar.gz
+tar xzf /tmp/spica.tar.gz --strip-components=1
+
+# 3. 依存とビルド
+npm install && npm run build
+
+# 4. 再起動（PM2 / systemd のどちらか）
+pm2 reload spica         # または sudo systemctl restart spica
+```
+
+> [!NOTE]
+> - アーカイブには**ソースとドキュメントだけ**が入っています。`.env`・DB・`data/uploads`・
+>   `node_modules` は含まれないので、重ねても消えません（心配なら更新前に `md5sum .env server/data_astrabit.sqlite`
+>   などで控えを取ってください。上の手順 1 で DB のバックアップは取っています）。
+> - 逆に、**上流で削除されたファイルはそのまま残ります**。完全に一致させたい場合は、別の場所で
+>   `git clone` してから `rsync -a --delete --exclude '.env' --exclude 'node_modules' --exclude 'data' --exclude 'server/data*' クローン先/ 配置先/`
+>   のように同期してください。
+> - 2 回目以降は同梱の `scripts/update-by-copy.sh` が手順 1〜3 をまとめて実行します
+>   （`--verify-url http://localhost:<ポート>` を付けると再起動後の確認まで行います）。
+
+---
+
 ## 🗄️ データベースマイグレーションについて
 
 Spica は起動時に自動的にデータベーススキーマを検査し、新規テーブルの作成や必要なカラムの追加（`ALTER TABLE`）を**自動的に実行**します。
