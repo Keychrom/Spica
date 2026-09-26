@@ -8,14 +8,43 @@
 
 安全な運用のために、アップデート作業前に必ず SQLite データベースおよび環境設定ファイルのバックアップを作成してください。
 
+> [!IMPORTANT]
+> **稼働中の SQLite を `cp` するだけでは、直近の書き込みが失われることがあります。**
+> Spica は WAL モードで動いており、**書き込みはまず `-wal` ファイルに入ります**（本体へ反映されるのは
+> チェックポイント時です）。ノードを止めずに本体ファイルだけをコピーすると、`-wal` に残っている
+> 書き込みはコピーに含まれません（実測: 接続を開いたまま数件書き込んだ状態で本体だけを `cp` すると、
+> コピー側にはその書き込みが入っていませんでした）。
+> **下の「方法 A（推奨）」を使ってください。**
+
+### 方法 A: 付属のバックアップを使う（推奨・稼働中でも安全）
+
+`db:maintenance` のバックアップは SQLite の `VACUUM INTO` を使い、**WAL の内容も含めた一貫性のある
+1 ファイル**を書き出します。ノードを止める必要はありません。
+
 ```bash
 cd /var/www/spica
 
-# 現在の日時を付与してデータベースをバックアップ
-cp data_astrabit.sqlite data_astrabit.sqlite.bak_$(date +%Y%m%d_%H%M%S)
+# 予約投稿の整理・古いリモート投稿の削除・VACUUM もまとめて実行されます（既定はドライラン）
+#   まず内容を確認したいときは --apply を外して実行してください
+npm run db:maintenance -- --apply
+
+# 書き出されたバックアップ（既定 3 世代を保持）
+ls -lt server/data/backups/ | head -3
 
 # 環境設定ファイルのバックアップ
 cp .env .env.bak_$(date +%Y%m%d_%H%M%S)
+```
+
+`db:maintenance` を使いたくない場合は 3 点セットでコピーします（**本体・`-wal`・`-shm` の 3 つ**）。
+
+```bash
+cd /var/www/spica/server
+
+# WAL の内容を本体へ反映してからコピーすると安全（sqlite3 が無い場合は 3 ファイルをまとめてコピー）
+sqlite3 data_astrabit.sqlite "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+cp data_astrabit.sqlite data_astrabit.sqlite-wal data_astrabit.sqlite-shm ~/spica-backups/ 2>/dev/null
+cp -r data/uploads ~/spica-backups/uploads-$(date +%Y%m%d) 2>/dev/null || true
+cp ../.env ~/spica-backups/.env-$(date +%Y%m%d)
 ```
 
 ---
@@ -120,6 +149,8 @@ journalctl -u spica -n 50 --no-pager
 
 ### 2. ロールバック手順
 ```bash
+cd /var/www/spica
+
 # 直前のコミットまたは特定のタグに戻す
 git reset --hard HEAD@{1}
 
@@ -127,19 +158,39 @@ git reset --hard HEAD@{1}
 npm install
 npm run build
 
-# 必要に応じてバックアップしたデータベースを復元
-cp data_astrabit.sqlite.bak_<日時> data_astrabit.sqlite
+# プロセスを止めてから、バックアップしたデータベースを復元する
+pm2 stop spica
+rm -f server/data_astrabit.sqlite-wal server/data_astrabit.sqlite-shm   # ← 重要
+cp ~/spica-backups/data_astrabit.sqlite server/data_astrabit.sqlite     # 方法 A で取った 1 ファイル
+# 3 点セットで取った場合は -wal / -shm も一緒に戻す（古い -wal だけを残さない）
+#   cp ~/spica-backups/data_astrabit.sqlite-wal server/data_astrabit.sqlite-wal
 
-# プロセス再起動
 pm2 restart spica
 ```
+
+> [!IMPORTANT]
+> **復元するときは、先に `-wal` / `-shm` を消してください。** 古い DB 本体だけを戻して新しい `-wal` が
+> 残っていると、SQLite が**戻す前の書き込みを古い DB に適用してしまいます**（復元したつもりで復元できていません）。
+> サービスを止めてから、`-wal` / `-shm` を消して、DB を戻す、の順で行ってください。
 
 ---
 
 ## ✅ アップデート後の確認
 
-1. **再起動が必要です。** DB のマイグレーションは起動時に実行されるため、新しい機能は再起動後に有効になります（新しいエンドポイントが 404 を返す場合は、まだ古いプロセスが動いています）。
+1. **再起動が必要です。** DB のマイグレーションは起動時に実行されるため、新しい機能は再起動後に有効になります。
 2. **本番ビルドを更新してください。** `npm run build` を実行してから再起動します（クライアントは `client/dist` から配信されます）。
-3. **DB の整理をときどき実行してください。** `npm run db:maintenance` でドライラン、問題なければ `--apply` で実行します（バックアップ・古いリモート投稿の削除・VACUUM）。詳しくは [SETUP_Normal.md](SETUP_Normal.md) を参照してください（PostgreSQL の場合は手動 CLI ではなく自動メンテナンスと `npm run db:pg:backup` を使います。[SETUP_PostgreSQL_Redis.md](SETUP_PostgreSQL_Redis.md)）。
-4. **動画サムネイル（任意）**: ffmpeg をインストールすると動画のサムネイルが生成されます（未インストールでも動作に支障はありません）。
-5. 追加・変更された機能は [FEATURES.md](FEATURES.md)、環境変数は [CONFIGURATION.md](CONFIGURATION.md) にまとまっています。
+3. **新しいコードが動いているか確かめます。** 次の 3 つで判断できます（いずれもログイン不要）。
+
+   | 確認 | 期待 | 古いプロセスのとき |
+   | :--- | :--- | :--- |
+   | `curl -i http://<ホスト>/robots.txt` | `Content-Type: text/plain` で `Sitemap:` の行がある | `text/html`（SPA の HTML）が返る |
+   | `curl -i http://<ホスト>/sitemap.xml` | `Content-Type: application/xml` | `text/html` が返る |
+   | `curl -i http://<ホスト>/metrics` | `METRICS_TOKEN` 未設定なら **404 JSON**、設定済みなら 401 | `text/html` が返る |
+
+   「HTML が返る」＝ SPA のフォールバックが応答している＝**プロセスがまだ古い**ということです。
+4. **共有リンクが直っているか確かめます。** 投稿の「共有」でコピーした URL を開くと、その投稿が開きます
+   （ローカル投稿は `/users/<id>/posts/<postId>` の形になります）。ブラウザの開発者ツールや
+   `curl -H 'Accept: text/html' <URL>` で `og:title` が入っていることも確認できます。
+5. **DB の整理をときどき実行してください。** `npm run db:maintenance` でドライラン、問題なければ `--apply` で実行します（バックアップ・古いリモート投稿の削除・VACUUM）。詳しくは [SETUP_Normal.md](SETUP_Normal.md) を参照してください（PostgreSQL の場合は手動 CLI ではなく自動メンテナンスと `npm run db:pg:backup` を使います。[SETUP_PostgreSQL_Redis.md](SETUP_PostgreSQL_Redis.md)）。
+6. **動画サムネイル（任意）**: ffmpeg をインストールすると動画のサムネイルが生成されます（未インストールでも動作に支障はありません）。
+7. 追加・変更された機能は [FEATURES.md](FEATURES.md)、環境変数は [CONFIGURATION.md](CONFIGURATION.md) にまとまっています。
