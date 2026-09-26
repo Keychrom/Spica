@@ -56,6 +56,17 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
     return res.status(400).json({ error: 'Activity actor が指定されていません。' });
   }
 
+  // 🚫 自分のローカル利用者を名乗る Activity は処理しない。
+  //    ローカルの投稿はこちらが正で、外部から届く正当なものは無い。実際に届くのは
+  //    **リレーが折り返してくる自分の投稿**（購読中のリレーは投稿を全購読者へ転送するので、
+  //    発信元である自分にも戻ってくる）。これを受理すると同じ投稿が「連合受信」＝他人の投稿として
+  //    もう 1 行増え、タイムラインに二重に並ぶ（署名が正しくても同じ）。
+  //    送信側に再送させないよう 202 を返して静かに落とす。
+  if (await isLocalActorUrl(actorUrl)) {
+    console.log(`[Inbox Ignored] ↩️ 自分の actor を名乗る Activity を無視: ${activity.type} from ${actorUrl}`);
+    return res.status(202).json({ message: 'Ignored: activity from a local actor.' });
+  }
+
   // ドメインブロック判定: 送信元 Actor のドメインがブロックされている場合は 403 で拒絶
   if (await isDomainBlocked(actorUrl)) {
     console.log(`[Inbox Blocked] 🚫 Rejected activity (${activity.type}) from blocked domain actor: ${actorUrl}`);

@@ -153,6 +153,14 @@ async function run() {
     check('本文', note.text, '最初のノートです');
     check('公開範囲', note.visibility, 'public');
     check('投稿者', note.user.handle, `@alice@localhost:${PORT}`);
+
+    // Misskey のクライアントから作った投稿が「連合受信」にならないこと。
+    // Spica 自身のタイムライン API で見て is_local = 1（＝ローカル投稿）であることを確かめる。
+    const spicaLocal = (await (await fetch(`${BASE}/api/timeline?mode=local&limit=30`)).json()) as any[];
+    const fromMisskey = spicaLocal.find((p: any) => String(p.content || '').includes('最初のノートです'));
+    check('Misskey 経由の投稿が Spica 側でもローカル投稿', fromMisskey?.is_local, 1);
+    check('連合受信としては現れない', Boolean(fromMisskey), true);
+
     check('ID は 16 文字（時刻 + ハッシュ）', String(note.id).length, 16);
 
     const empty = await mk('/notes/create', { text: '   ' }, alice.token);

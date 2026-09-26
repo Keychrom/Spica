@@ -506,6 +506,37 @@ async function run() {
       timeline3.some((p: any) => p.content?.includes('wrong host signed note'));
     check('別ドメイン向け署名の投稿が保存されていない', wrongHostSaved, false);
 
+    // ------------------------------------------------------------------
+    // 10. 自分のローカル利用者を名乗る Activity は無視される
+    //    リレーは自分の投稿も購読者へ転送するため、発信元である自分にも戻ってくる。
+    //    これを受理すると同じ投稿が「連合受信」＝他人の投稿として二重に並ぶ。
+    // ------------------------------------------------------------------
+    console.log('\n🏠 [10] 自分のローカル利用者を名乗る Activity は無視されるか');
+    const localActor = `${PUBLIC_ORIGIN}/users/admin`; // サーバーが名乗る公開ドメイン側のローカル利用者
+    const localEchoBody = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${localActor}/activities/echo-1`,
+      type: 'Create',
+      actor: localActor,
+      object: {
+        id: `${localActor}/posts/echo-1`,
+        type: 'Note',
+        attributedTo: localActor,
+        content: 'local actor echoed note',
+        published: new Date().toISOString(),
+      },
+    });
+    // 署名は付けない（自分の actor を名乗る時点で、署名の有無に関わらず処理しない）
+    const localEchoRes = await postInbox(localEchoBody, { 'Content-Type': 'application/activity+json' });
+    check('ローカルの actor を名乗る Create は 202（無視）', localEchoRes.status, 202);
+    check('無視したことが分かる応答', localEchoRes.text.includes('local actor'), true);
+
+    const tlRes4 = await fetch(`${ORIGIN}/api/timeline?mode=all`);
+    const timeline4 = await tlRes4.json();
+    const echoedSaved = Array.isArray(timeline4) &&
+      timeline4.some((p: any) => p.content?.includes('local actor echoed note'));
+    check('折り返された投稿が保存されていない', echoedSaved, false);
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Inbox 署名強制テスト: すべて成功');
