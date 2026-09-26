@@ -194,6 +194,9 @@ async function run() {
     // ?post= で開いても、正規 URL はパーマリンクに一本化する
     check('canonical がパーマリンク', html.includes(`rel="canonical" href="${publicPost}"`), true);
     check('meta description がある', html.includes('name="description"'), true);
+    // index.html 側の既定値と二重にならないこと（クローラは最初の 1 つだけを読む）
+    check('meta description が 1 つだけ', (html.match(/<meta\s+name="description"/gi) || []).length, 1);
+    check('description が投稿のもの', html.includes('RSSに出る公開投稿です'), true);
     check('twitter:card がある', html.includes('name="twitter:card"'), true);
     check('RSS 自動発見リンクがある', html.includes('type="application/rss+xml"'), true);
     check('oEmbed 自動発見リンクがある', html.includes('type="application/json+oembed"'), true);

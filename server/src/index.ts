@@ -426,7 +426,14 @@ if (finalDistPath) {
       .filter(Boolean)
       .join('\n    ');
 
-    return html.replace(/<title>[\s\S]*?<\/title>/i, '').replace(/<\/head>/i, `    ${tags}\n  </head>`);
+    // index.html 側にも既定の description / RSS リンクを置いてあるので、
+    // **同じタグが二重に出ないよう、先に外してから差し込む**（クローラは最初の 1 つを読むため）
+    return html
+      .replace(/<title>[\s\S]*?<\/title>/i, '')
+      .replace(/<meta\s+name="description"[^>]*>\s*/gi, '')
+      .replace(/<link\s+rel="alternate"[^>]*application\/rss\+xml[^>]*>\s*/gi, '')
+      .replace(/<link\s+rel="alternate"[^>]*application\/json\+oembed[^>]*>\s*/gi, '')
+      .replace(/<\/head>/i, `    ${tags}\n  </head>`);
   };
 
   /** 投稿の OGP に使う共通の組み立て（ローカル・リモートの両方を扱う） */
