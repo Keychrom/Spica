@@ -25,6 +25,9 @@ fi
 #    差分が数行なら手で当てる（下の「手で当てるファイル」を参照）。
 FILES=(
   .env.example
+  # client/ は src だけを運んでいたため、index.html の変更（メタ情報・フィード案内）が
+  # 公開ツリーへ入らない事故になりかけた。単体のファイルはここに明示する
+  client/index.html
   docs/CONFIGURATION.md
   docs/FEATURES.md
   docs/POSTGRESQL.md

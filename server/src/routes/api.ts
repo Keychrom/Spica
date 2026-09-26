@@ -2644,12 +2644,21 @@ apiRouter.get('/following', asyncHandler(async (req: Request, res: Response) => 
   }
 
   const myActorUrl = `${config.origin}/users/${userId}`;
+  // ローカルの相手は users 側にしか名前・アイコンが無いので、両方を引いて埋める
+  // （リモートは remote_actors、ローカルは users。`? || u.id` で actor URL を組み立てる）
+  // どちら側かは follows.is_local（ローカル=1 / リモート=0）をそのまま使う。
   const following = await db.prepare(`
-    SELECT f.*, r.name, r.username, r.domain
+    SELECT f.*,
+      COALESCE(NULLIF(r.name, ''), u.name, '') AS name,
+      COALESCE(NULLIF(r.username, ''), u.id, '') AS username,
+      COALESCE(NULLIF(r.domain, ''), ?) AS domain,
+      COALESCE(NULLIF(r.icon_url, ''), NULLIF(u.icon_url, ''), '') AS icon_url
     FROM follows f
     LEFT JOIN remote_actors r ON f.following_url = r.id
+    LEFT JOIN users u ON f.following_url = ? || u.id
     WHERE f.follower_url = ?
-  `).all(myActorUrl);
+    ORDER BY f.created_at DESC
+  `).all(config.domain, `${config.origin}/users/`, myActorUrl);
 
   res.json(following);
 }));
@@ -2662,14 +2671,19 @@ apiRouter.get('/followers', asyncHandler(async (req: Request, res: Response) => 
   }
 
   const myActorUrl = `${config.origin}/users/${userId}`;
-  // 承認済みのフォロワーのみ（鍵アカウントの承認待ちは含めない）
+  // 承認済みのフォロワーのみ（鍵アカウントの承認待ちは含めない）。表示用に相手の名前とアイコンも埋める
   const followers = await db.prepare(`
-    SELECT f.*, r.name, r.username, r.domain
+    SELECT f.*,
+      COALESCE(NULLIF(r.name, ''), u.name, '') AS name,
+      COALESCE(NULLIF(r.username, ''), u.id, '') AS username,
+      COALESCE(NULLIF(r.domain, ''), ?) AS domain,
+      COALESCE(NULLIF(r.icon_url, ''), NULLIF(u.icon_url, ''), '') AS icon_url
     FROM follows f
     LEFT JOIN remote_actors r ON f.follower_url = r.id
+    LEFT JOIN users u ON f.follower_url = ? || u.id
     WHERE f.following_url = ? AND f.status = 'accepted'
     ORDER BY f.created_at DESC
-  `).all(myActorUrl);
+  `).all(config.domain, `${config.origin}/users/`, myActorUrl);
 
   res.json(followers);
 }));
@@ -4330,6 +4344,39 @@ apiRouter.post('/reports', requireAuth, asyncHandler(async (req: Request, res: R
     console.error('[Report Error]:', err);
     res.status(400).json({ error: err.message || '通報の送信に失敗しました。' });
   }
+}));
+
+/**
+ * 自分が出した通報の一覧。
+ *
+ * 通報は送れるのに「その後どうなったか」が利用者から見えなかった（一覧は管理画面にしか無い）。
+ * 結果を見せるための読み取り専用の口。対応状況（open / resolved）と、解決時のメモだけを返す。
+ */
+apiRouter.get('/reports/mine', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const reporterActorUrl = `${config.origin}/users/${user.id}`;
+  const rows = await db.prepare(`
+    SELECT id, target_actor_url, target_handle, target_post_id, target_post_content,
+           category, comment, status, resolution_note, created_at, resolved_at
+    FROM reports
+    WHERE reporter_actor_url = ? OR reporter_user_id = ?
+    ORDER BY created_at DESC LIMIT 100
+  `).all(reporterActorUrl, user.id) as any[];
+
+  res.json(rows.map((row) => ({
+    id: row.id,
+    target_handle: row.target_handle || row.target_actor_url,
+    target_post_id: row.target_post_id || null,
+    target_post_preview: row.target_post_content
+      ? String(row.target_post_content).replace(/<[^>]*>/g, '').slice(0, 120)
+      : null,
+    category: row.category,
+    comment: row.comment || '',
+    status: row.status,
+    resolution_note: row.resolution_note || '',
+    created_at: row.created_at,
+    resolved_at: row.resolved_at || null,
+  })));
 }));
 
 // 端末の PushSubscription 登録

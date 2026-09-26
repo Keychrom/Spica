@@ -5,6 +5,10 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="icon" type="image/jpeg" href="/favicon.jpg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- 画面ごとの og/description/canonical はサーバーが配信時に差し込む（server/src/index.ts）。
+         ここにあるのは、差し込みが無いパス（/search など）でも最低限何か出るようにするための既定値。 -->
+    <meta name="description" content="Spica - ActivityPub でつながる分散型ソーシャルネットワーク" />
+    <link rel="alternate" type="application/rss+xml" title="Spica" href="/feed.xml" />
     <title>Spica - 分散型ソーシャルネットワーク</title>
     <!-- PWA Settings -->
     <link rel="manifest" href="/manifest.json" />

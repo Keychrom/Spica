@@ -33,6 +33,9 @@ export function buildPerson(user: UserRow) {
     summary: user.summary || '',
     // 鍵アカウント（フォロー承認制）であることを連合先へ伝える
     manuallyApprovesFollowers: user.is_locked === 1,
+    // ディレクトリ（ユーザー一覧）への掲載可否。Mastodon も同じ名前で出しており、
+    // 連合先が「見つけてもらう対象かどうか」を判断できる（未設定は掲載する側に倒す）
+    discoverable: user.discoverable === undefined ? true : Number(user.discoverable) === 1,
     // プロフィール項目（リンク集）を PropertyValue として公開する
     attachment: parseProfileFields(user.fields),
     icon: user.icon_url ? {

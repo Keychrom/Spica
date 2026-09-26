@@ -142,7 +142,7 @@ function FormattedPostContent({
     // HTML内のテキスト中のハッシュタグをリンク化 (タグ外のみ)
     displayContent = displayContent.replace(
       /(^|\s)#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)(?![^<]*>)/gu,
-      '$1<a href="#tag-$2" data-tag="$2" class="hashtag text-indigo-400 hover:text-indigo-300 font-semibold hover:underline cursor-pointer">#$2</a>'
+      '$1<a href="/tags/$2" data-tag="$2" class="hashtag text-indigo-400 hover:text-indigo-300 font-semibold hover:underline cursor-pointer">#$2</a>'
     );
     sanitizedHtml = DOMPurify.sanitize(displayContent, {
       ALLOWED_TAGS: [
@@ -163,7 +163,7 @@ function FormattedPostContent({
     );
     const withTags = withLinks.replace(
       /(^|\s)#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu,
-      '$1<a href="#tag-$2" data-tag="$2" class="hashtag text-indigo-400 hover:text-indigo-300 font-semibold hover:underline cursor-pointer">#$2</a>'
+      '$1<a href="/tags/$2" data-tag="$2" class="hashtag text-indigo-400 hover:text-indigo-300 font-semibold hover:underline cursor-pointer">#$2</a>'
     );
     sanitizedHtml = withTags.replace(/\n/g, '<br />');
   }
@@ -673,6 +673,63 @@ export interface Channel {
   followers_count: number;
   is_following?: boolean;
   created_at: string;
+}
+
+/** `/api/followers` / `/api/following` の 1 行（表示用にローカルの名前・アイコンも埋めてある） */
+interface FollowListEntry {
+  actor_url: string;
+  user_id: string;
+  username: string;
+  domain: string;
+  name: string;
+  icon_url: string;
+  is_local: number;
+  created_at?: string;
+}
+
+/**
+ * 投稿の共有 URL。
+ *
+ * ローカル投稿の正規 ID は `${origin}/users/<user>/posts/<id>` で、これはサーバーが
+ * OGP 付きの HTML も返す（＝そのまま共有リンクとして使える）。リモート投稿の正規 ID は
+ * 他サーバーを指すので、このインスタンスの `/?post=<正規 ID>` を使う。
+ *
+ * ⚠️ 以前は `post.url` に頼って `${origin}/posts/<正規 ID>` を組み立てており、
+ *    **開いても投稿に辿り着けない URL**（正規 ID 自体が URL なので二重 URL になる）を
+ *    コピーしていた。サーバー側は旧形式を 301 で救済している（index.ts の `/posts/*`）。
+ */
+function buildPostPermalink(post: { id?: string; is_local?: number }): string {
+  const id = post?.id || '';
+  const origin = window.location.origin;
+  if (id.startsWith(`${origin}/users/`)) {
+    return id;
+  }
+  return `${origin}/?post=${encodeURIComponent(id)}`;
+}
+
+/**
+ * 共有ボタンの動作。共有シートが使える端末（スマホなど）では OS の共有を開き、
+ * 無ければ URL をクリップボードへコピーする。
+ */
+async function sharePost(post: { id?: string; is_local?: number; author_name?: string }) {
+  const url = buildPostPermalink(post);
+  const title = post?.author_name ? `${post.author_name} のノート` : 'Spica のノート';
+  const nav = navigator as Navigator & { share?: (data: ShareData) => Promise<void> };
+  if (typeof nav.share === 'function') {
+    try {
+      await nav.share({ title, url });
+      return;
+    } catch (err) {
+      // ユーザーが共有シートを閉じただけの場合は何もしない
+      if ((err as Error)?.name === 'AbortError') return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    alert('投稿URLをクリップボードにコピーしました！');
+  } catch {
+    window.prompt('この投稿の URL です', url);
+  }
 }
 
 export interface WebAuthnCredential {
@@ -1486,6 +1543,227 @@ function AntennaManageModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// 👥 フォロワー / フォロー中の一覧モーダル
+//    プロフィールの数字は数えるだけで、誰なのかが見られなかった（`/api/followers` は
+//    実装済みなのにクライアントから一度も呼ばれていなかった）。
+function FollowListModal({
+  title,
+  rows,
+  isLoading,
+  error,
+  onOpenProfile,
+  onClose,
+}: {
+  title: string;
+  rows: FollowListEntry[];
+  isLoading: boolean;
+  error: string | null;
+  onOpenProfile: (userId: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <div
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-sky-400">
+            <Users className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">
+              {title} ({rows.length})
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+            title="閉じる"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {isLoading ? (
+          <p className="text-sm text-slate-400 py-6 text-center">読み込み中…</p>
+        ) : error ? (
+          <p className="text-sm text-rose-400 py-6 text-center">{error}</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-slate-500 py-6 text-center">まだ誰もいません。</p>
+        ) : (
+          <div className="space-y-1 max-h-[60vh] overflow-y-auto">
+            {rows.map((row) => (
+              <button
+                key={row.actor_url}
+                type="button"
+                onClick={() => onOpenProfile(row.user_id)}
+                className="w-full flex items-center space-x-3 p-2 rounded-2xl hover:bg-slate-800/70 transition text-left"
+              >
+                <div className="w-10 h-10 rounded-xl overflow-hidden bg-gradient-to-tr from-cyan-500 via-indigo-600 to-purple-600 flex items-center justify-center text-sm font-bold text-white shrink-0">
+                  {row.icon_url ? (
+                    <img src={row.icon_url} alt="" className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    (row.name || row.username || '?').slice(0, 1).toUpperCase()
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-slate-100 truncate">{row.name || row.username}</p>
+                  <p className="text-xs text-slate-500 font-mono truncate">
+                    {row.username ? `@${row.username}${row.domain ? `@${row.domain}` : ''}` : row.actor_url}
+                  </p>
+                </div>
+                {!row.is_local && (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-indigo-500/15 text-indigo-300 shrink-0">
+                    連合
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// 🛠 チャンネル設定モーダル（作成した人・管理者だけが開ける）
+function ChannelEditModal({
+  channel,
+  onSave,
+  onClose,
+}: {
+  channel: Channel;
+  onSave: (patch: { name: string; description: string; banner_url: string; color: string; category: string; is_archived: boolean }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(channel.name || '');
+  const [description, setDescription] = useState(channel.description || '');
+  const [bannerUrl, setBannerUrl] = useState(channel.banner_url || '');
+  const [color, setColor] = useState(channel.color || '#6366f1');
+  const [category, setCategory] = useState(channel.category || 'general');
+  const [isArchived, setIsArchived] = useState(Boolean(channel.is_archived));
+  const [isSaving, setIsSaving] = useState(false);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200"
+      onClick={onClose}
+    >
+      <form
+        className="bg-slate-900 border border-slate-700/80 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 my-8"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setIsSaving(true);
+          try {
+            await onSave({ name, description, banner_url: bannerUrl, color, category, is_archived: isArchived });
+            onClose();
+          } finally {
+            setIsSaving(false);
+          }
+        }}
+      >
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center space-x-2 text-indigo-400">
+            <Settings className="w-5 h-5" />
+            <h3 className="font-bold text-base text-slate-100">チャンネル設定</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+            title="閉じる"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <label className="block space-y-1.5">
+          <span className="text-xs font-bold text-slate-400">名前</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={50}
+            required
+            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+          />
+        </label>
+
+        <label className="block space-y-1.5">
+          <span className="text-xs font-bold text-slate-400">説明</span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            maxLength={500}
+            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 resize-none"
+          />
+        </label>
+
+        <label className="block space-y-1.5">
+          <span className="text-xs font-bold text-slate-400">バナー画像 URL</span>
+          <input
+            value={bannerUrl}
+            onChange={(e) => setBannerUrl(e.target.value)}
+            placeholder="https://…"
+            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block space-y-1.5">
+            <span className="text-xs font-bold text-slate-400">テーマ色</span>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-full h-10 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer"
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-xs font-bold text-slate-400">カテゴリ</span>
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              maxLength={30}
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+          </label>
+        </div>
+
+        <label className="flex items-center space-x-2 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={isArchived}
+            onChange={(e) => setIsArchived(e.target.checked)}
+            className="w-4 h-4 accent-indigo-500"
+          />
+          <span>アーカイブする（一覧に出さず、投稿も受け付けない）</span>
+        </label>
+
+        <div className="flex items-center justify-end space-x-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold transition"
+          >
+            キャンセル
+          </button>
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold transition"
+          >
+            {isSaving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -3548,14 +3826,18 @@ export default function App() {
   };
 
   // ハッシュタグ選択
-  const handleSelectHashtag = (tag: string) => {
+  const handleSelectHashtag = (tag: string, updateUrl = true) => {
     const clean = tag.replace(/^#/, '');
     setNewPostsQueue([]);
     setTimelineCursor(null);
     setActiveHashtag(clean);
     setTimelineMode('tag');
-    navigateToView('timeline');
+    navigateToView('timeline', false);
     fetchTimeline('tag', clean);
+    // URL を残す（タグページは共有もできる。/tags/<tag> はサーバーが OGP を差し込む）
+    if (updateUrl) {
+      window.history.pushState({ view: 'tag', tag: clean }, '', `/tags/${encodeURIComponent(clean)}`);
+    }
   };
 
   // トレンド・人気タグ一覧取得
@@ -4324,7 +4606,8 @@ export default function App() {
   const handleOpenThreadById = async (postId: string, push: boolean = true) => {
     if (push) {
       try {
-        window.history.pushState({ modal: 'thread', postId }, '', `/?post=${encodeURIComponent(postId)}`);
+        // ローカル投稿は `/users/<user>/posts/<id>` を共有 URL として使う（サーバーが OGP を返す）
+        window.history.pushState({ modal: 'thread', postId }, '', buildPostPermalink({ id: postId }));
       } catch {}
     }
     setIsLoadingThread(true);
@@ -4914,6 +5197,21 @@ export default function App() {
   const [directorySearch, setDirectorySearch] = useState<string>('');
   const [isLoadingDirectory, setIsLoadingDirectory] = useState<boolean>(false);
 
+  // 👥 フォロワー / フォロー中の一覧（プロフィールの数字から開く）
+  const [followList, setFollowList] = useState<{ mode: 'followers' | 'following'; userId: string; name: string } | null>(null);
+  const [followListRows, setFollowListRows] = useState<FollowListEntry[]>([]);
+  const [isLoadingFollowList, setIsLoadingFollowList] = useState<boolean>(false);
+  const [followListError, setFollowListError] = useState<string | null>(null);
+
+  // 🛠 チャンネル設定（作成者・管理者のみ）
+  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
+
+  // 🚩 自分の通報一覧
+  const [myReports, setMyReports] = useState<
+    { id: string; target_handle: string; target_post_preview: string | null; category: string; comment: string; status: string; resolution_note: string; created_at: string; resolved_at: string | null }[]
+  >([]);
+  const [isLoadingMyReports, setIsLoadingMyReports] = useState<boolean>(false);
+
   // 📧 メールアドレス登録 / 🔑 マスターキー復元 / 管理者のメール設定
   const [recoveryStatus, setRecoveryStatus] = useState<{ authMode: string; allowEmailRegistration: boolean; mailConfigured: boolean; recoveryAvailable: boolean }>({
     authMode: 'master_key',
@@ -5287,6 +5585,92 @@ export default function App() {
       setRecoveryMsg({ type: 'error', text: err.message });
     } finally {
       setIsRecovering(false);
+    }
+  };
+
+  /**
+   * フォロワー / フォロー中の一覧を開く。
+   * `userId` は表示したい相手（自分以外のプロフィールからも開ける。API は公開）。
+   */
+  const openFollowList = async (mode: 'followers' | 'following', userId: string, name: string) => {
+    setFollowList({ mode, userId, name });
+    setFollowListRows([]);
+    setFollowListError(null);
+    setIsLoadingFollowList(true);
+    try {
+      const res = await fetch(`/api/${mode}?userId=${encodeURIComponent(userId)}`);
+      if (!res.ok) {
+        throw new Error('一覧を取得できませんでした。');
+      }
+      const data = (await res.json()) as any[];
+      setFollowListRows(
+        data.map((row) => {
+          const actorUrl = String(mode === 'followers' ? row.follower_url : row.following_url || '');
+          const username = row.username || '';
+          const domain = row.domain || '';
+          const isLocal = Number(row.is_local || 0) === 1;
+          return {
+            actor_url: actorUrl,
+            // ローカルの相手は actor URL からユーザー ID を取り出す（そのままプロフィールを開ける）
+            user_id: isLocal && username ? username : actorUrl,
+            username,
+            domain,
+            name: row.name || username || actorUrl,
+            icon_url: row.icon_url || '',
+            is_local: isLocal ? 1 : 0,
+            created_at: row.created_at,
+          };
+        }),
+      );
+    } catch (err) {
+      console.error('フォロー一覧の取得エラー:', err);
+      setFollowListError(err instanceof Error ? err.message : '一覧を取得できませんでした。');
+    } finally {
+      setIsLoadingFollowList(false);
+    }
+  };
+
+  /** チャンネル設定の保存（作成者・管理者のみ。API 側でも権限を検査している） */
+  const saveChannelEdit = async (patch: {
+    name: string;
+    description: string;
+    banner_url: string;
+    color: string;
+    category: string;
+    is_archived: boolean;
+  }) => {
+    if (!editingChannel || !authToken) return;
+    const res = await fetch(`/api/channels/${encodeURIComponent(editingChannel.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'チャンネルの更新に失敗しました。');
+      return;
+    }
+    const updated = (await res.json()) as Channel;
+    setChannels((prev) => prev.map((ch) => (ch.id === updated.id ? { ...ch, ...updated } : ch)));
+    if (selectedChannel?.id === updated.id) {
+      setSelectedChannel((prev) => (prev ? { ...prev, ...updated } : prev));
+    }
+    alert('チャンネルを更新しました！');
+  };
+
+  /** 自分が出した通報の一覧（結果が見えなかったので追加した） */
+  const fetchMyReports = async () => {
+    if (!authToken) return;
+    setIsLoadingMyReports(true);
+    try {
+      const res = await fetch('/api/reports/mine', { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        setMyReports(await res.json());
+      }
+    } catch (err) {
+      console.error('通報履歴の取得エラー:', err);
+    } finally {
+      setIsLoadingMyReports(false);
     }
   };
 
@@ -5725,10 +6109,27 @@ export default function App() {
       }
 
       // 2. パスによるルーティング
+      // 投稿のパーマリンク（/users/<user>/posts/<id>）はプロフィールより先に判定する
+      // （そうしないと userId = "alice/posts/123" としてプロフィールを開きにいってしまう）
+      const permalink = pathname.match(/^\/users\/([^/]+)\/posts\/([^/]+)$/);
+      if (permalink) {
+        const canonicalId = `${window.location.origin}/users/${decodeURIComponent(permalink[1])}/posts/${decodeURIComponent(permalink[2])}`;
+        handleOpenThreadById(canonicalId, false);
+        return;
+      }
+
       if (pathname.startsWith('/users/')) {
         const userId = decodeURIComponent(pathname.replace('/users/', ''));
         if (userId) {
           openUserProfile(userId, false);
+          return;
+        }
+      }
+
+      if (pathname.startsWith('/tags/')) {
+        const tag = decodeURIComponent(pathname.replace('/tags/', ''));
+        if (tag) {
+          handleSelectHashtag(tag, false);
           return;
         }
       }
@@ -5887,6 +6288,7 @@ export default function App() {
       fetchBlocksAndMutes();
       fetchMutedWords();
       fetchFollowRequests();
+      fetchMyReports();
     } else if (currentView === 'settings' && settingsTab === 'account') {
       fetchMigrationInfo();
     } else if (currentView === 'settings' && settingsTab === 'preferences') {
@@ -7169,7 +7571,7 @@ export default function App() {
   const handleOpenThread = async (post: Post, push: boolean = true) => {
     if (push) {
       try {
-        window.history.pushState({ modal: 'thread', postId: post.id }, '', `/?post=${encodeURIComponent(post.id)}`);
+        window.history.pushState({ modal: 'thread', postId: post.id }, '', buildPostPermalink(post));
       } catch {}
     }
     setThreadModalPost(post);
@@ -7829,17 +8231,15 @@ export default function App() {
                   className="absolute right-0 top-full mt-1 z-30 w-48 bg-slate-900 border border-slate-750 rounded-2xl shadow-2xl p-1.5 space-y-0.5 text-xs animate-in fade-in zoom-in-95 duration-100"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <button
-                    onClick={() => {
-                      const shareUrl = post.url || `${window.location.origin}/posts/${post.id}`;
-                      navigator.clipboard.writeText(shareUrl);
-                      setActiveMenuPostId(null);
-                      alert('投稿URLをクリップボードにコピーしました！');
-                    }}
+                      <button
+                        onClick={() => {
+                          void sharePost(post);
+                          setActiveMenuPostId(null);
+                        }}
                     className="w-full flex items-center space-x-2 px-2.5 py-2 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-white transition text-left"
                   >
                     <Share2 className="w-3.5 h-3.5" />
-                    <span>投稿URLをコピー</span>
+                    <span>投稿URLを共有</span>
                   </button>
 
                   {/* 📌 自分の投稿の場合のピン留め・解除メニュー */}
@@ -8205,12 +8605,10 @@ export default function App() {
 
         <button
           onClick={() => {
-            const shareUrl = post.url || `${window.location.origin}/posts/${post.id}`;
-            navigator.clipboard.writeText(shareUrl);
-            alert('投稿URLをクリップボードにコピーしました！');
+            void sharePost(post);
           }}
           className="flex items-center space-x-1 hover:text-slate-200 py-1 px-2 rounded-lg hover:bg-slate-800/50 transition"
-          title="投稿URLをコピー"
+          title="投稿URLを共有"
         >
           <Share2 className="w-4 h-4" />
         </button>
@@ -13282,6 +13680,55 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  {/* 🚩 自分が出した通報の履歴（送れるのに結果が見えなかった） */}
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-400" />
+                      <span>送信した通報</span>
+                      <span className="text-xs font-normal text-slate-500">({myReports.length})</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      あなたが送った通報と、その対応状況です。管理者が対応すると「対応済み」になります。
+                    </p>
+                  </div>
+
+                  {isLoadingMyReports ? (
+                    <p className="text-xs text-slate-500 py-3">読み込み中…</p>
+                  ) : myReports.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-3">まだ通報はありません。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {myReports.map((report) => (
+                        <div key={report.id} className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[11px] text-slate-300 truncate">{report.target_handle}</span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                                report.status === 'resolved'
+                                  ? 'bg-emerald-500/15 text-emerald-300'
+                                  : 'bg-amber-500/15 text-amber-300'
+                              }`}
+                            >
+                              {report.status === 'resolved' ? '対応済み' : '対応待ち'}
+                            </span>
+                          </div>
+                          {report.target_post_preview && (
+                            <p className="text-[11px] text-slate-500 line-clamp-2">{report.target_post_preview}</p>
+                          )}
+                          <p className="text-[11px] text-slate-400">理由: {report.category}</p>
+                          {report.comment && <p className="text-[11px] text-slate-500">補足: {report.comment}</p>}
+                          {report.resolution_note && (
+                            <p className="text-[11px] text-emerald-300/90">対応メモ: {report.resolution_note}</p>
+                          )}
+                          <span className="text-[10px] text-slate-600 block">
+                            送信: {new Date(report.created_at).toLocaleString('ja-JP')}
+                            {report.resolved_at ? ` / 対応: ${new Date(report.resolved_at).toLocaleString('ja-JP')}` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 /* 🚪 セッション・ログアウト */
@@ -14028,14 +14475,24 @@ export default function App() {
                     </div>
                     {profileData.is_local && (
                       <>
-                        <div>
+                        <button
+                          type="button"
+                          onClick={() => openFollowList('following', profileData.id, profileData.name)}
+                          className="hover:text-white transition cursor-pointer"
+                          title="フォロー中の一覧を表示"
+                        >
                           <span className="font-bold text-white text-sm sm:text-base mr-1.5">{profileData.following_count}</span>
                           <span className="text-slate-400">フォロー中</span>
-                        </div>
-                        <div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openFollowList('followers', profileData.id, profileData.name)}
+                          className="hover:text-white transition cursor-pointer"
+                          title="フォロワーの一覧を表示"
+                        >
                           <span className="font-bold text-white text-sm sm:text-base mr-1.5">{profileData.follower_count}</span>
                           <span className="text-slate-400">フォロワー</span>
-                        </div>
+                        </button>
                       </>
                     )}
                     <div className="text-slate-500 flex items-center space-x-1 sm:ml-auto">
@@ -14286,9 +14743,8 @@ export default function App() {
                   <span>マイページ</span>
                 </button>
 
-                {canAdmin && (
-  <>
-{/* 設定 */}
+                {/* 設定（一般ユーザーも開ける。プロフィール編集・ミュート/ブロック・
+                    パスキー・エクスポートなどはここにしかない） */}
                 <button
                   type="button"
                   onClick={() => openSettings('profile')}
@@ -14302,8 +14758,6 @@ export default function App() {
                   <span>設定</span>
                 </button>
 
-</>
-)}
                 {/* 管理者用コントロールパネル */}
                 {authUser?.role === 'admin' && (
                   <button
@@ -14704,6 +15158,16 @@ export default function App() {
                           >
                             <RefreshCw className={`w-3.5 h-3.5 ${isLoadingChannelTimeline ? 'animate-spin text-indigo-400' : ''}`} />
                           </button>
+                          {(authUser?.role === 'admin' || selectedChannel.user_id === authUser?.id) && (
+                            <button
+                              type="button"
+                              onClick={() => setEditingChannel(selectedChannel)}
+                              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 transition cursor-pointer"
+                              title="チャンネル設定（名前・説明・バナー・アーカイブ）"
+                            >
+                              <Settings className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -17701,6 +18165,26 @@ export default function App() {
         </div>
       )}
 
+      {/* 👥 フォロワー / フォロー中の一覧 */}
+      {followList && (
+        <FollowListModal
+          title={followList.mode === 'followers' ? `${followList.name} のフォロワー` : `${followList.name} のフォロー中`}
+          rows={followListRows}
+          isLoading={isLoadingFollowList}
+          error={followListError}
+          onOpenProfile={(userId) => {
+            setFollowList(null);
+            openUserProfile(userId);
+          }}
+          onClose={() => setFollowList(null)}
+        />
+      )}
+
+      {/* 🛠 チャンネル設定 */}
+      {editingChannel && (
+        <ChannelEditModal channel={editingChannel} onSave={saveChannelEdit} onClose={() => setEditingChannel(null)} />
+      )}
+
       {/* 👥 ユーザーディレクトリ */}
       {showDirectoryModal && (
         <div
@@ -18724,6 +19208,49 @@ export default function App() {
                     <BarChart2 className="w-3.5 h-3.5 text-indigo-400" />
                     <span className="text-[10px] font-bold">投票</span>
                   </button>
+
+                  {/* 💾 下書き（デスクトップの「その他」メニューにしか無かった） */}
+                  <button
+                    type="button"
+                    onClick={openDraftsModal}
+                    className="px-2 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 border bg-slate-900 border-slate-800 text-slate-400 hover:text-cyan-300 transition cursor-pointer"
+                    title="下書き（保存・読み込み）"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-cyan-400" />
+                    <span className="text-[10px] font-bold">下書き{drafts.length > 0 ? ` (${drafts.length})` : ''}</span>
+                  </button>
+
+                  {/* ⏰ 予約投稿（同上） */}
+                  <button
+                    type="button"
+                    onClick={openScheduleModal}
+                    className="px-2 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 border bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300 transition cursor-pointer"
+                    title="予約投稿"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-[10px] font-bold">予約{scheduledPosts.length > 0 ? ` (${scheduledPosts.length})` : ''}</span>
+                  </button>
+
+                  {/* 📢 投稿先チャンネル（デスクトップと同じ選択肢） */}
+                  {channels.length > 0 && (
+                    <select
+                      value={postTargetChannelId || ''}
+                      onChange={(e) => setPostTargetChannelId(e.target.value || null)}
+                      className={`max-w-[9rem] px-2 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer focus:outline-none ${
+                        postTargetChannelId
+                          ? 'bg-indigo-950/80 border-indigo-500/60 text-indigo-300'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                      title="投稿先チャンネル"
+                    >
+                      <option value="" className="bg-slate-900 text-slate-200">📢 チャンネルなし</option>
+                      {channels.map((ch) => (
+                        <option key={ch.id} value={ch.id} className="bg-slate-900 text-slate-200">
+                          📢 {ch.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
 
                   <span className="flex items-center space-x-1 text-indigo-400/80 font-mono text-[10px]">
                     <ShieldCheck className="w-3 h-3 text-emerald-400" />

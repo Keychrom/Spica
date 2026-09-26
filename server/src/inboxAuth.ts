@@ -306,7 +306,12 @@ function isPublicFetchPath(path: string): boolean {
     path.startsWith('/nodeinfo') ||
     path.startsWith('/uploads/') ||
     path.startsWith('/assets/') ||
+    path.startsWith('/tags/') ||
+    path.startsWith('/posts/') ||
     path === '/sw.js' ||
+    path === '/robots.txt' ||
+    path === '/sitemap.xml' ||
+    path === '/feed.xml' ||
     path === '/manifest.json' ||
     path === '/manifest.webmanifest' ||
     path === '/favicon.jpg' ||

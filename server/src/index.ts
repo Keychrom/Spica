@@ -18,6 +18,7 @@ import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
 import { discoveryRouter } from './routes/discovery.js';
+import { postPermalink, canonicalPostId } from './postLinks.js';
 import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
 import { startScheduler, startDeliveryQueueWorker, startJobWorker } from './scheduler.js';
@@ -375,9 +376,30 @@ if (finalDistPath) {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
-  const injectMeta = (html: string, meta: { title: string; description: string; image?: string | null; url: string }): string => {
+  const injectMeta = (
+    html: string,
+    meta: {
+      title: string;
+      description: string;
+      image?: string | null;
+      url: string;
+      /** og:type（既定 website。プロフィールは profile、投稿は article） */
+      type?: string;
+      /** 正規 URL。共有 URL が複数あるとき（?post= と /users/x/posts/y）に一本化する */
+      canonical?: string;
+      /** RSS 自動発見（パス）。既定はサイト全体のフィード */
+      feed?: string | null;
+      /** oEmbed 自動発見（URL） */
+      oembed?: string | null;
+      /** 検索エンジンに載せたくないページ（非公開投稿など） */
+      noindex?: boolean;
+    },
+  ): string => {
+    const feedPath = meta.feed === undefined ? '/feed.xml' : meta.feed;
     const tags = [
-      `<meta property="og:type" content="website" />`,
+      `<meta name="description" content="${escapeHtml(meta.description)}" />`,
+      meta.noindex ? `<meta name="robots" content="noindex, nofollow" />` : '',
+      `<meta property="og:type" content="${escapeHtml(meta.type || 'website')}" />`,
       `<meta property="og:site_name" content="${escapeHtml(config.instanceName)}" />`,
       `<meta property="og:title" content="${escapeHtml(meta.title)}" />`,
       `<meta property="og:description" content="${escapeHtml(meta.description)}" />`,
@@ -387,6 +409,11 @@ if (finalDistPath) {
       `<meta name="twitter:title" content="${escapeHtml(meta.title)}" />`,
       `<meta name="twitter:description" content="${escapeHtml(meta.description)}" />`,
       meta.image ? `<meta name="twitter:image" content="${escapeHtml(meta.image)}" />` : '',
+      `<link rel="canonical" href="${escapeHtml(meta.canonical || meta.url)}" />`,
+      feedPath
+        ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(config.instanceName)}" href="${escapeHtml(`${config.origin}${feedPath}`)}" />`
+        : '',
+      meta.oembed ? `<link rel="alternate" type="application/json+oembed" href="${escapeHtml(meta.oembed)}" />` : '',
       `<title>${escapeHtml(meta.title)}</title>`,
     ]
       .filter(Boolean)
@@ -395,61 +422,158 @@ if (finalDistPath) {
     return html.replace(/<title>[\s\S]*?<\/title>/i, '').replace(/<\/head>/i, `    ${tags}\n  </head>`);
   };
 
-  app.get(['/users/:username', '/'], async (req: Request, res: Response, next: NextFunction) => {
-    if (!req.headers.accept || !req.headers.accept.includes('text/html')) {
-      return next();
+  /** 投稿の OGP に使う共通の組み立て（ローカル・リモートの両方を扱う） */
+  const sendPostMeta = async (
+    res: Response,
+    html: string,
+    post: {
+      id: string;
+      user_id: string;
+      author_name: string;
+      author_handle: string;
+      author_icon: string | null;
+      content: string;
+      cw: string | null;
+      visibility: string | null;
+      is_local: number;
+      media_attachments: string;
+      published_at: string;
+    },
+  ): Promise<boolean> => {
+    // 公開投稿だけをクローラに渡す（ローカル限定・フォロワー限定は site 既定のメタ + noindex）
+    if (post.visibility && post.visibility !== 'public') {
+      return false;
     }
-    const html = readIndexHtml();
-    if (!html) {
-      return next();
+    const permalink = postPermalink(post.id);
+
+    let image: string | null = null;
+    try {
+      const attachments = JSON.parse(post.media_attachments || '[]');
+      const firstImage = Array.isArray(attachments)
+        ? attachments.find((a: any) => String(a?.mediaType || a?.media_type || '').startsWith('image/'))
+        : null;
+      image = firstImage?.url ? new URL(firstImage.url, config.origin).toString() : null;
+    } catch {}
+    if (!image && post.author_icon) {
+      image = new URL(post.author_icon, config.origin).toString();
     }
 
-    try {
-      // 1. ユーザープロフィール
-      const usernameParam = (req.params as Record<string, string>).username;
-      if (usernameParam) {
-        const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
-          | { id: string; name: string; summary: string; icon_url: string }
-          | undefined;
-        if (!user) {
-          return next();
-        }
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.send(injectMeta(html, {
-          title: `${user.name} (@${user.id}@${config.domain})`,
-          description: (user.summary || `${config.instanceName} のユーザー`).slice(0, 200),
-          image: user.icon_url ? new URL(user.icon_url, config.origin).toString() : `${config.origin}/logo.jpg`,
-          url: `${config.origin}/users/${user.id}`,
-        }));
+    const text = String(post.content || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    // author_handle は `@user@domain` 形式で入っていることがある（先頭の @ を二重にしない）
+    const handle = String(post.author_handle || '');
+    const atHandle = handle.startsWith('@') ? handle : `@${handle}`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(
+      injectMeta(html, {
+        title: `${post.author_name} (${atHandle}) のノート`,
+        description: post.cw ? `[${post.cw}] ${text}` : text,
+        image,
+        url: permalink,
+        canonical: permalink,
+        type: 'article',
+        // ローカル投稿は投稿者のフィード、リモート投稿はサイト全体のフィードを案内する
+        feed: post.is_local === 1 && post.user_id ? `/users/${post.user_id}/feed.xml` : '/feed.xml',
+        oembed: `${config.origin}/api/oembed?url=${encodeURIComponent(permalink)}`,
+      }),
+    );
+    return true;
+  };
+
+  app.get(
+    ['/users/:username', '/users/:username/posts/:postPathId', '/tags/:tag', '/'],
+    async (req: Request, res: Response, next: NextFunction) => {
+      if (!req.headers.accept || !req.headers.accept.includes('text/html')) {
+        return next();
+      }
+      const html = readIndexHtml();
+      if (!html) {
+        return next();
       }
 
-      // 2. 投稿（/?post=<id> または ?postId=<id>）
-      const postParam = (req.query.post || req.query.postId) as string | undefined;
-      if (postParam) {
-        const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(decodeURIComponent(postParam)) as
-          | { id: string; author_name: string; author_handle: string; content: string; cw: string | null; visibility: string | null; is_local: number; media_attachments: string }
-          | undefined;
-
-        if (post && post.is_local === 1 && (!post.visibility || post.visibility === 'public')) {
-          let image: string | null = null;
-          try {
-            const attachments = JSON.parse(post.media_attachments || '[]');
-            const firstImage = Array.isArray(attachments)
-              ? attachments.find((a: any) => String(a?.mediaType || '').startsWith('image/'))
-              : null;
-            image = firstImage?.url ? new URL(firstImage.url, config.origin).toString() : null;
-          } catch {}
-
-          const text = String(post.content || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      try {
+        // 1. 投稿のパーマリンク（/users/<user>/posts/<id>）
+        const { username: usernameParam, postPathId, tag: tagParam } = req.params as Record<string, string>;
+        if (usernameParam && postPathId) {
+          const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId(usernameParam, postPathId)) as
+            | Parameters<typeof sendPostMeta>[2]
+            | undefined;
+          if (!post) {
+            return next();
+          }
+          if (await sendPostMeta(res, html, post)) {
+            return;
+          }
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           return res.send(injectMeta(html, {
             title: `${post.author_name} のノート`,
-            description: post.cw ? `[${post.cw}] ${text}` : text,
-            image,
-            url: `${config.origin}/?post=${encodeURIComponent(post.id)}`,
+            description: `${config.instanceName} の投稿`,
+            url: `${config.origin}/users/${usernameParam}/posts/${postPathId}`,
+            type: 'article',
+            noindex: true,
           }));
         }
-      }
+
+        // 2. タグページ（/tags/<tag>）
+        if (tagParam) {
+          const tag = decodeURIComponent(tagParam);
+          const url = `${config.origin}/tags/${encodeURIComponent(tag)}`;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.send(injectMeta(html, {
+            title: `#${tag} - ${config.instanceName}`,
+            description: `${config.instanceName} の #${tag} の投稿一覧`,
+            image: `${config.origin}/logo.jpg`,
+            url,
+            type: 'website',
+            feed: `/tags/${encodeURIComponent(tag)}/feed.xml`,
+          }));
+        }
+
+        // 3. ユーザープロフィール
+        if (usernameParam) {
+          const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
+            | { id: string; name: string; summary: string; icon_url: string }
+            | undefined;
+          if (!user) {
+            return next();
+          }
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          return res.send(injectMeta(html, {
+            title: `${user.name} (@${user.id}@${config.domain})`,
+            description: (user.summary || `${config.instanceName} のユーザー`).slice(0, 200),
+            image: user.icon_url ? new URL(user.icon_url, config.origin).toString() : `${config.origin}/logo.jpg`,
+            url: `${config.origin}/users/${user.id}`,
+            type: 'profile',
+            feed: `/users/${user.id}/feed.xml`,
+          }));
+        }
+
+        // 2. 投稿（/?post=<id> または ?postId=<id>）。リモート投稿も同じ形で共有できる
+        const postParam = (req.query.post || req.query.postId) as string | undefined;
+        if (postParam) {
+          const postId = decodeURIComponent(postParam);
+          const post = (await db.prepare(`
+            SELECT p.*, COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+            FROM posts p
+            LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+            LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+            WHERE p.id = ?
+          `).get(postId)) as Parameters<typeof sendPostMeta>[2] | undefined;
+
+          if (post && (await sendPostMeta(res, html, post))) {
+            return;
+          }
+          if (post) {
+            // 公開範囲が限定の投稿: メタは出さず、検索エンジンにも載せない
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            return res.send(injectMeta(html, {
+              title: `${post.author_name} のノート`,
+              description: `${config.instanceName} の投稿`,
+              url: `${config.origin}/?post=${encodeURIComponent(post.id)}`,
+              type: 'article',
+              noindex: true,
+            }));
+          }
+        }
 
       // 3. それ以外はサイト既定のメタ情報
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -463,6 +587,16 @@ if (finalDistPath) {
       console.warn('[OGP] メタ情報の注入に失敗したため通常のHTMLを返します:', (err as Error).message);
       return next();
     }
+  });
+
+  // 🔗 `?post=` の中間ページを作らずに共有していた頃の URL（`/posts/<正規 ID>`）を救済する。
+  //    正規 ID は自前でスラッシュを含むため、ワイルドカードで受けて共有 URL へ 301 する。
+  app.get(['/posts', '/posts/*'], (req: Request, res: Response, next: NextFunction) => {
+    const raw = String((req.params as Record<string, string>)[0] || '');
+    if (!raw) {
+      return next();
+    }
+    return res.redirect(301, postPermalink(decodeURIComponent(raw)));
   });
 
   // ビルド済みフロントエンドの静的配信（index.html は OGP 注入側で扱うため対象外）

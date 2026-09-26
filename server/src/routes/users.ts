@@ -152,12 +152,17 @@ usersRouter.get('/:username/collections/featured', asyncHandler(async (req: Requ
 }));
 
 // Note (投稿) エンドポイント - Misskey / Mastodon からの個別ノート解決用
-usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response) => {
+usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response, next: NextFunction) => {
+  // ブラウザからの HTML 要求は、同じ URL を共有リンクとして使えるよう OGP 付きの画面へ委ねる
+  // （Mastodon などと同じく、同じ URL が Accept によって HTML にも ActivityPub JSON にもなる）
+  const accept = String(req.headers.accept || '');
+  if (accept.includes('text/html')) {
+    return next();
+  }
+
   const { username, postId } = req.params;
   const canonicalPostId = `${config.origin}/users/${username}/posts/${postId}`;
 
-  // ブラウザからの通常アクセスかつHTML要求の場合はSPAのルーティング等に任せることも可能だが、
-  // ActivityPub / API クライアントは application/activity+json や application/ld+json を要求
   const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(canonicalPostId) as unknown as PostRow | undefined;
   if (!post) {
     return res.status(404).json({ error: '投稿が見つかりません。' });
