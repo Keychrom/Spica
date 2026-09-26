@@ -4,6 +4,7 @@ import { db, UserRow } from './db.js';
 import { config } from './config.js';
 import { broadcastDeletePost } from './streaming.js';
 import { buildDeleteActorActivity, deliverActivity } from './activitypub.js';
+import { registerJobHandler, enqueueJob } from './jobs.js';
 import { deleteAllMediaForUser } from './mediaService.js';
 
 export interface DeleteUserAccountResult {
@@ -161,3 +162,57 @@ export async function deleteUserAccount(userId: string): Promise<DeleteUserAccou
     return { success: false, error: dbErr.message || 'データベース削除中にエラーが発生しました。' };
   }
 }
+
+// ---------------------------------------------------------------------------
+// 退会の非同期化
+//
+// アカウント削除は「フォロワー全員への Delete 配信（ネットワーク）」と「メディアの削除（ファイル）」
+// を含むため、大きなアカウントでは**リクエストの中で待たせると終わらない**（タイムアウトすると
+// 中途半端な状態で残る）。そこで:
+//
+//   1. 受け付けたら**すぐ凍結してセッションを消す**（＝その場でログインできなくなる。失敗しても安全側）
+//   2. 実際の削除はジョブキューで実行する（再試行つき。進み具合は管理画面と /health で見える）
+// ---------------------------------------------------------------------------
+
+/** 退会を受け付ける（凍結 + セッション削除 + ジョブ投入） */
+export async function beginUserDeletion(userId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
+  const cleanId = userId.trim();
+  const user = await db.prepare('SELECT id, role FROM users WHERE id = ?').get(cleanId) as { id: string; role: string } | undefined;
+  if (!user) return { success: false, error: 'ユーザーが見つかりません。' };
+
+  // 最後の管理者を消さない保護（ここで止める）
+  if (user.role === 'admin') {
+    const adminCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+    if (adminCount <= 1) {
+      return { success: false, error: 'サーバーに存在する最後の管理者を削除することはできません。別のユーザーを管理者に任命してから実行してください。' };
+    }
+  }
+
+  // 1. 先に凍結してログインできなくする（削除が失敗しても「入れない」状態で止まる＝安全側）
+  await db.prepare('UPDATE users SET is_frozen = 1 WHERE id = ?').run(cleanId);
+  await db.prepare('DELETE FROM sessions WHERE user_id = ?').run(cleanId);
+
+  // 2. 実作業はジョブで（同じ人の退会が二重に走らないよう dedupe）
+  const jobId = await enqueueJob('user_delete', { userId: cleanId }, { dedupeKey: `user_delete:${cleanId}`, maxAttempts: 5 });
+  if (!jobId) {
+    return { success: false, error: '退会処理を受け付けられませんでした。しばらくしてからお試しください。' };
+  }
+  console.log(`[Account Delete] 🗑️ @${cleanId} の退会を受け付けました（ジョブ ${jobId}）`);
+  return { success: true, jobId };
+}
+
+// ジョブの処理（登録はモジュール読み込み時）
+registerJobHandler('user_delete', async (payload: { userId?: string }) => {
+  const userId = String(payload?.userId || '');
+  if (!userId) throw new Error('userId がありません');
+  const result = await deleteUserAccount(userId);
+  if (!result.success) {
+    // 失敗は例外にして再試行に回す（「見つかりません」は消えている＝成功扱い）
+    if (result.error === 'ユーザーが見つかりません。') {
+      console.log(`[Account Delete] ℹ️ ${userId} は既に削除済みです`);
+      return;
+    }
+    throw new Error(result.error || 'アカウントの削除に失敗しました');
+  }
+  console.log(`[Account Delete] ✅ ${userId} の削除が完了しました`);
+});

@@ -40,6 +40,8 @@ export interface JobRow {
   max_attempts: number;
   next_attempt_at: string;
   last_error: string;
+  /** 完了時の結果（JSON 文字列。エクスポートのファイル名など） */
+  result: string;
   dedupe_key: string | null;
   created_at: string;
   updated_at: string;
@@ -55,9 +57,9 @@ export interface JobStats {
 }
 
 /** ジョブの種類ごとの処理。モジュールの読み込み時に登録する */
-const handlers = new Map<string, (payload: any) => Promise<void>>();
+const handlers = new Map<string, (payload: any, jobId: string) => Promise<void>>();
 
-export function registerJobHandler(kind: string, handler: (payload: any) => Promise<void>): void {
+export function registerJobHandler(kind: string, handler: (payload: any, jobId: string) => Promise<void>): void {
   handlers.set(kind, handler);
 }
 
@@ -158,6 +160,31 @@ export async function finishJob(id: string): Promise<void> {
     );
   } catch (err) {
     console.error('[Jobs] ❌ 完了の記録に失敗:', err);
+  }
+}
+
+/**
+ * 結果を残す（完了前に呼ぶ）。エクスポートのように「作ったものの場所」を
+ * 呼び出し元へ返したい仕事で使う。JSON 文字列で入れる。
+ */
+export async function setJobResult(id: string, result: unknown): Promise<void> {
+  try {
+    await db.prepare('UPDATE jobs SET result = ?, updated_at = ? WHERE id = ?').run(
+      JSON.stringify(result ?? null),
+      new Date().toISOString(),
+      id,
+    );
+  } catch (err) {
+    console.error('[Jobs] ❌ 結果の記録に失敗:', err);
+  }
+}
+
+/** 1 件の状態を見る（エクスポートの進捗確認などに使う） */
+export async function getJob(id: string): Promise<JobRow | null> {
+  try {
+    return ((await db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)) as JobRow | undefined) ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -271,7 +298,7 @@ export async function runJobsOnce(
     const current: JobRow = { ...row, attempts: claim.attempts };
     try {
       const payload = JSON.parse(row.payload || 'null');
-      await handler(payload);
+      await handler(payload, row.id);
       await finishJob(row.id);
       return true;
     } catch (err) {

@@ -1,6 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { db, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
 import { config } from './config.js';
+import { registerJobHandler, setJobResult } from './jobs.js';
 
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
@@ -294,3 +298,69 @@ export async function streamUserExportZip(userId: string, outputStream: NodeJS.W
     })().catch(reject);
   });
 }
+
+// ---------------------------------------------------------------------------
+// 非同期エクスポート（ジョブキュー経由）
+//
+// 大きなアカウントのエクスポートは ZIP の生成に時間がかかるため、**リクエストの中で待たせない**。
+// 受け付けたらジョブを積み、`jobs.result` に作ったファイルの場所を残す。利用者は状態を見て
+// 出来上がったらダウンロードする（`/api/user/export/:jobId` と `:jobId/file`）。
+// ---------------------------------------------------------------------------
+
+/** エクスポートの置き場（1 時間で掃除する。ダウンロード後に消す） */
+export function getUserExportDir(): string {
+  return path.resolve(path.dirname(config.dbPath), 'exports');
+}
+
+export interface UserExportFile {
+  filePath: string;
+  filename: string;
+  bytes: number;
+}
+
+/** エクスポートを作ってファイルに書き出す（ジョブから呼ぶ） */
+export async function buildUserExportFile(userId: string, format: 'json' | 'zip'): Promise<UserExportFile> {
+  const dir = getUserExportDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const dateStr = new Date().toISOString().split('T')[0];
+  const safeId = userId.replace(/[^A-Za-z0-9_.-]/g, '_');
+  const filename = `spica-export-${safeId}-${dateStr}.${format}`;
+  const filePath = path.join(dir, `${crypto.randomUUID()}-${filename}`);
+
+  if (format === 'zip') {
+    await streamUserExportZip(userId, fs.createWriteStream(filePath));
+  } else {
+    const data = await exportUserData(userId);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  }
+  return { filePath, filename, bytes: fs.statSync(filePath).size };
+}
+
+/** 古いエクスポート（1 時間より前）を消す */
+export function cleanupOldUserExports(maxAgeMs = 60 * 60 * 1000): number {
+  const dir = getUserExportDir();
+  if (!fs.existsSync(dir)) return 0;
+  const now = Date.now();
+  let removed = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const file = path.join(dir, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+        fs.unlinkSync(file);
+        removed++;
+      }
+    } catch {
+      // 消せなくても続ける
+    }
+  }
+  return removed;
+}
+
+// ジョブの処理を登録する（`jobs` テーブル経由。ワーカーが拾って実行する）
+registerJobHandler('user_export', async (payload: { userId?: string; format?: string }, jobId: string) => {
+  const userId = String(payload?.userId || '');
+  const format = payload?.format === 'zip' ? 'zip' : 'json';
+  if (!userId) throw new Error('userId がありません');
+  const built = await buildUserExportFile(userId, format);
+  await setJobResult(jobId, built);
+});

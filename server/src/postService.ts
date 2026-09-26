@@ -400,11 +400,39 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
     const antennas = await db.prepare('SELECT * FROM antennas WHERE notify = 1').all() as unknown as AntennaRow[];
     if (!antennas || antennas.length === 0) return;
 
+    // `src = 'home'` のアンテナは「持ち主がこの投稿者をフォローしているか」を見る。
+    // アンテナごとに 1 本ずつ引くと **投稿 1 件あたりアンテナ数ぶんのクエリ**になり、
+    // リレーから投稿が流れてくるほど効いてくる（投稿数 × アンテナ数）。
+    // フォロー関係を 1 本でまとめて引いておく。
+    const authorUrl = String(post.author_url || '');
+    const homeOwners = Array.from(
+      new Set(
+        antennas
+          .filter((ant) => ant.src === 'home' && ant.user_id !== post.user_id)
+          .map((ant) => `${config.origin}/users/${ant.user_id}`),
+      ),
+    );
+    const followsAuthor = new Set<string>();
+    if (authorUrl && homeOwners.length > 0) {
+      // プレースホルダが増えすぎないように区切って引く（アンテナが数千ある場合の保険）
+      const CHUNK = 400;
+      for (let i = 0; i < homeOwners.length; i += CHUNK) {
+        const chunk = homeOwners.slice(i, i + CHUNK);
+        const rows = (await db
+          .prepare(`SELECT follower_url FROM follows WHERE following_url = ? AND follower_url IN (${chunk.map(() => '?').join(',')})`)
+          .all(authorUrl, ...chunk)) as { follower_url: string }[];
+        for (const row of rows) followsAuthor.add(row.follower_url);
+      }
+    }
+
     for (const ant of antennas) {
       // 自分の投稿は自分に通知しない
       if (ant.user_id === post.user_id) continue;
 
-      if (await await isPostMatchingAntenna(post, ant)) {
+      // フォロー範囲の判定は上でまとめて済ませてある（ここでは引かない）
+      if (ant.src === 'home' && !followsAuthor.has(`${config.origin}/users/${ant.user_id}`)) continue;
+
+      if (isPostMatchingAntenna(post, ant)) {
         await createNotification({
           userId: ant.user_id,
           type: 'antenna',
@@ -424,24 +452,20 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
 }
 
 /**
- * 投稿が特定のアンテナ条件に合致しているかを判定
+ * 投稿が特定のアンテナ条件に合致しているかを判定する。
+ *
+ * **DB は引かない**（`src = 'home'` のフォロー確認は呼び出し側がまとめて行う）。
+ * 投稿 1 件ごとにアンテナ数ぶんクエリを撃たないための分離なので、ここに問い合わせを足さないこと。
  */
-export async function isPostMatchingAntenna(post: any, ant: AntennaRow): Promise<boolean> {
+export function isPostMatchingAntenna(post: any, ant: AntennaRow): boolean {
   // 1. ファイル添付フィルタ
   if (ant.with_file === 1) {
     const hasMedia = Array.isArray(post.media_attachments) && post.media_attachments.length > 0;
     if (!hasMedia) return false;
   }
 
-  // 2. ソース範囲フィルタ
-  if (ant.src === 'home') {
-    // アンテナ所有者のフォロー対象かチェック
-    const isFollowing = await db.prepare(`
-      SELECT 1 FROM follows 
-      WHERE follower_url = ? AND following_url = ?
-    `).get(`${config.origin}/users/${ant.user_id}`, post.author_url);
-    if (!isFollowing) return false;
-  } else if (ant.src === 'users') {
+  // 2. ソース範囲フィルタ（`home` のフォロー確認は呼び出し側で済み）
+  if (ant.src === 'users') {
     // 特定ユーザーリスト
     const allowed = (ant.user_list || '')
       .split(',')

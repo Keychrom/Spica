@@ -26,6 +26,7 @@ import { logAutomationSettings, getMaintenanceStats } from './maintenanceService
 import { getDeliveryQueueStats } from './deliveryQueue.js';
 import { getJobStats } from './jobs.js';
 import { getTimelineCacheStats } from './timelineCache.js';
+import { recordRequest, formatPrometheus } from './metrics.js';
 import {
   mediaProxyMiddleware,
   isImageProxyEnabled,
@@ -111,6 +112,15 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// 応答時間と状態コードを数える（`/metrics` で推移を見るため。URL はラベルにしない）
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    recordRequest(res.statusCode, Number(process.hrtime.bigint() - startedAt) / 1e6);
+  });
+  next();
+});
+
 // レート制限（ブルートフォース・スパム・flooding 対策）
 //  - 認証系は厳しめ、通常 API は緩め、Inbox は連合配送を妨げないよう非常に緩め
 if (!config.rateLimitDisabled) {
@@ -186,6 +196,55 @@ const healthHandler = async (req: Request, res: Response) => {
 app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
 
+/**
+ * `/metrics`（Prometheus 形式）。
+ *
+ * **`METRICS_TOKEN` を設定したときだけ有効**です（未設定なら 404）。
+ * トークンは `Authorization: Bearer <token>` で渡します（Prometheus の `bearer_token`）。
+ * 管理者のセッションでも読めます（`/health` の詳細と同じ扱い）。
+ * nginx の背後だと接続元 IP では守れないため、**IP 制限では守りません**。
+ */
+app.get('/metrics', async (req: Request, res: Response) => {
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const tokenOk = Boolean(config.metricsToken) && token === config.metricsToken;
+  const adminOk = Boolean(req.user && req.user.role === 'admin');
+  if (!tokenOk && !adminOk) {
+    // トークン未設定なら「存在しない」、設定済みで不一致なら 401（設定の有無を推測されにくくする）
+    if (!config.metricsToken) return res.status(404).json({ error: 'Not Found' });
+    return res.status(401).json({ error: '認証が必要です。' });
+  }
+
+  const startedAt = Date.now();
+  let dbOk = true;
+  try {
+    await db.prepare('SELECT 1 AS ok').get();
+  } catch {
+    dbOk = false;
+  }
+
+  let deliveryQueue = { pending: 0, delivering: 0, failed: 0 };
+  let jobs = { pending: 0, running: 0, failed: 0 };
+  try {
+    const queue = await getDeliveryQueueStats();
+    deliveryQueue = { pending: queue.pending, delivering: queue.delivering, failed: queue.failed };
+    const jobStats = await getJobStats();
+    jobs = { pending: jobStats.pending, running: jobStats.running, failed: jobStats.failed };
+  } catch {
+    // 取れなくても他は返す
+  }
+
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+  res.send(formatPrometheus({
+    dbOk,
+    dbLatencyMs: Date.now() - startedAt,
+    sseClients: getStreamClientCount(),
+    redis: getRedisStatus(),
+    timelineCache: getTimelineCacheStats(),
+    deliveryQueue,
+    jobs,
+  }));
+});
+
 // クライアント用 REST API ルーティング
 // 画像プロキシ: タイムライン等の応答に含まれるリモート画像 URL を
 // 署名付きプロキシ URL へ置き換える（閲覧者の IP を相手サーバーに渡さない）
@@ -252,10 +311,13 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 // アップロードメディアは同一オリジンで配信されるため、SVG 等に埋め込まれた
-// スクリプトが実行されないよう CSP で無効化する（nosniff も付与）
+// スクリプトが実行されないよう CSP で無効化する（nosniff も付与）。
+// ファイル名は `<時刻>_<乱数>.<拡張子>` で**中身が変われば名前も変わる**ので、長くキャッシュさせる
+// （CDN を前段に置いたときもそのまま効きます）
 app.use('/uploads', (req: Request, res: Response, next: NextFunction) => {
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   next();
 });
 app.use('/uploads', express.static(uploadsDir));

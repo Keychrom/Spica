@@ -51,8 +51,21 @@ async function initPostgresSchema(): Promise<void> {
   }
   const sql = fs.readFileSync(schemaPath, 'utf8');
   try {
-    await db.exec(sql);
-    console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+    // **複数プロセスが同時に起動すると、DDL がぶつかってデッドロックすることがある**
+    // （実際に 2 ノード同時起動で「デッドロックを検出しました」→ 片方が起動失敗した）。
+    // 助言ロックで 1 プロセスずつ流す（待ってから適用するだけなので、起動が少し遅くなるだけ）。
+    const SCHEMA_LOCK_KEY = 8456231;
+    const locked = (await db.prepare('SELECT pg_try_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY)) as { ok: boolean };
+    if (!locked?.ok) {
+      console.log('[DB] ⏳ 他のプロセスがスキーマを適用中です。終わるのを待ちます…');
+      await db.prepare('SELECT pg_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY);
+    }
+    try {
+      await db.exec(sql);
+      console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+    } finally {
+      await db.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
+    }
   } catch (err: any) {
     throw new Error(`PostgreSQL スキーマの適用に失敗しました: ${err?.message || err}`);
   }
@@ -712,10 +725,12 @@ async function initDatabaseSchema(): Promise<void> {
       max_attempts INTEGER NOT NULL DEFAULT 5,
       next_attempt_at TEXT NOT NULL,
       last_error TEXT DEFAULT '',
+      result TEXT DEFAULT '',
       dedupe_key TEXT DEFAULT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );`,
+    "ALTER TABLE jobs ADD COLUMN result TEXT DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);",
     // 相手（リモート）がこちらをブロックした記録: 配送抑制と表示制御に使う

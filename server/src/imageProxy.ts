@@ -147,6 +147,34 @@ export function proxyHtmlImages(html: string): string {
 }
 
 /**
+ * 自分のメディア（`/uploads/...`）を CDN の URL に置き換える。
+ * `MEDIA_PUBLIC_BASE_URL` を設定したときだけ働きます（DB には相対のまま保存しているため、
+ * 応答を作るときに差し替える＝後から CDN を替えても DB を触らなくて済みます）。
+ */
+export function rewriteLocalMediaUrls<T>(value: T, depth = 0): T {
+  const base = config.mediaPublicBaseUrl;
+  if (!base || depth > 8) return value;
+
+  if (typeof value === 'string') {
+    // 相対（/uploads/...）と、自分のオリジン付き（https://host/uploads/...）の両方
+    if (value.startsWith('/uploads/')) return `${base}${value}` as unknown as T;
+    if (value.startsWith(`${config.origin}/uploads/`)) return `${base}${value.slice(config.origin.length)}` as unknown as T;
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => rewriteLocalMediaUrls(item, depth + 1)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = rewriteLocalMediaUrls(item, depth + 1);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+/**
  * JSON レスポンス全体を走査し、リモート画像 URL をプロキシ経由に置き換える。
  * タイムラインのアイコン・添付・引用・絵文字・本文 HTML をまとめて処理する。
  */
@@ -175,12 +203,21 @@ export function rewriteRemoteMediaUrls<T>(value: T, depth = 0): T {
 /** JSON 応答（GET /api/*、管理 API を除く）にプロキシ変換を挟むミドルウェア */
 export function mediaProxyMiddleware() {
   return (req: any, res: any, next: any) => {
-    if (req.method !== 'GET' || !isImageProxyEnabled()) return next();
+    if (req.method !== 'GET') return next();
+    // 画像プロキシと CDN は独立。どちらも無効なら何もしない
+    const proxy = isImageProxyEnabled();
+    const cdn = Boolean(config.mediaPublicBaseUrl);
+    if (!proxy && !cdn) return next();
     if (typeof req.path !== 'string' || !req.path.startsWith('/api/')) return next();
     if (req.path.startsWith('/api/admin')) return next();
 
     const originalJson = res.json.bind(res);
-    res.json = (body: unknown) => originalJson(rewriteRemoteMediaUrls(body));
+    res.json = (body: unknown) => {
+      let out: unknown = body;
+      if (proxy) out = rewriteRemoteMediaUrls(out);
+      if (cdn) out = rewriteLocalMediaUrls(out);
+      return originalJson(out);
+    };
     next();
   };
 }

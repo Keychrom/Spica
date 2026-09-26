@@ -6310,35 +6310,63 @@ export default function App() {
   };
 
   // 📦 データエクスポートハンドラ (JSON / ZIP)
+  // サーバー側でジョブとして作る（大きなアカウントでも待たされない）。
+  // 受け付けたら状態を見に行き、出来上がったらダウンロードする。
   const handleExportData = async (format: 'json' | 'zip') => {
     if (!authToken) return;
     setIsExportingData(true);
     setExportingFormat(format);
     try {
-      const res = await fetch(`/api/user/export?format=${format}`, {
+      const started = await fetch('/api/user/export', {
+        method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
+        body: JSON.stringify({ format }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        alert(err.error || 'データのエクスポートに失敗しました。');
+      if (!started.ok) {
+        const err = await started.json().catch(() => ({}));
+        alert(err.error || 'データのエクスポートを開始できませんでした。');
         return;
       }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      const dateStr = new Date().toISOString().split('T')[0];
-      a.download = format === 'zip'
-        ? `spica-backup-${authUser?.id || 'me'}-${dateStr}.zip`
-        : `spica-backup-${authUser?.id || 'me'}-${dateStr}.json`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      setSettingsMessage({ type: 'success', text: `データを${format.toUpperCase()}形式でダウンロードしました！` });
-      setTimeout(() => setSettingsMessage(null), 4000);
+      const { jobId } = await started.json();
+      setSettingsMessage({ type: 'success', text: `${format.toUpperCase()} を作成しています…（そのままお待ちください）` });
+
+      // 出来上がるまで見に行く（最大 2 分。ZIP はアカウントが大きいと時間がかかる）
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const statusRes = await fetch(`/api/user/export/${jobId}`, { headers: { Authorization: `Bearer ${authToken}` } });
+        if (!statusRes.ok) continue;
+        const info = await statusRes.json();
+        if (info.status === 'failed') {
+          alert(info.error || 'エクスポートに失敗しました。');
+          setSettingsMessage(null);
+          return;
+        }
+        if (info.status !== 'done') continue;
+
+        const fileRes = await fetch(info.downloadUrl, { headers: { Authorization: `Bearer ${authToken}` } });
+        if (!fileRes.ok) {
+          alert('エクスポートのダウンロードに失敗しました。');
+          setSettingsMessage(null);
+          return;
+        }
+        const blob = await fileRes.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = info.filename || `spica-export-${authUser?.id || 'me'}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        setSettingsMessage({ type: 'success', text: `データを${format.toUpperCase()}形式でダウンロードしました！` });
+        setTimeout(() => setSettingsMessage(null), 4000);
+        return;
+      }
+      alert('エクスポートに時間がかかっています。しばらくしてから、もう一度お試しください。');
+      setSettingsMessage(null);
     } catch (err: any) {
       alert(`エクスポートエラー: ${err.message}`);
     } finally {

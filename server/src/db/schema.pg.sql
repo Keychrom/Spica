@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS jobs  (
   max_attempts BIGINT NOT NULL DEFAULT 5,
   next_attempt_at TEXT NOT NULL,
   last_error TEXT DEFAULT '',
+  result TEXT DEFAULT '',
   dedupe_key TEXT DEFAULT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

@@ -254,6 +254,14 @@ async function run() {
     }
 
     // C: リレーから流れてきた第三者の投稿（Announce / ブースト）を受信（署名付き）
+    // リモートのブーストは既定で「フォロー中のアクターのものだけ保存」なので、
+    // リレーをフォローしている状態にしておく（保存ポリシーは searchPolicy.ts）。
+    testDb.prepare(`
+      INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+      VALUES (?, ?, ?, 'https://relay.example.com/inbox', 1, 'accepted', ?)
+      ON CONFLICT(follower_url, following_url) DO NOTHING
+    `).run(`${admin.user.actorUrl} -> ${RELAY_ACTOR}`, admin.user.actorUrl, RELAY_ACTOR, new Date().toISOString());
+
     const relayAnnounceBody = JSON.stringify({
       '@context': 'https://www.w3.org/ns/activitystreams',
       id: 'https://relay.example.com/announce/4567',
@@ -306,9 +314,10 @@ async function run() {
       headers: { Authorization: `Bearer ${admin.sessionToken}` },
     });
     const homePosts = await homeRes.json();
-    console.log(`👥 [ホームTL件数]: ${homePosts.length} 件 (ローカル + フォロー中Misskey)`);
-    if (homePosts.length !== 2) {
-      throw new Error(`ホームタイムライン件数が不正です (期待値: 2, 実際: ${homePosts.length})`);
+    console.log(`👥 [ホームTL件数]: ${homePosts.length} 件 (ローカル + フォロー中Misskey + フォロー中リレーのブースト)`);
+    // ローカル投稿 + フォロー中 Misskey の投稿 + フォロー中リレーのブースト（リノート表示）の 3 件
+    if (homePosts.length !== 3) {
+      throw new Error(`ホームタイムライン件数が不正です (期待値: 3, 実際: ${homePosts.length})`);
     }
 
     // 3) 連合タイムライン (リレー含む全件)
@@ -327,6 +336,28 @@ async function run() {
     }
     console.log(`🔁 リレーAnnounceのリノート表示: ${relayedEntry.renote.handle} → ${relayedEntry.content?.slice(0, 20)}...`);
     console.log('🎉 タイムラインの3層分離（ローカル / ホーム / 連合）が完全動作！');
+
+    // 3-b) タグタイムライン（直近 N 件の走査で拾えること）
+    //     タグは `content LIKE '%#tag%'` で探すため、全件走査を避けて直近 N 件に限定している。
+    //     新しい投稿のタグは当然拾える必要がある。
+    const tagged = await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin.sessionToken}` },
+      body: JSON.stringify({ content: 'タグの検証用 #timetest です', visibility: 'public' }),
+    });
+    if (tagged.status !== 201) {
+      throw new Error(`タグ検証用の投稿に失敗しました (HTTP ${tagged.status})`);
+    }
+    const tagPosts = await (await fetch(`${BASE}/api/timeline?mode=tag&tag=timetest`)).json();
+    console.log(`🏷️  [タグTL件数]: ${tagPosts.length} 件 (#timetest)`);
+    if (!Array.isArray(tagPosts) || tagPosts.length !== 1 || !tagPosts[0]?.content?.includes('#timetest')) {
+      throw new Error(`タグタイムラインが新しい投稿を拾えていません (実際: ${JSON.stringify(tagPosts).slice(0, 160)})`);
+    }
+    const noTag = await (await fetch(`${BASE}/api/timeline?mode=tag&tag=notag_here_xyz`)).json();
+    if (!Array.isArray(noTag) || noTag.length !== 0) {
+      throw new Error(`存在しないタグで行が返りました (実際: ${JSON.stringify(noTag).slice(0, 120)})`);
+    }
+    console.log('✅ タグタイムライン（#tag を拾う・無いタグでは空）');
 
     // 4. リレーサーバー管理 API テスト
     console.log('\n📡 [ステップ 4] リレーサーバー接続 API テスト...');

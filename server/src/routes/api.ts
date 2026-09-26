@@ -1,6 +1,8 @@
 import { asyncHandler } from '../asyncHandler.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import multer from 'multer';
 import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, matchesBlockedDomainRule, loadBlockedDomainRules, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting, NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
 import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
@@ -36,8 +38,9 @@ import {
   requireAuth,
   getUserFromToken,
 } from '../auth.js';
-import { deleteUserAccount } from '../accountService.js';
-import { exportUserData, streamUserExportZip } from '../exportService.js';
+import { deleteUserAccount, beginUserDeletion } from '../accountService.js';
+import { exportUserData, streamUserExportZip, buildUserExportFile } from '../exportService.js';
+import { enqueueJob, getJob } from '../jobs.js';
 import {
   getVapidPublicKey,
   savePushSubscription,
@@ -812,7 +815,25 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   let announceFollowJoin = '';
   let followParam: string | null = null;
 
+  // 投稿側の FROM 句。タグのときだけ FTS を噛ませる（下の tag 分岐を参照）
+  let postFrom = 'posts p';
+  const recentScanPosts = mode === 'tag' ? config.recentScanPosts : 0;
+
   if (mode === 'tag' && tag) {
+    // タグは「本文に #tag を含む投稿を新しい順に」。`content LIKE '%#tag%'` だけだと
+    // **毎回 全件走査**になり、32 万投稿で 300ms 超（SQLite は同期ドライバなので、
+    // ハッシュタグを 1 回クリックされるだけでプロセスが止まる）。
+    //
+    // FTS（trigram）で候補を絞る手もあるが、**FTS の索引範囲は `fts_index_scope`（既定は
+    // ローカル投稿のみ）**なので、リモート投稿のタグが出なくなる。タグは「いま何が話題か」を
+    // 見る機能なので、**直近 N 件（`RECENT_SCAN_POSTS`・既定 2 万）に限って走査**し、
+    // リモート投稿も今までどおり拾う（N 件の索引走査なので DB が育ってもコストは一定）。
+    if (recentScanPosts > 0) {
+      postConds.push(`p.published_at >= (
+        SELECT COALESCE(MIN(published_at), '') FROM (SELECT published_at FROM posts ORDER BY published_at DESC LIMIT ?)
+      )`);
+      params.push(recentScanPosts);
+    }
     postConds.push('(p.content LIKE ? OR p.content LIKE ?)');
     announceConds.push('(p.content LIKE ? OR p.content LIKE ?)');
     params.push(`%#${tag}%`, `%/tags/${tag}%`);
@@ -880,7 +901,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       NULL AS renoted_by_icon,
       NULL AS renoted_by_url,
       p.published_at AS timeline_at
-    FROM posts p
+    FROM ${postFrom}
     ${postFollowJoin}
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
     LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
@@ -1186,6 +1207,14 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
   // 演算子のみの検索（例: has:media だけ）にも対応するため、本文が空でも実行する
   if (postRows.length === 0 && (terms.length > 0 || extraConds.length > 0)) {
     const postPattern = terms.length > 0 ? `%${searchText}%` : '%';
+    // FTS にヒットしない語（リモート投稿にしか無い語・1〜2 文字の語）はここに落ちる。
+    // 全件走査だと 32 万投稿で 250ms 超（SQLite は同期なのでプロセスが止まる）ので、
+    // **直近 N 件に限る**（タグタイムラインと同じ `recentScanPosts`。既定 2 万）。
+    const recentBound = config.recentScanPosts > 0
+      ? [`p.published_at >= (
+          SELECT COALESCE(MIN(published_at), '') FROM (SELECT published_at FROM posts ORDER BY published_at DESC LIMIT ?)
+        )`, config.recentScanPosts] as const
+      : null;
     postRows = await db.prepare(`
       SELECT 
         p.id AS post_id,
@@ -1216,10 +1245,10 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
       LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE (p.content LIKE ? OR p.cw LIKE ?)${extraWhere}
+      WHERE (p.content LIKE ? OR p.cw LIKE ?)${extraWhere}${recentBound ? ` AND ${recentBound[0]}` : ''}
       ORDER BY p.published_at DESC
       LIMIT 30
-    `).all(postPattern, postPattern, ...extraParams) as any[];
+    `).all(postPattern, postPattern, ...extraParams, ...(recentBound ? [recentBound[1]] : [])) as any[];
   }
 
   const posts = await enrichAndFilterPosts(postRows, currentActorUrl, req.user?.id);
@@ -2293,29 +2322,78 @@ apiRouter.post('/user/migration/cancel', requireAuth, asyncHandler(async (req: R
   console.log(`[Migration] 📦 @${user.id} の引っ越し先を解除`);
   res.json({ success: true, message: '引っ越し先の記録を解除しました（連合先へ配送済みの Move は取り消せません）。' });
 }));
-apiRouter.get('/user/export', requireAuth, async (req: Request, res: Response) => {
+// 📦 データエクスポート（非同期）
+//
+// 大きなアカウントでは ZIP の生成に時間がかかるので、**リクエストの中で待たせない**。
+// 受け付けたらジョブを積み、`GET /api/user/export/:jobId` で状態を見て、
+// 出来上がったら `GET /api/user/export/:jobId/file` でダウンロードする。
+apiRouter.post('/user/export', requireAuth, async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const format = (req.query.format as string)?.toLowerCase();
-  const dateStr = new Date().toISOString().split('T')[0];
+  const format = String(req.body?.format || req.query.format || 'json').toLowerCase() === 'zip' ? 'zip' : 'json';
 
   try {
-    if (format === 'zip') {
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="spica-export-${user.id}-${dateStr}.zip"`);
-      await streamUserExportZip(user.id, res);
-    } else {
-      const data = exportUserData(user.id);
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="spica-export-${user.id}-${dateStr}.json"`);
-      res.send(JSON.stringify(data, null, 2));
+    // 同じ人のエクスポートが走っている間は積まない（連打対策）
+    const jobId = await enqueueJob('user_export', { userId: user.id, format }, { dedupeKey: `user_export:${user.id}`, maxAttempts: 2 });
+    if (!jobId) {
+      return res.status(503).json({ error: 'エクスポートを受け付けられませんでした。しばらくしてからお試しください。' });
     }
+    res.status(202).json({ jobId, status: 'pending', format });
   } catch (err: any) {
-    console.error(`[Export Error] Failed to export data for @${user.id}:`, err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'データのエクスポートに失敗しました。' });
-    }
+    console.error(`[Export Error] Failed to enqueue export for @${user.id}:`, err);
+    res.status(500).json({ error: 'データのエクスポートを開始できませんでした。' });
   }
 });
+
+/** エクスポートの状態（自分のジョブだけ見られる） */
+apiRouter.get('/user/export/:jobId', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const job = await getJob(String(req.params.jobId));
+  if (!job || job.kind !== 'user_export') {
+    return res.status(404).json({ error: 'エクスポートが見つかりません。' });
+  }
+  const payload = JSON.parse(job.payload || '{}') as { userId?: string };
+  if (payload.userId !== user.id) {
+    return res.status(404).json({ error: 'エクスポートが見つかりません。' });
+  }
+  const result = job.result ? (JSON.parse(job.result) as { filename?: string; bytes?: number }) : null;
+  res.json({
+    status: job.status,
+    error: job.status === 'failed' ? job.last_error || 'エクスポートに失敗しました。' : '',
+    filename: result?.filename || '',
+    bytes: result?.bytes || 0,
+    downloadUrl: job.status === 'done' ? `/api/user/export/${job.id}/file` : '',
+  });
+}));
+
+/** 出来上がったファイルを返す（返したら消す＝置き場を溜めない） */
+apiRouter.get('/user/export/:jobId/file', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const job = await getJob(String(req.params.jobId));
+  if (!job || job.kind !== 'user_export' || job.status !== 'done' || !job.result) {
+    return res.status(404).json({ error: 'エクスポートが見つかりません。' });
+  }
+  const payload = JSON.parse(job.payload || '{}') as { userId?: string };
+  if (payload.userId !== user.id) {
+    return res.status(404).json({ error: 'エクスポートが見つかりません。' });
+  }
+  const result = JSON.parse(job.result) as { filePath?: string; filename?: string };
+  if (!result.filePath || !fs.existsSync(result.filePath)) {
+    // 期限切れ（1 時間で掃除される）や、別プロセスが作った場合
+    return res.status(410).json({ error: 'エクスポートのファイルはもうありません。もう一度お試しください。' });
+  }
+
+  res.setHeader('Content-Type', result.filename?.endsWith('.zip') ? 'application/zip' : 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${result.filename || 'spica-export'}"`);
+  res.sendFile(path.resolve(result.filePath), (err) => {
+    // 送り終わったら消す（失敗しても消す。1 時間の掃除でも拾われる）
+    try {
+      fs.unlinkSync(result.filePath as string);
+    } catch {
+      // すでに無ければ何もしない
+    }
+    if (err && !res.headersSent) res.status(500).end();
+  });
+}));
 
 // ユーザー自身によるアカウント削除（退会・データ完全抹消）
 apiRouter.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request, res: Response) => {
@@ -2349,15 +2427,17 @@ apiRouter.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request,
     }
   }
 
-  // 4. アカウント完全消去
-  const result = await deleteUserAccount(user.id);
+  // 4. 退会を受け付ける（その場で凍結 + セッション削除。実作業はジョブで。
+  //    フォロワー全員への Delete 配信とメディア削除は時間がかかるため、リクエスト内で待たせない）
+  const result = await beginUserDeletion(user.id);
   if (!result.success) {
     return res.status(400).json({ error: result.error || 'アカウントの削除に失敗しました。' });
   }
 
   res.json({
     success: true,
-    message: 'アカウントと関連データを完全に削除しました。ご利用ありがとうございました。',
+    jobId: result.jobId,
+    message: '退会を受け付けました。アカウントと関連データを削除しています。ご利用ありがとうございました。',
   });
 }));
 
@@ -3490,7 +3570,38 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
       LIMIT ?
     `).all(q, `%${q}%`, `%${q}%`, limit) as any[];
 
-    const users = await Promise.all(rows.map(async (user) => {
+    // 利用者ごとに 3 本ずつ撃つと 50 人で 150 クエリになる。しかも投稿数の
+    // `COUNT(*) FROM posts WHERE user_id = ?` は user_id に索引が無く全件走査（実測 116ms/人）。
+    // **IN でまとめて 3 本**にし、数え上げは索引の効く author_url で行う（実測 6.2ms/人 → まとめると実質 0）。
+    const actorUrls = rows.map((user) => `${config.origin}/users/${user.id}`);
+    const userIds = rows.map((user) => user.id);
+    const marks = (n: number) => Array.from({ length: n }, () => '?').join(',');
+
+    const [postCountRows, followerCountRows, roleRows] = rows.length === 0
+      ? [[], [], []]
+      : await Promise.all([
+          db.prepare(`SELECT author_url AS k, COUNT(*) AS c FROM posts WHERE author_url IN (${marks(actorUrls.length)}) GROUP BY author_url`)
+            .all(...actorUrls) as Promise<{ k: string; c: number }[]>,
+          db.prepare(`SELECT following_url AS k, COUNT(*) AS c FROM follows WHERE following_url IN (${marks(actorUrls.length)}) AND status = 'accepted' GROUP BY following_url`)
+            .all(...actorUrls) as Promise<{ k: string; c: number }[]>,
+          db.prepare(`
+            SELECT ur.user_id AS k, r.id, r.name, r.color FROM user_roles ur
+            JOIN roles r ON ur.role_id = r.id
+            WHERE ur.user_id IN (${marks(userIds.length)})
+            ORDER BY ur.user_id ASC, r.created_at ASC
+          `).all(...userIds) as Promise<{ k: string; id: string; name: string; color: string }[]>,
+        ]);
+
+    const postCounts = new Map(postCountRows.map((row) => [row.k, Number(row.c)]));
+    const followerCounts = new Map(followerCountRows.map((row) => [row.k, Number(row.c)]));
+    const rolesByUser = new Map<string, { id: string; name: string; color: string }[]>();
+    for (const row of roleRows) {
+      const list = rolesByUser.get(row.k) ?? [];
+      list.push({ id: row.id, name: row.name, color: row.color });
+      rolesByUser.set(row.k, list);
+    }
+
+    const users = rows.map((user) => {
       const actorUrl = `${config.origin}/users/${user.id}`;
       return {
         id: user.id,
@@ -3501,17 +3612,12 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
         handle: `@${user.id}@${config.domain}`,
         actor_url: actorUrl,
         created_at: user.created_at,
-        post_count: (await db.prepare('SELECT COUNT(*) AS c FROM posts WHERE user_id = ?').get(user.id) as { c: number }).c,
-        follower_count: (await db.prepare("SELECT COUNT(*) AS c FROM follows WHERE following_url = ? AND status = 'accepted'").get(actorUrl) as { c: number }).c,
+        post_count: postCounts.get(actorUrl) ?? 0,
+        follower_count: followerCounts.get(actorUrl) ?? 0,
         fields: parseProfileFields((user as any).fields).map((f) => ({ name: f.name, value: f.value })),
-        roles: await db.prepare(`
-          SELECT r.id, r.name, r.color FROM user_roles ur
-          JOIN roles r ON ur.role_id = r.id
-          WHERE ur.user_id = ?
-          ORDER BY r.created_at ASC
-        `).all(user.id),
+        roles: rolesByUser.get(user.id) ?? [],
       };
-    }));
+    });
 
     res.json({ users, total: users.length });
   } catch (err: any) {
@@ -4472,6 +4578,16 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
   if (page.cursor) {
     conditions.push(cursorPredicate('p.published_at', 'p.id'));
     params.push(page.cursor.at, page.cursor.at, page.cursor.id);
+  }
+
+  // 走査の上限（タグ・検索と同じ）。アンテナはキーワードやユーザー名の LIKE で絞るので、
+  // 条件が緩いと全件走査になる。**直近 N 件**に限れば DB が育ってもコストが一定
+  // （`RECENT_SCAN_POSTS`・既定 2 万。0 で無制限）
+  if (config.recentScanPosts > 0) {
+    conditions.push(`p.published_at >= (
+      SELECT COALESCE(MIN(published_at), '') FROM (SELECT published_at FROM posts ORDER BY published_at DESC LIMIT ?)
+    )`);
+    params.push(config.recentScanPosts);
   }
   params.push(page.limit + 1);
 

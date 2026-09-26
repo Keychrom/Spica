@@ -122,6 +122,70 @@ async function runTest() {
   console.log(`✅ アンテナ新着通知作成成功 (通知ID: ${notifs[0].id}, アンテナ名: ${notifs[0].content})\n`);
 
   // ==========================================
+  // テスト 1-b: 📡 src='home' のアンテナ（フォロー範囲）
+  //   「投稿ごとにアンテナ数ぶんクエリを撃たない」ように判定を分けたので、
+  //   フォローしている / していないで通知が変わることを確かめる
+  // ==========================================
+  console.log("--- 1-b. 📡 src='home' のアンテナ判定 ---");
+
+  const homeAntenna: any = {
+    id: 'ant-home',
+    user_id: userA.id,
+    name: 'フォロー中の人',
+    src: 'home',
+    user_list: '',
+    keywords: '',
+    exclude_keywords: '',
+    case_sensitive: 0,
+    with_file: 0,
+    notify: 1,
+    created_at: new Date().toISOString(),
+  };
+  await db.prepare(`
+    INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(homeAntenna.id, homeAntenna.user_id, homeAntenna.name, homeAntenna.src, homeAntenna.user_list, homeAntenna.keywords, homeAntenna.exclude_keywords, homeAntenna.case_sensitive, homeAntenna.with_file, homeAntenna.notify, homeAntenna.created_at);
+
+  const bobActorUrl = 'https://spica.test/users/bob';
+  const bobPost = {
+    id: 'post-home-1',
+    user_id: userB.id,
+    author_url: bobActorUrl,
+    author_name: 'Bob',
+    author_handle: '@bob@spica.test',
+    content: 'フォロー範囲のアンテナ確認用',
+    cw: '',
+    media_attachments: '[]',
+  };
+  const countHomeNotifs = async () =>
+    ((await db.prepare("SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND type = 'antenna' AND content LIKE '%フォロー中の人%'").get(userA.id)) as { c: number }).c;
+
+  // フォローしていない状態 → 通知されない
+  await checkAntennaMatchesAndNotify(bobPost);
+  if ((await countHomeNotifs()) !== 0) {
+    throw new Error('フォローしていないのに src=home のアンテナが通知しました');
+  }
+  console.log('✅ フォローしていない相手は通知しない');
+
+  // フォローした状態 → 通知される
+  await db.prepare(`
+    INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+    VALUES ('f-home-1', ?, ?, 'https://spica.test/inbox', 1, 'accepted', datetime('now'))
+  `).run('https://spica.test/users/alice', bobActorUrl);
+  await checkAntennaMatchesAndNotify(bobPost);
+  if ((await countHomeNotifs()) !== 1) {
+    throw new Error('フォローしている相手なのに src=home のアンテナが通知しませんでした');
+  }
+  console.log('✅ フォローしている相手は通知する');
+
+  // 自分の投稿では自分に通知しない（有効なフォロー関係があっても）
+  await checkAntennaMatchesAndNotify({ ...bobPost, id: 'post-home-2', user_id: userA.id, author_url: 'https://spica.test/users/alice' });
+  if ((await countHomeNotifs()) !== 1) {
+    throw new Error('自分の投稿で自分のアンテナが通知しました');
+  }
+  console.log('✅ 自分の投稿では通知しない\n');
+
+  // ==========================================
   // テスト 2: 📝 下書き保存・一覧・削除の検証
   // ==========================================
   console.log('--- 2. 📝 下書き機能の検証 ---');

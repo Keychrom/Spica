@@ -5,6 +5,7 @@ import { attemptDelivery } from './activitypub.js';
 import { maybeRunScheduledMaintenance } from './maintenanceService.js';
 import { runExclusively } from './redis.js';
 import { runWithConcurrency, runJobsOnce, getJobKinds } from './jobs.js';
+import { cleanupOldUserExports } from './exportService.js';
 import {
   listDueDeliveries,
   markDeliveryDelivered,
@@ -281,8 +282,20 @@ export function startJobWorker(intervalMs = 15000): void {
   const kinds = getJobKinds();
   if (kinds.length === 0) return;
   console.log(`[Jobs] ⏱️ ジョブワーカーを開始しました (interval: ${intervalMs}ms, 種類: ${kinds.join(', ')})`);
+  // エクスポートの置き場（`data/exports`）は 1 時間で掃除する。専用タイマーは増やさず、
+  // ジョブワーカーのついでに 10 分おきに確認する
+  let lastExportCleanup = 0;
   jobTimer = setInterval(() => {
     void (async () => {
+      try {
+        if (Date.now() - lastExportCleanup > 10 * 60 * 1000) {
+          lastExportCleanup = Date.now();
+          const removed = cleanupOldUserExports();
+          if (removed > 0) console.log(`[Jobs] 🧹 古いエクスポートを ${removed} 件削除しました`);
+        }
+      } catch {
+        // 掃除に失敗しても続ける
+      }
       for (const kind of getJobKinds()) {
         try {
           const result = await runJobsOnce(kind, { limit: 20, concurrency: 3 });

@@ -70,6 +70,12 @@ export interface AppConfig {
   deliveryConcurrency: number;
   /** タイムラインの読み取りキャッシュの TTL（秒。**既定 0 = 無効**。有効にすると可視性の変化が TTL ぶん遅れる） */
   timelineCacheTtlSec: number;
+  /** タグタイムラインが走査する直近の投稿数（既定 20000。0 で無制限） */
+  recentScanPosts: number;
+  /** メディアの公開 URL（CDN。未設定なら自ホストで配信） */
+  mediaPublicBaseUrl: string;
+  /** /metrics のトークン（未設定なら /metrics は 404） */
+  metricsToken: string;
   /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
@@ -240,6 +246,15 @@ const BACKUPS_KEEP = (() => {
 const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
 const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
 
+// CDN（例: Cloudflare）を前段に置くときのメディアの公開 URL。
+// 設定すると API の応答に含まれる自分のメディア（`/uploads/...`）をこの URL に置き換えます
+// （DB には相対のまま保存するので、後から CDN を替えられます）
+const MEDIA_PUBLIC_BASE_URL = (process.env.MEDIA_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+
+// `/metrics`（Prometheus 形式）を出すときのトークン。**未設定なら /metrics は 404**。
+// nginx の背後では接続元 IP で守れない（全部 127.0.0.1 になる）ので、トークンで守る。
+const METRICS_TOKEN = (process.env.METRICS_TOKEN || '').trim();
+
 // Redis（任意）。未設定ならインメモリ実装のまま＝単一プロセス前提で今までどおり動く
 const REDIS_URL = process.env.REDIS_URL?.trim() || '';
 const REDIS_PREFIX = process.env.REDIS_PREFIX?.trim() || 'spica';
@@ -256,6 +271,16 @@ const DELIVERY_CONCURRENCY = (() => {
 const TIMELINE_CACHE_TTL_SEC = (() => {
   const parsed = parseInt(process.env.TIMELINE_CACHE_TTL_SEC || '', 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+})();
+
+// タグタイムラインと検索の「LIKE 走査」が対象にする直近の投稿数。
+// `content LIKE '%語%'` は索引が使えず、全件走査だと 32 万投稿で 250〜300ms 超
+// （SQLite は同期 API なのでプロセス全体が止まる）。直近 N 件に限れば DB が育っても
+// コストが一定になる（実測: 2 万件で 17ms / 5 万件で 40ms / 10 万件で 139ms）。
+// 0 で無制限（従来の挙動）。広げるほど「古い投稿のタグ・語」も見つかるようになる。
+const RECENT_SCAN_POSTS = (() => {
+  const parsed = parseInt(process.env.RECENT_SCAN_POSTS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20000;
 })();
 
 export const config: AppConfig = {
@@ -285,6 +310,9 @@ export const config: AppConfig = {
   redisPrefix: REDIS_PREFIX,
   deliveryConcurrency: DELIVERY_CONCURRENCY,
   timelineCacheTtlSec: TIMELINE_CACHE_TTL_SEC,
+  recentScanPosts: RECENT_SCAN_POSTS,
+  mediaPublicBaseUrl: MEDIA_PUBLIC_BASE_URL,
+  metricsToken: METRICS_TOKEN,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
   ffmpegPath: FFMPEG_PATH,

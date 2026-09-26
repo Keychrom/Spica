@@ -6,6 +6,7 @@
  * 主なオプション:
  *   --url <url>         対象（複数指定するとラウンドロビン＝ロードバランサ相当）
  *   --token <token>     認証トークン（ホームタイムラインと投稿に使う）
+ *   --tokens <file>     複数ユーザーのトークン（1 行 1 つ）。ワーカーごとに別の利用者として振る舞う
  *   --duration <sec>    測定時間（既定 40。この前に 5 秒のウォームアップを入れる）
  *   --concurrency <n>   同時に投げる数（既定 20）
  *   --write <比率>      書き込み（ローカル限定の投稿）の割合（既定 0.1）
@@ -19,6 +20,7 @@
  * 出すもの: 秒あたりのリクエスト数、レイテンシの中央値・p95・p99、エラー率、エンドポイント別の内訳、
  * 記録したプロセスの CPU / RSS。**同じマシンで負荷を掛けている**ので、その分は割り引いて読むこと。
  */
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -26,6 +28,8 @@ import { execFileSync } from 'node:child_process';
 interface Options {
   urls: string[];
   token: string;
+  tokenFile?: string;
+  tokens: string[];
   durationSec: number;
   concurrency: number;
   writeRatio: number;
@@ -42,6 +46,7 @@ function parseArgs(argv: string[]): Options {
   const opts: Options = {
     urls,
     token: '',
+    tokens: [],
     durationSec: 40,
     concurrency: 20,
     writeRatio: 0.1,
@@ -57,6 +62,7 @@ function parseArgs(argv: string[]): Options {
     const next = () => argv[++i];
     if (a === '--url') urls.push(next());
     else if (a === '--token') opts.token = next();
+    else if (a === '--tokens') opts.tokenFile = next();
     else if (a === '--duration') opts.durationSec = Math.max(1, parseInt(next(), 10) || 40);
     else if (a === '--concurrency') opts.concurrency = Math.max(1, parseInt(next(), 10) || 20);
     else if (a === '--write') opts.writeRatio = Math.min(1, Math.max(0, parseFloat(next()) || 0));
@@ -71,6 +77,19 @@ function parseArgs(argv: string[]): Options {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+if (opts.tokenFile) {
+  // 1 行 1 トークン。ワーカーごとに別の利用者として振る舞わせる
+  opts.tokens = fs
+    .readFileSync(opts.tokenFile, 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (opts.tokens.length === 0) {
+    console.error('❌ --tokens のファイルが空です');
+    process.exit(2);
+  }
+  opts.token = opts.tokens[0];
+}
 if (opts.urls.length === 0) {
   console.error('❌ --url を 1 つ以上指定してください');
   process.exit(2);
@@ -136,11 +155,12 @@ function call(origin: string, path: string, init: { method?: string; body?: stri
 }
 
 /** 重み付きで次のリクエストを選ぶ */
-function pick(origin: string, random: number): { path: string; init: { method?: string; body?: string; token?: string } } {
-  const hasToken = Boolean(opts.token);
+function pick(origin: string, random: number, token?: string): { path: string; init: { method?: string; body?: string; token?: string } } {
+  const activeToken = token ?? opts.token;
+  const hasToken = Boolean(activeToken);
   if (random < opts.writeRatio && hasToken) {
     const body = JSON.stringify({ content: `負荷試験の投稿 ${Math.random().toString(36).slice(2, 10)}`, visibility: 'local' });
-    return { path: '/api/posts', init: { method: 'POST', body, token: opts.token } };
+    return { path: '/api/posts', init: { method: 'POST', body, token: activeToken } };
   }
   const read = (random - opts.writeRatio) / Math.max(1 - opts.writeRatio, 0.0001);
   // 読みの内訳を積み上げ式で決める。`--all-share 0` なら連合タイムラインを外した比較になる。
@@ -160,7 +180,7 @@ function pick(origin: string, random: number): { path: string; init: { method?: 
     accumulated += weight;
     if (read < accumulated) {
       const needsAuth = path.includes('/api/timeline');
-      return { path, init: needsAuth ? { token: opts.token } : {} };
+      return { path, init: needsAuth ? { token: activeToken } : {} };
     }
   }
   return { path: '/health', init: {} };
@@ -238,23 +258,25 @@ if (sseClients.length > 0) await sleep(1500); // 接続が登録されるのを�
 // ウォームアップ（1.5 秒）
 const warmUntil = Date.now() + 1500;
 let counter = 0;
-async function worker(deadline: number, warm: boolean, samples: Sample[] | null): Promise<void> {
+async function worker(deadline: number, warm: boolean, samples: Sample[] | null, workerIndex = 0): Promise<void> {
+  // 複数トークンを渡されたら、ワーカーごとに別の利用者として振る舞う（人数ぶんの偏りを見るため）
+  const token = opts.tokens.length > 0 ? opts.tokens[workerIndex % opts.tokens.length] : opts.token;
   while (Date.now() < deadline) {
     const origin = opts.urls[counter++ % opts.urls.length];
-    const { path, init } = pick(origin, Math.random());
+    const { path, init } = pick(origin, Math.random(), token);
     const sample = await call(origin, path, init);
     if (!warm && samples) samples.push(sample);
   }
 }
 
 sampleProcesses();
-await Promise.all(Array.from({ length: opts.concurrency }, () => worker(warmUntil, true, null)));
+await Promise.all(Array.from({ length: opts.concurrency }, (_, i) => worker(warmUntil, true, null, i)));
 
 const measureUntil = Date.now() + opts.durationSec * 1000;
 const startedAt = Date.now();
 const sampler = setInterval(sampleProcesses, 5000);
 const samples: Sample[] = [];
-await Promise.all(Array.from({ length: opts.concurrency }, () => worker(measureUntil, false, samples)));
+await Promise.all(Array.from({ length: opts.concurrency }, (_, i) => worker(measureUntil, false, samples, i)));
 clearInterval(sampler);
 sampleProcesses();
 

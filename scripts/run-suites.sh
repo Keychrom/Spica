@@ -6,11 +6,11 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 
 DEFAULT_SUITES=(
-  inbox-signature federation pagination followers-visibility reports
+  inbox-signature relay-and-timelines federation pagination followers-visibility reports
   filters-and-locked announcements differentiation import lists media-video
   search-operators discovery roles profile-fields mail-recovery password-auth
   dm-policy drive notification-prefs video-thumbnail search-policy ops-automation
-  secret-scan silence-featured image-proxy email-notify admin-audit
+  secret-scan silence-featured image-proxy email-notify admin-audit metrics backup-restore
   antennas-and-scheduler account-deletion export-and-rules fts-push
   theme-channels-webauthn db-maintenance pg-translate db-async redis stream-scope job-queue multiprocess
 )
