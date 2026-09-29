@@ -204,7 +204,8 @@ const ORIGIN = `${PROTOCOL}://${DOMAIN}`;
 const DB_PATH = process.env.DB_PATH || path.resolve(process.cwd(), 'data_astrabit.sqlite');
 
 // データベースの種類。既定は SQLite（追加ミドルウェア不要）。
-// 'postgres' を選ぶと DATABASE_URL に接続する（アプリ本体の対応は実験的。docs/POSTGRESQL.md）
+// 'postgres' を選ぶと DATABASE_URL に接続する。どちらも同じ非同期データ層で動く
+// （設計・移行手順・既知の違い＝検索の順位が近似になるなどは docs/POSTGRESQL.md）
 const rawDriver = (process.env.DB_DRIVER || 'sqlite').trim().toLowerCase();
 const DB_DRIVER: 'sqlite' | 'postgres' =
   rawDriver === 'postgres' || rawDriver === 'postgresql' || rawDriver === 'pg' ? 'postgres' : 'sqlite';

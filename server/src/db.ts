@@ -54,6 +54,10 @@ async function initPostgresSchema(): Promise<void> {
   // 大きいテーブルへの索引は、**スキーマを適用する前に** CONCURRENTLY で作る。
   // スキーマ側は `CREATE INDEX IF NOT EXISTS` なので、先に作っておけば素通りする
   // （逆順にすると、起動時に ACCESS EXCLUSIVE で読み書きが止まる）。
+  //
+  // ※ この処理は助言ロックの**外**で走る（スキーマ適用の前に置く必要があるため）。
+  //    同時起動で 2 プロセスが同じ索引を作ろうとすると片方が失敗するが、警告に留めて
+  //    起動は続ける（失敗して残った無効な索引は、次回の起動で落として作り直す）。
   await createIndexesConcurrently(await collectDeferredIndexesFromSchema());
 
   try {

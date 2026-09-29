@@ -299,13 +299,13 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | セッション固定 | 不要（接続が 1 本しかない） | `withSession()` の中は同じ接続、外は空いている接続に載る |
 | 結果の受け渡し | 参照（`Uint8Array`） | `pg` が行を組み立てて返す（`Buffer`） |
 
-### 検証済みの範囲（2026-09-22）
+### 検証済みの範囲（2026-09-22。その後のぶんは下の「テストスイートを PG で回す場合」）
 
-- **HTTP で完結するテストスイート**: `test-pagination` と `test-announcements` が全項目パス。
+- **HTTP で完結するテストスイート**: `test-pagination` と `test-announcements` が全項目パス（2026-09-30 時点では 29 スイートが緑）。
 - **手動の一巡**: 登録 → ログイン → 投稿 → タイムライン → 検索（日本語の部分一致）→ 通知 → 管理画面。
 - **ビルド成果物でも起動**: `npm run build` 後の `dist` で PG 起動を確認。
 - **実データ**: ライブノードの 187,072 行を移送した DB で起動し、タイムラインと検索が返ること。
-- **SQL 翻訳**: `npm run test:pg-translate`（17 項目、PG 不要）。
+- **SQL 翻訳**: `npm run test:pg-translate`（28 項目、PG 不要）。
 
 ### 制約（把握したうえで使う）
 
@@ -319,7 +319,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |
 | **短い検索語** | trigram 索引は 3 文字未満だと効きにくい | 1〜2 文字の検索は全走査になる。機能は同じで遅いだけ |
 | **バイナリ列** | SQLite は `Uint8Array`、PG は `Buffer` で返る | 現在のスキーマにバイナリ列は無い（鍵や画像は TEXT の base64）。増やすときは注意 |
-| **索引の追加** | スキーマは起動時にも適用されるので、新しい索引は起動時に作られる（`CREATE INDEX IF NOT EXISTS`） | 大きい DB では `CREATE INDEX` がテーブルをロックし、その間の書き込みが待ちます。**先に手で `CREATE INDEX CONCURRENTLY` を流しておけば、起動時は `IF NOT EXISTS` で素通りします**（例: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);`。`CONCURRENTLY` はトランザクション内では使えません） |
+| **索引の追加** | スキーマは起動時にも適用されるので、新しい索引は起動時に作られる（`CREATE INDEX IF NOT EXISTS`）。**5 万行を超えるテーブルの索引は、アプリが起動時に自動で `CREATE INDEX CONCURRENTLY` に切り替えます**（スキーマ適用の前に作るので、`IF NOT EXISTS` で素通りする） | しきい値未満のテーブルでは従来どおり `CREATE INDEX` がロックを取るので、**大きい DB へ手で索引を足すときは先に `CREATE INDEX CONCURRENTLY` を流しておくと安全**です（例: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);`。`CONCURRENTLY` はトランザクション内では使えません）。同時起動で 2 プロセスが同じ索引を作ろうとすると片方が警告を出しますが、起動は続き、次回の起動で無効な索引を落として作り直します |
 | **接続断** | 切れた接続は捨ててプールが張り直す（アプリは落ちない）。他の接続はそのまま使える | 実行中だったクエリはエラーになる（再実行はしない。書き込みの二重実行を避けるため）。`DATABASE_STATEMENT_TIMEOUT_MS` / `DATABASE_IDLE_TIMEOUT_MS` を起動パラメータで渡し、1 クエリとアイドル中のトランザクションに上限を掛けている |
 | **セッション** | 移送後にテーブルは引き継がれる | とはいえ移行時は再ログインを促すのが安全 |
 
