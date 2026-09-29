@@ -9,6 +9,7 @@ import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules } fr
 import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
 import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
 import { inboxGate } from './inboxGate.js';
+import { startSoakLog, getSoakStats } from './soakLog.js';
 import { authenticate } from './auth.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
@@ -100,6 +101,9 @@ if (runsWorkers) {
 }
 
 warnOnRoleMisconfiguration();
+
+// 連続稼働の記録（`SOAK_LOG_INTERVAL_MS` を設定したときだけ。数日動かしたときの増え方を見る）
+startSoakLog();
 
 const app = express();
 
@@ -231,6 +235,7 @@ const healthHandler = async (req: Request, res: Response) => {
         posts: stats.posts,
         deliveryQueue: queue,
         jobs,
+        soak: getSoakStats(),
         automation: stats.automation,
         backups: stats.backups,
       });

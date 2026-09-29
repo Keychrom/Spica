@@ -262,11 +262,11 @@ try {
   const runTwice = await Promise.all([
     runExclusively('hardening-exclusive', 30_000, async () => {
       ranCount++;
-      await sleep(100);
+      await sleep(400);
     }),
     runExclusively('hardening-exclusive', 30_000, async () => {
       ranCount++;
-      await sleep(100);
+      await sleep(400);
     }),
   ]);
   check('Redis 無しでも 1 回だけ実行される', ranCount, 1);
@@ -276,11 +276,11 @@ try {
   await Promise.all([
     withDbLock('hardening-with', 30_000, async () => {
       withLockRan++;
-      await sleep(50);
+      await sleep(400);
     }),
     withDbLock('hardening-with', 30_000, async () => {
       withLockRan++;
-      await sleep(50);
+      await sleep(400);
     }),
   ]);
   check('withDbLock も 1 回だけ', withLockRan, 1);
@@ -641,6 +641,35 @@ try {
     return webfingerHits;
   })(), 2);
   wfServer.close();
+
+  // ── 11. 連続稼働の記録（soak log）─────────────────────────────
+  console.log('\n── 11. 連続稼働の記録 ──────────');
+  await stopNode();
+  startNode({ SOAK_LOG_INTERVAL_MS: '1200' });
+  await waitForHttp();
+  await sleep(4200);
+
+  const soakLines = serverLog.split(/\r?\n/).filter((line) => line.includes('[Soak]'));
+  check('定期で 1 行ずつ記録される', soakLines.length >= 2, true);
+  check('RSS が入っている', /rss=\d+MB/.test(soakLines.at(-1) ?? ''), true);
+  check('DB と WAL が入っている', /db=[\d.]+MB wal=[\d.]+MB/.test(soakLines.at(-1) ?? ''), true);
+  check('キューと受信の状態が入っている', /jobs=\d+\/\d+\/\d+/.test(soakLines.at(-1) ?? '') && /inbox=\d+\/\d+\/\d+/.test(soakLines.at(-1) ?? ''), true);
+
+  // /health（認証あり）から直近のサンプルと増え方が見える
+  const soakDb = openDb();
+  const soakToken = `spica_sess_hardening_${Date.now()}`;
+  const soakNow = new Date().toISOString();
+  await soakDb
+    .prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(soakToken, 'hardening-user', soakNow, new Date(Date.now() + 3600_000).toISOString());
+  await soakDb.close();
+
+  const soakHealth = (await (
+    await fetch(`${BASE}/health`, { headers: { Authorization: `Bearer ${soakToken}` } })
+  ).json()) as any;
+  check('/health に記録が見える', soakHealth?.soak?.enabled, true);
+  check('/health にサンプルが入っている', Number(soakHealth?.soak?.count ?? 0) >= 2, true);
+  check('増え方（RSS の差）が出る', typeof soakHealth?.soak?.rssDeltaMb === 'number', true);
 } catch (err: any) {
   console.error('\n❌ 検査中にエラー:', err?.message || err);
   console.error(serverLog.slice(-2000));

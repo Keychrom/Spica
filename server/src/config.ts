@@ -102,6 +102,8 @@ export interface AppConfig {
   inboxQueueMax: number;
   /** Inbox を待たせる上限（ミリ秒） */
   inboxQueueWaitMs: number;
+  /** 連続稼働の記録の間隔（ミリ秒。0 で無効） */
+  soakLogIntervalMs: number;
   /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
@@ -366,6 +368,14 @@ const INBOX_QUEUE_WAIT_MS = (() => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5000;
 })();
 
+// 連続稼働の記録（soak log）の間隔（ミリ秒）。**既定 0 = 無効**。
+// 設定すると、その間隔で RSS・DB/WAL・キューの滞留を 1 行だけログに残す
+// （数時間〜数日動かしたときの増え方を見るため。`journalctl | grep '\[Soak\]'`）
+const SOAK_LOG_INTERVAL_MS = (() => {
+  const parsed = parseInt(process.env.SOAK_LOG_INTERVAL_MS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 1000 ? parsed : 0;
+})();
+
 // タイムラインの読み取りキャッシュ（秒）。**既定は 0 = 無効**。
 // 有効にすると「同じ画面を何度も開いたときの組み立て」を省けるが、ブロック・削除・フォローの
 // 反映が TTL ぶん遅れる（権限はキャッシュ時点のもので判定されるので、他人に漏れることはない）
@@ -440,6 +450,7 @@ export const config: AppConfig = {
   inboxConcurrency: INBOX_CONCURRENCY,
   inboxQueueMax: INBOX_QUEUE_MAX,
   inboxQueueWaitMs: INBOX_QUEUE_WAIT_MS,
+  soakLogIntervalMs: SOAK_LOG_INTERVAL_MS,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
   notificationRetentionDays: NOTIFICATION_RETENTION_DAYS,

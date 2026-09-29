@@ -85,6 +85,7 @@ Spica の設定は **2 か所**に分かれています。
 | `INBOX_CONCURRENCY` | `4` | 受信（Inbox）を同時に処理する数（1〜64）。受信の処理は DB の書き込み・アンテナの照合・配信まで**リクエストの中で**終わるので、ここを区切らないとリレーの burst で画面の応答まで遅くなります |
 | `INBOX_QUEUE_MAX` | `200` | 順番待ちに並べる数。超えたら `503`（`Retry-After: 30`）を返します。**送信側は指数バックオフで送り直す**ので取りこぼしにはなりません |
 | `INBOX_QUEUE_WAIT_MS` | `5000` | 順番待ちで待たせる上限（ミリ秒）。過ぎたら `503` |
+| `SOAK_LOG_INTERVAL_MS` | `0`（無効） | 連続稼働の記録の間隔（ミリ秒、1000 以上）。設定すると RSS・DB/WAL・キューの滞留を 1 行だけログに残します（数時間〜数日動かしたときの増え方を見るため）。`journalctl -u spica | grep '`[Soak]`'` で推移を追え、直近 288 件（5 分間隔なら 24 時間）は `/health`（認証あり）の `soak` でも見られます |
 | `TRUST_PROXY` | `loopback` | リバースプロキシの信頼範囲（Express の `trust proxy`）。`loopback` は 127.0.0.1 からの `X-Forwarded-For` だけを信頼します。前段が別ホストならそのアドレス（`192.0.2.10`）か段数（`1`）を指定。**`true` にすると誰の `X-Forwarded-For` も信じてしまい、レート制限の IP 判定を詐称できます** |
 | `ALLOW_PRIVATE_REMOTE_FETCH` | `PROTOCOL` が `https` なら `false`、それ以外は `true` | プライベート IP・内部ホスト名への remote actor 取得を許可するか（SSRF 対策） |
 
