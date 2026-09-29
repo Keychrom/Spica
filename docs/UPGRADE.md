@@ -6,7 +6,14 @@
 
 ## ⚠️ 更新前の推奨事項: データベースのバックアップ
 
-安全な運用のために、アップデート作業前に必ず SQLite データベースおよび環境設定ファイルのバックアップを作成してください。
+安全な運用のために、アップデート作業前に必ずデータベースと環境設定ファイルのバックアップを作成してください。
+
+**バックアップの取り方はデータベースによって違います**（どちらを使っているかは `.env` の `DB_DRIVER` で分かります）:
+
+| 構成 | 方法 |
+| :--- | :--- |
+| SQLite（既定・`DB_DRIVER` 未設定か `sqlite`） | 下の「方法 A（推奨）」= `npm run db:maintenance -- --apply`（`VACUUM INTO` で WAL の内容も含む 1 ファイル）。`sqlite3` を使わない 3 点セットのコピーは「方法 B」 |
+| PostgreSQL（`DB_DRIVER=postgres`） | `npm run db:pg:backup`（`pg_dump`）。SQLite 用の `db:maintenance` や 3 点セットは使いません |
 
 > [!IMPORTANT]
 > **稼働中の SQLite を `cp` するだけでは、直近の書き込みが失われることがあります。**
@@ -16,7 +23,7 @@
 > コピー側にはその書き込みが入っていませんでした）。
 > **下の「方法 A（推奨）」を使ってください。**
 
-### 方法 A: 付属のバックアップを使う（推奨・稼働中でも安全）
+### 方法 A: 付属のバックアップを使う（SQLite・推奨・稼働中でも安全）
 
 `db:maintenance` のバックアップは SQLite の `VACUUM INTO` を使い、**WAL の内容も含めた一貫性のある
 1 ファイル**を書き出します。ノードを止める必要はありません。
@@ -36,6 +43,12 @@ cp .env .env.bak_$(date +%Y%m%d_%H%M%S)
 ```
 
 `db:maintenance` を使いたくない場合は 3 点セットでコピーします（**本体・`-wal`・`-shm` の 3 つ**）。
+
+> [!NOTE]
+> **PostgreSQL で動かしている場合**（`DB_DRIVER=postgres`）は、この SQLite 用の 2 つの方法ではなく
+> `npm run db:pg:backup` を使ってください（内部で `pg_dump` を呼びます。接続情報は `.env` から読み、
+> 引数には出しません）。復元は `pg_restore` です。手順は
+> [POSTGRESQL.md](POSTGRESQL.md) と [SETUP_PostgreSQL_Redis.md](SETUP_PostgreSQL_Redis.md) にあります。
 
 ```bash
 cd /var/www/spica/server
@@ -164,7 +177,7 @@ diff -u .env .env.example
 | `ALLOW_PRIVATE_REMOTE_FETCH` | `https` 公開時は `false` | プライベート IP への remote actor 取得の可否（SSRF 対策） |
 | `PROCESS_ROLE` | `all` | `web`（HTTP だけ）/ `worker`（定期処理だけ・**ポートを掴まない**）に役割を分ける。**Redis と PostgreSQL の併用を推奨** |
 | `TRUST_PROXY` | `loopback` | リバースプロキシの信頼範囲。既定は 127.0.0.1 からの `X-Forwarded-For` だけ |
-| `FEDERATION_TIMEOUT_MS` | `15000` | 連合の外向き取得（配送・Actor・WebFinger・メディア）の打ち切り時間 |
+| `FEDERATION_TIMEOUT_MS` | `15000` | 連合の外向き取得（配送の POST・Actor・WebFinger）の打ち切り時間（リンクプレビューは 5 秒・画像プロキシは 20 秒を別に使う） |
 | `SSE_MAX_CLIENTS` / `SSE_MAX_BUFFER_BYTES` | `1000` / `2MB` | リアルタイム接続の上限と、遅い接続を切る閾値 |
 | `INBOX_CONCURRENCY` / `INBOX_QUEUE_MAX` / `INBOX_QUEUE_WAIT_MS` | `4` / `200` / `5000` | 受信を同時に処理する数・順番待ちの上限・待たせる時間（溢れたぶんは 503 → 送信側が再送。`0` は待たずに即 503） |
 | `NOTIFICATION_RETENTION_DAYS` | `90` | 読み終わった通知を残す日数（未読は消えない） |

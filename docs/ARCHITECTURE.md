@@ -266,4 +266,4 @@ npx tsx scripts/test-redis.ts           # 個別に走らせる場合（一部�
   Redis の役割は [REDIS.md](REDIS.md)、設定は [CONFIGURATION.md](CONFIGURATION.md) にあります。
 - ここに書いた構成は**すべて任意**です。`PROCESS_ROLE` も `REDIS_URL` も `DB_DRIVER` も設定しなければ、
   今までどおり「1 プロセス・追加ミドルウェアなし」で動きます。
-- 実装が変われば更新します（最終更新: 2026-09-29）。
+- 実装が変われば更新します（最終更新: 2026-09-30。受信ルートの例外処理（`asyncHandler` と `check:routes`）、助言ロックの接続固定、Redis ロックの延長の持ち主確認、`INBOX_QUEUE_WAIT_MS=0` の扱い、アンケート更新の連合の集約を反映）。

@@ -15,7 +15,7 @@
 > | SQL 翻訳の単体検証 | ✅ 実装済み | `npm run test:pg-translate`（PG 不要） |
 > | 非同期データ層（案A） | ✅ 完了（610 箇所） | `npm run test:db-async` / 状態は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
-> | 既存テストスイートの PG 対応 | ✅ 主要どころ | 16 スイートが PG でも全項目緑（下記に個別の状態） |
+> | 既存テストスイートの PG 対応 | ✅ 主要どころ | 29 スイートが PG でも全項目緑（下記に個別の状態） |
 > | データ層の非同期化（案A） | ✅ 完了（同期ファサード・worker は削除済み） | 経緯は下の「歩んだ道」 |
 
 ---
@@ -338,7 +338,7 @@ DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
 **いま PG でも緑になるスイート（29 本。`scripts/run-suites-pg.sh` の一覧が正）**: `pg-port`（27 項目）/ `pg-backup`（20）/
-`pg-translate`（28）/ `db-async`（46）/ `admin-audit` / `email-notify` / `image-proxy` /
+`pg-translate`（28）/ `db-async`（60。SQLite ぶんと PG ぶんの合計）/ `admin-audit` / `email-notify` / `image-proxy` /
 `ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
 `antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
 `theme-channels-webauthn` / `password-auth` / `federation` / `search-policy`
@@ -365,17 +365,26 @@ SQLite 側の全スイート（47 本）は `bash scripts/run-suites.sh` でま�
 
 ### CI（GitHub Actions）
 
-`.github/workflows/test.yml` が push / pull request のたびに 3 つの job を回します。
+同じ 3 つの job を回すワークフロー（`.github/workflows/test.yml`）は **`ci-workflow` ブランチにあります**。
+`main` には置いていません（このアカウントのトークンに `workflow` スコープが無く、ワークフローの
+追加・更新を含む push が拒否されるためです）。手元で同じことをするなら次を順に実行します:
+
+```bash
+npm run check:secrets && npm run check:await && npm run check:routes
+npx tsc -p server/tsconfig.json --noEmit && npx tsc -p client/tsconfig.json --noEmit
+bash scripts/run-suites.sh                        # SQLite（Redis 7 があれば共有の検査も回る）
+TEST_DATABASE_URL=... bash scripts/run-suites-pg.sh   # PostgreSQL
+```
 
 | job | 内容 |
 | :--- | :--- |
 | 静的チェック | `check:secrets`（秘密の混入）/ `check:await`（await の付け忘れ）/ `check:routes`（ルートの例外処理）/ サーバーとクライアントの型チェック |
-| SQLite のスイート | `bash scripts/run-suites.sh`（47 本。CI では Redis 7 も立てて共有の検査まで回す） |
+| SQLite のスイート | `bash scripts/run-suites.sh`（47 本。Redis 7 を立てると共有の検査まで回る） |
 | PostgreSQL のスイート | `postgres:18` サービス + 専用ロール（`CREATEDB` 付き）+ `pg_trgm` を用意して `bash scripts/run-suites-pg.sh`（29 本） |
 
 実行環境は **Node 24**（`node:sqlite` が flag 無しで使えるのが v22.13 / v23.4 以降のため。
 v20 では動きません）。`TEST_DATABASE_URL` は環境変数でも渡せるようにしてあり、
-CI のように `.env` が無い場所でもスイートが回ります。
+`.env` が無い場所（CI など）でもスイートが回ります。
 
 ---
 

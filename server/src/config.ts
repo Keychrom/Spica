@@ -235,8 +235,9 @@ const INBOX_FORWARDED_POLICY: InboxForwardedPolicy =
 // 署名の Date ヘッダー許容幅（秒）。既定 12 時間（Mastodon と同値）
 const SIGNATURE_MAX_AGE_SECONDS = Math.max(0, parseInt(process.env.SIGNATURE_MAX_AGE_SECONDS || '43200', 10) || 0);
 
-// 連合の外向き取得（配送・Actor・WebFinger・リンクプレビュー・画像プロキシ）の打ち切り時間（ミリ秒）。
+// 連合の外向き取得（配送の POST・Actor・WebFinger）の既定の打ち切り時間（ミリ秒）。
 // 相手が黒穴（接続はするが応答しない）のとき、これが無いとソケットとリクエストを掴んだまま戻らない。
+// ※ リンクプレビュー（5 秒）と画像プロキシ（20 秒）は、用途ごとの上限を safeFetch に渡す
 const FEDERATION_TIMEOUT_MS = (() => {
   const parsed = parseInt(process.env.FEDERATION_TIMEOUT_MS || '', 10);
   return Number.isFinite(parsed) && parsed >= 1000 ? Math.min(parsed, 120_000) : 15_000;
