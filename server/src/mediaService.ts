@@ -107,7 +107,8 @@ export async function linkMediaToPost(userId: string, postId: string, attachment
   const update = await db.prepare('UPDATE media SET post_id = ? WHERE user_id = ? AND url = ?');
   for (const url of urls) {
     try {
-      update.run(postId, userId, url);
+      // await する（PostgreSQL では待たないと、投稿の応答より後に書き込まれ得る）
+      await update.run(postId, userId, url);
     } catch (err: any) {
       console.warn('[Drive] メディアの紐づけに失敗しました:', err?.message || err);
     }

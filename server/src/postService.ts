@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db, UserRow, PostRow, createNotification, AntennaRow } from './db.js';
+import { withTransaction } from './db/asyncDriver.js';
 import { config } from './config.js';
 import { broadcastNote } from './streaming.js';
 import {
@@ -159,17 +160,23 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
       expiresAt = new Date(Date.now() + poll.expires_in * 1000).toISOString();
     }
 
-    await db.prepare(`
-      INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(pollId, postId, multiple, expiresAt, now);
+    // アンケート本体と選択肢は**同じトランザクション**で入れる。
+    // 別々に入れると、選択肢が入り切る前に投票が届き得る（PostgreSQL で実際に起きた:
+    // `forEach` のコールバックで await していなかったため、3 つめが入る前に
+    // 投票が処理され「無効な選択肢」で 400 になった）。
+    await withTransaction(db, async () => {
+      await db.prepare(`
+        INSERT INTO polls (id, post_id, multiple, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(pollId, postId, multiple, expiresAt, now);
 
-    const insertChoice = await db.prepare(`
-      INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
-      VALUES (?, ?, ?, ?, 0)
-    `);
-    validChoices.forEach((choiceText: string, idx: number) => {
-      insertChoice.run(crypto.randomUUID(), pollId, idx, choiceText);
+      const insertChoice = await db.prepare(`
+        INSERT INTO poll_choices (id, poll_id, choice_index, text, votes_count)
+        VALUES (?, ?, ?, ?, 0)
+      `);
+      for (let idx = 0; idx < validChoices.length; idx++) {
+        await insertChoice.run(crypto.randomUUID(), pollId, idx, validChoices[idx]);
+      }
     });
 
     pollDataForAp = {
@@ -471,6 +478,39 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
  * **DB は引かない**（`src = 'home'` のフォロー確認は呼び出し側がまとめて行う）。
  * 投稿 1 件ごとにアンテナ数ぶんクエリを撃たないための分離なので、ここに問い合わせを足さないこと。
  */
+/**
+ * アンテナ判定のための下ごしらえを、**投稿 1 件・アンテナ 1 件につき 1 回**だけにする。
+ *
+ * 以前はアンテナごとに「本文＋CW を連結して小文字化」と「キーワード文字列の分割」を
+ * やり直していた（アンテナ 1000 件・本文 5KB で 18ms/投稿。リレーから 600 投稿/秒が
+ * 流れてくる状況では、それだけで 10 秒分になる）。
+ * 派生した値なので、元が同じなら使い回して構わない。
+ */
+const postTextCache = new WeakMap<object, { raw: string; lower: string }>();
+const keywordListCache = new Map<string, string[]>();
+
+function postTexts(post: any): { raw: string; lower: string } {
+  const cached = postTextCache.get(post);
+  if (cached) return cached;
+  const raw = `${post.content || ''} ${post.cw || ''}`;
+  const value = { raw, lower: raw.toLowerCase() };
+  postTextCache.set(post, value);
+  return value;
+}
+
+/** キーワード文字列を分割する（同じ文字列なら覚えておく） */
+function splitKeywords(raw: string): string[] {
+  const cached = keywordListCache.get(raw);
+  if (cached) return cached;
+  const list = raw
+    .split(/[,、\n\s]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+  if (keywordListCache.size >= 5000) keywordListCache.clear();
+  keywordListCache.set(raw, list);
+  return list;
+}
+
 export function isPostMatchingAntenna(post: any, ant: AntennaRow): boolean {
   // 1. ファイル添付フィルタ
   if (ant.with_file === 1) {
@@ -491,16 +531,13 @@ export function isPostMatchingAntenna(post: any, ant: AntennaRow): boolean {
     if (!matched) return false;
   }
 
-  // 3. テキストの準備（本文 ＋ CW）
-  const rawText = `${post.content || ''} ${post.cw || ''}`;
-  const textToSearch = ant.case_sensitive === 1 ? rawText : rawText.toLowerCase();
+  // 3. テキストの準備（本文 ＋ CW。投稿ごとに 1 回だけ作る）
+  const { raw: rawText, lower: lowerText } = postTexts(post);
+  const textToSearch = ant.case_sensitive === 1 ? rawText : lowerText;
 
   // 4. 除外キーワード判定（1つでも含まれていれば不一致）
   if (ant.exclude_keywords && ant.exclude_keywords.trim().length > 0) {
-    const excludeList = ant.exclude_keywords
-      .split(/[,、\n\s]+/)
-      .map((k) => k.trim())
-      .filter(Boolean);
+    const excludeList = splitKeywords(ant.exclude_keywords);
 
     for (const ex of excludeList) {
       const targetEx = ant.case_sensitive === 1 ? ex : ex.toLowerCase();
@@ -512,10 +549,7 @@ export function isPostMatchingAntenna(post: any, ant: AntennaRow): boolean {
 
   // 5. 含有キーワード判定（ORマッチ: いずれか1つでも含まれれば一致）
   if (ant.keywords && ant.keywords.trim().length > 0) {
-    const keywordList = ant.keywords
-      .split(/[,、\n\s]+/)
-      .map((k) => k.trim())
-      .filter(Boolean);
+    const keywordList = splitKeywords(ant.keywords);
 
     if (keywordList.length === 0) return true; // キーワード指定なしは全件一致
 

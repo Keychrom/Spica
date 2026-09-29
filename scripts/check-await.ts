@@ -102,3 +102,55 @@ if (real.length === 0) {
   console.log(`⚠️  await が無い呼び出しが ${real.length} 箇所あります（誤検出も含むので目視で確認）:`);
   for (const p of problems) console.log(`   ${p}`);
 }
+
+// ---------------------------------------------------------------------------
+// 文（プリペアドステートメント）の await 忘れ
+//
+// `export async function` の呼び出しと違い、**文のメソッド**（`.run()` など）は
+// 上の検出に引っかからない。SQLite では同期なので気づかないが、PostgreSQL では
+// 待たないと「応答を返した後に書き込まれる」＝競合になる。
+// 実際にアンケート作成（poll_choices）でこれが起きて、投票が「無効な選択肢」で
+// 400 になった（2026-09-29）。`db.prepare(` 由来の変数だけを対象にする。
+// ---------------------------------------------------------------------------
+const statementProblems: string[] = [];
+
+for (const file of allFiles) {
+  const rel = path.relative(ROOT_DIR, file).replace(/\\/g, '/');
+  // 対象は本体（server/src）だけ。検査スクリプトは SQLite でしか動かさないので対象外
+  // （SQLite では文がその場で実行されるため、待たなくても検査は通る）。
+  // ドライバ自身は `runNow(() => statement.run(...))` のように実行を包むので対象外。
+  if (!rel.startsWith('server/src/')) continue;
+  if (rel === 'server/src/db/asyncDriver.ts') continue;
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+
+  // `const x = await db.prepare(...)` / `const x = db.prepare(...)` の x を集める
+  const statementVars = new Set<string>();
+  for (const line of lines) {
+    const m = /(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:await\s+)?[A-Za-z_$][A-Za-z0-9_$.]*\.prepare\s*\(/.exec(line);
+    if (m) statementVars.add(m[1]);
+  }
+  if (statementVars.size === 0) continue;
+
+  lines.forEach((line, i) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+    for (const name of statementVars) {
+      const call = new RegExp(`(?<![A-Za-z0-9_$.])${name}\\.(run|get|all|exec)\\s*\\(`);
+      if (!call.test(line)) continue;
+      if (new RegExp(`(await|return|void|yield)\\s+${name}\\.(run|get|all|exec)\\s*\\(`).test(trimmed)) continue;
+      if (new RegExp(`(const|let|var)\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*=\\s*(await\\s+)?${name}\\.`).test(line)) continue;
+      if (ACCEPTABLE_CONTEXTS.some((re) => re.test(line))) continue;
+      statementProblems.push(`${rel}:${i + 1}: ${trimmed}`);
+      break;
+    }
+  });
+}
+
+if (statementProblems.length === 0) {
+  console.log('✅ 文（prepare した変数）の await 忘れもありません');
+} else {
+  console.log(`⚠️  文の await 忘れが ${statementProblems.length} 箇所あります（PostgreSQL では競合になります）:`);
+  for (const p of statementProblems) console.log(`   ${p}`);
+}
+
+process.exit(statementProblems.length === 0 ? 0 : 1);

@@ -9168,6 +9168,23 @@ export default function App() {
           >
             <RefreshCw className={`w-4 h-4 ${isLoadingTimeline ? 'animate-spin' : ''}`} />
           </button>
+          {authUser && (
+            // モバイルでも通知センターへ行けるようにする（PC 側と同じ未読バッジ）
+            <button
+              onClick={() => navigateToView('notifications')}
+              className={`relative p-1.5 rounded-xl transition ${
+                currentView === 'notifications' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="通知センター"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadNotificationsCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center px-1 text-[9px] font-black rounded-full bg-rose-500 text-white shadow min-w-[15px]">
+                  {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </header>
 

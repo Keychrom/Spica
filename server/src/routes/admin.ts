@@ -1471,7 +1471,8 @@ adminRouter.post('/users/:id/roles', asyncHandler(async (req: Request, res: Resp
     for (const roleId of roleIds) {
       const exists = await db.prepare('SELECT id FROM roles WHERE id = ?').get(roleId);
       if (!exists) continue;
-      insert.run(targetUserId, roleId, now);
+      // await する（PostgreSQL では待たないと、付与が終わる前に応答してしまう）
+      await insert.run(targetUserId, roleId, now);
       applied++;
     }
     console.log(`[Role] 🎭 @${targetUserId} に ${applied} 件のロールを付与 by @${req.user!.id}`);

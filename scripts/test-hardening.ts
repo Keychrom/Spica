@@ -542,6 +542,32 @@ try {
   // アンケート本体の ID は投稿 ID とは別（polls.post_id で引く）
   const pollRow = (await voteDb.prepare('SELECT id FROM polls WHERE post_id = ?').get(pollPost.id)) as { id: string } | undefined;
   check('アンケートが保存されている', Boolean(pollRow?.id), true);
+
+  // 投稿の応答が返った時点で、選択肢が**すべて**入っていること。
+  // ここが欠けると、直後に届いた投票が「無効な選択肢」で 400 になる
+  // （2026-09-29 に PostgreSQL で実際に起きた: 選択肢の INSERT を forEach で await していなかった）。
+  // 1 件だけだと競合が起きにくいので、**同時に 3 件**作って確かめる（プールを取り合う状況を作る）
+  const concurrentPolls: { postId: string }[] = [];
+  for (let i = 0; i < 3; i++) concurrentPolls.push({ postId: '' });
+  await Promise.all(
+    concurrentPolls.map(async (entry, i) => {
+      const res = await fetch(`${BASE}/api/posts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ content: `同時作成のアンケート ${i}`, poll: { choices: ['A', 'B', 'C'], multiple: true } }),
+      });
+      entry.postId = ((await res.json()) as any)?.id ?? '';
+    }),
+  );
+  for (const entry of concurrentPolls) {
+    const row = (await voteDb.prepare('SELECT id FROM polls WHERE post_id = ?').get(entry.postId)) as { id: string } | undefined;
+    const rows = row
+      ? ((await voteDb
+          .prepare('SELECT choice_index FROM poll_choices WHERE poll_id = ? ORDER BY choice_index')
+          .all(row.id)) as { choice_index: number }[])
+      : [];
+    check(`同時作成でも応答時点で選択肢が揃っている（${entry.postId.slice(-8)}）`, rows.map((r) => r.choice_index), [0, 1, 2]);
+  }
   const votes = (await voteDb
     .prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? ORDER BY choice_index')
     .all(pollRow?.id)) as { choice_index: number }[];

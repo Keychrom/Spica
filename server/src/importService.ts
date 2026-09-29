@@ -191,7 +191,8 @@ export async function importNotes(user: UserRow, notes: NormalizedNote[]): Promi
         ? new Date().toISOString()
         : new Date(note.publishedAt).toISOString();
 
-      insert.run(
+      // await する（PostgreSQL では待たないと、取り込みの集計と実際の行数がずれる）
+      await insert.run(
         postId,
         user.id,
         user.name,
