@@ -152,7 +152,7 @@ usersRouter.get('/:username/collections/featured', asyncHandler(async (req: Requ
 }));
 
 // Note (投稿) エンドポイント - Misskey / Mastodon からの個別ノート解決用
-usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response, next: NextFunction) => {
+usersRouter.get('/:username/posts/:postId', asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   // ブラウザからの HTML 要求は、同じ URL を共有リンクとして使えるよう OGP 付きの画面へ委ねる
   // （Mastodon などと同じく、同じ URL が Accept によって HTML にも ActivityPub JSON にもなる）
   const accept = String(req.headers.accept || '');
@@ -190,10 +190,10 @@ usersRouter.get('/:username/posts/:postId', async (req: Request, res: Response, 
 
   res.setHeader('Content-Type', `${ACTIVITY_CONTENT_TYPE}; charset=utf-8`);
   res.json(note);
-});
+}));
 
 // Create Activity エンドポイント
-usersRouter.get('/:username/posts/:postId/activity', async (req: Request, res: Response) => {
+usersRouter.get('/:username/posts/:postId/activity', asyncHandler(async (req: Request, res: Response) => {
   const { username, postId } = req.params;
   const canonicalPostId = `${config.origin}/users/${username}/posts/${postId}`;
 
@@ -228,4 +228,4 @@ usersRouter.get('/:username/posts/:postId/activity', async (req: Request, res: R
 
   res.setHeader('Content-Type', `${ACTIVITY_CONTENT_TYPE}; charset=utf-8`);
   res.json(createActivity);
-});
+}));

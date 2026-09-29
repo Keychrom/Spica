@@ -759,6 +759,8 @@ export default app;
 // 🛑 グレースフルシャットダウン
 //   SIGTERM / SIGINT で新規接続を止め、SSE を閉じ、WAL をチェックポイントして終了する
 //   （POSIX 環境でのみシグナルが配送される。Windows は強制終了だが WAL なので壊れない）
+//   未処理の Promise 拒否 / 未捕捉の例外も同じ後始末をしてから非ゼロで終わる
+//   （Node の既定は即終了で、ロック解放もチェックポイントも走らない）
 // ==========================================
 registerGracefulShutdown(
   server ? { server } : { server: { close: () => { /* worker は HTTP を持たない */ } } },

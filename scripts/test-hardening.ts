@@ -10,8 +10,11 @@
  *   3. 予約投稿の「公開中」フラグは 1 プロセスしか立てられない（+ 落ちたぶんを戻す）
  *   4. 外向き fetch は 1 ホップずつ検証し、タイムアウトで必ず打ち切る
  *   5. SSE は上限で断り、溢れた接続を抱え込まない
- *   6. フォロワーへの配送は sharedInbox に集約し、同時実行数を絞る
+ *   6. フォロワーへの配送は sharedInbox に集約し、同時実行数を絞る（アンケート更新も同じ形）
  *   7. アンケート投票のトランザクション（上の 1 の実利用箇所）が二重集計しない
+ *   8. 受信の受け入れ制御（待ち時間 0 は待たずに 503 / 溢れた数が見える）
+ *   9. レート制限の鍵（利用者ごと・未認証は IP ごと）
+ *  10. WebFinger の TTL キャッシュ / 11. 連続稼働の記録
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
@@ -514,6 +517,18 @@ try {
   const waited = await gate2.acquire();
   check('待ち時間を過ぎたら溢れさせる', waited, null);
   check('溢れたことが記録される', gate2.stats().shed, 1);
+
+  // waitMs = 0 は「待たない」（並べてもタイマーが無く永久に返らないリクエストが生まれる）
+  const gate3 = createInboxGate({ max: 1, queueMax: 5, waitMs: 0 });
+  const held3 = await gate3.acquire();
+  const shedStartedAt = Date.now();
+  const shedImmediately = await gate3.acquire();
+  check('waitMs=0 は待たずに即溢れさせる', shedImmediately, null);
+  check('実際に待っていない（50ms 未満で返る）', Date.now() - shedStartedAt < 50, true);
+  check('順番待ちには並ばない', gate3.stats().waiting, 0);
+  check('溢れたことが記録される', gate3.stats().shed, 1);
+  held3?.();
+
   held?.();
   slotB?.();
   third?.();
@@ -522,6 +537,8 @@ try {
 
   // ── 8. アンケート投票のトランザクション ─────────────────────
   console.log('\n── 8. アンケート投票（トランザクションの実利用）──────────');
+  // まず投稿自体の Create 配送を待つ（投票の Update 配送だけを数えたいので基準を取る）
+  const pollCreateBase = remote.total;
   const pollRes = await fetch(`${BASE}/api/posts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionToken}` },
@@ -529,14 +546,36 @@ try {
   });
   const pollPost = (await pollRes.json()) as any;
   check('アンケート付きで投稿できる', Boolean(pollPost?.id), true);
+  check('アンケート投稿の配送が終わる（基準を取る）', await sleepUntil(() => remote.total >= pollCreateBase + 7, 30000), true);
 
   // 2 択に同時に投票する（トランザクションの中で 2 行入る）
+  // 同時実行数の測定は、前の配送（Create）が**完全に片付いてから**始める
+  // （数え始めた瞬間に前の便が残っていると、2 + 2 で 4 に見えてしまう）
+  check('前の配送が片付くまで待つ', await sleepUntil(() => remote.inFlight === 0, 5000), true);
+  const beforeVote = remote.total;
+  const byPathBeforeVote = new Map(remote.byPath);
+  remote.maxInFlight = 0; // 投票の Update 配送だけの同時実行数を測る
   const voteRes = await fetch(`${BASE}/api/posts/${encodeURIComponent(pollPost.id)}/poll/vote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionToken}` },
     body: JSON.stringify({ choices: [0, 2] }),
   });
   check('投票できる', voteRes.status, 200);
+
+  // アンケート更新の連合も配送と同じ形か（sharedInbox 集約 + 同時実行の上限）。
+  // ここで待ち切る: この後の「同時作成のアンケート」も配送を出すので、
+  // 先に数えないと混ざる（最初はその重なりで数え間違えた）。
+  const pollUpdateArrived = await sleepUntil(() => remote.total >= beforeVote + 7, 30000);
+  const deltaPath = (p: string): number => (remote.byPath.get(p) ?? 0) - (byPathBeforeVote.get(p) ?? 0);
+  check('アンケート更新が全員ぶん届く（同じサーバーは 1 本に集約）', pollUpdateArrived && remote.total - beforeVote, 7);
+  check('同じサーバーの 6 人へ共有 inbox に 1 回だけ', deltaPath('/inbox'), 1);
+  check('個人 inbox には送らない', remote.personal, 0);
+  check(
+    '別々のサーバーは 1 本ずつ',
+    [0, 1, 2, 3, 4, 5].map((i) => deltaPath(`/shared-${i}/inbox`)),
+    [1, 1, 1, 1, 1, 1],
+  );
+  check('同時実行数は設定した 2 以下', remote.maxInFlight <= 2, true);
 
   const voteDb = openDb();
   // アンケート本体の ID は投稿 ID とは別（polls.post_id で引く）

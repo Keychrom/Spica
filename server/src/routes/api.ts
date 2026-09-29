@@ -1368,7 +1368,7 @@ apiRouter.post(
   '/media/upload',
   requireAuth,
   mediaUploadMiddleware,
-  async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     const user = req.rawUser!;
     const files = (req.files as Express.Multer.File[]) || (req.file ? [req.file] : []);
     const result = await saveUploadedMediaFiles(user.id, files);
@@ -1380,7 +1380,7 @@ apiRouter.post(
       media: result.mediaRows,
       attachment: result.mediaRows[0], // 1ファイルアップロード時の互換性
     });
-  }
+  })
 );
 
 // ==========================================
@@ -4416,7 +4416,7 @@ apiRouter.get('/reports/mine', requireAuth, asyncHandler(async (req: Request, re
 }));
 
 // 端末の PushSubscription 登録
-apiRouter.post('/push/subscribe', requireAuth, async (req: Request, res: Response) => {
+apiRouter.post('/push/subscribe', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const { subscription } = req.body;
   if (!subscription || !subscription.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
     return res.status(400).json({ error: '無効な PushSubscription 形式です。' });
@@ -4441,22 +4441,22 @@ apiRouter.post('/push/subscribe', requireAuth, async (req: Request, res: Respons
     console.error('[WebPush Error] Subscribe failed:', err);
     res.status(500).json({ error: 'プッシュ通知の購読登録に失敗しました。' });
   }
-});
+}));
 
 // 端末の PushSubscription 解除
-apiRouter.post('/push/unsubscribe', requireAuth, async (req: Request, res: Response) => {
+apiRouter.post('/push/unsubscribe', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const { endpoint } = req.body;
   if (endpoint && typeof endpoint === 'string') {
     await removePushSubscription(endpoint);
   }
   res.json({ success: true, message: 'Web Push 通知の登録を解除しました。' });
-});
+}));
 
 // プッシュ通知登録状況の確認
-apiRouter.get('/push/status', requireAuth, async (req: Request, res: Response) => {
+apiRouter.get('/push/status', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const isSubscribed = await isUserSubscribed(req.user!.id);
   res.json({ isSubscribed });
-});
+}));
 
 // テスト用プッシュ通知送信
 apiRouter.post('/push/test', requireAuth, async (req: Request, res: Response) => {

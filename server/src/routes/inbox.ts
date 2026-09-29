@@ -13,6 +13,7 @@ import {
   federatePollUpdate,
 } from '../activitypub.js';
 import { verifyInboxSignature } from '../inboxAuth.js';
+import { asyncHandler } from '../asyncHandler.js';
 import { inboxGate } from '../inboxGate.js';
 import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolicy.js';
 import { isPublicPost } from '../postVisibility.js';
@@ -1190,14 +1191,22 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 }
 
 // ユーザー専用 Inbox: POST /users/:username/inbox
-inboxRouter.post('/users/:username/inbox', async (req: Request, res: Response) => {
-  await handleActivity(req, res, req.params.username as string);
-});
+// asyncHandler で包む: handleActivity の手前（署名検証・ゲート待ち）で例外が出ても
+// 未処理の Promise 拒否にならず Express のエラーハンドラへ流れる（プロセスを落とさない）
+inboxRouter.post(
+  '/users/:username/inbox',
+  asyncHandler(async (req: Request, res: Response) => {
+    await handleActivity(req, res, req.params.username as string);
+  }),
+);
 
 // 共有 Inbox: POST /inbox (Misskey, Mastodon, リレーサーバーからの受信用)
-inboxRouter.post('/inbox', async (req: Request, res: Response) => {
-  await handleActivity(req, res);
-});
+inboxRouter.post(
+  '/inbox',
+  asyncHandler(async (req: Request, res: Response) => {
+    await handleActivity(req, res);
+  }),
+);
 
 /**
  * Note オブジェクトから attachment (画像など) を抽出

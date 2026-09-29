@@ -9,6 +9,7 @@
  *   3. all    … 未設定のときは今までどおり 1 プロセスで両方やる（既定の回帰確認）
  *   4. PostgreSQL（同じ DB を共有）のときだけ、web 1 + worker 2 を**同時に**動かし、
  *      積まれた仕事がちょうど 1 回だけ実行されることを確かめる
+ *   5. スキーマ適用の助言ロックが「同じ接続」で取って解放される（PostgreSQL のみ）
  *
  * SQLite のときは同じファイルを同時に開かない（web を止めてから worker を起動する）。
  * 1 ファイルを複数プロセスで共有するのは SQLite の想定外の使い方なので、無理に試さない。
@@ -256,6 +257,13 @@ try {
     // ここが競合すると鍵が 2 つになる（片方で署名した Activity が相手に通らなくなる）
     const racePortA = BASE_PORT + 3;
     const racePortB = BASE_PORT + 4;
+    // 起動前の助言ロックは 0 件のはず（ここを基準に、起動後に残っていないかを見る）
+    const advisoryBefore = await withDb('pg', async (handle) => {
+      const row = (await handle
+        .prepare("SELECT COUNT(*) AS c FROM pg_locks WHERE locktype = 'advisory'")
+        .get()) as { c: number };
+      return Number(row.c);
+    });
     const raceA = spawnNode(nodeEnv({ role: 'web', port: racePortA, dbName: 'pg' }));
     const raceB = spawnNode(nodeEnv({ role: 'web', port: racePortB, dbName: 'pg' }));
     await Promise.all([waitForHttp(racePortA), waitForHttp(racePortB)]);
@@ -269,6 +277,15 @@ try {
         typeof actorA.publicKey?.publicKeyPem === 'string',
       true,
     );
+    // スキーマ適用の助言ロックが解放されていること（接続を固定していないと、
+    // 取得した接続が持ちっぱなしになり、pg_locks に残ったまま次を待たせる）
+    const advisoryAfter = await withDb('pg', async (handle) => {
+      const row = (await handle
+        .prepare("SELECT COUNT(*) AS c FROM pg_locks WHERE locktype = 'advisory'")
+        .get()) as { c: number };
+      return Number(row.c);
+    });
+    check('起動後も助言ロックは残っていない（解放は効いている）', advisoryAfter, advisoryBefore);
     await stopNode(raceA);
     await stopNode(raceB);
   }
@@ -382,6 +399,68 @@ try {
     await stopNode(web2);
     await stopNode(workerA);
     await stopNode(workerB);
+  }
+
+  // ── 5. 助言ロックは「同じ接続」で取って解放する（PostgreSQL のみ）──
+  // スキーマ適用の排他は pg_try_advisory_lock / pg_advisory_unlock で行うが、
+  // これは**接続に紐づく**。プールが別の接続を渡すと、取得した接続が持ったままになり
+  // （解放は false を返して効かない）、次のプロセスが pg_advisory_lock で永久に待つ。
+  //
+  // ※ 0（同時起動）の検査では**捕まえられない**ことを確認済み（プールが暇だと同じ接続が
+  //    使い回されるので、固定していなくても素通りする）。ここで固定の意味（接続が複数あること）と、
+  //    withSession の中で取得・解放が閉じることを直接確かめる。
+  console.log('\n── 5. 助言ロックの接続固定（PostgreSQL のみ）──────────');
+  if (!USE_PG) {
+    skip('助言ロックの接続固定', 'PostgreSQL でのみ意味がある検査（SQLite に助言ロックは無い）');
+  } else {
+    const SCHEMA_LOCK_KEY = 8456231;
+    await withDb('pg', async (handle) => {
+      // まず「プールが本当に複数の接続を渡す」ことを示す（固定が必要な理由）
+      const pids = await Promise.all(
+        Array.from({ length: 5 }, async () => {
+          const row = (await handle.prepare('SELECT pg_backend_pid() AS pid').get()) as { pid: number };
+          await sleep(120); // 同時に借りさせる（1 本ずつなら同じ接続が使い回される）
+          return Number(row.pid);
+        }),
+      );
+      check('プールは複数の接続を渡す（だから固定が要る）', new Set(pids).size > 1, true);
+
+      // withSession の中では、取得も解放も同じ接続で行われる
+      const result = await handle.withSession(async () => {
+        const before = (await handle.prepare('SELECT pg_backend_pid() AS pid').get()) as { pid: number };
+        const acquired = (await handle.prepare('SELECT pg_try_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY)) as {
+          ok: boolean;
+        };
+        const during = (await handle.prepare('SELECT pg_backend_pid() AS pid').get()) as { pid: number };
+        const visible = (await handle.prepare("SELECT COUNT(*) AS c FROM pg_locks WHERE locktype = 'advisory'").get()) as {
+          c: number;
+        };
+        const released = (await handle.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY)) as {
+          ok: boolean;
+        };
+        const after = (await handle.prepare('SELECT pg_backend_pid() AS pid').get()) as { pid: number };
+        return {
+          before: Number(before.pid),
+          during: Number(during.pid),
+          after: Number(after.pid),
+          acquired,
+          released,
+          held: Number(visible.c),
+        };
+      });
+      check('セッション内は同じ接続を使う', [result.before, result.during, result.after].every((p) => p === result.before), true);
+      check('助言ロックを取れる', result.acquired.ok, true);
+      check('取っている間は pg_locks に見える', result.held >= 1, true);
+      check('同じ接続から解放できる', result.released.ok, true);
+
+      // 解放後は、別の接続からでも取れる（前の接続が持ちっぱなしになっていない）
+      const afterwards = await handle.withSession(async () => {
+        const again = (await handle.prepare('SELECT pg_try_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY)) as { ok: boolean };
+        await handle.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
+        return again.ok;
+      });
+      check('解放後は誰でも取れる（持ちっぱなしになっていない）', afterwards, true);
+    });
   }
 } catch (err: any) {
   console.error('\n❌ 検査中にエラー:', err?.message || err);

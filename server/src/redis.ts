@@ -60,6 +60,20 @@ end
 return 0
 `;
 
+/**
+ * 自分が取ったロックだけを延長する。
+ *
+ * 無条件の PEXPIRE だと、処理が TTL を超えて**別のプロセスがロックを取り直した後**に
+ * 延長が届き、他人のロックを延ばしてしまう（互いのロックが伸び続けて二重実行が続く）。
+ * 解放と同じく、持ち主を確認してから延ばす。
+ */
+const RENEW_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`;
+
 type CommandClient = RedisClientType;
 type SubscriberClient = RedisClientType;
 
@@ -342,9 +356,21 @@ export async function runExclusively(key: string, ttlMs: number, fn: () => Promi
   }
   if (!acquired) return false;
 
-  // 実行が長引いたときに TTL が切れて二重実行にならないよう、必要なら延長する
+  // 実行が長引いたときに TTL が切れて二重実行にならないよう、必要なら延長する。
+  // ただし**持ち主が自分のときだけ**延ばす（TTL 切れで他プロセスが取り直した後に
+  // 無条件で延ばすと、そのプロセスのロックを延命してしまう）。
+  let lostLock = false;
   const renew = setInterval(() => {
-    commandClient?.pExpire(lockKey, ttlMs).catch(() => {});
+    commandClient
+      ?.eval(RENEW_LOCK_SCRIPT, { keys: [lockKey], arguments: [token, String(ttlMs)] })
+      .then((result: unknown) => {
+        if (Number(result) === 0 && !lostLock) {
+          lostLock = true;
+          // 例外にはしない（処理はもう走っている）。事実を残して、次回以降の切り分けに使う
+          logError(`排他ロック「${key}」を失いました（TTL 切れ）。処理が重複している可能性があります`, new Error('lock lost'));
+        }
+      })
+      .catch(() => {});
   }, Math.max(Math.floor(ttlMs / 3), 1000));
   renew.unref?.();
 

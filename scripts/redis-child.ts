@@ -8,6 +8,7 @@
  *   npx tsx scripts/redis-child.ts rate <key> <windowMs> <max> <times>
  *   npx tsx scripts/redis-child.ts publish <channel> <payloadJson>
  *   npx tsx scripts/redis-child.ts lock <key> <ttlMs> <holdMs>
+ *   npx tsx scripts/redis-child.ts lock-tamper <key> [token] [ttlMs]
  *   npx tsx scripts/redis-child.ts set-setting <key> <value>
  *   npx tsx scripts/redis-child.ts connect
  *
@@ -69,6 +70,33 @@ try {
         await new Promise((resolve) => setTimeout(resolve, Number(holdMs)));
       });
       out({ ready: redis.isRedisReady(), acquired, ran });
+      break;
+    }
+
+    case 'lock-tamper': {
+      // ロックの鍵を**外から**読み（必要なら上書きし）て、値と残り TTL を返す。
+      // 親のロックは token を外に出さないので、これが唯一の観測手段。
+      const [key, token, ttlMs] = args;
+      await redis.initRedis();
+      const { createClient } = await import('redis');
+      // 再試行しない（繋がらないまま無限に待つと、検査が時間切れで終われなくなる）
+      const client = createClient({
+        url: process.env.REDIS_URL,
+        RESP: 2,
+        disableOfflineQueue: true,
+        socket: { connectTimeout: 3000, reconnectStrategy: () => false },
+      } as any);
+      client.on('error', () => {});
+      await client.connect();
+      const lockKey = redis.redisKey(`lock:${key}`);
+      try {
+        if (token) await client.set(lockKey, token, { PX: Number(ttlMs) });
+        const value = await client.get(lockKey);
+        const pttl = await client.pTTL(lockKey);
+        out({ value, pttl });
+      } finally {
+        await client.quit().catch(() => client.disconnect());
+      }
       break;
     }
 

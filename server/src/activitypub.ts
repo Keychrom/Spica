@@ -4,6 +4,7 @@ import { signHeaders } from './crypto.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
 import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 import { enqueueDelivery, nextRetryDelayMs } from './deliveryQueue.js';
+import { runWithConcurrency } from './jobs.js';
 import crypto from 'node:crypto';
 
 export const ACTIVITYSTREAMS_CONTEXT = [
@@ -1014,10 +1015,16 @@ export async function federatePollUpdate(params: {
     });
 
     // 配信先 Inbox の収集 (フォロワー + リレー + 投票者リモートサーバー)
+    // フォロワーは sharedInbox にまとめる（postService の配信と同じ形。まとめないと
+    // 同じサーバーのフォロワー数だけ署名付き POST と DNS 解決が走る）
     const authorUrl = `${config.origin}/users/${authorUser.id}`;
     const followerInboxes = (await db.prepare(`
-      SELECT DISTINCT inbox_url FROM follows
-      WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
+      SELECT DISTINCT COALESCE(ra.shared_inbox_url, f.inbox_url) AS inbox_url
+      FROM follows f
+      LEFT JOIN remote_actors ra ON ra.id = f.follower_url
+      WHERE f.following_url = ? AND f.status = 'accepted'
+        AND COALESCE(ra.shared_inbox_url, f.inbox_url) IS NOT NULL
+        AND COALESCE(ra.shared_inbox_url, f.inbox_url) != ''
     `).all(authorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
     // リレーは不特定多数へ再配信するため、公開投稿以外では使用しない
@@ -1040,17 +1047,16 @@ export async function federatePollUpdate(params: {
 
     console.log(`[Poll Federation] 📡 Broadcasting Update(Question) for post ${post.id} to ${allInboxes.length} inboxes...`);
 
-    // 非同期で配信
-    Promise.allSettled(
-      allInboxes.map((inboxUrl) =>
-        deliverActivity({
-          inboxUrl,
-          activity: updateActivity,
-          senderUser: authorUser,
-        })
-      )
+    // 非同期で配信。ただし**同時に開く本数は区切る**（無制限だと大量フォロワーで
+    // 一斉に接続を張り、ソケット・ファイル記述子・相手サーバーを圧迫する）
+    void runWithConcurrency(allInboxes, config.deliveryConcurrency, (inboxUrl) =>
+      deliverActivity({
+        inboxUrl,
+        activity: updateActivity,
+        senderUser: authorUser,
+      }).catch(() => false),
     ).then((results) => {
-      const succeeded = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+      const succeeded = results.filter((r) => r).length;
       console.log(`[Poll Federation] Sent update to ${succeeded}/${allInboxes.length} inboxes.`);
     }).catch((err) => {
       console.error('[Poll Federation Error] Broadcast failed:', err);

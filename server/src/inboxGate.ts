@@ -14,6 +14,9 @@ import { config } from './config.js';
  *   - 混んでいれば**少しだけ待たせる**（`waitMs` まで）
  *   - それでも空かなければ **503 を返す**
  *
+ * `waitMs = 0` は「待たない」の意味（列に並べると、空きが出るまで永久に返らない
+ * リクエストが生まれるため。0 のときは即 503）。
+ *
  * 503 は連合の送信側が指数バックオフで送り直すので、取りこぼしにはならない
  * （Mastodon / Misskey も混雑時は 503 を返す）。
  *
@@ -71,6 +74,11 @@ export function createInboxGate(options: InboxGateOptions): InboxGate {
         active++;
         return makeRelease();
       }
+      // waitMs = 0 は「待たない」。並べても起こす仕組みが無いので、そのまま 503 にする
+      if (waitMs <= 0) {
+        shed++;
+        return null;
+      }
       // 混んでいる: 順番待ちに並ぶ（いっぱいなら溢れさせる）
       if (waiting.length >= queueMax) {
         shed++;
@@ -83,15 +91,13 @@ export function createInboxGate(options: InboxGateOptions): InboxGate {
             resolve(release);
           },
         };
-        if (waitMs > 0) {
-          entry.timer = setTimeout(() => {
-            const index = waiting.indexOf(entry);
-            if (index >= 0) waiting.splice(index, 1);
-            shed++;
-            resolve(null);
-          }, waitMs);
-          entry.timer.unref?.();
-        }
+        entry.timer = setTimeout(() => {
+          const index = waiting.indexOf(entry);
+          if (index >= 0) waiting.splice(index, 1);
+          shed++;
+          resolve(null);
+        }, waitMs);
+        entry.timer.unref?.();
         waiting.push(entry);
       });
     },

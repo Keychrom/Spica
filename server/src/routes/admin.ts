@@ -232,7 +232,7 @@ adminRouter.post('/users/:id/freeze', asyncHandler(async (req: Request, res: Res
 }));
 
 // ユーザーアカウントの完全削除 (管理者モデレーション操作)
-adminRouter.delete('/users/:id', async (req: Request, res: Response) => {
+adminRouter.delete('/users/:id', asyncHandler(async (req: Request, res: Response) => {
   const targetId = req.params.id as string;
 
   if (targetId === req.user?.id) {
@@ -247,7 +247,7 @@ adminRouter.delete('/users/:id', async (req: Request, res: Response) => {
   }
 
   res.json({ success: true, userId: targetId, message: `ユーザー @${targetId} を完全に削除しました。` });
-});
+}));
 
 // 連携先インスタンス（リモートActor）一覧
 adminRouter.get('/federation', asyncHandler(async (req: Request, res: Response) => {
@@ -661,7 +661,7 @@ adminRouter.get('/storage', (req: Request, res: Response) => {
 });
 
 // ストレージ設定の保存
-adminRouter.post('/storage', async (req: Request, res: Response) => {
+adminRouter.post('/storage', asyncHandler(async (req: Request, res: Response) => {
   const { endpoint, bucket, accessKeyId, secretAccessKey, publicUrl, region } = req.body;
 
   const currentCfg = getStorageConfig();
@@ -684,10 +684,10 @@ adminRouter.post('/storage', async (req: Request, res: Response) => {
     message: 'メディアストレージ設定を保存しました。',
     configured: isS3Configured(updatedCfg),
   });
-});
+}));
 
 // ストレージ接続テスト
-adminRouter.post('/storage/test', async (req: Request, res: Response) => {
+adminRouter.post('/storage/test', asyncHandler(async (req: Request, res: Response) => {
   const { endpoint, bucket, accessKeyId, secretAccessKey, publicUrl, region } = req.body;
 
   const currentCfg = getStorageConfig();
@@ -707,7 +707,7 @@ adminRouter.post('/storage/test', async (req: Request, res: Response) => {
   } else {
     res.status(400).json({ success: false, error: result.error });
   }
-});
+}));
 
 // ==========================================
 // サーバー基本設定 (サーバー名・説明・アイコン)

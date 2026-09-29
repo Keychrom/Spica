@@ -96,7 +96,9 @@ SET status = 'running' WHERE id = ? AND status = 'pending' AND next_attempt_at <
 予約投稿の公開は条件付き UPDATE ではなく、**`runExclusively('scheduler', 60 秒)` のロック**で
 1 プロセスだけが実行します（実行が長引く間は TTL を延長します）。ロックの置き場所は 2 段構えです:
 
-- **Redis があれば** Redis のロック（`SET NX PX` + 延長 + 所有トークンで解放）
+- **Redis があれば** Redis のロック（`SET NX PX` + **持ち主を確認した**延長 + 所有トークンで解放）。
+  延長も解放も「自分のトークンのときだけ」効くので、TTL 切れで他プロセスが取り直した後に
+  前のプロセスが延ばしてしまうことはありません
 - **Redis が無い（または取得に失敗した）ときは DB のロック**（`app_locks` テーブル。TTL つき）。
   **プロセスをまたいで排他される**ので、Redis 無しでも二重公開はしません
   （TTL 方式なので、プロセスが TTL 以上止まると他が奪い得る点だけ Redis より弱い）
@@ -233,8 +235,10 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 
 | 検査 | 守っていること |
 | :--- | :--- |
-| `scripts/test-process-roles.ts` | `web` は定期処理を動かさない / `worker` はポートを開かない / 既定（`all`）は今までどおり / **2 ワーカーで同じ仕事を二重に実行しない** / 同時起動でもインスタンス鍵が 1 つ |
-| `scripts/test-hardening.ts` | **SQLite のトランザクションが他のリクエストを巻き込まない** / Redis 無しでもロックが効く / 予約投稿は 1 回だけ公開される / 外向き fetch は 1 ホップずつ検証して必ず打ち切る / SSE は上限で断る / **同じサーバーのフォロワーは 1 本に集約され、同時実行数は設定値以下** |
+| `scripts/test-process-roles.ts` | `web` は定期処理を動かさない / `worker` はポートを開かない / 既定（`all`）は今までどおり / **2 ワーカーで同じ仕事を二重に実行しない** / 同時起動でもインスタンス鍵が 1 つ / **助言ロックは同じ接続で取って解放する**（PostgreSQL） |
+| `scripts/test-hardening.ts` | **SQLite のトランザクションが他のリクエストを巻き込まない** / Redis 無しでもロックが効く / 予約投稿は 1 回だけ公開される / 外向き fetch は 1 ホップずつ検証して必ず打ち切る / SSE は上限で断る / **同じサーバーのフォロワーは 1 本に集約され、同時実行数は設定値以下**（アンケート更新も同じ形）/ 受信の受け入れ制御（**待ち時間 0 は待たずに 503**） |
+| `scripts/test-inbox-signature.ts` | 署名の強制（なりすまし・改ざん・古い Date・未知の actor を拒否）/ **壊れた入力でもプロセスが落ちない** |
+| `scripts/check-route-errors.ts`（`npm run check:routes`） | **ルートハンドラの未処理の Promise 拒否**（`try` の外の await を `asyncHandler` で包んでいるか。構文木で見る） |
 | `scripts/test-multiprocess.ts` | 2 プロセスでレート制限・SSE・設定が共有される / 予約投稿が二重に公開されない / 配送が二重に送られない |
 | `scripts/test-job-queue.ts` | 一覧→宣言の競合（バックオフ中の仕事を掴まない）/ 並列実行でも 1 件ずつ |
 | `scripts/test-redis.ts` / `test-stream-scope.ts` | ロック・Pub/Sub・配信先の絞り込み |

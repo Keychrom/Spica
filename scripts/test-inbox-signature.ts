@@ -537,6 +537,45 @@ async function run() {
       timeline4.some((p: any) => p.content?.includes('local actor echoed note'));
     check('折り返された投稿が保存されていない', echoedSaved, false);
 
+    // 9. 壊れた入力でもプロセスが落ちない
+    //    受信のルートは署名検証・ドメイン判定・ゲート待ちを await してから try に入る。
+    //    ここで例外が出ると未処理の Promise 拒否になり、**プロセスごと落ちて全停止**する
+    //    （2026-09-30 まで生の async ハンドラだった）。asyncHandler で包んだうえで、
+    //    変な入力を投げても応答が返り、ノードが生きていることを確かめる。
+    console.log('\n── 9. 壊れた入力でも落ちない ──────────');
+    const brokenCases: Array<[string, string, Record<string, string>]> = [
+      ['JSON として壊れた本文', '{ this is not json', { 'Content-Type': 'application/activity+json' }],
+      ['type が数値', JSON.stringify({ type: 123, actor: VICTIM_ACTOR }), { 'Content-Type': 'application/activity+json' }],
+      ['actor が配列', JSON.stringify({ type: 'Create', actor: [1, 2, 3] }), { 'Content-Type': 'application/activity+json' }],
+      ['actor が変な URL', JSON.stringify({ type: 'Create', actor: 'not-a-url' }), { 'Content-Type': 'application/activity+json' }],
+      [
+        '署名ヘッダーが壊れている',
+        JSON.stringify({ type: 'Create', actor: VICTIM_ACTOR }),
+        { 'Content-Type': 'application/activity+json', Signature: 'keyId="<<<",headers=?,signature=' },
+      ],
+      [
+        'Date が解釈できない',
+        JSON.stringify({ type: 'Create', actor: VICTIM_ACTOR }),
+        { 'Content-Type': 'application/activity+json', Signature: 'keyId="x",headers="(request-target) date",signature="zzz"', Date: 'not a date' },
+      ],
+    ];
+    let answered = 0;
+    for (const [label, body, headers] of brokenCases) {
+      try {
+        const res = await postInbox(body, headers);
+        if (res.status >= 400 && res.status < 600) answered++;
+        else console.log(`     （${label}: ${res.status}）`);
+      } catch (err: any) {
+        console.error(`     ❌ ${label}: 応答が返らなかった (${err?.message || err})`);
+      }
+    }
+    check('変な入力にも応答が返る（接続が切れない）', answered, brokenCases.length);
+
+    const healthAfter = await fetch(`${ORIGIN}/health`).catch(() => null);
+    check('ノードは生きている（/health が応答する）', healthAfter?.status, 200);
+    const stillHasTimeline = await fetch(`${ORIGIN}/api/timeline?mode=all`).catch(() => null);
+    check('受信以外の機能も動いている', stillHasTimeline?.status, 200);
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Inbox 署名強制テスト: すべて成功');

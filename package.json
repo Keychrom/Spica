@@ -45,6 +45,7 @@
     "test:hardening": "npx tsx scripts/test-hardening.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
     "check:await": "npx tsx scripts/check-await.ts",
+    "check:routes": "npx tsx scripts/check-route-errors.ts",
     "test:secret-scan": "npx tsx scripts/test-secret-scan.ts",
     "test:silence-featured": "npx tsx scripts/test-silence-featured.ts",
     "test:image-proxy": "npx tsx scripts/test-image-proxy.ts",

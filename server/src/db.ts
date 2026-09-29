@@ -60,20 +60,27 @@ async function initPostgresSchema(): Promise<void> {
     // **複数プロセスが同時に起動すると、DDL がぶつかってデッドロックすることがある**
     // （実際に 2 ノード同時起動で「デッドロックを検出しました」→ 片方が起動失敗した）。
     // 助言ロックで 1 プロセスずつ流す（待ってから適用するだけなので、起動が少し遅くなるだけ）。
+    //
+    // 助言ロックは**接続に紐づく**（pg_advisory_unlock は同じ接続から呼ばないと解放されず、
+    // プールが別の接続を渡すと取得と解放が食い違う）。区間全体を withSession で固定する。
     const SCHEMA_LOCK_KEY = 8456231;
-    const locked = (await db.prepare('SELECT pg_try_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY)) as { ok: boolean };
-    if (!locked?.ok) {
-      console.log('[DB] ⏳ 他のプロセスがスキーマを適用中です。終わるのを待ちます…');
-      await db.prepare('SELECT pg_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY);
-    }
-    try {
-      await db.exec(sql);
-      console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
-      // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
-      await recordMigration(`pg-schema:${migrationKey(sql)}`, 'schema');
-    } finally {
-      await db.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
-    }
+    await db.withSession(async () => {
+      const locked = (await db.prepare('SELECT pg_try_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY)) as {
+        ok: boolean;
+      };
+      if (!locked?.ok) {
+        console.log('[DB] ⏳ 他のプロセスがスキーマを適用中です。終わるのを待ちます…');
+        await db.prepare('SELECT pg_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY);
+      }
+      try {
+        await db.exec(sql);
+        console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+        // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
+        await recordMigration(`pg-schema:${migrationKey(sql)}`, 'schema');
+      } finally {
+        await db.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
+      }
+    });
   } catch (err: any) {
     throw new Error(`PostgreSQL スキーマの適用に失敗しました: ${err?.message || err}`);
   }

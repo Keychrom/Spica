@@ -337,7 +337,7 @@ npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-**いま PG でも緑になるスイート（20 本）**: `pg-port`（27 項目）/ `pg-backup`（20）/
+**いま PG でも緑になるスイート（29 本。`scripts/run-suites-pg.sh` の一覧が正）**: `pg-port`（27 項目）/ `pg-backup`（20）/
 `pg-translate`（28）/ `db-async`（46）/ `admin-audit` / `email-notify` / `image-proxy` /
 `ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
 `antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
@@ -347,12 +347,12 @@ DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 2 ノードを立てます。作る権限が無い場合は理由を出してスキップします
 （管理者が `ALTER ROLE <アプリのロール> CREATEDB;` を実行すると回ります）。
 
-SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でまとめて回せます。
+SQLite 側の全スイート（47 本）は `bash scripts/run-suites.sh` でまとめて回せます。
 `run-suites-pg.sh` は `TEST_DATABASE_URL` を環境変数からも読むので、`.env` が無い CI でも動きます。
 
 | スイート | PG での状態 |
 | :--- | :--- |
-| 上記 20 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
+| 上記 29 本 | ✅ 全項目通る（seed をアプリと同じドライバで行うように直した） |
 | `test-db-maintenance` | ❌ VACUUM / `VACUUM INTO` / `sqlite_master` の検査を含む **SQLite 専用**のスイート（PG の保全は `db:pg:backup` = `pg_dump`） |
 
 > [!NOTE]
@@ -369,9 +369,9 @@ SQLite 側の全スイート（36 本）は `bash scripts/run-suites.sh` でま�
 
 | job | 内容 |
 | :--- | :--- |
-| 静的チェック | `check:secrets`（秘密の混入）/ `check:await`（await の付け忘れ）/ サーバーとクライアントの型チェック |
-| SQLite のスイート | `bash scripts/run-suites.sh`（36 本） |
-| PostgreSQL のスイート | `postgres:18` サービス + 専用ロール（`CREATEDB` 付き）+ `pg_trgm` を用意して `bash scripts/run-suites-pg.sh`（19 本） |
+| 静的チェック | `check:secrets`（秘密の混入）/ `check:await`（await の付け忘れ）/ `check:routes`（ルートの例外処理）/ サーバーとクライアントの型チェック |
+| SQLite のスイート | `bash scripts/run-suites.sh`（47 本。CI では Redis 7 も立てて共有の検査まで回す） |
+| PostgreSQL のスイート | `postgres:18` サービス + 専用ロール（`CREATEDB` 付き）+ `pg_trgm` を用意して `bash scripts/run-suites-pg.sh`（29 本） |
 
 実行環境は **Node 24**（`node:sqlite` が flag 無しで使えるのが v22.13 / v23.4 以降のため。
 v20 では動きません）。`TEST_DATABASE_URL` は環境変数でも渡せるようにしてあり、

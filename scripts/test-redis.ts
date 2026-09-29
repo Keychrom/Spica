@@ -235,6 +235,30 @@ try {
     const childAfter = await child('lock', [holdKey, '10000', '0']);
     check('解放後は子が実行できる', [childAfter.acquired, childAfter.ran], [true, true]);
 
+    // ── 3c. TTL 延長は持ち主のときだけ ────────────────────────────
+    // 無条件の PEXPIRE だと、TTL 切れで他プロセスがロックを取り直した**後**に延長が届き、
+    // 他人のロックを延ばしてしまう（互いに延ばし合って二重実行が続く）。
+    console.log('\n── 3c. ロックの TTL 延長（持ち主の確認）──────────');
+    const renewKey = 'lock-renew';
+    const foreignToken = `foreign-${Date.now()}`;
+    let duringHold: { value: string | null; pttl: number } | null = null;
+    let afterSteal: { value: string | null; pttl: number } | null = null;
+
+    await redis.runExclusively(renewKey, 3000, async () => {
+      // (1) 生きているうちは延長される（ttl=3000 なので 1 秒ごとに延長が走る）
+      await sleep(2400);
+      duringHold = (await child('lock-tamper', [renewKey])) as { value: string | null; pttl: number };
+      // (2) 持ち主が変わった後は延ばさない（TTL 切れで他プロセスが取り直した状況を作る）
+      await child('lock-tamper', [renewKey, foreignToken, '30000']);
+      await sleep(1500); // 延長のタイミングを跨がせる
+      afterSteal = (await child('lock-tamper', [renewKey])) as { value: string | null; pttl: number };
+    });
+
+    check('延長されている（残り TTL が減りきっていない）', (duringHold?.pttl ?? -1) > 1500, true);
+    check('鍵は自分が持ったまま', Boolean(duringHold?.value) && duringHold?.value !== foreignToken, true);
+    check('持ち主が変わったら延長しない（他人の TTL を伸ばさない）', (afterSteal?.pttl ?? -1) > 10000, true);
+    check('持ち主の値も書き換えない', afterSteal?.value, foreignToken);
+
     // ── 4. Pub/Sub（他プロセスの配信を受け取る）──────────────────────
     console.log('\n── 4. Pub/Sub ──────────');
     const received: string[] = [];

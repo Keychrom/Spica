@@ -166,7 +166,7 @@ diff -u .env .env.example
 | `TRUST_PROXY` | `loopback` | リバースプロキシの信頼範囲。既定は 127.0.0.1 からの `X-Forwarded-For` だけ |
 | `FEDERATION_TIMEOUT_MS` | `15000` | 連合の外向き取得（配送・Actor・WebFinger・メディア）の打ち切り時間 |
 | `SSE_MAX_CLIENTS` / `SSE_MAX_BUFFER_BYTES` | `1000` / `2MB` | リアルタイム接続の上限と、遅い接続を切る閾値 |
-| `INBOX_CONCURRENCY` / `INBOX_QUEUE_MAX` | `4` / `200` | 受信を同時に処理する数と順番待ちの上限（溢れたぶんは 503 → 送信側が再送） |
+| `INBOX_CONCURRENCY` / `INBOX_QUEUE_MAX` / `INBOX_QUEUE_WAIT_MS` | `4` / `200` / `5000` | 受信を同時に処理する数・順番待ちの上限・待たせる時間（溢れたぶんは 503 → 送信側が再送。`0` は待たずに即 503） |
 | `NOTIFICATION_RETENTION_DAYS` | `90` | 読み終わった通知を残す日数（未読は消えない） |
 | `SOAK_LOG_INTERVAL_MS` | `0`（無効） | 設定すると RSS・WAL・キューの滞留を定期でログに残す（連続稼働の計測用） |
 
