@@ -75,9 +75,12 @@ function warnOnRoleMisconfiguration(): void {
   if (!config.redisUrl) {
     console.warn(`
 ⚠️  [PROCESS_ROLE=${config.processRole}] REDIS_URL が未設定です。
-    プロセスをまたぐ仕組み（レート制限・SSE・設定の反映・定期処理の多重実行防止）が
-    効かないため、同じ DB を複数のプロセスで使うと**予約投稿が二重に公開され得ます**。
-    役割を分けるときは Redis（REDIS_URL）と PostgreSQL（DB_DRIVER=postgres）を併用してください。
+    予約投稿の二重公開は DB のロック（app_locks）で防ぎますが、Redis と比べると次の点で劣ります:
+      - レート制限がプロセスごとに別々に数えられる（プロセス数ぶん緩くなる）
+      - リアルタイム更新（SSE）が、同じプロセスに繋いだ人にしか届かない
+      - 設定の変更が他のプロセスへ即座に伝わらない
+      - 定期処理のロックが TTL 方式になる（プロセスが TTL 以上止まると他が奪い得る）
+    役割を分けるときは Redis（REDIS_URL）と PostgreSQL（DB_DRIVER=postgres）の併用を推奨します。
 `);
   }
   if (config.dbDriver === 'sqlite') {

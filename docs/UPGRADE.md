@@ -154,7 +154,7 @@ diff -u .env .env.example
 > これまで検証せずに受理していた Activity が拒否される可能性があるため、更新後しばらくはサーバーログに `[Inbox Rejected]` が出ていないか確認してください。
 > 連合が停止した場合は、原因を切り分けるまでの暫定措置として `.env` に `INBOX_SIGNATURE_MODE=log` を設定して再起動してください（**署名検証が無効になるため、原因判明後は速やかに `strict` へ戻してください**）。
 
-主な追加項目:
+主な追加項目（すべて**設定しなければ従来どおり**動く任意のものです）:
 
 | 環境変数名 | デフォルト値 | 説明 |
 | :--- | :--- | :--- |
@@ -162,7 +162,17 @@ diff -u .env .env.example
 | `INBOX_FORWARDED_ACTIVITY_POLICY` | `relay` | 管理パネルで承認済みのリレーからの代理転送のみ許可 |
 | `SIGNATURE_MAX_AGE_SECONDS` | `43200` | 署名 `Date` ヘッダーの許容幅（秒）。リプレイ対策 |
 | `ALLOW_PRIVATE_REMOTE_FETCH` | `https` 公開時は `false` | プライベート IP への remote actor 取得の可否（SSRF 対策） |
+| `PROCESS_ROLE` | `all` | `web`（HTTP だけ）/ `worker`（定期処理だけ・**ポートを掴まない**）に役割を分ける。**Redis と PostgreSQL の併用を推奨** |
+| `TRUST_PROXY` | `loopback` | リバースプロキシの信頼範囲。既定は 127.0.0.1 からの `X-Forwarded-For` だけ |
+| `FEDERATION_TIMEOUT_MS` | `15000` | 連合の外向き取得（配送・Actor・WebFinger・メディア）の打ち切り時間 |
+| `SSE_MAX_CLIENTS` / `SSE_MAX_BUFFER_BYTES` | `1000` / `2MB` | リアルタイム接続の上限と、遅い接続を切る閾値 |
+| `INBOX_CONCURRENCY` / `INBOX_QUEUE_MAX` | `4` / `200` | 受信を同時に処理する数と順番待ちの上限（溢れたぶんは 503 → 送信側が再送） |
+| `NOTIFICATION_RETENTION_DAYS` | `90` | 読み終わった通知を残す日数（未読は消えない） |
+| `SOAK_LOG_INTERVAL_MS` | `0`（無効） | 設定すると RSS・WAL・キューの滞留を定期でログに残す（連続稼働の計測用） |
 
+> [!TIP]
+> **差分の確認は `diff -u .env .env.example` が確実です。** 上の表は主なものだけで、
+> すべてのキーと既定値は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) にあります。
 詳細は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) を参照してください。
 
 > [!NOTE]

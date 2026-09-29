@@ -40,9 +40,11 @@ PROCESS_ROLE=worker            node dist/index.js   # 定期処理だけ（HTTP 
 | 背景ジョブ（リンクプレビュー等。+ 10 分ごとに古いエクスポートを掃除） | 15 秒 | `JOB_INTERVAL_MS` |
 
 > [!IMPORTANT]
-> **`PROCESS_ROLE` を `all` 以外にするなら、Redis と PostgreSQL を併用してください。**
-> Redis が無いとプロセスをまたぐ仕組み（レート制限・SSE・設定の反映・予約投稿のロック）が効かず、
-> **予約投稿が二重に公開され得ます**。起動時に警告を出します（止めはしません）。
+> **`PROCESS_ROLE` を `all` 以外にするなら、Redis と PostgreSQL の併用を推奨します。**
+> **予約投稿の二重公開は Redis 無しでも起きません**（ロックは DB の `app_locks` にフォールバックし、
+> プロセスをまたいで 1 つだけが実行します）。Redis を入れる理由は**プロセス間で共有されない 3 つ**です:
+> レート制限（プロセスごとに数えてしまう）・リアルタイム更新（SSE）・設定の変更の反映。
+> 起動時にこの旨を警告として出します（止めはしません）。
 > SQLite のままだと書き込みが 1 本に直列化されるので、プロセスを増やしても書き込みは速くなりません。
 
 ---
@@ -89,11 +91,18 @@ SET status = 'running' WHERE id = ? AND status = 'pending' AND next_attempt_at <
 `attempts` が 1 のはずの行が 30 ミリ秒後に 2 になりました）。
 `scripts/test-job-queue.ts` がこの不変条件を検査しています。
 
-### 予約投稿は Redis のロックで 1 プロセスだけ
+### 予約投稿はロックで 1 プロセスだけ
 
 予約投稿の公開は条件付き UPDATE ではなく、**`runExclusively('scheduler', 60 秒)` のロック**で
-1 プロセスだけが実行します（実行が長引く間は TTL を延長します）。
-**Redis が無いときはロックがプロセス内だけになる**ので、`PROCESS_ROLE` を分けたら Redis も入れてください。
+1 プロセスだけが実行します（実行が長引く間は TTL を延長します）。ロックの置き場所は 2 段構えです:
+
+- **Redis があれば** Redis のロック（`SET NX PX` + 延長 + 所有トークンで解放）
+- **Redis が無い（または取得に失敗した）ときは DB のロック**（`app_locks` テーブル。TTL つき）。
+  **プロセスをまたいで排他される**ので、Redis 無しでも二重公開はしません
+  （TTL 方式なので、プロセスが TTL 以上止まると他が奪い得る点だけ Redis より弱い）
+
+行の側でも守っています: 公開の直前に `status = 'publishing'` へ条件付き UPDATE で「自分が公開する」と
+宣言し、公開中に落ちた行は定期処理が 10 分後に待機中へ戻して拾い直します。
 
 ### 起動時の競合（インスタンス鍵）
 
@@ -232,11 +241,18 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 | `scripts/test-backup-restore.ts` | SQLite / PostgreSQL のバックアップから復元して起動できる |
 
 ```bash
-bash scripts/run-suites.sh              # SQLite で全スイート
+bash scripts/run-suites.sh              # SQLite で全スイート（引数で名前を絞れる: run-suites.sh redis）
 bash scripts/run-suites-pg.sh           # PostgreSQL で（process-roles / hardening は同時運転まで回る）
 npx tsx scripts/test-process-roles.ts   # 役割の検査だけ
 npx tsx scripts/test-hardening.ts       # 堅牢性の検査だけ
+npx tsx scripts/test-redis.ts           # 個別に走らせる場合（一部のスイートには npm script もあります）
 ```
+
+> [!NOTE]
+> スイートは**すべて `bash scripts/run-suites.sh <名前>` で走ります**（ポート・環境変数・後片付けは
+> スクリプトが面倒を見ます）。個別に `npx tsx scripts/test-<名前>.ts` で叩くこともできますが、
+> その場合は自分でポートと `DB_PATH` を決めてください。`npm run test:<名前>` が用意されているのは
+> 一部のスイートだけです（`package.json` の `scripts` を参照）。
 
 ---
 
@@ -246,4 +262,4 @@ npx tsx scripts/test-hardening.ts       # 堅牢性の検査だけ
   Redis の役割は [REDIS.md](REDIS.md)、設定は [CONFIGURATION.md](CONFIGURATION.md) にあります。
 - ここに書いた構成は**すべて任意**です。`PROCESS_ROLE` も `REDIS_URL` も `DB_DRIVER` も設定しなければ、
   今までどおり「1 プロセス・追加ミドルウェアなし」で動きます。
-- 実装が変われば更新します（最終更新: 2026-09-25）。
+- 実装が変われば更新します（最終更新: 2026-09-29）。

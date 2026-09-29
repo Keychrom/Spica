@@ -44,7 +44,7 @@ Spica の設定は **2 か所**に分かれています。
 | `REDIS_URL` | （なし） | **空なら Redis を使わない**（今までどおりインメモリ＝1 プロセス前提）。設定すると、レート制限・リアルタイム更新・設定の反映・定期処理の単一実行が Redis 経由になり、複数プロセスで動かせる（パスワードを含むため公開リポジトリに置かない。手順は [REDIS.md](REDIS.md)） |
 | `REDIS_PREFIX` | `spica` | Redis のキー・チャンネルの接頭辞。同じ Redis を複数のノードで共有する場合に、ノードごとに変える |
 | `DELIVERY_CONCURRENCY` | `5` | 配送再送の同時実行数（1〜50）。配送はネットワーク待ちが主なので、並べると同じ時間で多く送れる。相手サーバーを過度に叩かない範囲で調整する |
-| `PROCESS_ROLE` | `all` | このプロセスの役割。`all` = HTTP も定期処理も 1 プロセス（既定・従来どおり）。`web` = HTTP だけ（読み取りを横に増やす）、`worker` = 定期処理だけ（**HTTP を開かない**）。`http` は `web`、`jobs` は `worker` として扱う。**`all` 以外にするときは `REDIS_URL` と PostgreSQL を併用**（Redis が無いと予約投稿が二重に公開され得る。起動時に警告を出します）。置き方は [ARCHITECTURE.md](ARCHITECTURE.md) |
+| `PROCESS_ROLE` | `all` | このプロセスの役割。`all` = HTTP も定期処理も 1 プロセス（既定・従来どおり）。`web` = HTTP だけ（読み取りを横に増やす）、`worker` = 定期処理だけ（**HTTP を開かない**）。`http` は `web`、`jobs` は `worker` として扱う。**`all` 以外にするときは `REDIS_URL` と PostgreSQL の併用を推奨**（予約投稿の二重公開は DB のロック（app_locks）で防ぎますが、レート制限・SSE・設定の反映がプロセス間で共有されなくなります。起動時に警告を出します）。置き方は [ARCHITECTURE.md](ARCHITECTURE.md) |
 | `SCHEDULER_INTERVAL_MS` | `10000` | 予約投稿（と 1 日 1 回の自動メンテナンス）の確認間隔。詰めるほど予定時刻に近く出るが、DB を叩く回数が増える |
 | `DELIVERY_INTERVAL_MS` | `60000` | 配送再送の確認間隔。短くすると再試行が早くなる（相手サーバーを叩く回数も増える） |
 | `JOB_INTERVAL_MS` | `15000` | 背景ジョブ（リンクプレビュー等）の確認間隔 |

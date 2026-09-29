@@ -184,6 +184,13 @@ done | tail -1
 
 DB と Redis が繋がっていることを確認できたら、プロセスを増やせます。
 
+> [!TIP]
+> **役割を分ける方法もあります。** `PROCESS_ROLE=web`（HTTP だけ）と `PROCESS_ROLE=worker`
+> （定期処理だけ・**ポートを掴まない**）に分けると、Web を増やしても定期処理は 1 枚で済み、
+> 重い定期処理がリクエストの応答を奪わなくなります。置き方・前提・何がプロセスの外にあるかは
+> [設計（プロセスと状態の置き場所） (ARCHITECTURE.md)](ARCHITECTURE.md) にまとめています。
+> 下の方法 1・2 は「同じ役割（`all`）を複数並べる」やり方です。
+
 ### 方法 1: PM2 の cluster モード（同じホストで増やす）
 
 ```bash
@@ -193,6 +200,28 @@ pm2 save
 ```
 
 PM2 が 1 つのポートで受け持つので、**nginx の設定はそのままで構いません**（`127.0.0.1:3000` のまま）。
+
+### 方法 3: 役割を分ける（Web だけ増やす / 定期処理を 1 枚にまとめる）
+
+1 台の中で役割を分ける例です（詳しくは [ARCHITECTURE.md](ARCHITECTURE.md)）。
+
+```ini
+# /etc/systemd/system/spica-web@.service … Web（%i をポートにする）
+[Service]
+EnvironmentFile=/var/www/spica/.env
+Environment=PROCESS_ROLE=web
+Environment=PORT=300%i
+ExecStart=/usr/bin/npm run start
+
+# /etc/systemd/system/spica-worker.service … 定期処理だけ（HTTP を開かない）
+[Service]
+EnvironmentFile=/var/www/spica/.env
+Environment=PROCESS_ROLE=worker
+ExecStart=/usr/bin/npm run start
+```
+
+`systemctl enable --now spica-web@0 spica-web@1 spica-worker` で、Web 2 枚 + worker 1 枚になります。
+worker はポートを掴まないので、nginx の upstream には Web だけを並べてください。
 
 ### 方法 2: systemd + nginx（ホストを分ける / 手動で並べる）
 
