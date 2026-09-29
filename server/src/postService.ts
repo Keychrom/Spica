@@ -12,6 +12,7 @@ import {
 import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibility.js';
 import { localPostId } from './ids.js';
 import { queueLinkPreviewFetch } from './linkPreview.js';
+import { invalidateTimelineCache } from './timelineCache.js';
 import { linkMediaToPost } from './mediaService.js';
 import { runWithConcurrency } from './jobs.js';
 
@@ -117,6 +118,10 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, in_reply_to, quote_id, is_sensitive, media_attachments, cw, published_at, channel_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(postId, user.id, user.name, actorUrl, authorHandle, authorIcon, postText, visibility, emojisJson, inReplyTo, quoteId, isSensitive ? 1 : 0, attachmentsJson, cwText, now, channelId);
+
+  // タイムラインの読み取りキャッシュを捨てる。これが無いと、投稿した直後に
+  // ホームを開いても最大 TTL ぶん古い並び（自分の投稿が無い）を見ることになる。
+  await invalidateTimelineCache();
 
   // 添付メディアをドライブの台帳へ紐づける（自分がアップロードしたメディアのみ）
   await linkMediaToPost(user.id, postId, parsedAttachments);

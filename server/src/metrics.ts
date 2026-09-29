@@ -94,7 +94,7 @@ export function formatPrometheus(extra: {
   role: string;
   sseClients: number;
   redis: { configured: boolean; ready: boolean };
-  timelineCache: { enabled: boolean; backend: string; entries: number; hits: number; misses: number };
+  timelineCache: { enabled: boolean; backend: string; entries: number; hits: number; misses: number; invalidations: number };
   deliveryQueue: { pending: number; delivering: number; failed: number };
   jobs: { pending: number; running: number; failed: number };
 }): string {
@@ -136,6 +136,8 @@ export function formatPrometheus(extra: {
   lines.push(`spica_timeline_cache_hits_total ${extra.timelineCache.hits}`);
   metric('spica_timeline_cache_misses_total', 'キャッシュに外れた回数', 'counter');
   lines.push(`spica_timeline_cache_misses_total ${extra.timelineCache.misses}`);
+  metric('spica_timeline_cache_invalidations_total', '書き込みで捨てた回数', 'counter');
+  lines.push(`spica_timeline_cache_invalidations_total ${extra.timelineCache.invalidations}`);
 
   metric('spica_delivery_queue_pending', '配送キューの待ち件数', 'gauge');
   lines.push(`spica_delivery_queue_pending ${extra.deliveryQueue.pending}`);

@@ -15,6 +15,7 @@
  *   8. 受信の受け入れ制御（待ち時間 0 は待たずに 503 / 溢れた数が見える）
  *   9. レート制限の鍵（利用者ごと・未認証は IP ごと）
  *  10. WebFinger の TTL キャッシュ / 11. 連続稼働の記録
+ *  12. タイムラインの読み取りキャッシュ（既定で有効・投稿したら捨てる・TTL 0 で無効）
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import http from 'node:http';
@@ -709,6 +710,61 @@ try {
   check('/health に記録が見える', soakHealth?.soak?.enabled, true);
   check('/health にサンプルが入っている', Number(soakHealth?.soak?.count ?? 0) >= 2, true);
   check('増え方（RSS の差）が出る', typeof soakHealth?.soak?.rssDeltaMb === 'number', true);
+
+  // ── 12. タイムラインの読み取りキャッシュ（既定で有効）────────────
+  // 1 リクエストで 12 本のクエリを撃つ組み立てを、同じ画面のあいだ使い回す。
+  // 「既定で有効」なので、**投稿したらすぐ見える**（無効化が効いている）ことも確かめる。
+  console.log('\n── 12. タイムラインの読み取りキャッシュ ──────────');
+  await stopNode();
+  startNode({ TIMELINE_CACHE_TTL_SEC: '15' });
+  await waitForHttp();
+
+  const cacheToken = `spica_sess_cache_${Date.now()}`;
+  const cacheDb = openDb();
+  await cacheDb.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(cacheToken, 'hardening-user', new Date().toISOString(), new Date(Date.now() + 3600_000).toISOString());
+  await cacheDb.close();
+
+  const readTimeline = async (mode = 'local'): Promise<{ status: number; header: string | null; ids: string[] }> => {
+    const res = await fetch(`${BASE}/api/timeline?mode=${mode}`);
+    const body = (await res.json()) as any[];
+    return { status: res.status, header: res.headers.get('x-timeline-cache'), ids: Array.isArray(body) ? body.map((p) => p.id) : [] };
+  };
+
+  const cacheFirst = await readTimeline();
+  check('1 回目は組み立てる（MISS）', cacheFirst.header, 'MISS');
+  const cacheSecond = await readTimeline();
+  check('2 回目は使い回す（HIT）', cacheSecond.header, 'HIT');
+  check('中身は同じ', cacheSecond.ids, cacheFirst.ids);
+
+  // 利用者が違えば別の鍵（他人の状態が混ざらない）
+  const cacheAuthed = await fetch(`${BASE}/api/timeline?mode=local`, { headers: { Authorization: `Bearer ${cacheToken}` } });
+  check('利用者が違えば別に組み立てる', cacheAuthed.headers.get('x-timeline-cache'), 'MISS');
+  await cacheAuthed.json();
+
+  // 投稿したら捨てる（キャッシュが残っていても新しい投稿が見える）
+  const cachePost = await fetch(`${BASE}/api/posts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cacheToken}` },
+    body: JSON.stringify({ content: `キャッシュの検査 ${Date.now()}`, visibility: 'public' }),
+  });
+  const cachePostBody = (await cachePost.json()) as any;
+  check('投稿できる', cachePost.status, 201);
+  const afterPost = await readTimeline();
+  check('投稿の直後は作り直す（無効化が効く）', afterPost.header, 'MISS');
+  check('新しい投稿が入っている', afterPost.ids.includes(cachePostBody.id), true);
+
+  const cacheHealth = (await (await fetch(`${BASE}/health`)).json()) as any;
+  check('/health にヒット数が出る', Number(cacheHealth?.timelineCache?.hits ?? 0) >= 1, true);
+  check('/health に無効化の回数が出る', Number(cacheHealth?.timelineCache?.invalidations ?? 0) >= 1, true);
+
+  // TTL 0 で無効にできる（以前の動きに戻せる）
+  await stopNode();
+  startNode({ TIMELINE_CACHE_TTL_SEC: '0' });
+  await waitForHttp();
+  const cacheOff = await readTimeline();
+  check('TTL 0 なら使い回さない（ヘッダーも付かない）', cacheOff.header, null);
+  check('TTL 0 なら backend も off', ((await (await fetch(`${BASE}/health`)).json()) as any)?.timelineCache?.backend, 'off');
 } catch (err: any) {
   console.error('\n❌ 検査中にエラー:', err?.message || err);
   console.error(serverLog.slice(-2000));

@@ -60,7 +60,7 @@ import {
   isStreamAtCapacity,
 } from '../streaming.js';
 import { parseStreams } from '../streamRouting.js';
-import { cacheGet, cacheSet, isTimelineCacheEnabled } from '../timelineCache.js';
+import { cacheGet, cacheSet, isTimelineCacheEnabled, invalidateTimelineCache } from '../timelineCache.js';
 import {
   buildNote,
   buildCreateActivity,
@@ -1480,6 +1480,8 @@ export const handleDeletePost = asyncHandler(async (req: Request, res: Response)
   await db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
   await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
   await db.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
+  // 読み取りキャッシュにも消えたことを反映させる
+  await invalidateTimelineCache();
   try {
     await db.prepare('DELETE FROM polls WHERE post_id = ?').run(postId);
   } catch {}
@@ -1787,6 +1789,7 @@ export const handleAnnouncePost = asyncHandler(async (req: Request, res: Respons
   if (existing) {
     // 解除
     await db.prepare('DELETE FROM announces WHERE id = ?').run(existing.id);
+    await invalidateTimelineCache();
     announced = false;
 
     // Undo(Announce) 配信
@@ -1822,6 +1825,7 @@ export const handleAnnouncePost = asyncHandler(async (req: Request, res: Respons
         user_handle = excluded.user_handle,
         user_icon = excluded.user_icon
     `).run(announceId, postId, actorUrl, user.name, `@${user.id}@${config.domain}`, user.icon_url || '', now);
+    await invalidateTimelineCache();
     announced = true;
 
     // ローカル投稿の場合、投稿者にリノート通知を送信
@@ -2025,6 +2029,8 @@ export const handleFollow = asyncHandler(async (req: Request, res: Response) => 
         ON CONFLICT(follower_url, following_url) DO UPDATE SET
           status = 'accepted'
       `).run(followId, myActorUrl, targetActorUrl, `${targetActorUrl}/inbox`, now);
+      // 新しいフォロー相手の投稿が、キャッシュ済みのホームにも出るようにする
+      await invalidateTimelineCache();
 
       try {
         await createNotification({
@@ -2068,6 +2074,8 @@ export const handleFollow = asyncHandler(async (req: Request, res: Response) => 
         status = 'pending',
         inbox_url = excluded.inbox_url
     `).run(followId, myActorUrl, targetActorUrl, remoteActor.inbox_url, now);
+    // 承認後に相手の投稿が出るので、いまのうちに捨てておく（承認は別のプロセスで起き得る）
+    await invalidateTimelineCache();
 
     // 相手の Inbox へ署名付き Follow Activity を配送
     const delivered = await deliverActivity({
@@ -2123,6 +2131,7 @@ export const handleUnfollow = asyncHandler(async (req: Request, res: Response) =
 
     // follows テーブルから削除
     await db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(myActorUrl, targetActorUrl);
+    await invalidateTimelineCache();
 
     // リモートユーザーなら Undo(Follow) を配送
     if (!targetActorUrl.startsWith(config.origin) && followRow.inbox_url) {
@@ -3239,6 +3248,8 @@ apiRouter.post('/users/:identifier/block', requireAuth, asyncHandler(async (req:
       WHERE (follower_url = ? AND following_url = ?)
          OR (follower_url = ? AND following_url = ?)
     `).run(myActorUrl, targetActorUrl, targetActorUrl, myActorUrl);
+    // フォローが外れたので、キャッシュ済みのホームから相手の投稿が消えるようにする
+    await invalidateTimelineCache();
 
     // リモートユーザーの場合、ActivityPub Block Activity を配送
     if (isRemote && remoteActorInbox) {
@@ -3300,6 +3311,7 @@ apiRouter.post('/users/:identifier/unblock', requireAuth, asyncHandler(async (re
     }
 
     await db.prepare('DELETE FROM user_blocks WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+    await invalidateTimelineCache();
 
     // リモートユーザーの場合、Undo(Block) を配送
     if (isRemote && remoteActorInbox) {
@@ -3401,6 +3413,7 @@ apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req
     }
 
     await db.prepare('DELETE FROM user_mutes WHERE user_id = ? AND target_user_id = ?').run(user.id, targetUserId);
+    await invalidateTimelineCache();
 
     res.json({ success: true, is_muted: false });
   } catch (err: any) {
@@ -3708,6 +3721,8 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
     INSERT INTO muted_words (id, user_id, keyword, case_sensitive, whole_word, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(id, user.id, value, caseSensitive ? 1 : 0, wholeWord ? 1 : 0, new Date().toISOString());
+  // ミュートワードは自分の画面の絞り込みなので、設定した瞬間に効かせる
+  await invalidateTimelineCache();
 
   console.log(`[WordFilter] 🔇 @${user.id} が「${value}」をミュートワードに追加しました`);
   res.status(201).json({ success: true, id, keyword: value });
@@ -3716,6 +3731,7 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
 apiRouter.delete('/muted-words/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const result = await db.prepare('DELETE FROM muted_words WHERE id = ? AND user_id = ?').run(String(req.params.id), user.id);
+  await invalidateTimelineCache();
   if (result.changes === 0) {
     return res.status(404).json({ error: 'キーワードが見つかりません。' });
   }

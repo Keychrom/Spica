@@ -21,6 +21,7 @@ import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
+import { invalidateTimelineCache } from '../timelineCache.js';
 import { fallbackActivityId } from '../ids.js';
 
 export const inboxRouter = Router();
@@ -238,6 +239,8 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
         }
 
         // 2. リレーサーバーのステータス自動更新 (ドメイン・URL柔軟照合)
+        //    承認されたフォローの投稿が、キャッシュ済みのホームにも出るように捨てておく
+        await invalidateTimelineCache();
         try {
           const parsedActorUrl = new URL(actorUrl);
           const actorHost = parsedActorUrl.host;
@@ -521,6 +524,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           noteFtsIndexed
         );
 
+        // 受信した投稿を、キャッシュ済みのタイムラインにも反映させる
+        await invalidateTimelineCache();
+
         // 📊 アンケート (Poll / Question: oneOf / anyOf) の抽出と保存
         let pollData: any = null;
         const rawChoices = note.oneOf || note.anyOf;
@@ -747,6 +753,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             publishedAt,
             relayFtsIndexed
           );
+          await invalidateTimelineCache();
 
           console.log(`[Inbox Relay Announce] 🚀 Saved relay note from ${authorHandle}: ${content.slice(0, 40)}...`);
         }
@@ -786,6 +793,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
               boosterActor.icon_url || '',
               activity.published || new Date().toISOString()
             );
+            await invalidateTimelineCache();
             console.log(`[Inbox Boost] 🔁 Recorded boost on ${boostedPostId} by @${boosterActor.username}@${boosterActor.domain}`);
 
             // 📡 リアルタイム SSE リノート更新（公開投稿のみ）

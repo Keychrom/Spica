@@ -3,6 +3,7 @@ import path from 'node:path';
 import { db, UserRow } from './db.js';
 import { config } from './config.js';
 import { broadcastDeletePost } from './streaming.js';
+import { invalidateTimelineCache } from './timelineCache.js';
 import { buildDeleteActorActivity, deliverActivity } from './activitypub.js';
 import { registerJobHandler, enqueueJob } from './jobs.js';
 import { deleteAllMediaForUser } from './mediaService.js';
@@ -139,6 +140,8 @@ export async function deleteUserAccount(userId: string): Promise<DeleteUserAccou
 
     // 投稿本体
     await db.prepare('DELETE FROM posts WHERE user_id = ?').run(cleanId);
+    // 消えた投稿・フォローを、キャッシュ済みのタイムラインにも反映させる
+    await invalidateTimelineCache();
 
     // ドライブ（アップロード済みメディア）を台帳とストレージから削除
     const deletedMedia = await deleteAllMediaForUser(cleanId);

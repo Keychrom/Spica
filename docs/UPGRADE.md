@@ -181,6 +181,7 @@ diff -u .env .env.example
 | `SSE_MAX_CLIENTS` / `SSE_MAX_BUFFER_BYTES` | `1000` / `2MB` | リアルタイム接続の上限と、遅い接続を切る閾値 |
 | `INBOX_CONCURRENCY` / `INBOX_QUEUE_MAX` / `INBOX_QUEUE_WAIT_MS` | `4` / `200` / `5000` | 受信を同時に処理する数・順番待ちの上限・待たせる時間（溢れたぶんは 503 → 送信側が再送。`0` は待たずに即 503） |
 | `NOTIFICATION_RETENTION_DAYS` | `90` | 読み終わった通知を残す日数（未読は消えない） |
+| `TIMELINE_CACHE_TTL_SEC` | `15` | タイムラインの読み取りキャッシュ（秒。`0` で無効）。**既定で有効になった**ので、リモートからの流入・リアクションの反映が最大この秒数だけ遅れ得ます（ローカルの投稿・削除・フォローは即時） |
 | `SOAK_LOG_INTERVAL_MS` | `0`（無効） | 設定すると RSS・WAL・キューの滞留を定期でログに残す（連続稼働の計測用） |
 
 > [!TIP]

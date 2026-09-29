@@ -311,7 +311,9 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 
 | 制約 | 内容 | 影響 |
 | :--- | :--- | :--- |
-| **接続が複数** | プール（既定 5 本）なので同時に複数のクエリが走る。SQLite は 1 クエリずつ | 順序に依存する処理はトランザクションに入れる。1 接続に依存する処理（一時テーブル）は `withSession()` で囲む。重いクエリを同時に 5 本流すと相手の DB を圧迫しうるので `DATABASE_POOL_MAX` で絞れる |
+| **接続が複数** | プール（既定 5 本）なので同時に複数のクエリが走る。SQLite は 1 クエリずつ | 順序に依存する処理はトランザクションに入れる。1 接続に依存する処理（一時テーブル・助言ロック）は `withSession()` で囲む。重いクエリを同時に 5 本流すと相手の DB を圧迫しうるので `DATABASE_POOL_MAX` で絞れる |
+| **接続数の数え方** | 1 プロセスが張るのは**最大 `DATABASE_POOL_MAX`（既定 5）本**。`PROCESS_ROLE` で分けたときは `web` の枚数 + `worker` 1 枚ぶんが同時に繋がる | 3 プロセス（web 2 + worker 1）なら最大 15 本。PostgreSQL の `max_connections`（既定 100）に対して余裕があるうちは、**プールの本数を明示して `max_connections` を上げる**ほうが単純で速い（`DATABASE_POOL_MAX=10` × 3 プロセス = 30 本 など） |
+| **PgBouncer を前段に置く場合** | 置けますが**モードが要ります**。Spica は `withSession()` の中で**セッションに紐づく状態**（`pg_advisory_lock`・`CREATE TEMP TABLE`）を使うため、**transaction pooling では接続が途中で入れ替わって壊れます**（助言ロックの解放が効かない・一時テーブルが見えない） | `pool_mode = session` なら安全ですが、多重化の効果はほぼありません（1 クライアント = 1 サーバー接続）。**transaction pooling を使いたい場合は、セッション状態を使う処理を直結の接続へ逃がす改造が先**です。名前付きプリペアド文も transaction pooling と相性が悪いので、導入するなら同時に検討してください（`db:pg:stats` で実測してから） |
 | **大きな結果** | 結果は JSON でコピーする | 巨大な `BLOB` を大量に読む処理は苦手。投稿やユーザーの一覧は問題なし |
 | **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump -Fc` を使う（`npm run db:pg:backup`。自動メンテナンスでも毎日取る）。`pg_dump` が無い環境では警告してスキップする |
 | **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する（下記） |

@@ -2,6 +2,7 @@ import { asyncHandler } from '../asyncHandler.js';
 import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
+import { invalidateTimelineCache } from '../timelineCache.js';
 import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDomainData, getInstanceInfo, saveInstanceInfo, CustomEmojiRow, InvitationCodeRow, RegistrationMode, getServerSetting, setServerSetting, invalidateBlockedDomainRules } from '../db.js';
 import { publishEvent } from '../redis.js';
 import { requireAdmin, hasPermission, getUserPermissions } from '../auth.js';
@@ -576,6 +577,8 @@ adminRouter.post('/blocks', asyncHandler(async (req: Request, res: Response) => 
     // ブロックリストはタイムラインと配送で毎回参照するので、キャッシュを捨てる
     // （他プロセスは通知を受けて捨てる。Redis 未設定なら TTL ぶん待って反映される）
     invalidateBlockedDomainRules();
+    // 表示中のタイムラインからも即座に消えるように、読み取りキャッシュも捨てる
+    await invalidateTimelineCache();
     void publishEvent('settings', { key: 'blocked_domains' });
 
     // 過去の外部投稿・アクターキャッシュ・フォロー関係のパージ
@@ -624,6 +627,8 @@ adminRouter.delete('/blocks/:domain', asyncHandler(async (req: Request, res: Res
     await db.prepare('DELETE FROM blocked_domains WHERE domain = ?').run(cleanDomain);
 
     invalidateBlockedDomainRules();
+    // 表示中のタイムラインからも即座に消えるように、読み取りキャッシュも捨てる
+    await invalidateTimelineCache();
     void publishEvent('settings', { key: 'blocked_domains' });
 
     console.log(`[Admin] ✅ Domain "${cleanDomain}" unblocked by @${(req.rawUser || req.user)?.id}`);

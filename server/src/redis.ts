@@ -419,3 +419,36 @@ export async function redisSetJson(key: string, value: unknown, ttlSec: number):
     return false;
   }
 }
+
+/**
+ * キャッシュ用の数値（世代番号など）を読む。鍵が無ければ null。
+ * `redisGetJson` と同じ接頭辞を使うので、キャッシュの鍵空間を共有する。
+ */
+export async function redisGetNumber(key: string): Promise<number | null> {
+  if (!ready || !commandClient) return null;
+  try {
+    const raw = await commandClient.get(redisKey(`cache:${key}`));
+    if (raw === null || raw === undefined) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (err) {
+    logError('キャッシュの数値の取得に失敗しました', err);
+    return null;
+  }
+}
+
+/**
+ * キャッシュ用の数値を 1 増やす（無ければ 1 から）。
+ *
+ * **プロセスをまたぐキャッシュの無効化**に使う（鍵に世代番号を混ぜると、
+ * 古い世代で入れた値は自然と読まれなくなる）。失敗したら null。
+ */
+export async function redisIncr(key: string): Promise<number | null> {
+  if (!ready || !commandClient) return null;
+  try {
+    return Number(await commandClient.incr(redisKey(`cache:${key}`)));
+  } catch (err) {
+    logError('キャッシュの世代番号を進められませんでした', err);
+    return null;
+  }
+}

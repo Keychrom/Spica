@@ -84,7 +84,7 @@ export interface AppConfig {
   redisPrefix: string;
   /** 配送再送ワーカーの同時実行数（既定 5。相手サーバーごとに違うので並べると速い） */
   deliveryConcurrency: number;
-  /** タイムラインの読み取りキャッシュの TTL（秒。**既定 0 = 無効**。有効にすると可視性の変化が TTL ぶん遅れる） */
+  /** タイムラインの読み取りキャッシュの TTL（秒。**既定 15**。0 で無効。ローカルの書き込み直後は捨てる） */
   timelineCacheTtlSec: number;
   /** タグタイムラインが走査する直近の投稿数（既定 20000。0 で無制限） */
   recentScanPosts: number;
@@ -378,12 +378,16 @@ const SOAK_LOG_INTERVAL_MS = (() => {
   return Number.isFinite(parsed) && parsed >= 1000 ? parsed : 0;
 })();
 
-// タイムラインの読み取りキャッシュ（秒）。**既定は 0 = 無効**。
-// 有効にすると「同じ画面を何度も開いたときの組み立て」を省けるが、ブロック・削除・フォローの
-// 反映が TTL ぶん遅れる（権限はキャッシュ時点のもので判定されるので、他人に漏れることはない）
+// タイムラインの読み取りキャッシュ（秒）。**既定 15 秒で有効**（`0` で無効）。
+//
+// 1 リクエストあたり 12 本のクエリで組み立てているので、同じ画面を何度も開くあいだ使い回す。
+// - ローカルの投稿・削除・ブースト・フォロー・ブロックの直後は捨てる（1 秒にまとめて）ので、
+//   自分の操作の結果はすぐ見える
+// - リモートからの流入（他人の投稿）・リアクション・ブックマークは TTL ぶん古く見え得る
+//   （権限はキャッシュ時点のもので判定されるので、他人に漏れることはない）
 const TIMELINE_CACHE_TTL_SEC = (() => {
   const parsed = parseInt(process.env.TIMELINE_CACHE_TTL_SEC || '', 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 15;
 })();
 
 // タグタイムラインと検索の「LIKE 走査」が対象にする直近の投稿数。

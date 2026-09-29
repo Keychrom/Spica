@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { isRedisReady, redisGetJson, redisSetJson } from './redis.js';
+import { isRedisReady, redisGetJson, redisSetJson, redisGetNumber, redisIncr } from './redis.js';
 
 /**
  * タイムラインの読み取りキャッシュ（短い TTL）。
@@ -9,10 +9,11 @@ import { isRedisReady, redisGetJson, redisSetJson } from './redis.js';
  * **組み立て済みの応答をそのまま短時間だけ使い回す**のが効く。
  *
  * - `REDIS_URL` があれば全プロセスで共有（プロセスを増やしてもヒット率が落ちない）
- * - 無ければプロセス内（上限つき・TTL つき）。**どちらも設定しなければ（TTL 0）無効**
+ * - 無ければプロセス内（上限つき・TTL つき）
  * - 鍵はユーザーごとに分ける（リアクション・ブックマーク・投票の状態が混ざらないように）
- * - 無効化は TTL だけに頼る（投稿直後の見え方が最大 TTL ぶん古くなるのは許容。
- *   自分の投稿はクライアントが手元で先に出す）
+ * - **投稿・削除・ブースト・フォロー・ブロックの直後は捨てる**ので、それらの結果はすぐ見える。
+ *   TTL だけに頼るのは、リアクション・ブックマーク・投票のような**その人にしか見えない状態**
+ *   （クライアントが楽観的に先に反映する）だけ
  */
 
 interface Entry {
@@ -24,12 +25,35 @@ const local = new Map<string, Entry>();
 /** プロセス内で持つ上限（超えたら古いものから捨てる） */
 const LOCAL_MAX_ENTRIES = 300;
 
+/** Redis に置く世代番号の鍵（プロセスをまたぐ無効化に使う） */
+const GENERATION_KEY = 'timeline:generation';
+
+/** プロセス内の世代番号（Redis が無いときに使う） */
+let memoryGeneration = 0;
+
 let hits = 0;
 let misses = 0;
+let invalidations = 0;
 
 /** キャッシュを使うか（TTL が 0 なら無効） */
 export function isTimelineCacheEnabled(): boolean {
   return config.timelineCacheTtlSec > 0;
+}
+
+/**
+ * いまの世代番号。Redis があれば**共有の世代**を読み、無ければプロセス内の世代を使う。
+ *
+ * 読めないとき（Redis が落ちている等）は 0 を返す。その場合も TTL は効くので、
+ * 古い値がいつまでも残ることはない。
+ */
+async function currentGeneration(): Promise<number> {
+  if (!isRedisReady()) return memoryGeneration;
+  return (await redisGetNumber(GENERATION_KEY)) ?? 0;
+}
+
+/** 世代ごとに別の鍵にする（古い世代の値は読まれず、TTL で消える） */
+function generationKey(key: string, generation: number): string {
+  return generation === 0 ? key : `g${generation}:${key}`;
 }
 
 /** キャッシュから取る（無ければ null） */
@@ -37,7 +61,8 @@ export async function cacheGet(key: string): Promise<unknown | null> {
   if (!isTimelineCacheEnabled()) return null;
 
   if (isRedisReady()) {
-    const value = await redisGetJson(key);
+    const generation = await currentGeneration();
+    const value = await redisGetJson(generationKey(key, generation));
     if (value !== null && value !== undefined) {
       hits++;
       return value;
@@ -61,7 +86,8 @@ export async function cacheSet(key: string, value: unknown, ttlSec = config.time
   if (!isTimelineCacheEnabled() || ttlSec <= 0) return;
 
   if (isRedisReady()) {
-    await redisSetJson(key, value, ttlSec);
+    const generation = await currentGeneration();
+    await redisSetJson(generationKey(key, generation), value, ttlSec);
     return;
   }
 
@@ -76,14 +102,51 @@ export async function cacheSet(key: string, value: unknown, ttlSec = config.time
   local.set(key, { value, expiresAt: Date.now() + ttlSec * 1000 });
 }
 
+/**
+ * キャッシュを捨てる（投稿・削除・ブースト・フォロー・ブロック・ミュートワード・
+ * ドメインの遮断/サイレンス、および連合からの受信の直後に呼ぶ）。
+ *
+ * - Redis あり … 共有の世代番号を進める（**他のプロセスの値も読まれなくなる**。古い鍵は TTL で消える）
+ * - Redis なし … プロセス内の Map を空にする
+ *
+ * まとめずに毎回捨てる。丸めると「同じ鍵をもう一度読んだだけの読み」が古いまま残り、
+ * 設定変更や投稿が TTL ぶん効かないことがあるため（**書き込みが続いている間は、
+ * キャッシュが無かったときと同じ組み立てに戻るだけ**で、読みが壊れることはない）。
+ * 失敗しても致命的ではない（TTL でいずれ消える）ので、例外は投げない。
+ */
+export async function invalidateTimelineCache(): Promise<void> {
+  if (!isTimelineCacheEnabled()) return;
+  invalidations++;
+
+  if (!isRedisReady()) {
+    local.clear();
+    memoryGeneration++;
+    return;
+  }
+
+  const next = await redisIncr(GENERATION_KEY);
+  if (next === null) {
+    // 世代を進められないときは、せめて自分のプロセスぶんは捨てておく
+    local.clear();
+  }
+}
+
 /** いまの状態（`/health` と検査で使う） */
-export function getTimelineCacheStats(): { enabled: boolean; backend: 'redis' | 'memory' | 'off'; entries: number; hits: number; misses: number } {
+export function getTimelineCacheStats(): {
+  enabled: boolean;
+  backend: 'redis' | 'memory' | 'off';
+  entries: number;
+  hits: number;
+  misses: number;
+  invalidations: number;
+} {
   return {
     enabled: isTimelineCacheEnabled(),
     backend: !isTimelineCacheEnabled() ? 'off' : isRedisReady() ? 'redis' : 'memory',
     entries: local.size,
     hits,
     misses,
+    invalidations,
   };
 }
 
@@ -92,4 +155,6 @@ export function clearTimelineCache(): void {
   local.clear();
   hits = 0;
   misses = 0;
+  invalidations = 0;
+  memoryGeneration = 0;
 }

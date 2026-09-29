@@ -137,6 +137,9 @@ async function main(): Promise<void> {
     'spica_delivery_queue_pending',
     'spica_jobs_pending',
     'spica_timeline_cache_hits_total',
+    'spica_timeline_cache_misses_total',
+    'spica_timeline_cache_invalidations_total',
+    'spica_timeline_cache_enabled',
     'spica_process_resident_memory_bytes',
     'spica_process_active_handles',
   ]) {
