@@ -50,6 +50,12 @@ async function initPostgresSchema(): Promise<void> {
     );
   }
   const sql = fs.readFileSync(schemaPath, 'utf8');
+
+  // 大きいテーブルへの索引は、**スキーマを適用する前に** CONCURRENTLY で作る。
+  // スキーマ側は `CREATE INDEX IF NOT EXISTS` なので、先に作っておけば素通りする
+  // （逆順にすると、起動時に ACCESS EXCLUSIVE で読み書きが止まる）。
+  await createIndexesConcurrently(await collectDeferredIndexesFromSchema());
+
   try {
     // **複数プロセスが同時に起動すると、DDL がぶつかってデッドロックすることがある**
     // （実際に 2 ノード同時起動で「デッドロックを検出しました」→ 片方が起動失敗した）。
@@ -63,6 +69,8 @@ async function initPostgresSchema(): Promise<void> {
     try {
       await db.exec(sql);
       console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+      // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
+      await recordMigration(`pg-schema:${migrationKey(sql)}`, 'schema');
     } finally {
       await db.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
     }
@@ -98,9 +106,173 @@ export async function initDatabase(): Promise<void> {
   await loadInstanceActorKeyPair();
 }
 
+// ---------------------------------------------------------------------------
+// マイグレーションの記録と、大きいテーブルへの索引（オンライン作成）
+// ---------------------------------------------------------------------------
+
+/**
+ * 適用したマイグレーションの記録。
+ *
+ * 鍵は**SQL 文そのもののハッシュ**（連番ではない）。途中に 1 文を足しても、
+ * 既存の記録がずれないため。文を書き換えたときはハッシュが変わるので、
+ * もう一度実行される（中身は `IF NOT EXISTS` 系なので安全）。
+ */
+const SCHEMA_MIGRATIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    note TEXT DEFAULT ''
+  );
+`;
+
+/** 索引作成のうち、大きいテーブルでは後回しにするもの */
+interface DeferredIndex {
+  sql: string;
+  name: string;
+  table: string;
+}
+
+/** この行数を超えるテーブルへの索引は、起動時に作らず CONCURRENTLY で作る */
+const ONLINE_INDEX_ROW_THRESHOLD = 50_000;
+
+function migrationKey(sql: string): string {
+  return crypto.createHash('sha256').update(sql.replace(/\s+/g, ' ').trim()).digest('hex').slice(0, 32);
+}
+
+/** 「もう望ましい状態になっている」ことを表すエラーか（列・表・索引が既にある） */
+function isAlreadyAppliedError(err: any): boolean {
+  const code = String(err?.code || '');
+  // PostgreSQL: duplicate_table / duplicate_column / duplicate_schema / duplicate_object
+  if (['42P07', '42701', '42P06', '42710'].includes(code)) return true;
+  return /already exists|duplicate column|duplicate_column|duplicate table|duplicate_table/i.test(String(err?.message || ''));
+}
+
+async function loadAppliedMigrations(): Promise<Set<string>> {
+  const applied = new Set<string>();
+  try {
+    await db.exec(SCHEMA_MIGRATIONS_DDL);
+    const rows = (await db.prepare('SELECT key FROM schema_migrations').all()) as { key: string }[];
+    for (const row of rows) applied.add(row.key);
+  } catch {
+    // 記録が使えなくても続行する（毎回適用に戻るだけ）
+  }
+  return applied;
+}
+
+async function recordMigration(key: string, note: string): Promise<boolean> {
+  try {
+    // すでに記録があれば何もしない（PostgreSQL では `ON CONFLICT DO NOTHING` に翻訳される）
+    const result = await db
+      .prepare('INSERT OR IGNORE INTO schema_migrations (key, applied_at, note) VALUES (?, ?, ?)')
+      .run(key, new Date().toISOString(), note);
+    return Number(result.changes ?? 0) === 1;
+  } catch {
+    // 記録できなくても続行（次回また試す）
+    return false;
+  }
+}
+
+/** テーブルの行数をざっくり見積もる（PostgreSQL のみ。索引の作り方を決めるためだけに使う） */
+async function estimateTableRows(table: string): Promise<number> {
+  try {
+    const row = (await db.prepare('SELECT reltuples FROM pg_class WHERE relname = ? AND relkind = ?').get(table, 'r')) as
+      | { reltuples: number | string }
+      | undefined;
+    const estimate = Number(row?.reltuples ?? -1);
+    if (estimate > 0) return estimate;
+    // ANALYZE されていないテーブルは -1 なので、上限つきで実際に数える（5 万行まで）
+    const counted = (await db
+      .prepare(`SELECT COUNT(*) AS c FROM (SELECT 1 FROM "${table}" LIMIT ?) AS t`)
+      .get(ONLINE_INDEX_ROW_THRESHOLD + 1)) as { c: number } | undefined;
+    return Number(counted?.c ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 生成済みスキーマ（PostgreSQL）から、**大きいテーブルに張る索引**を選び出す。
+ *
+ * 適用前に見つけておいて `CREATE INDEX CONCURRENTLY` で作るために使う。
+ * 小さければ（新規の DB や小さいノード）何も返さない＝スキーマ適用時に普通に作られる。
+ */
+async function collectDeferredIndexesFromSchema(): Promise<DeferredIndex[]> {
+  const schemaPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'db', 'schema.pg.sql');
+  if (!fs.existsSync(schemaPath)) return [];
+  try {
+    return await pickLargeTableIndexes(fs.readFileSync(schemaPath, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+/** スキーマの SQL から「大きいテーブルに張る索引」だけを選ぶ（判定の実体） */
+async function pickLargeTableIndexes(sql: string): Promise<DeferredIndex[]> {
+  const candidates: DeferredIndex[] = [];
+  const regex = /CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?\s+ON\s+"?([A-Za-z_][A-Za-z0-9_]*)"?[^;]*;/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(sql)) !== null) {
+    candidates.push({ sql: match[0], name: match[1], table: match[2] });
+  }
+  if (candidates.length === 0) return [];
+
+  const deferred: DeferredIndex[] = [];
+  const rowsCache = new Map<string, number>();
+  for (const candidate of candidates) {
+    // すでに索引があるなら何もしない（毎回の起動で行数を数えない）
+    const exists = await db.prepare('SELECT 1 AS ok FROM pg_class WHERE relname = ? AND relkind = ?').get(candidate.name, 'i');
+    if (exists) continue;
+
+    let rows = rowsCache.get(candidate.table);
+    if (rows === undefined) {
+      rows = await estimateTableRows(candidate.table);
+      rowsCache.set(candidate.table, rows);
+    }
+    if (rows >= ONLINE_INDEX_ROW_THRESHOLD) deferred.push(candidate);
+  }
+  return deferred;
+}
+
+/**
+ * 後回しにした索引を `CREATE INDEX CONCURRENTLY` で作る。
+ *
+ * - `CONCURRENTLY` はトランザクションの中で実行できないので、1 文ずつ流す（自動コミット）
+ * - 途中で失敗すると**無効な索引**が残ることがある。その場合は次回の起動で
+ *   落としてから作り直す（`IF NOT EXISTS` があると無効な索引を「出来ている」と誤認するため）
+ * - 失敗しても起動は続ける（索引が無いだけ。次回の起動でまた試す）
+ *
+ * SQLite では呼ばれない（1 プロセス・1 接続なので、起動時に待つだけで済む）。
+ */
+async function createIndexesConcurrently(deferred: DeferredIndex[]): Promise<void> {
+  for (const index of deferred) {
+    try {
+      const invalid = (await db
+        .prepare(
+          `SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = ?`,
+        )
+        .get(index.name)) as { valid: boolean } | undefined;
+      if (invalid && !invalid.valid) {
+        console.warn(`[DB] 🐘 無効な索引を作り直します: ${index.name}`);
+        await db.exec(`DROP INDEX IF EXISTS "${index.name}";`);
+      }
+
+      console.log(
+        `[DB] 🐘 大きいテーブル (${index.table}) の索引を、書き込みを止めずに作ります: ${index.name}（数秒〜数分かかることがあります）`,
+      );
+      const concurrently = index.sql.replace(/CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS/i, 'CREATE INDEX CONCURRENTLY IF NOT EXISTS');
+      await db.exec(concurrently);
+      console.log(`[DB] 🐘 索引を作成しました: ${index.name}`);
+    } catch (err: any) {
+      console.warn(
+        `[DB] ⚠️ 索引 ${index.name} をオンラインで作れませんでした（次回の起動でもう一度試します）:`,
+        String(err?.message || err).split('\n')[0],
+      );
+    }
+  }
+}
+
 /** スキーマの適用（SQLite は migrations、PostgreSQL は生成済みスキーマ） */
 async function initDatabaseSchema(): Promise<void> {
-  // SQLite のときだけ PRAGMA を設定する（PostgreSQL では不要）
   if (db.kind === 'sqlite') {
     await db.exec('PRAGMA journal_mode = WAL;');
     await db.exec('PRAGMA foreign_keys = ON;');
@@ -845,12 +1017,37 @@ async function initDatabaseSchema(): Promise<void> {
     "CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocker ON remote_blocks(blocker_actor_url);",
   ];
 
+  // マイグレーションの適用。
+  //
+  // - **適用済みのものは飛ばす**（`schema_migrations` に記録する）。以前は起動のたびに
+  //   全件を流し直していて、大きい DB では毎回の起動が無駄に重かった。
+  // - PostgreSQL はここへ来ない（生成済みスキーマを適用する側で、大きいテーブルの索引だけを
+  //   `CREATE INDEX CONCURRENTLY` に回している）。
+  const applied = await loadAppliedMigrations();
+
+  let appliedNow = 0;
   for (const sql of migrations) {
+    const key = migrationKey(sql);
+    if (applied.has(key)) continue;
+
+    let note = '';
     try {
       await db.exec(sql);
-    } catch {
-      // すでにカラムやインデックスが存在する場合は無視
+    } catch (err: any) {
+      // 「すでにある」なら望ましい状態なので記録する。それ以外は記録せず次回もう一度試す
+      if (!isAlreadyAppliedError(err)) {
+        console.warn(
+          '[DB] ⚠️ マイグレーションを適用できませんでした（次回の起動でもう一度試します）:',
+          String(err?.message || err).split('\n')[0],
+        );
+        continue;
+      }
+      note = '既存';
     }
+    if (await recordMigration(key, note)) appliedNow++;
+  }
+  if (appliedNow > 0) {
+    console.log(`[DB] 🧱 マイグレーション ${appliedNow} 件を適用しました（記録済み ${applied.size + appliedNow} 件）`);
   }
 
   // FTS5 既存投稿データの同期（未同期の過去ノートを一括インデックス化）

@@ -13,6 +13,7 @@ import {
   federatePollUpdate,
 } from '../activitypub.js';
 import { verifyInboxSignature } from '../inboxAuth.js';
+import { inboxGate } from '../inboxGate.js';
 import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolicy.js';
 import { isPublicPost } from '../postVisibility.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
@@ -81,6 +82,19 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
       return res.status(401).json({ error: 'HTTP Signature verification failed.', reason: auth.error });
     }
     console.log(`[Inbox Auth Warn] ⚠️ Signature check failed but INBOX_SIGNATURE_MODE=log, processing anyway: ${activity.type} from ${actorUrl} - ${auth.error}`);
+  }
+
+  // ここから先は DB の書き込み・アンテナの照合・配信などの重い処理。
+  // リレーの burst で同じ数の処理が同時に走ると画面の応答まで遅くなるので、
+  // 同時に処理する数を区切る（溢れたら 503。送信側が指数バックオフで送り直す）。
+  const releaseSlot = await inboxGate.acquire();
+  if (!releaseSlot) {
+    const stats = inboxGate.stats();
+    console.warn(
+      `[Inbox Busy] 🚦 受信が混み合っているため 503 を返します (処理中 ${stats.active} / 待ち ${stats.waiting} / 溢れ ${stats.shed})`,
+    );
+    res.setHeader('Retry-After', '30');
+    return res.status(503).json({ error: 'Busy. Please retry later.' });
   }
 
   try {
@@ -1169,6 +1183,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
   } catch (err: any) {
     console.error(`[Inbox Error] Failed to process ${activity.type}:`, err);
     return res.status(500).json({ error: err.message });
+  } finally {
+    // 受け入れ枠を返す（成功・失敗どちらでも）
+    releaseSlot();
   }
 }
 

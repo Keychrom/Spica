@@ -489,6 +489,45 @@ export function buildDeleteActorActivity(params: {
  * WebFinger でアカウントから Actor URL を解決
  * 例: "alice@localhost:3000" または "@bob@example.com"
  */
+/**
+ * WebFinger の結果を短い TTL で覚える。
+ *
+ * `@user@remote` の解決は検索・フォロー・メンションのたびに起きるのに、毎回ネットワークへ
+ * 出ていました（相手のサーバーが遅いと、こちらのリクエストもその分待つ）。
+ * Actor URL は滅多に変わらないので、数分だけ覚えておけば十分です。
+ *
+ * - 成功は 10 分、失敗（解決できなかった）は 60 秒だけ覚える（相手が復旧したらすぐ追随する）
+ * - 上限つき（超えたら古いものから捨てる）
+ */
+const WEBFINGER_CACHE_TTL_MS = 10 * 60 * 1000;
+const WEBFINGER_FAILURE_TTL_MS = 60 * 1000;
+const WEBFINGER_CACHE_MAX = 1000;
+const webFingerCache = new Map<string, { at: number; actorUrl: string | null }>();
+
+function readWebFingerCache(key: string): string | null | undefined {
+  const entry = webFingerCache.get(key);
+  if (!entry) return undefined;
+  const ttl = entry.actorUrl ? WEBFINGER_CACHE_TTL_MS : WEBFINGER_FAILURE_TTL_MS;
+  if (Date.now() - entry.at > ttl) {
+    webFingerCache.delete(key);
+    return undefined;
+  }
+  return entry.actorUrl;
+}
+
+function writeWebFingerCache(key: string, actorUrl: string | null): void {
+  if (webFingerCache.size >= WEBFINGER_CACHE_MAX) {
+    const oldest = webFingerCache.keys().next().value;
+    if (oldest) webFingerCache.delete(oldest);
+  }
+  webFingerCache.set(key, { at: Date.now(), actorUrl });
+}
+
+/** 検査用: キャッシュを空にする */
+export function clearWebFingerCache(): void {
+  webFingerCache.clear();
+}
+
 export async function resolveWebFinger(handle: string): Promise<string> {
   const cleanHandle = handle.startsWith('@') ? handle.slice(1) : handle;
   const parts = cleanHandle.split('@');
@@ -501,6 +540,15 @@ export async function resolveWebFinger(handle: string): Promise<string> {
     throw new Error(`ドメイン "${domain}" はサーバーポリシーによりブロックされています。`);
   }
 
+  const cacheKey = `${username.toLowerCase()}@${domain.toLowerCase()}`;
+  const cached = readWebFingerCache(cacheKey);
+  if (cached !== undefined) {
+    if (cached === null) {
+      throw new Error(`WebFinger解決失敗（直前に失敗しています）: ${cacheKey}`);
+    }
+    return cached;
+  }
+
   const protocol = domain.startsWith('localhost') || domain.startsWith('127.0.0.1') ? 'http' : 'https';
   const url = `${protocol}://${domain}/.well-known/webfinger?resource=acct:${username}@${domain}`;
 
@@ -511,13 +559,20 @@ export async function resolveWebFinger(handle: string): Promise<string> {
   }
 
   console.log(`[WebFinger] Querying: ${url}`);
-  const res = await safeFetch(url, {
-    headers: {
-      Accept: 'application/jrd+json, application/json',
-    },
-  });
+  let res: Response;
+  try {
+    res = await safeFetch(url, {
+      headers: {
+        Accept: 'application/jrd+json, application/json',
+      },
+    });
+  } catch (err: any) {
+    writeWebFingerCache(cacheKey, null);
+    throw err;
+  }
 
   if (!res.ok) {
+    writeWebFingerCache(cacheKey, null);
     throw new Error(`WebFinger解決失敗 (HTTP ${res.status}): ${url}`);
   }
 
@@ -527,9 +582,11 @@ export async function resolveWebFinger(handle: string): Promise<string> {
   );
 
   if (!link || !link.href) {
+    writeWebFingerCache(cacheKey, null);
     throw new Error(`WebFingerの応答に Actor URL が見つかりませんでした: ${url}`);
   }
 
+  writeWebFingerCache(cacheKey, String(link.href));
   return link.href;
 }
 

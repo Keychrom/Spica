@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules } from './db.js';
 import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
 import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
+import { inboxGate } from './inboxGate.js';
 import { authenticate } from './auth.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
@@ -102,8 +103,10 @@ warnOnRoleMisconfiguration();
 
 const app = express();
 
-// Cloudflare Tunnel 等のリバースプロキシ用設定
-app.set('trust proxy', true);
+// リバースプロキシ（Cloudflare Tunnel / nginx）用設定。
+// 既定は `loopback` = 127.0.0.1 からの X-Forwarded-For だけを信頼する
+// （`true` にすると誰の X-Forwarded-For も信じてしまい、レート制限の IP 判定を詐称できる）
+app.set('trust proxy', config.trustProxy);
 
 // 応答の圧縮（gzip）。クライアントの JS は 1 ファイルで 500KB を超え、API も JSON なので効果が大きい。
 //  - 1KB 未満は圧縮しない（オーバーヘッドの方が大きい）
@@ -211,6 +214,8 @@ const healthHandler = async (req: Request, res: Response) => {
     redis: getRedisStatus(),
     sseClients: getStreamClientCount(),
     timelineCache: getTimelineCacheStats(),
+    // 受信の混み具合（溢れが出ているなら burst が来ている）
+    inbox: inboxGate.stats(),
   };
 
   // 認証済みなら運用の詳細も返す（監視ツールはヘッダーなしで叩ける）

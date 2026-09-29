@@ -452,6 +452,11 @@ CREATE TABLE IF NOT EXISTS scheduled_posts  (
   updated_at TEXT DEFAULT '',
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS schema_migrations  (
+  key TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL,
+  note TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS server_settings  (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

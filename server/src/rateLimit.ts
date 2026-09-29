@@ -94,8 +94,13 @@ export function rateLimit(options: RateLimitOptions) {
       return next();
     }
 
+    // 認証済みなら**利用者ごと**に数える。
+    // IP 単位だけだと、NAT / CGNAT 配下の大勢が 1 つの枠を共有してしまい
+    // （1 人の暴走で全員が 429）、逆に IPv6 を付け替えるだけで素通りできる。
+    // 未認証（＝相手を特定できない）ときだけ IP に落とす。
+    const userId = (req.rawUser?.id || req.user?.id) as string | undefined;
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `${options.keyPrefix}:${ip}`;
+    const key = userId ? `${options.keyPrefix}:user:${userId}` : `${options.keyPrefix}:ip:${ip}`;
 
     // Redis を使っているときはカウンタが共有される（非同期）。
     // 失敗してもリクエストは落とさず、その場はインメモリの判定で続ける。

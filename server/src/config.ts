@@ -42,6 +42,8 @@ export type ProcessRole = 'all' | 'web' | 'worker';
 export interface AppConfig {
   port: number;
   bindHost: string;
+  /** リバースプロキシの信頼範囲（Express の trust proxy に渡す値: 'loopback' など） */
+  trustProxy: string | number | boolean;
   domain: string;
   protocol: string;
   origin: string;
@@ -94,6 +96,12 @@ export interface AppConfig {
   sseMaxClients: number;
   /** 1 接続の送信バッファの上限（バイト）。超えた接続は切る */
   sseMaxBufferBytes: number;
+  /** Inbox で同時に処理する数 */
+  inboxConcurrency: number;
+  /** Inbox の順番待ちに並べる数（超えたら 503） */
+  inboxQueueMax: number;
+  /** Inbox を待たせる上限（ミリ秒） */
+  inboxQueueWaitMs: number;
   /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
@@ -162,6 +170,26 @@ export interface AppConfig {
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const BIND_HOST = process.env.BIND_HOST || '0.0.0.0';
+
+/**
+ * リバースプロキシをどこまで信頼するか（Express の `trust proxy`）。
+ *
+ * 既定は `loopback`（127.0.0.1 からの `X-Forwarded-For` だけを信頼する）。
+ * 前段が同じホスト（Cloudflare Tunnel / nginx）ならこれで正しく、**接続元 IP を
+ * 詐称できません**。`true` にすると誰からの `X-Forwarded-For` も信じてしまうので、
+ * レート制限の IP 判定が素通りできます（前段が別ホストのときだけ、そのアドレスを
+ * `TRUST_PROXY=192.0.2.10` のように指定してください）。
+ */
+const TRUST_PROXY: string = (process.env.TRUST_PROXY || 'loopback').trim() || 'loopback';
+
+/** `trust proxy` に渡す値（Express は 'loopback' などの名前・IP・段数・真偽を受け付ける） */
+const TRUST_PROXY_VALUE: string | number | boolean = (() => {
+  const raw = TRUST_PROXY.toLowerCase();
+  if (raw === 'true' || raw === 'yes' || raw === 'on' || raw === 'all' || raw === '*') return true;
+  if (raw === 'false' || raw === 'no' || raw === 'off' || raw === 'none') return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return TRUST_PROXY; // 'loopback' / 'linklocal' / 'uniquelocal' / IP / CIDR
+})();
 
 // 公開用ドメイン（環境変数 DOMAIN がなければ localhost:PORT）
 const rawDomain = process.env.DOMAIN || (PORT === 80 || PORT === 443 ? 'localhost' : `localhost:${PORT}`);
@@ -322,6 +350,22 @@ const DELIVERY_CONCURRENCY = (() => {
   return Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, 50) : 5;
 })();
 
+// Inbox（受信）の受け入れ制御。リレーからまとめて流れてきたときに、
+// 同じ数の処理が同時に走って画面の応答まで遅くならないようにする。
+//   超過したぶんは `INBOX_QUEUE_WAIT_MS` まで順番待ちに並べ、それでも空かなければ 503（送信側が再送する）
+const INBOX_CONCURRENCY = (() => {
+  const parsed = parseInt(process.env.INBOX_CONCURRENCY || '', 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.min(parsed, 64) : 4;
+})();
+const INBOX_QUEUE_MAX = (() => {
+  const parsed = parseInt(process.env.INBOX_QUEUE_MAX || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 200;
+})();
+const INBOX_QUEUE_WAIT_MS = (() => {
+  const parsed = parseInt(process.env.INBOX_QUEUE_WAIT_MS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5000;
+})();
+
 // タイムラインの読み取りキャッシュ（秒）。**既定は 0 = 無効**。
 // 有効にすると「同じ画面を何度も開いたときの組み立て」を省けるが、ブロック・削除・フォローの
 // 反映が TTL ぶん遅れる（権限はキャッシュ時点のもので判定されるので、他人に漏れることはない）
@@ -362,6 +406,7 @@ const JOB_INTERVAL_MS = intervalMs(process.env.JOB_INTERVAL_MS, 15_000, 1_000);
 export const config: AppConfig = {
   port: PORT,
   bindHost: BIND_HOST,
+  trustProxy: TRUST_PROXY_VALUE,
   domain: DOMAIN,
   protocol: PROTOCOL,
   origin: ORIGIN,
@@ -392,6 +437,9 @@ export const config: AppConfig = {
   metricsToken: METRICS_TOKEN,
   sseMaxClients: SSE_MAX_CLIENTS,
   sseMaxBufferBytes: SSE_MAX_BUFFER_BYTES,
+  inboxConcurrency: INBOX_CONCURRENCY,
+  inboxQueueMax: INBOX_QUEUE_MAX,
+  inboxQueueWaitMs: INBOX_QUEUE_WAIT_MS,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
   notificationRetentionDays: NOTIFICATION_RETENTION_DAYS,

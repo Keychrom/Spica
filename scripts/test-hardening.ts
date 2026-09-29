@@ -77,6 +77,8 @@ const sleepUntil = async (predicate: () => boolean, timeoutMs: number): Promise<
 
 let server: ChildProcess | null = null;
 let serverLog = '';
+/** WebFinger の検査で相手役に当たった回数 */
+let webfingerHits = 0;
 function startNode(extraEnv: Record<string, string> = {}): ChildProcess {
   serverLog = '';
   const proc = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
@@ -220,6 +222,19 @@ try {
   console.log('\n── 2. 排他ロック（DB フォールバック）──────────');
   const dbModule = await import('../server/src/db.js');
   await dbModule.initDatabase();
+
+  // マイグレーションの記録（適用済みはやり直さない）
+  const migrationCount = async (): Promise<number> =>
+    Number(((await dbModule.db.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get()) as { c: number }).c);
+  const afterFirstInit = await migrationCount();
+  check('適用したマイグレーションが記録される', afterFirstInit > 0, true);
+  await dbModule.initDatabase();
+  check('2 回目の起動では適用し直さない（記録が増えない）', await migrationCount(), afterFirstInit);
+  const one = (await dbModule.db.prepare('SELECT key FROM schema_migrations LIMIT 1').get()) as { key: string };
+  await dbModule.db.prepare('DELETE FROM schema_migrations WHERE key = ?').run(one.key);
+  await dbModule.initDatabase();
+  check('記録を消せば、その文だけもう一度適用される', await migrationCount(), afterFirstInit);
+
   const { acquireDbLock, withDbLock, getDbLockOwner } = await import('../server/src/dbLock.js');
   const { runExclusively } = await import('../server/src/redis.js');
 
@@ -464,8 +479,49 @@ try {
   check('配送は実行された（待ち時間を含む）', delivered && remote.maxInFlight >= 2, true);
   check('署名付きの POST が届いている', remote.bodies.some((b) => b.includes('hardening-user')), true);
 
-  // ── 7. アンケート投票のトランザクション ──────────────────────
-  console.log('\n── 7. アンケート投票（トランザクションの実利用）──────────');
+  // ── 7. 受信の受け入れ制御（burst で溢れさせる）──────────────
+  console.log('\n── 7. 受信の受け入れ制御 ──────────');
+  const { createInboxGate } = await import('../server/src/inboxGate.js');
+  const gate = createInboxGate({ max: 2, queueMax: 2, waitMs: 300 });
+
+  const slotA = await gate.acquire();
+  const slotB = await gate.acquire();
+  check('空きがあれば通す', [Boolean(slotA), Boolean(slotB)], [true, true]);
+
+  // 3 つ目・4 つ目は順番待ちに並ぶ（すぐには返らない）
+  let third: (() => void) | null = null;
+  let fourth: (() => void) | null = null;
+  const p3 = gate.acquire().then((r) => (third = r));
+  const p4 = gate.acquire().then((r) => (fourth = r));
+  await sleep(50);
+  check('混んでいるときは順番待ちに並ぶ', [third, fourth], [null, null]);
+  check('並んでいる数が見える', gate.stats().waiting, 2);
+
+  // 5 つ目は並びきれないので溢れる（＝503 を返す側）
+  const overflow = await gate.acquire();
+  check('順番待ちが一杯なら溢れさせる', overflow, null);
+  check('溢れた数が記録される', gate.stats().shed, 1);
+
+  // 1 つ返すと、待っていた 1 つが通る
+  slotA?.();
+  await sleep(20);
+  check('枠が空いたら待っていたものが通る', Boolean(third), true);
+  check('通った数は上限のまま', gate.stats().active, 2);
+
+  // 待ち時間を過ぎたら溢れさせる（相手には 503 が返る）
+  const gate2 = createInboxGate({ max: 1, queueMax: 5, waitMs: 100 });
+  const held = await gate2.acquire();
+  const waited = await gate2.acquire();
+  check('待ち時間を過ぎたら溢れさせる', waited, null);
+  check('溢れたことが記録される', gate2.stats().shed, 1);
+  held?.();
+  slotB?.();
+  third?.();
+  fourth?.();
+  await Promise.all([p3, p4]);
+
+  // ── 8. アンケート投票のトランザクション ─────────────────────
+  console.log('\n── 8. アンケート投票（トランザクションの実利用）──────────');
   const pollRes = await fetch(`${BASE}/api/posts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionToken}` },
@@ -495,6 +551,70 @@ try {
     .all(pollRow?.id)) as { choice_index: number; votes_count: number }[];
   check('集計も 2 つだけ +1 されている', counts.map((c) => c.votes_count), [1, 0, 1]);
   await voteDb.close();
+
+  // ── 9. レート制限の数え方（利用者ごと / 未認証は IP ごと）──────
+  console.log('\n── 9. レート制限の鍵 ──────────');
+  const { rateLimit } = await import('../server/src/rateLimit.js');
+  const { config: appConfig } = await import('../server/src/config.js');
+  check('プロキシの信頼は既定で loopback', appConfig.trustProxy, 'loopback');
+
+  const limiter = rateLimit({ windowMs: 60_000, max: 2, keyPrefix: 'hardening-rate' });
+  const callLimiter = (userId: string | null, ip = '10.0.0.1'): number => {
+    let status = 200;
+    const res: any = {
+      setHeader: () => {},
+      status: (code: number) => {
+        status = code;
+        return res;
+      },
+      json: () => res,
+    };
+    limiter({ ip, socket: { remoteAddress: ip }, user: userId ? { id: userId } : null } as any, res, () => {});
+    return status;
+  };
+  // 同じ IP でも利用者が違えば別々に数える（NAT 配下の巻き添えを無くす）
+  check('利用者 1 の 1 回目', callLimiter('user-1'), 200);
+  check('利用者 1 の 2 回目', callLimiter('user-1'), 200);
+  check('別の利用者は影響を受けない', callLimiter('user-2'), 200);
+  check('上限を超えたら 429', callLimiter('user-1'), 429);
+  // 未認証は IP ごと（相手を特定できないため）
+  check('未認証の 1 回目', callLimiter(null), 200);
+  check('未認証の 2 回目', callLimiter(null), 200);
+  check('未認証も上限で 429', callLimiter(null), 429);
+  check('別の IP は影響を受けない', callLimiter(null, '10.0.0.2'), 200);
+
+  // ── 10. WebFinger の TTL キャッシュ ───────────────────────────
+  console.log('\n── 10. WebFinger のキャッシュ ──────────');
+  const wfServer = http.createServer((req, res) => {
+    if (req.url?.startsWith('/.well-known/webfinger')) {
+      webfingerHits++;
+      res.writeHead(200, { 'Content-Type': 'application/jrd+json' });
+      res.end(
+        JSON.stringify({
+          subject: 'acct:alice@127.0.0.1',
+          links: [{ rel: 'self', type: 'application/activity+json', href: `${REMOTE}/users/alice` }],
+        }),
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => wfServer.listen(REMOTE_PORT + 2, '127.0.0.1', () => resolve()));
+
+  const { resolveWebFinger, clearWebFingerCache } = await import('../server/src/activitypub.js');
+  const handle = `@alice@127.0.0.1:${REMOTE_PORT + 2}`;
+  const wfFirst = await resolveWebFinger(handle);
+  const wfSecond = await resolveWebFinger(handle);
+  check('Actor URL を解決できる', wfFirst, `${REMOTE}/users/alice`);
+  check('2 回目も同じ結果', wfSecond, wfFirst);
+  check('ネットワークへは 1 回だけ（キャッシュが効く）', webfingerHits, 1);
+  check('キャッシュを捨てれば問い合わせ直す', await (async () => {
+    clearWebFingerCache();
+    await resolveWebFinger(handle);
+    return webfingerHits;
+  })(), 2);
+  wfServer.close();
 } catch (err: any) {
   console.error('\n❌ 検査中にエラー:', err?.message || err);
   console.error(serverLog.slice(-2000));
