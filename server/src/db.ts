@@ -104,6 +104,11 @@ async function initDatabaseSchema(): Promise<void> {
   if (db.kind === 'sqlite') {
     await db.exec('PRAGMA journal_mode = WAL;');
     await db.exec('PRAGMA foreign_keys = ON;');
+    // 書き込みロックが取れないときに待つ時間。`npm run db:maintenance`（保守 CLI）は
+    // 同じファイルに長時間の書き込みをかけるので、待たずに諦めると
+    // **エラーになった操作が消える**（`SQLITE_BUSY` を握り潰している箇所がある）。
+    // 保守 CLI 側と同じ 10 秒に合わせる。
+    await db.exec('PRAGMA busy_timeout = 10000;');
   }
 
   // PostgreSQL では、SQLite の migrations ではなく生成済みスキーマを適用する
@@ -825,6 +830,19 @@ async function initDatabaseSchema(): Promise<void> {
     `CREATE TRIGGER posts_ad AFTER DELETE ON posts BEGIN
       DELETE FROM posts_fts WHERE post_id = old.id;
     END;`,
+    // 予約投稿の公開中フラグ（'publishing'）を戻すための時刻。
+    // 公開中にプロセスが落ちた行を、一定時間後に待機中へ戻すために使う
+    "ALTER TABLE scheduled_posts ADD COLUMN updated_at TEXT DEFAULT '';",
+    // 自分の投稿一覧・プロフィールの件数（COUNT(*) WHERE user_id = ?）が全表走査にならないようにする
+    "CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);",
+    // 期限切れセッションの掃除（DELETE ... WHERE expires_at <= ?）を索引で支える
+    "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
+    // 読み終わった通知の保持期間による削除（DELETE ... WHERE is_read = 1 AND created_at <= ?）用
+    "CREATE INDEX IF NOT EXISTS idx_notifications_read_created ON notifications(is_read, created_at);",
+    // 置き去りの一時ファイル・メディアの掃除で「作られてから古いもの」を引く用
+    "CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);",
+    // 「相手がこちらをブロックしている」判定（配送のたびに引く）用
+    "CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocker ON remote_blocks(blocker_actor_url);",
   ];
 
   for (const sql of migrations) {
@@ -1142,14 +1160,30 @@ export interface BlockedDomainRule { domain: string; severity: DomainBlockSeveri
  * ブロックリストを一括で読み込む。
  * 1 件ずつ問い合わせる findDomainBlock と違い、
  * タイムラインのように多数の投稿をまとめて判定する用途で使う（判定は matchesBlockedDomainRule）。
+ *
+ * タイムラインの整形と配送のたびに呼ばれるので、**短い TTL のキャッシュを持つ**
+ * （毎回全件読み直すのは、リレーで DB が育つほど効いてくる）。変更時は
+ * `invalidateBlockedDomainRules()` を呼べばすぐ反映される（他プロセスは TTL ぶん遅れる）。
  */
+const BLOCKED_RULES_TTL_MS = 30_000;
+let blockedRulesCache: { at: number; rules: BlockedDomainRule[] } | null = null;
+
+export function invalidateBlockedDomainRules(): void {
+  blockedRulesCache = null;
+}
+
 export async function loadBlockedDomainRules(): Promise<BlockedDomainRule[]> {
+  const cached = blockedRulesCache;
+  if (cached && Date.now() - cached.at < BLOCKED_RULES_TTL_MS) return cached.rules;
+
   try {
     const rows = await db.prepare('SELECT domain, severity FROM blocked_domains').all() as { domain: string; severity?: string }[];
-    return rows.map((row) => ({
+    const rules = rows.map((row) => ({
       domain: String(row.domain || '').toLowerCase(),
       severity: row.severity === 'silence' ? 'silence' as const : 'suspend' as const,
     }));
+    blockedRulesCache = { at: Date.now(), rules };
+    return rules;
   } catch {
     // テーブル未作成時の安全フォールバック
     return [];

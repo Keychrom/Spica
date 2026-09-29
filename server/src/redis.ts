@@ -313,13 +313,19 @@ export async function consumeSharedRateLimit(
 /**
  * `key` について「いまは 1 プロセスだけが実行する」ことを保証して `fn` を実行する。
  *
- * Redis が使えないときはそのまま実行する（単一プロセス前提の今までどおりの動き）。
+ * - Redis があるとき … Redis のロック（NX + TTL）
+ * - Redis が無いとき … **DB のロック**（`app_locks` テーブル。TTL つき）
+ *
  * 戻り値は「実行したか」（他のプロセスが実行中なら false）。
+ *
+ * ※ 以前は Redis が無いときに無条件で実行していたため、Redis を入れずに複数プロセスで
+ *    動かすと予約投稿が二重に公開された（静かに壊れる）。今は DB のロックに落ちる。
  */
 export async function runExclusively(key: string, ttlMs: number, fn: () => Promise<void>): Promise<boolean> {
   if (!ready || !commandClient) {
-    await fn();
-    return true;
+    const { withDbLock } = await import('./dbLock.js');
+    const outcome = await withDbLock(key, ttlMs, fn);
+    return outcome.ran;
   }
 
   const lockKey = redisKey(`lock:${key}`);
@@ -329,8 +335,10 @@ export async function runExclusively(key: string, ttlMs: number, fn: () => Promi
     acquired = (await commandClient.set(lockKey, token, { NX: true, PX: ttlMs })) === 'OK';
   } catch (err) {
     logError('ロックの取得に失敗しました', err);
-    await fn();
-    return true;
+    // Redis が落ちている・詰まっている場合も DB のロックに落として、二重実行だけは避ける
+    const { withDbLock } = await import('./dbLock.js');
+    const outcome = await withDbLock(key, ttlMs, fn);
+    return outcome.ran;
   }
   if (!acquired) return false;
 

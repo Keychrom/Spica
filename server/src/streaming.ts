@@ -1,5 +1,6 @@
 import { Response } from 'express';
 import crypto from 'node:crypto';
+import { config } from './config.js';
 import { isRedisReady, publishEvent } from './redis.js';
 import {
   buildNoteRouting,
@@ -35,6 +36,53 @@ interface StreamClient {
 
 const clients = new Map<string, StreamClient>();
 
+/**
+ * 1 プロセスが同時に持てる SSE 接続の上限（`SSE_MAX_CLIENTS`、既定 1000）。
+ * 常時接続なので、上限が無いと 1 プロセスのメモリを食い尽くす（まずここが枯れる）。
+ * 溢れた接続は待たせずに 503 で断る（クライアントは少し待って張り直す）。
+ */
+const MAX_CLIENTS = config.sseMaxClients;
+/**
+ * 1 クライアントの送信バッファの上限（`SSE_MAX_BUFFER_BYTES`、既定 2MB）。
+ * 遅いクライアントを放置するとバッファが無限に膨らむので、超えたら切る。
+ * 切ってもクライアントは自動で張り直す（SSE の再接続）ので、失うのは数イベントぶん。
+ */
+const MAX_BUFFER_BYTES = config.sseMaxBufferBytes;
+
+/**
+ * バックプレッシャ対応の書き込み。
+ *
+ * `res.write()` の戻り値が false のときは**送信バッファが詰まっている**。
+ * それを無視して書き続けるとバッファが膨らみ続けるので、詰まったら切断する。
+ */
+function writeToClient(id: string, client: StreamClient, payload: string): void {
+  try {
+    if (client.res.writableEnded || client.res.destroyed) {
+      clients.delete(id);
+      return;
+    }
+    const ok = client.res.write(payload);
+    if (!ok || client.res.writableLength > MAX_BUFFER_BYTES) {
+      console.warn(
+        `[Streaming] ⚠️ 送信が追いつかないため切断します: ${id} (buffer ${client.res.writableLength} bytes)`,
+      );
+      clients.delete(id);
+      try {
+        client.res.end();
+      } catch {
+        // すでに切れている
+      }
+    }
+  } catch {
+    clients.delete(id);
+  }
+}
+
+/** これ以上受け入れられないか（接続時に 503 で断る判定） */
+export function isStreamAtCapacity(): boolean {
+  return MAX_CLIENTS > 0 && clients.size >= MAX_CLIENTS;
+}
+
 /** プロセスをまたぐときに Pub/Sub へ流すメッセージ */
 type StreamMessage =
   | { k: 'event'; e: string; d: any; r?: NoteRouting }
@@ -45,11 +93,7 @@ setInterval(() => {
   if (clients.size === 0) return;
   const pingPayload = `:keepalive\n\n`;
   for (const [id, client] of clients.entries()) {
-    try {
-      client.res.write(pingPayload);
-    } catch {
-      clients.delete(id);
-    }
+    writeToClient(id, client, pingPayload);
   }
 }, 25000);
 
@@ -109,11 +153,7 @@ function deliverLocalEvent(eventName: string, data: any, routing?: NoteRouting):
     if (note && routing && !shouldDeliverNote({ userId: client.userId ?? null, streams: client.streams }, note, routing)) {
       continue;
     }
-    try {
-      client.res.write(payload);
-    } catch {
-      clients.delete(id);
-    }
+    writeToClient(id, client, payload);
   }
 }
 
@@ -228,11 +268,7 @@ function deliverLocalUserNotification(cleanTarget: string, notification: any): v
 
   for (const [id, client] of clients.entries()) {
     if (client.userId && client.userId === cleanTarget) {
-      try {
-        client.res.write(payload);
-      } catch {
-        clients.delete(id);
-      }
+      writeToClient(id, client, payload);
     }
   }
 }

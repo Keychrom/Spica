@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
+import { withTransaction } from '../db/asyncDriver.js';
 import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, matchesBlockedDomainRule, loadBlockedDomainRules, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting, NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
 import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
 import { getUserPermissions } from '../auth.js';
@@ -56,6 +57,7 @@ import {
   broadcastAnnounce,
   broadcastPoll,
   broadcastDeletePost,
+  isStreamAtCapacity,
 } from '../streaming.js';
 import { parseStreams } from '../streamRouting.js';
 import { cacheGet, cacheSet, isTimelineCacheEnabled } from '../timelineCache.js';
@@ -431,6 +433,12 @@ apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => 
   let user = req.user;
   if (!user && req.query.token && typeof req.query.token === 'string') {
     user = await getUserFromToken(req.query.token) || undefined;
+  }
+  // 常時接続の上限。溢れたら待たせずに断る（クライアントは少し待って張り直す）
+  if (isStreamAtCapacity()) {
+    res.setHeader('Retry-After', '30');
+    res.status(503).json({ error: 'リアルタイム接続が混み合っています。しばらく待ってから再接続してください。' });
+    return;
   }
   const clientId = addStreamClient(res, user?.id, parseStreams(req.query.streams));
   req.on('close', () => {
@@ -1570,19 +1578,15 @@ export const handleVotePoll = asyncHandler(async (req: Request, res: Response) =
   const insertVote = await db.prepare('INSERT INTO poll_votes (id, poll_id, choice_index, user_id, created_at) VALUES (?, ?, ?, ?, ?)');
   const updateCount = await db.prepare('UPDATE poll_choices SET votes_count = votes_count + 1 WHERE poll_id = ? AND choice_index = ?');
 
-  try {
-    await db.exec('BEGIN');
+  // 投票と集計はまとめて 1 つのトランザクションで入れる。
+  // 文は必ず await する（待たないと COMMIT の後に実行され、集計が二重にずれる）。
+  // SQLite では `withTransaction` が、開いている間だけ他のリクエストの文を待たせる。
+  await withTransaction(db, async () => {
     for (const choiceIdx of choices) {
-      insertVote.run(crypto.randomUUID(), poll.id, choiceIdx, user.id, now);
-      updateCount.run(poll.id, choiceIdx);
+      await insertVote.run(crypto.randomUUID(), poll.id, choiceIdx, user.id, now);
+      await updateCount.run(poll.id, choiceIdx);
     }
-    await db.exec('COMMIT');
-  } catch (err) {
-    try {
-      await db.exec('ROLLBACK');
-    } catch {}
-    throw err;
-  }
+  });
 
   console.log(`[Poll Vote] User @${user.id} voted for choices [${choices.join(', ')}] on post ${postId}`);
 

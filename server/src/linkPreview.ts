@@ -1,5 +1,5 @@
 import { db } from './db.js';
-import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
+import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 import { enqueueJob, registerJobHandler } from './jobs.js';
 
 /**
@@ -196,12 +196,10 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
     return null;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
+    // リダイレクトは 1 ホップずつ検証し、タイムアウトも必ず入れる（safeFetch が両方やる）
+    const res = await safeFetch(url, {
+      timeoutMs: FETCH_TIMEOUT_MS,
       headers: {
         Accept: 'text/html,application/xhtml+xml',
         'User-Agent': `Spica/1.0.0 (+LinkPreview)`,
@@ -235,8 +233,6 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
   } catch {
     await savePreview({ url, title: null, description: null, image_url: null, site_name: null, status: 'error', fetched_at: new Date().toISOString() });
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

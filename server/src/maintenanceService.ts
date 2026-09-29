@@ -150,6 +150,8 @@ export async function runScheduledMaintenance(): Promise<{
   fts: { toUnindex: number; toIndex: number };
   announces: { toRemove: number };
   proxyCache: { removed: number; freedBytes: number };
+  /** 期限切れで消した行（セッション・読み終わった通知） */
+  expired: { sessions: number; notifications: number };
 }> {
   const started = Date.now();
   const options = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: config.remotePostRetentionDays, applyPolicy: true };
@@ -233,12 +235,64 @@ export async function runScheduledMaintenance(): Promise<{
     console.error('[Auto Maintenance] 画像プロキシの整理に失敗しました:', err?.message || err);
   }
 
+  // ⑤ 期限切れデータの掃除（セッション・読み終わった通知）
+  //    どちらも放っておくと際限なく増える（数週間で効いてくる種類のもの）
+  let expired = { sessions: 0, notifications: 0 };
+  try {
+    expired = await pruneExpiredRows();
+    if (expired.sessions > 0 || expired.notifications > 0) {
+      console.log(
+        `[Auto Maintenance] 🧽 期限切れの掃除: セッション ${expired.sessions} 件 / 読み終わった通知 ${expired.notifications} 件`,
+      );
+    }
+  } catch (err: any) {
+    console.error('[Auto Maintenance] 期限切れデータの掃除に失敗しました:', err?.message || err);
+  }
+
   const size = await getDbSizeInfo(config.dbPath, db);
   console.log(
     `[Auto Maintenance] ✅ 完了 (${((Date.now() - started) / 1000).toFixed(1)}s) / DB ${(size.dbBytes / 1024 / 1024).toFixed(1)}MB + WAL ${(size.walBytes / 1024 / 1024).toFixed(1)}MB` +
       ' / ※ 領域の解放（VACUUM）はサーバー停止時に npm run db:maintenance -- --apply で',
   );
-  return { backup, removedPosts, fts, announces, proxyCache };
+  return { backup, removedPosts, fts, announces, proxyCache, expired };
+}
+
+/**
+ * 期限切れデータの削除。
+ *
+ * - 期限切れのセッション: ログアウト時にしか消していなかったので、放置すると永久に溜まる
+ * - 読み終わった通知: `NOTIFICATION_RETENTION_DAYS` 日より古いものだけ（未読は消さない）
+ *
+ * 件数を区切って複数回に分ける（SQLite の書き込みを 1 回で長時間占有しないため）。
+ */
+export async function pruneExpiredRows(): Promise<{ sessions: number; notifications: number }> {
+  const batch = 2000;
+  let sessions = 0;
+  let notifications = 0;
+
+  while (true) {
+    const result = await db
+      .prepare('DELETE FROM sessions WHERE token IN (SELECT token FROM sessions WHERE expires_at <= ? LIMIT ?)')
+      .run(new Date().toISOString(), batch);
+    const removed = Number(result.changes ?? 0);
+    sessions += removed;
+    if (removed < batch) break;
+  }
+
+  const retentionDays = config.notificationRetentionDays;
+  if (retentionDays > 0) {
+    const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
+    while (true) {
+      const result = await db
+        .prepare('DELETE FROM notifications WHERE id IN (SELECT id FROM notifications WHERE is_read = 1 AND created_at <= ? LIMIT ?)')
+        .run(cutoff, batch);
+      const removed = Number(result.changes ?? 0);
+      notifications += removed;
+      if (removed < batch) break;
+    }
+  }
+
+  return { sessions, notifications };
 }
 
 /** 管理画面向け: 容量・件数・メンテナンス状況をまとめて返す */

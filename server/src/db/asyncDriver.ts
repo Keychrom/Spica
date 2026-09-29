@@ -59,6 +59,15 @@ export interface AsyncSpicaDatabase {
    * SQLite は元から 1 接続なので、そのまま実行する。
    */
   withSession<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * トランザクションの中で `fn` を実行する（入れ子は不可）。
+   *
+   * SQLite は 1 接続を全リクエストで共有しているので、**`fn` の中の await の間に
+   * 他のリクエストの文が同じ接続へ入らないように待たせる**（待たせないと、その文が
+   * 開いているトランザクションに相乗りし、ROLLBACK が他人の書き込みまで巻き戻す）。
+   * PostgreSQL は接続を 1 本借りて固定するので、他のリクエストは混ざらない。
+   */
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,24 +81,104 @@ export interface AsyncSpicaDatabase {
 class AsyncSqliteDatabase implements AsyncSpicaDatabase {
   readonly kind = 'sqlite' as const;
 
+  /**
+   * トランザクションの持ち主（AsyncLocalStorage）。
+   *
+   * SQLite は 1 接続を全リクエストで共有している。`node:sqlite` の 1 文は同期なので
+   * 途中で割り込まれることは無いが、**`await` をまたいだ瞬間にイベントループが回り、
+   * 別リクエストの文が同じ接続（＝開いているトランザクションの中）で実行されてしまう**。
+   * そうなると ROLLBACK が他人の書き込みまで巻き戻り、COMMIT の二重開始で
+   * `cannot start a transaction within a transaction` も出る。
+   *
+   * そこで「トランザクションが開いている間は、**持ち主以外**の文を待たせる」。
+   * 持ち主の文はそのまま通す（自分のトランザクションなので当然）。
+   */
+  private readonly txOwner = new AsyncLocalStorage<symbol>();
+  /** 開いている（または開始待ちの）トランザクションが終わるまで解決しないロック */
+  private txLock: Promise<void> = Promise.resolve();
+  private txRunning = false;
+
   constructor(private readonly inner: DatabaseSync) {}
 
+  /**
+   * 文を実行する前の関門。
+   * トランザクションの中なら素通り、外なら開いているトランザクションの終了を待つ。
+   */
+  private async gate(): Promise<void> {
+    if (this.txOwner.getStore()) return;
+    if (this.txRunning) await this.txLock;
+  }
+
+  /**
+   * 1 文を実行する。
+   *
+   * **トランザクションが開いていないときは、その場で同期的に実行する**（従来どおり）。
+   * 待たせるのは「他の文脈でトランザクションが開いている」ときだけ。
+   *
+   * これは見た目より大事な性質で、`backupDatabase` のように
+   * `exec('VACUUM INTO ...')` の直後に `statSync` で結果を見る処理がある
+   * （`await` を挟むと、まだ実行されていないファイルを stat して ENOENT になる）。
+   */
+  private runNow<T>(fn: () => T): Promise<T> {
+    if (!this.txRunning || this.txOwner.getStore()) {
+      return Promise.resolve(fn());
+    }
+    return this.gate().then(fn);
+  }
+
   prepare(sql: string): AsyncSpicaStatement {
+    // 準備（コンパイル）はここで済ませる
     const statement = this.inner.prepare(sql) as unknown as {
       get(...params: unknown[]): any;
       all(...params: unknown[]): any[];
       run(...params: unknown[]): SpicaRunResult;
     };
     return {
-      get: (...params: unknown[]) => Promise.resolve(statement.get(...params)),
-      all: (...params: unknown[]) => Promise.resolve(statement.all(...params)),
-      run: (...params: unknown[]) => Promise.resolve(statement.run(...params)),
+      get: (...params: unknown[]) => this.runNow(() => statement.get(...params)),
+      all: (...params: unknown[]) => this.runNow(() => statement.all(...params)),
+      run: (...params: unknown[]) => this.runNow(() => statement.run(...params)),
     };
   }
 
   exec(sql: string): Promise<void> {
-    this.inner.exec(sql);
-    return Promise.resolve();
+    return this.runNow(() => {
+      this.inner.exec(sql);
+    });
+  }
+
+  /**
+   * トランザクション。開いている間は他の文脈の文を待たせる（上の `txOwner` の説明を参照）。
+   * 1 本の接続なので、同時に開けるトランザクションも 1 つだけにする。
+   */
+  async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.txOwner.getStore()) throw new Error('トランザクションは入れ子にできません');
+
+    // 先にロックを差し替えてから待つ（待っている間に来た文も、この順番で並ぶ）
+    const previous = this.txLock;
+    let release!: () => void;
+    this.txLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.txRunning = true;
+    try {
+      await previous;
+      this.inner.exec('BEGIN');
+      try {
+        const result = await this.txOwner.run(Symbol('tx'), fn);
+        this.inner.exec('COMMIT');
+        return result;
+      } catch (err) {
+        try {
+          this.inner.exec('ROLLBACK');
+        } catch {
+          // ロールバックに失敗しても元のエラーを優先する
+        }
+        throw err;
+      }
+    } finally {
+      this.txRunning = false;
+      release();
+    }
   }
 
   close(): Promise<void> {
@@ -431,27 +520,15 @@ export function createAsyncDatabase(options: CreateAsyncDatabaseOptions = {}): A
 }
 
 /**
- * トランザクション付きで実行する。
+ * トランザクション付きで実行する（両ドライバ共通の入口）。
  *
- * PostgreSQL では 1 接続に直列化しているので、`fn` の実行中は他のクエリが割り込まない。
- * SQLite も同じ接続を共有しているので、`fn` の中の await の間に他のクエリが割り込む余地は無い
- * （`node:sqlite` は同期 API なので、そもそも実行中に他の処理が走らない）。
+ * - PostgreSQL … 接続を 1 本借りて固定するので、他のリクエストは混ざらない
+ * - SQLite … 1 接続を共有しているので、`fn` の中の `await` の間は**他のリクエストの文を待たせる**
+ *   （待たせないと、その文が開いているトランザクションに相乗りしてしまう）
+ *
+ * `fn` の中の文は必ず `await` すること。待たないと COMMIT の後に実行され得る
+ * （PostgreSQL では別の接続に流れて、トランザクションの外で書かれる）。
  */
 export function withTransaction<T>(database: AsyncSpicaDatabase, fn: () => Promise<T>): Promise<T> {
-  if (database instanceof AsyncPostgresDatabase) return database.transaction(fn);
-  return (async () => {
-    await database.exec('BEGIN');
-    try {
-      const result = await fn();
-      await database.exec('COMMIT');
-      return result;
-    } catch (err) {
-      try {
-        await database.exec('ROLLBACK');
-      } catch {
-        // ロールバックに失敗しても元のエラーを優先する
-      }
-      throw err;
-    }
-  })();
+  return database.transaction(fn);
 }

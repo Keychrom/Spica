@@ -225,6 +225,7 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 | 検査 | 守っていること |
 | :--- | :--- |
 | `scripts/test-process-roles.ts` | `web` は定期処理を動かさない / `worker` はポートを開かない / 既定（`all`）は今までどおり / **2 ワーカーで同じ仕事を二重に実行しない** / 同時起動でもインスタンス鍵が 1 つ |
+| `scripts/test-hardening.ts` | **SQLite のトランザクションが他のリクエストを巻き込まない** / Redis 無しでもロックが効く / 予約投稿は 1 回だけ公開される / 外向き fetch は 1 ホップずつ検証して必ず打ち切る / SSE は上限で断る / **同じサーバーのフォロワーは 1 本に集約され、同時実行数は設定値以下** |
 | `scripts/test-multiprocess.ts` | 2 プロセスでレート制限・SSE・設定が共有される / 予約投稿が二重に公開されない / 配送が二重に送られない |
 | `scripts/test-job-queue.ts` | 一覧→宣言の競合（バックオフ中の仕事を掴まない）/ 並列実行でも 1 件ずつ |
 | `scripts/test-redis.ts` / `test-stream-scope.ts` | ロック・Pub/Sub・配信先の絞り込み |
@@ -232,8 +233,9 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 
 ```bash
 bash scripts/run-suites.sh              # SQLite で全スイート
-bash scripts/run-suites-pg.sh           # PostgreSQL で（process-roles は同時運転まで回る）
+bash scripts/run-suites-pg.sh           # PostgreSQL で（process-roles / hardening は同時運転まで回る）
 npx tsx scripts/test-process-roles.ts   # 役割の検査だけ
+npx tsx scripts/test-hardening.ts       # 堅牢性の検査だけ
 ```
 
 ---

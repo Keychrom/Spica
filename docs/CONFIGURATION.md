@@ -78,6 +78,10 @@ Spica の設定は **2 か所**に分かれています。
 | `INBOX_SIGNATURE_MODE` | `strict` | `strict`: 検証失敗を **401 で拒否**。`log`: 警告ログのみで処理続行（**非推奨**） |
 | `INBOX_FORWARDED_ACTIVITY_POLICY` | `relay` | `relay`: **承認済みリレー**からの代理転送のみ許可。`any`: 誰からの代理転送でも許可（**非推奨**） |
 | `SIGNATURE_MAX_AGE_SECONDS` | `43200`（12 時間） | 署名 `Date` ヘッダーの許容幅。リプレイ攻撃対策 |
+| `FEDERATION_TIMEOUT_MS` | `15000` | 連合の外向き取得（配送・Actor・WebFinger・リンクプレビュー・画像プロキシ）の打ち切り時間（ミリ秒、1000〜120000）。**相手が黒穴（接続はするが応答しない）でも、ここで必ず切ります**（無いとソケットを掴んだまま戻らず、follow などのリクエストが無限に待ちます） |
+| `SSE_MAX_CLIENTS` | `1000` | 1 プロセスが同時に持てるリアルタイム接続（SSE）の数。`0` で無制限。溢れた接続は `503`（`Retry-After: 30`）で断ります |
+| `SSE_MAX_BUFFER_BYTES` | `2097152`（2MB） | 1 接続の送信バッファの上限。超えた接続は切ります（遅いクライアント 1 本でバッファが無限に膨らむのを防ぐ。切られたクライアントは自動で張り直します） |
+| `NOTIFICATION_RETENTION_DAYS` | `90` | 読み終わった通知を残す日数（`0` で削除しない）。**未読は消しません**。毎日の自動メンテナンスで消します |
 | `ALLOW_PRIVATE_REMOTE_FETCH` | `PROTOCOL` が `https` なら `false`、それ以外は `true` | プライベート IP・内部ホスト名への remote actor 取得を許可するか（SSRF 対策） |
 
 ---

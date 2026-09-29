@@ -40,6 +40,23 @@ export async function processScheduledPosts(): Promise<number> {
   let processedCount = 0;
   try {
     const nowIso = new Date().toISOString();
+
+    // 公開中（'publishing'）のまま残った行を待機中へ戻す。
+    // 公開の途中でプロセスが落ちると、その行は永久に公開されなくなるため（10 分より古いものだけ）。
+    try {
+      const staleCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const reclaimed = await db
+        .prepare(
+          "UPDATE scheduled_posts SET status = 'pending' WHERE status = 'publishing' AND (updated_at = '' OR updated_at <= ?)",
+        )
+        .run(staleCutoff);
+      if (Number(reclaimed.changes ?? 0) > 0) {
+        console.log(`[Scheduler] ♻️ 公開中のまま残っていた予約投稿を ${reclaimed.changes} 件戻しました`);
+      }
+    } catch {
+      // updated_at が無い古い DB でも動くように、失敗しても続行する
+    }
+
     const pendingPosts = await db.prepare(`
       SELECT * FROM scheduled_posts
       WHERE status = 'pending' AND scheduled_at <= ?
@@ -56,6 +73,16 @@ export async function processScheduledPosts(): Promise<number> {
 
     for (const item of pendingPosts) {
       try {
+        // 「自分が公開する」と宣言してから公開する（`status = 'publishing'`）。
+        // ロック（Redis / DB）が効いていれば 1 プロセスしかここへ来ないが、
+        // 行の側でも 1 回だけにしておく（ロックが失効した・Redis が落ちた場合の保険）。
+        const claimed = await db
+          .prepare("UPDATE scheduled_posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'pending'")
+          .run(new Date().toISOString(), item.id);
+        if (Number(claimed.changes ?? 0) !== 1) {
+          continue; // 他のプロセスが先に取った
+        }
+
         const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(item.user_id) as UserRow | undefined;
         if (!user) {
           await db.prepare('UPDATE scheduled_posts SET status = "failed", error_message = "ユーザーが見つかりません" WHERE id = ?').run(item.id);

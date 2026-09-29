@@ -2,7 +2,7 @@ import { config } from './config.js';
 import { db, UserRow, PostRow, RemoteActorRow, isDomainBlocked, isInboxBlockingSender } from './db.js';
 import { signHeaders } from './crypto.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
-import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
+import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 import { enqueueDelivery, nextRetryDelayMs } from './deliveryQueue.js';
 import crypto from 'node:crypto';
 
@@ -421,7 +421,7 @@ export async function fetchActorAliases(actorUrl: string): Promise<string[]> {
       console.log(`[Move] 🚫 alsoKnownAs の取得をスキップ（安全でない URL）: ${actorUrl}`);
       return [];
     }
-    const res = await fetch(actorUrl, {
+    const res = await safeFetch(actorUrl, {
       headers: {
         Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
         'User-Agent': `Spica/1.0.0 (+${config.origin})`,
@@ -511,7 +511,7 @@ export async function resolveWebFinger(handle: string): Promise<string> {
   }
 
   console.log(`[WebFinger] Querying: ${url}`);
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: {
       Accept: 'application/jrd+json, application/json',
     },
@@ -570,7 +570,7 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
   }
 
   console.log(`[Actor] Fetching remote actor: ${actorUrl}`);
-  const res = await fetch(actorUrl, {
+  const res = await safeFetch(actorUrl, {
     headers: {
       Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
       'User-Agent': `Spica/1.0.0 (+${config.origin})`,
@@ -745,7 +745,9 @@ export async function attemptDelivery(params: {
   console.log(`[Delivery] Sending activity (${params.activity.type}) to ${params.inboxUrl}`);
 
   try {
-    const res = await fetch(params.inboxUrl, {
+    // 署名した POST はリダイレクトを追わない（追うと署名が宛先と食い違い、3xx で
+    // ガードの外へ飛ばされる）。タイムアウトは safeFetch が必ず入れる。
+    const res = await safeFetch(params.inboxUrl, {
       method: 'POST',
       headers,
       body,

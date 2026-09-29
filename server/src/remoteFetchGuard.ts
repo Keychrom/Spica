@@ -93,12 +93,7 @@ export async function assertFetchableRemoteUrl(rawUrl: string): Promise<{ safe: 
       : { safe: true };
   }
 
-  let resolved: { address: string; family: number }[];
-  try {
-    resolved = await dnsLookup(hostname, { all: true });
-  } catch {
-    return { safe: false, reason: `Remote hostname did not resolve: ${hostname}` };
-  }
+  const resolved = await resolveHost(hostname);
   if (resolved.length === 0) {
     return { safe: false, reason: `Remote hostname did not resolve: ${hostname}` };
   }
@@ -111,4 +106,100 @@ export async function assertFetchableRemoteUrl(rawUrl: string): Promise<{ safe: 
   }
 
   return { safe: true };
+}
+
+/**
+ * 名前解決の結果を少しの間だけ覚える。
+ *
+ * 配送 1 件ごとに相手のホストを引き直すので、フォロワーが多い投稿では同じホストを
+ * 何百回も引くことになる（1 投稿の fan-out が数百の DNS を作る）。TTL は短くして、
+ * 公開アドレスだったホストが private に変わる余地を残さない範囲にする。
+ *
+ * **失敗は覚えない**（一時的な名前解決の失敗で配送が「再試行しない」扱いになるのを避ける）。
+ */
+const DNS_CACHE_TTL_MS = 60_000;
+const DNS_CACHE_MAX = 2000;
+/** リゾルバが固まっても、ここで打ち切って先へ進む */
+const DNS_TIMEOUT_MS = 5_000;
+const dnsCache = new Map<string, { at: number; entries: { address: string; family: number }[] }>();
+
+async function resolveHost(hostname: string): Promise<{ address: string; family: number }[]> {
+  const cached = dnsCache.get(hostname);
+  if (cached && Date.now() - cached.at < DNS_CACHE_TTL_MS) return cached.entries;
+
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const entries = (await Promise.race([
+      dnsLookup(hostname, { all: true }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`DNS lookup timed out: ${hostname}`)), DNS_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ])) as { address: string; family: number }[];
+    if (dnsCache.size >= DNS_CACHE_MAX) {
+      // 古いものから捨てる（Map は挿入順）
+      const oldest = dnsCache.keys().next().value;
+      if (oldest) dnsCache.delete(oldest);
+    }
+    dnsCache.set(hostname, { at: Date.now(), entries });
+    return entries;
+  } catch {
+    return [];
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** リダイレクトとして扱うステータス */
+const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
+
+export interface SafeFetchOptions extends RequestInit {
+  /** 打ち切るまでの時間（ミリ秒）。既定は `FEDERATION_TIMEOUT_MS` */
+  timeoutMs?: number;
+  /**
+   * 追うリダイレクトの上限。既定は GET / HEAD なら 3、それ以外は 0
+   * （署名した POST はリダイレクト先へ付け替えられないため）
+   */
+  maxRedirects?: number;
+}
+
+/**
+ * SSRF ガードとタイムアウト付きの fetch（連合の外向き取得は必ずこれを通す）。
+ *
+ * - 取得の前に**毎回** `assertFetchableRemoteUrl` を通す。`redirect: 'follow'` にすると
+ *   最初の URL しか検証されず、`Location: http://169.254.169.254/` のような 3xx で
+ *   ガードを回避できる。ここでは `redirect: 'manual'` にして**1 ホップずつ検証**する
+ * - `AbortSignal.timeout` で必ず打ち切る。相手が黒穴（接続はするが応答しない）だと、
+ *   タイムアウトが無い限りソケットとリクエストを掴んだまま戻らない
+ */
+export async function safeFetch(rawUrl: string, options: SafeFetchOptions = {}): Promise<Response> {
+  const { timeoutMs = config.federationTimeoutMs, maxRedirects, ...init } = options;
+  const method = String(init.method || 'GET').toUpperCase();
+  const redirectsAllowed = maxRedirects ?? (method === 'GET' || method === 'HEAD' ? 3 : 0);
+
+  let current = rawUrl;
+  for (let hop = 0; ; hop++) {
+    const safety = await assertFetchableRemoteUrl(current);
+    if (!safety.safe) {
+      throw new Error(`安全でない取得先のため拒否しました: ${safety.reason || current}`);
+    }
+
+    const response = await fetch(current, {
+      ...init,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    const location = response.headers.get('location');
+    if (!REDIRECT_STATUS.has(response.status) || !location) return response;
+    if (hop >= redirectsAllowed) {
+      // 追わない場合はそのまま返す（POST の 3xx は呼び出し側が「配送失敗」として扱う。
+      // 署名は URL を含むので、こちらで勝手に付け替えて投げ直すことはできない）
+      if (redirectsAllowed === 0) return response;
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`リダイレクトが多すぎます: ${rawUrl}`);
+    }
+    await response.body?.cancel().catch(() => {});
+    current = new URL(location, current).toString();
+  }
 }

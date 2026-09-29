@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { db, initDatabase, loadServerSettings } from './db.js';
+import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules } from './db.js';
 import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
 import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
 import { authenticate } from './auth.js';
@@ -51,6 +51,8 @@ await subscribeEvent('settings', () => {
   void loadServerSettings().catch((err) => {
     console.warn('[Redis] 設定の読み直しに失敗しました:', err?.message || err);
   });
+  // ブロックリストも変わり得るので、こちらも捨てる（次の参照で読み直す）
+  invalidateBlockedDomainRules();
 });
 
 // ==========================================

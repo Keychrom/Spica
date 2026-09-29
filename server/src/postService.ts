@@ -12,6 +12,7 @@ import { canViewPost, normalizeVisibility, PostVisibility } from './postVisibili
 import { localPostId } from './ids.js';
 import { queueLinkPreviewFetch } from './linkPreview.js';
 import { linkMediaToPost } from './mediaService.js';
+import { runWithConcurrency } from './jobs.js';
 
 export interface CreatePostParams {
   user: UserRow;
@@ -339,9 +340,17 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   });
 
   // 4. 配信先 Inbox の収集: フォロワー(承認済みのみ) + 承認済みリレー + 返信相手(あれば) + 引用相手(あれば)
+  //
+  // 同じサーバーのフォロワーは**共有 Inbox（sharedInbox）1 つにまとめる**。
+  // まとめないと、そのサーバーのフォロワー数だけ署名付き POST と DNS 解決が走る
+  // （Mastodon / Misskey はどちらも sharedInbox を公開しているので、実質 1 本で済む）。
   const followerInboxes = (await db.prepare(`
-    SELECT DISTINCT inbox_url FROM follows
-    WHERE following_url = ? AND status = 'accepted' AND inbox_url IS NOT NULL AND inbox_url != ''
+    SELECT DISTINCT COALESCE(ra.shared_inbox_url, f.inbox_url) AS inbox_url
+    FROM follows f
+    LEFT JOIN remote_actors ra ON ra.id = f.follower_url
+    WHERE f.following_url = ? AND f.status = 'accepted'
+      AND COALESCE(ra.shared_inbox_url, f.inbox_url) IS NOT NULL
+      AND COALESCE(ra.shared_inbox_url, f.inbox_url) != ''
   `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
 
   // リレーは不特定多数のサーバーへ再配信するため、フォロワー限定投稿では使用しない
@@ -373,18 +382,23 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
 
   const allTargetInboxes = Array.from(new Set([...followerInboxes, ...relayInboxes, ...directInboxes]));
 
-  // 非同期でフォロワー及びリレーへ配送
+  // 非同期でフォロワー及びリレーへ配送。
+  // **同時実行数を絞る**（既定 5、`DELIVERY_CONCURRENCY`）。以前は全部を一度に投げていたので、
+  // フォロワーが多いと 1 投稿で数百〜数千の fetch が同時に立ち、ソケットとメモリを使い切っていた。
+  // 絞っても総時間はほぼ変わらない（1 件あたりはネットワーク待ちが主）。
   if (allTargetInboxes.length > 0) {
-    Promise.allSettled(
-      allTargetInboxes.map((inboxUrl) =>
-        deliverActivity({
+    void runWithConcurrency(allTargetInboxes, config.deliveryConcurrency, async (inboxUrl) => {
+      try {
+        return (await deliverActivity({
           inboxUrl,
           activity: createActivity,
           senderUser: user,
-        })
-      )
-    ).then((results) => {
-      const succeeded = results.filter((r) => r.status === 'fulfilled' && r.value).length;
+        })) === true;
+      } catch {
+        return false;
+      }
+    }).then((results) => {
+      const succeeded = results.filter((ok) => ok === true).length;
       console.log(`[Delivery] Federation sent: ${succeeded}/${allTargetInboxes.length} inboxes`);
     });
   }

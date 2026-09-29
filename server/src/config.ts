@@ -53,6 +53,8 @@ export interface AppConfig {
   inboxSignatureMode: InboxSignatureMode;
   /** 署名の Date ヘッダー許容幅（秒）。リプレイ防止用 */
   signatureMaxAgeSeconds: number;
+  /** 連合の外向き取得（配送・Actor・WebFinger・メディア）の打ち切り時間（ミリ秒） */
+  federationTimeoutMs: number;
   /**
    * 署名鍵の持ち主と Activity の actor が異なる「代理転送」の許可方針。
    * relay: 管理画面で accepted 済みのリレーからの転送のみ許可（既定）
@@ -88,6 +90,10 @@ export interface AppConfig {
   mediaPublicBaseUrl: string;
   /** /metrics のトークン（未設定なら /metrics は 404） */
   metricsToken: string;
+  /** 1 プロセスが同時に持てるリアルタイム接続（SSE）の数。0 で無制限 */
+  sseMaxClients: number;
+  /** 1 接続の送信バッファの上限（バイト）。超えた接続は切る */
+  sseMaxBufferBytes: number;
   /**
    * リモート投稿の保持日数（npm run db:maintenance が使う。既定 30、0 で期間削除なし）
    * リレー経由で流入する投稿で DB が際限なく増えるのを防ぐための設定。
@@ -95,6 +101,8 @@ export interface AppConfig {
   remotePostRetentionDays: number;
   /** ドライブ（自分のアップロード）の容量上限（MB）。0 は無制限 */
   mediaQuotaMb: number;
+  /** 読み終わった通知の保持日数（0 で削除しない。未読は消さない） */
+  notificationRetentionDays: number;
   /** ffmpeg の実行ファイルパス（動画サムネイル生成用。既定 'ffmpeg'） */
   ffmpegPath: string;
   /** ffprobe の実行ファイルパス（動画の長さ・解像度取得用。既定 'ffprobe'） */
@@ -197,6 +205,13 @@ const INBOX_FORWARDED_POLICY: InboxForwardedPolicy =
 // 署名の Date ヘッダー許容幅（秒）。既定 12 時間（Mastodon と同値）
 const SIGNATURE_MAX_AGE_SECONDS = Math.max(0, parseInt(process.env.SIGNATURE_MAX_AGE_SECONDS || '43200', 10) || 0);
 
+// 連合の外向き取得（配送・Actor・WebFinger・リンクプレビュー・画像プロキシ）の打ち切り時間（ミリ秒）。
+// 相手が黒穴（接続はするが応答しない）のとき、これが無いとソケットとリクエストを掴んだまま戻らない。
+const FEDERATION_TIMEOUT_MS = (() => {
+  const parsed = parseInt(process.env.FEDERATION_TIMEOUT_MS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 1000 ? Math.min(parsed, 120_000) : 15_000;
+})();
+
 // プライベートアドレス宛の remote actor 取得を許すか。
 // 本番（https 公開）では SSRF 対策として既定で拒否し、http 運用のローカル開発時のみ許可する。
 const ALLOW_PRIVATE_REMOTE_FETCH = process.env.ALLOW_PRIVATE_REMOTE_FETCH
@@ -221,6 +236,15 @@ const REMOTE_POST_RETENTION_DAYS = (() => {
 const MEDIA_QUOTA_MB = (() => {
   const parsed = parseInt(process.env.MEDIA_QUOTA_MB || '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+})();
+
+// 読み終わった通知の保持日数（既定 90 日、0 で削除しない）。
+// 通知は放っておくと際限なく増える。**未読は消さない**（取りこぼしを避ける）。
+const NOTIFICATION_RETENTION_DAYS = (() => {
+  const raw = process.env.NOTIFICATION_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === '') return 90;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 90;
 })();
 
 // 画像プロキシ（リモート画像をこのノード経由で配信し、直リンクを避ける）。既定は有効
@@ -274,6 +298,19 @@ const MEDIA_PUBLIC_BASE_URL = (process.env.MEDIA_PUBLIC_BASE_URL || '').trim().r
 // `/metrics`（Prometheus 形式）を出すときのトークン。**未設定なら /metrics は 404**。
 // nginx の背後では接続元 IP で守れない（全部 127.0.0.1 になる）ので、トークンで守る。
 const METRICS_TOKEN = (process.env.METRICS_TOKEN || '').trim();
+
+// リアルタイム接続（SSE）の上限。
+//  - `SSE_MAX_CLIENTS` … 1 プロセスが同時に持てる接続数（既定 1000、0 で無制限）
+//  - `SSE_MAX_BUFFER_BYTES` … 1 接続の送信バッファの上限（既定 2MB）。超えた接続は切る
+//    （遅いクライアントを放置するとバッファが無限に膨らみ、まずここでメモリが尽きる）
+const SSE_MAX_CLIENTS = (() => {
+  const parsed = parseInt(process.env.SSE_MAX_CLIENTS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1000;
+})();
+const SSE_MAX_BUFFER_BYTES = (() => {
+  const parsed = parseInt(process.env.SSE_MAX_BUFFER_BYTES || '', 10);
+  return Number.isFinite(parsed) && parsed >= 1024 ? parsed : 2 * 1024 * 1024;
+})();
 
 // Redis（任意）。未設定ならインメモリ実装のまま＝単一プロセス前提で今までどおり動く
 const REDIS_URL = process.env.REDIS_URL?.trim() || '';
@@ -341,6 +378,7 @@ export const config: AppConfig = {
   },
   inboxSignatureMode: INBOX_SIGNATURE_MODE,
   signatureMaxAgeSeconds: SIGNATURE_MAX_AGE_SECONDS,
+  federationTimeoutMs: FEDERATION_TIMEOUT_MS,
   inboxForwardedPolicy: INBOX_FORWARDED_POLICY,
   allowPrivateRemoteFetch: ALLOW_PRIVATE_REMOTE_FETCH,
   authorizedFetch: AUTHORIZED_FETCH,
@@ -352,8 +390,11 @@ export const config: AppConfig = {
   recentScanPosts: RECENT_SCAN_POSTS,
   mediaPublicBaseUrl: MEDIA_PUBLIC_BASE_URL,
   metricsToken: METRICS_TOKEN,
+  sseMaxClients: SSE_MAX_CLIENTS,
+  sseMaxBufferBytes: SSE_MAX_BUFFER_BYTES,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,
+  notificationRetentionDays: NOTIFICATION_RETENTION_DAYS,
   ffmpegPath: FFMPEG_PATH,
   ffprobePath: FFPROBE_PATH,
   ftsIndexScope: FTS_INDEX_SCOPE,

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
-import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
+import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 
 /**
  * 画像プロキシ（リモート画像の直リンク解消）
@@ -29,11 +29,17 @@ import { assertFetchableRemoteUrl } from './remoteFetchGuard.js';
  *   IMAGE_PROXY_TTL_DAYS=30       … キャッシュ保持日数
  */
 
-const FETCH_TIMEOUT_MS = 8000;
+/**
+ * 取得と本文の読み込みを合わせた上限。`safeFetch` のタイムアウトは**本文の受信中也**に効くので、
+ * 8MB の画像を細い回線から取ると短いと足りない（取得の開始だけを見ていた以前より厳しくなる）。
+ */
+const FETCH_TOTAL_TIMEOUT_MS = 20000;
 const MAX_BYTES = 8 * 1024 * 1024; // 8MB まで
 const DEFAULT_MAX_MB = 512;
 const DEFAULT_TTL_DAYS = 30;
 const MAX_CONCURRENT_FETCHES = 4;
+/** 最終使用時刻を書き直す間隔。掃除の粒度（日）に対して十分細かく、書き込みは最小にする */
+const LAST_USED_TOUCH_MS = 60 * 60 * 1000;
 
 /** キャッシュする Content-Type（画像のみ。動画・音声は容量が大きいので対象外） */
 const ALLOWED_CONTENT_TYPES = [
@@ -272,7 +278,15 @@ async function readCache(url: string): Promise<{ file: string; contentType: stri
       return null;
     }
 
-    await db.prepare('UPDATE proxy_cache SET last_used_at = ? WHERE url_hash = ?').run(new Date().toISOString(), hash);
+    // 最終使用時刻は**毎回は書かない**。画像を見るたびに書くと、SQLite では
+    // 読み取りだけで書き込みロックを取り、投稿や Inbox の書き込みと直列化してしまう。
+    // 掃除（TTL 判定）に必要な粒度は「日」単位なので、1 時間に 1 回で足りる。
+    const lastUsedMs = row.last_used_at ? new Date(row.last_used_at).getTime() : 0;
+    if (Date.now() - lastUsedMs > LAST_USED_TOUCH_MS) {
+      void db.prepare('UPDATE proxy_cache SET last_used_at = ? WHERE url_hash = ?')
+        .run(new Date().toISOString(), hash)
+        .catch(() => {});
+    }
     return { file, contentType: row.content_type, size: row.size, fetchedAt: row.fetched_at };
   } catch {
     return null;
@@ -314,22 +328,17 @@ export async function fetchProxiedImage(url: string): Promise<ProxyFetchResult> 
         throw new Error(`取得できない URL です（${safety.reason || '安全でないアドレス'}）`);
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       let res: Response;
-      try {
-        res = await fetch(url, {
-          redirect: 'follow',
-          signal: controller.signal,
-          headers: {
-            // 相手サーバーに余計な情報を渡さない
-            'User-Agent': `Spica/${config.instanceName} (+${config.origin})`,
-            Accept: 'image/*,*/*;q=0.8',
-          },
-        });
-      } finally {
-        clearTimeout(timer);
-      }
+      // リダイレクトは 1 ホップずつ検証する（`follow` にすると、最初の URL だけを見て
+      // 内部アドレスへ 3xx で飛ばされる）。タイムアウトも safeFetch 側で入る。
+      res = await safeFetch(url, {
+        timeoutMs: FETCH_TOTAL_TIMEOUT_MS,
+        headers: {
+          // 相手サーバーに余計な情報を渡さない
+          'User-Agent': `Spica/${config.instanceName} (+${config.origin})`,
+          Accept: 'image/*,*/*;q=0.8',
+        },
+      });
 
       if (!res.ok) {
         throw new Error(`取得に失敗しました（HTTP ${res.status}）`);

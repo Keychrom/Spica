@@ -449,6 +449,7 @@ CREATE TABLE IF NOT EXISTS scheduled_posts  (
   error_message TEXT DEFAULT '',
   published_post_id TEXT DEFAULT '',
   created_at TEXT NOT NULL,
+  updated_at TEXT DEFAULT '',
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS server_settings  (
@@ -528,11 +529,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_list_members_list ON list_members(list_id);
 CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);
+CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);
 CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
 CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);
 CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_miauth_created ON miauth_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_muted_words_user ON muted_words(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_read_created ON notifications(is_read, created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_due ON outbox_deliveries(status, next_attempt_at);
@@ -547,14 +550,17 @@ CREATE INDEX IF NOT EXISTS idx_posts_in_reply_to ON posts(in_reply_to);
 CREATE INDEX IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);
+CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_user ON reactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocked ON remote_blocks(blocked_actor_url);
+CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocker ON remote_blocks(blocker_actor_url);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_actor_url);
 CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status ON scheduled_posts(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_blocks_user ON user_blocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_mutes_user ON user_mutes(user_id);
