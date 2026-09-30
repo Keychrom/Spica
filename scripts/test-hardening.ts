@@ -758,6 +758,49 @@ try {
   check('/health にヒット数が出る', Number(cacheHealth?.timelineCache?.hits ?? 0) >= 1, true);
   check('/health に無効化の回数が出る', Number(cacheHealth?.timelineCache?.invalidations ?? 0) >= 1, true);
 
+  // ── 13. タイムラインの組み立て（12 本 → まとめた後も中身が同じ）────
+  // カウンタ（リアクション / ブースト / 返信）と閲覧者の状態（ブックマーク等）は
+  // 1 本のクエリにまとめた。**まとめた結果が従来と同じ形で出ているか**を確かめる。
+  console.log('\n── 13. タイムラインの組み立て（統合したクエリ）──────────');
+  const guardPost = await fetch(`${BASE}/api/posts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cacheToken}` },
+    body: JSON.stringify({ content: '組み立ての検査', visibility: 'public' }),
+  });
+  const guardPostBody = (await guardPost.json()) as any;
+  check('対象の投稿を作れる', guardPost.status, 201);
+
+  const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${cacheToken}` };
+  const react = await fetch(`${BASE}/api/posts/${encodeURIComponent(guardPostBody.id)}/react`, {
+    method: 'POST', headers: authHeaders, body: JSON.stringify({ reaction: '⭐' }),
+  });
+  check('リアクションできる', [200, 201].includes(react.status), true);
+  const boost = await fetch(`${BASE}/api/posts/${encodeURIComponent(guardPostBody.id)}/announce`, {
+    method: 'POST', headers: authHeaders, body: JSON.stringify({}),
+  });
+  check('ブーストできる', [200, 201].includes(boost.status), true);
+  const reply = await fetch(`${BASE}/api/posts`, {
+    method: 'POST', headers: authHeaders,
+    body: JSON.stringify({ content: '返信の検査', in_reply_to: guardPostBody.id, visibility: 'public' }),
+  });
+  check('返信できる', [200, 201].includes(reply.status), true);
+  const bookmark = await fetch(`${BASE}/api/posts/${encodeURIComponent(guardPostBody.id)}/bookmark`, {
+    method: 'POST', headers: authHeaders, body: JSON.stringify({}),
+  });
+  check('ブックマークできる', [200, 201].includes(bookmark.status), true);
+
+  const guardTimeline = (await (await fetch(`${BASE}/api/timeline?mode=all&limit=50`, {
+    headers: { Authorization: `Bearer ${cacheToken}` },
+  })).json()) as any[];
+  const guardItem = guardTimeline.find((p) => p.id === guardPostBody.id);
+  check('タイムラインに出る', Boolean(guardItem), true);
+  check('リアクションが数えられている', guardItem?.reactions?.some((r: any) => r.reaction === '⭐' && r.count === 1), true);
+  check('自分のリアクションが見分けられる（me）', guardItem?.reactions?.find((r: any) => r.reaction === '⭐')?.me, true);
+  check('ブースト数が入る', Number(guardItem?.announce_count ?? 0) >= 1, true);
+  check('自分のブーストが見分けられる', guardItem?.my_announced, true);
+  check('返信数が入る', Number(guardItem?.reply_count ?? 0) >= 1, true);
+  check('ブックマーク状態が入る', guardItem?.bookmarked, true);
+
   // TTL 0 で無効にできる（以前の動きに戻せる）
   await stopNode();
   startNode({ TIMELINE_CACHE_TTL_SEC: '0' });

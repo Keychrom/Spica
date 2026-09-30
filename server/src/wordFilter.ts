@@ -52,15 +52,41 @@ function buildRegex(word: MutedWord): RegExp | null {
   }
 }
 
-/** 指定ユーザーが登録しているミュートワードを取得する */
+/**
+ * 指定ユーザーが登録しているミュートワードを取得する。
+ *
+ * タイムライン 1 回ごとに引く（＝利用者ごとに毎回 1 本）ので、**30 秒だけ覚える**。
+ * 追加・削除のときは `invalidateMutedWords()` で捨てるので、自分の設定はすぐ効く
+ * （他のプロセスは TTL ぶん待つ。ドメインブロックのルールと同じ扱い）。
+ */
+const MUTED_WORDS_TTL_MS = 30_000;
+const mutedWordsCache = new Map<string, { at: number; words: MutedWord[] }>();
+
+/** ミュートワードのキャッシュを捨てる（追加・削除の直後に呼ぶ） */
+export function invalidateMutedWords(userId?: string): void {
+  if (!userId) {
+    mutedWordsCache.clear();
+    return;
+  }
+  mutedWordsCache.delete(userId);
+}
+
 export async function getMutedWords(userId: string | null | undefined): Promise<MutedWord[]> {
   if (!userId) {
     return [];
   }
+  const cached = mutedWordsCache.get(userId);
+  if (cached && Date.now() - cached.at < MUTED_WORDS_TTL_MS) {
+    return cached.words;
+  }
   try {
-    return await db
+    const words = (await db
       .prepare('SELECT id, keyword, case_sensitive, whole_word FROM muted_words WHERE user_id = ?')
-      .all(userId) as unknown as MutedWord[];
+      .all(userId)) as unknown as MutedWord[];
+    // 覚える数にも上限を置く（管理者が大量の利用者を抱えても増え続けないように）
+    if (mutedWordsCache.size >= 1000) mutedWordsCache.clear();
+    mutedWordsCache.set(userId, { at: Date.now(), words });
+    return words;
   } catch {
     return [];
   }

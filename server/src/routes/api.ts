@@ -14,7 +14,7 @@ import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { applyPageHeaders, cursorPredicate, parsePageQuery } from '../pagination.js';
 import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } from '../postVisibility.js';
 import { createReport, logNewReport } from '../reportService.js';
-import { getMutedWords, postMatchesMutedWords } from '../wordFilter.js';
+import { getMutedWords, postMatchesMutedWords, invalidateMutedWords } from '../wordFilter.js';
 import { extractFirstUrl, getCachedPreviews } from '../linkPreview.js';
 import { parseArchive, importNotes } from '../importService.js';
 import { parseProfileFields } from '../activitypub.js';
@@ -502,33 +502,77 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
 
   const postIds = Array.from(new Set(rows.map((r) => r.post_id || r.id)));
   const placeholders = postIds.map(() => '?').join(',');
+  const viewer = currentActorUrl || '';
 
-  const allReactions = await db.prepare(`
-    SELECT post_id, reaction, count(*) as count,
-      max(case when user_id = ? then 1 else 0 end) as me
-    FROM reactions
-    WHERE post_id IN (${placeholders})
-    GROUP BY post_id, reaction
-  `).all(currentActorUrl || '', ...postIds) as { post_id: string; reaction: string; count: number; me: number }[];
+  // 1 リクエストで 12 本撃っていたのを、**同じ IN を持つ物は 1 本にまとめ、独立な物は同時に流す**。
+  // （1 本ずつ await していたので、PostgreSQL ではそのぶん往復が積み上がっていた）
+  //   - カウンタ（リアクション / ブースト / 返信数）… 同じ対象なので UNION ALL で 1 本
+  //   - 閲覧者の状態（ブックマーク / ピン留め / ブロック / ミュート）… 同上
+  //   - どれか 1 つが失敗しても他は返す（safe() が握って空を返す）
+  const safe = async <T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await fn();
+    } catch (e) {
+      console.error(`[enrichAndFilterPosts] Error fetching ${label}:`, e);
+      return fallback;
+    }
+  };
 
-  const allAnnounces = await db.prepare(`
-    SELECT post_id, count(*) as count,
-      max(case when user_id = ? then 1 else 0 end) as me
-    FROM announces
-    WHERE post_id IN (${placeholders})
-    GROUP BY post_id
-  `).all(currentActorUrl || '', ...postIds) as { post_id: string; count: number; me: number }[];
+  const counterRowsPromise = safe(
+    'counters',
+    () =>
+      db.prepare(`
+        SELECT post_id, 'reaction' AS kind, reaction, count(*) AS count,
+          max(case when user_id = ? then 1 else 0 end) AS me
+        FROM reactions
+        WHERE post_id IN (${placeholders})
+        GROUP BY post_id, reaction
+        UNION ALL
+        SELECT post_id, 'announce' AS kind, '' AS reaction, count(*) AS count,
+          max(case when user_id = ? then 1 else 0 end) AS me
+        FROM announces
+        WHERE post_id IN (${placeholders})
+        GROUP BY post_id
+        UNION ALL
+        SELECT in_reply_to AS post_id, 'reply' AS kind, '' AS reaction, count(*) AS count, 0 AS me
+        FROM posts
+        WHERE in_reply_to IN (${placeholders})
+        GROUP BY in_reply_to
+      `).all(viewer, ...postIds, viewer, ...postIds, ...postIds) as Promise<
+        { post_id: string; kind: string; reaction: string; count: number; me: number }[]
+      >,
+    [],
+  );
 
-  const allReplies = await db.prepare(`
-    SELECT in_reply_to as post_id, count(*) as count
-    FROM posts
-    WHERE in_reply_to IN (${placeholders})
-    GROUP BY in_reply_to
-  `).all(...postIds) as { post_id: string; count: number }[];
+  // 閲覧者に紐づく状態を 1 本にまとめる（表ごとに 1 本ずつ撃っていた）
+  const viewerStatePromise = currentUserId
+    ? safe(
+        'viewer state',
+        () =>
+          db.prepare(`
+            SELECT post_id, 'bookmark' AS kind FROM bookmarks WHERE user_id = ? AND post_id IN (${placeholders})
+            UNION ALL
+            SELECT post_id, 'pinned' AS kind FROM pinned_posts WHERE user_id = ? AND post_id IN (${placeholders})
+            UNION ALL
+            SELECT target_user_id AS post_id, 'blocked' AS kind FROM user_blocks WHERE user_id = ?
+            UNION ALL
+            SELECT target_user_id AS post_id, 'muted' AS kind FROM user_mutes WHERE user_id = ?
+          `).all(currentUserId, ...postIds, currentUserId, ...postIds, currentUserId, currentUserId) as Promise<
+            { post_id: string; kind: string }[]
+          >,
+        [],
+      )
+    : Promise.resolve([] as { post_id: string; kind: string }[]);
 
-  // 📊 アンケート情報の取得
+  const [counterRows, viewerStateRows] = await Promise.all([counterRowsPromise, viewerStatePromise]);
+
+  const allReactions = counterRows.filter((r) => r.kind === 'reaction');
+  const allAnnounces = counterRows.filter((r) => r.kind === 'announce');
+  const allReplies = counterRows.filter((r) => r.kind === 'reply');
+
+  // 📊 アンケート情報の取得（選択肢と投票はアンケート本体に依存するので、ここだけ直列）
   const pollsMap = new Map<string, any>();
-  try {
+  const loadPolls = async (): Promise<void> => {
     const pollRows = await db.prepare(`
       SELECT id, post_id, multiple, expires_at, created_at
       FROM polls
@@ -589,51 +633,23 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
         });
       }
     }
-  } catch (e) {
-    console.error('[enrichAndFilterPosts] Error fetching polls:', e);
-  }
+  };
 
-  // 🔖 ブックマーク状態判定
-  let bookmarkedSet = new Set<string>();
-  if (currentUserId) {
-    try {
-      const bookmarkedRows = await db.prepare(`
-        SELECT post_id FROM bookmarks
-        WHERE user_id = ? AND post_id IN (${placeholders})
-      `).all(currentUserId, ...postIds) as { post_id: string }[];
-      bookmarkedSet = new Set(bookmarkedRows.map((b) => b.post_id));
-    } catch {}
-  }
-
-  // 📌 ピン留め状態判定（該当ユーザーがピン留めしているか）
-  let pinnedSet = new Set<string>();
-  if (currentUserId) {
-    try {
-      const pinnedRows = await db.prepare(`
-        SELECT post_id FROM pinned_posts
-        WHERE user_id = ? AND post_id IN (${placeholders})
-      `).all(currentUserId, ...postIds) as { post_id: string }[];
-      pinnedSet = new Set(pinnedRows.map((b) => b.post_id));
-    } catch {}
-  }
-
-  // 🚫 個人ブロック & ミュート対象ユーザーの取得
+  // 🔖 ブックマーク / 📌 ピン留め / 🚫 ブロック・ミュート（上の 1 本にまとめた結果を振り分ける）
+  const bookmarkedSet = new Set(
+    viewerStateRows.filter((r) => r.kind === 'bookmark').map((r) => r.post_id),
+  );
+  const pinnedSet = new Set(
+    viewerStateRows.filter((r) => r.kind === 'pinned').map((r) => r.post_id),
+  );
   const blockedOrMutedUserIds = new Set<string>();
-  if (currentUserId) {
-    try {
-      const blockedRows = await db.prepare(`
-        SELECT target_user_id FROM user_blocks WHERE user_id = ?
-      `).all(currentUserId) as { target_user_id: string }[];
-      const mutedRows = await db.prepare(`
-        SELECT target_user_id FROM user_mutes WHERE user_id = ?
-      `).all(currentUserId) as { target_user_id: string }[];
-      for (const r of blockedRows) if (r.target_user_id) blockedOrMutedUserIds.add(r.target_user_id.toLowerCase());
-      for (const r of mutedRows) if (r.target_user_id) blockedOrMutedUserIds.add(r.target_user_id.toLowerCase());
-    } catch {}
+  for (const r of viewerStateRows) {
+    if ((r.kind === 'blocked' || r.kind === 'muted') && r.post_id) {
+      blockedOrMutedUserIds.add(String(r.post_id).toLowerCase());
+    }
   }
 
-  // 🔇 ワードフィルター（ミュートワード）
-  const mutedWords = await getMutedWords(currentUserId);
+  // 🔇 ワードフィルター（ミュートワード）は下の Promise.all で取る（利用者ごとの設定）
 
   const reactionsMap = new Map<string, { reaction: string; count: number; me: boolean }[]>();
   for (const r of allReactions) {
@@ -653,70 +669,72 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
 
   // 💬 引用ノート (Quote) 情報の一括取得
   const quotesMap = new Map<string, any>();
-  const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter(Boolean)));
-  if (quoteIds.length > 0) {
-    try {
-      const qPlaceholders = quoteIds.map(() => '?').join(',');
-      const quoteRows = await db.prepare(`
-        SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at
-        FROM posts
-        WHERE id IN (${qPlaceholders})
-      `).all(...quoteIds) as any[];
+  const loadQuotes = async (): Promise<void> => {
+    const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter(Boolean)));
+    if (quoteIds.length === 0) return;
+    const qPlaceholders = quoteIds.map(() => '?').join(',');
+    const quoteRows = await db.prepare(`
+      SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at
+      FROM posts
+      WHERE id IN (${qPlaceholders})
+    `).all(...quoteIds) as any[];
 
-      for (const q of quoteRows) {
-        quotesMap.set(q.id, {
-          id: q.id,
-          user_id: q.user_id,
-          author_name: q.author_name,
-          author_url: q.author_url,
-          author_handle: q.author_handle,
-          author_icon: q.author_icon,
-          content: q.content,
-          cw: q.cw || null,
-          emojis: q.emojis,
-          is_sensitive: Boolean(q.is_sensitive),
-          media_attachments: (() => {
-            try {
-              return typeof q.media_attachments === 'string' ? JSON.parse(q.media_attachments || '[]') : (q.media_attachments || []);
-            } catch {
-              return [];
-            }
-          })(),
-          published_at: q.published_at,
-        });
-      }
-    } catch (e) {
-      console.error('[enrichAndFilterPosts] Error fetching quotes:', e);
+    for (const q of quoteRows) {
+      quotesMap.set(q.id, {
+        id: q.id,
+        user_id: q.user_id,
+        author_name: q.author_name,
+        author_url: q.author_url,
+        author_handle: q.author_handle,
+        author_icon: q.author_icon,
+        content: q.content,
+        cw: q.cw || null,
+        emojis: q.emojis,
+        is_sensitive: Boolean(q.is_sensitive),
+        media_attachments: (() => {
+          try {
+            return typeof q.media_attachments === 'string' ? JSON.parse(q.media_attachments || '[]') : (q.media_attachments || []);
+          } catch {
+            return [];
+          }
+        })(),
+        published_at: q.published_at,
+      });
     }
-  }
+  };
 
   // 📢 チャンネル (Channels) 情報の一括取得
   const channelsMap = new Map<string, any>();
-  const channelIds = Array.from(new Set(rows.map((r) => r.channel_id).filter(Boolean)));
-  if (channelIds.length > 0) {
-    try {
-      const cPlaceholders = channelIds.map(() => '?').join(',');
-      const channelRows = await db.prepare(`
-        SELECT id, name, description, banner_url, color, posts_count, followers_count
-        FROM channels
-        WHERE id IN (${cPlaceholders})
-      `).all(...channelIds) as any[];
+  const loadChannels = async (): Promise<void> => {
+    const channelIds = Array.from(new Set(rows.map((r) => r.channel_id).filter(Boolean)));
+    if (channelIds.length === 0) return;
+    const cPlaceholders = channelIds.map(() => '?').join(',');
+    const channelRows = await db.prepare(`
+      SELECT id, name, description, banner_url, color, posts_count, followers_count
+      FROM channels
+      WHERE id IN (${cPlaceholders})
+    `).all(...channelIds) as any[];
 
-      for (const ch of channelRows) {
-        channelsMap.set(ch.id, ch);
-      }
-    } catch (e) {
-      console.error('[enrichAndFilterPosts] Error fetching channels:', e);
+    for (const ch of channelRows) {
+      channelsMap.set(ch.id, ch);
     }
-  }
+  };
 
   // 🔗 リンクプレビューは 1 回のクエリでまとめて取る（行ごとに問い合わせない）
   const previewUrls = Array.from(
     new Set(rows.map((r) => extractFirstUrl(r.content)).filter((url): url is string => Boolean(url))),
   );
-  const linkPreviews = await getCachedPreviews(previewUrls);
-  // 遮断ドメインは 1 回だけ読み込む（投稿ごとに問い合わせない）
-  const blockedDomainRules = await loadBlockedDomainRules();
+
+  // 残りは互いに依存しないので同時に流す（SQLite は 1 接続なので直列化されるが、
+  // PostgreSQL では往復が重ならない）。ミュートワードと遮断ドメインは TTL つきのキャッシュ。
+  const [, , , linkPreviews, blockedDomainRules, mutedWords] = await Promise.all([
+    safe('polls', loadPolls, undefined as void),
+    safe('quotes', loadQuotes, undefined as void),
+    safe('channels', loadChannels, undefined as void),
+    safe('link previews', () => getCachedPreviews(previewUrls), new Map()),
+    safe('blocked domain rules', () => loadBlockedDomainRules(), []),
+    safe('muted words', () => getMutedWords(currentUserId), []),
+  ]);
 
   const enrichedItems = rows.map((r) => {
     const pid = r.post_id || r.id;
@@ -3722,6 +3740,7 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(id, user.id, value, caseSensitive ? 1 : 0, wholeWord ? 1 : 0, new Date().toISOString());
   // ミュートワードは自分の画面の絞り込みなので、設定した瞬間に効かせる
+  invalidateMutedWords(user.id);
   await invalidateTimelineCache();
 
   console.log(`[WordFilter] 🔇 @${user.id} が「${value}」をミュートワードに追加しました`);
@@ -3731,6 +3750,7 @@ apiRouter.post('/muted-words', requireAuth, asyncHandler(async (req: Request, re
 apiRouter.delete('/muted-words/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const result = await db.prepare('DELETE FROM muted_words WHERE id = ? AND user_id = ?').run(String(req.params.id), user.id);
+  invalidateMutedWords(user.id);
   await invalidateTimelineCache();
   if (result.changes === 0) {
     return res.status(404).json({ error: 'キーワードが見つかりません。' });
