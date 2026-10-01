@@ -525,6 +525,7 @@ CREATE INDEX IF NOT EXISTS idx_announces_post ON announces(post_id);
 CREATE INDEX IF NOT EXISTS idx_announces_user ON announces(user_id);
 CREATE INDEX IF NOT EXISTS idx_antennas_user ON antennas(user_id);
 CREATE INDEX IF NOT EXISTS idx_blocked_domains_domain ON blocked_domains(domain);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_post ON bookmarks(post_id);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_channel_follows_user ON channel_follows(user_id);
 CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);
@@ -552,6 +553,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_due ON outbox_deliveries(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_outbox_deliveries_target ON outbox_deliveries(activity_id, inbox_url);
+CREATE INDEX IF NOT EXISTS idx_pinned_posts_post ON pinned_posts(post_id);
 CREATE INDEX IF NOT EXISTS idx_pinned_posts_user ON pinned_posts(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_poll_choices_poll ON poll_choices(poll_id, choice_index);
 CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_user ON poll_votes(poll_id, user_id);

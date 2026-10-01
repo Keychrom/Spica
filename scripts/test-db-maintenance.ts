@@ -21,6 +21,7 @@ import {
   cleanupOrphanMedia,
   formatBytes,
   getDbSizeInfo,
+  keepConditions,
   openMaintenanceDb,
   optimizeDatabase,
   planRemotePostRemoval,
@@ -87,6 +88,9 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
     CREATE TABLE announcements (id TEXT PRIMARY KEY, title TEXT, content TEXT, is_active INTEGER, created_by TEXT,
       created_at TEXT, updated_at TEXT);
     CREATE TABLE custom_emojis (id TEXT PRIMARY KEY, name TEXT, image_url TEXT);
+    -- 本番と同じ索引（保持判定が post_id で引くため。主キーは (user_id, post_id) なので必要）
+    CREATE INDEX idx_bookmarks_post ON bookmarks(post_id);
+    CREATE INDEX idx_pinned_posts_post ON pinned_posts(post_id);
   `);
 
   const now = new Date().toISOString();
@@ -176,6 +180,41 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   // 件数上限の計画
   const capPlan = await planRemotePostRemoval(db, { ...options, retentionDays: 0, maxRemotePosts: 100 });
   check('件数上限でも削除計画が出る', capPlan.byCount > 0, `byCount=${capPlan.byCount}`);
+  conn.close();
+}
+
+// ---------------------------------------------------------------------------
+// ①-b 保持判定の「書き方」（ここが崩れると候補 1 件ごとにローカル投稿を全走査する）
+// ---------------------------------------------------------------------------
+{
+  const conn = openMaintenanceDb(dbPath);
+  // 実測（2026-10-02・投稿 32.4 万 / 削除対象 26.7 万）:
+  //   相関 EXISTS + datetime() … 1 件あたり 71ms（全体で 5 時間相当）
+  //   集合演算 + 文字列比較     … 全件 0.61 秒
+  const keepSql = keepConditions(options).sql;
+  check('保持判定で datetime() を使わない（列を包むと索引が効かない）', !/datetime\(/i.test(keepSql), keepSql);
+  check('保持判定は集合演算（IN (SELECT …)）で書く', /IN \(SELECT/i.test(keepSql));
+
+  const cutoff = new Date(Date.now() - (options.retentionDays || 30) * 86400_000).toISOString();
+  const details = (
+    conn
+      .prepare(`EXPLAIN QUERY PLAN SELECT p.id FROM posts p WHERE p.is_local = 0 AND p.published_at < ? AND NOT (${keepSql})`)
+      .all(cutoff) as any[]
+  ).map((r) => String(r.detail));
+  check(
+    '相関サブクエリを使わない（候補 1 件ごとにローカル投稿を走査しない）',
+    !details.some((d) => /CORRELATED SCALAR SUBQUERY/i.test(d)),
+    details.join(' | '),
+  );
+  check(
+    '外側の posts は索引で引く（テーブル全走査をしない）',
+    !details.some((d) => /^SCAN p/.test(d)),
+    details.join(' | '),
+  );
+  // 保持判定が使う索引が実在すること（無いと候補ごとに全走査になる）
+  const indexes = (conn.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as any[]).map((r) => r.name);
+  check('bookmarks(post_id) の索引がある', indexes.includes('idx_bookmarks_post'));
+  check('pinned_posts(post_id) の索引がある', indexes.includes('idx_pinned_posts_post'));
   conn.close();
 }
 

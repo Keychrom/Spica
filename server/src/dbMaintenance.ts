@@ -181,29 +181,60 @@ export function formatBytes(bytes: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * 保持ルール。「残すべき投稿」の条件を SQL 断片として返す。
- * すべて `p` というエイリアスの posts 行を前提にする。
+ * 保持ルール（「削除してよいリモート投稿」から外す条件）。
+ *
+ * **書き方は `IN (SELECT …)` の集合演算にする**（`EXISTS` の相関サブクエリにしない）。
+ * 相関サブクエリは候補 1 件ごとに評価され、しかも SQLite は `is_local = 1` の索引を選んで
+ * しまい、**候補 1 件ごとにローカル投稿を全走査**する（実データ相当で 1 件 70ms 以上）。
+ * `IN (SELECT …)` なら副問い合わせを 1 度だけ実体化し、候補ごとに突き合わせるだけになる。
+ *
+ * NULL に注意: `IN`/`NOT IN` の対象列が NULL になり得るものは `IS NOT NULL` で除く
+ * （`NOT IN` は NULL があると「どちらでもない」になり、消せるはずの投稿が残る）。
+ *
+ * `match` は `p` というエイリアスの posts 行を前提にした「残す」述語。
  */
-function keepConditions(opts: MaintenanceOptions): { sql: string; reasons: string[] } {
-  const clauses: string[] = [
-    'EXISTS (SELECT 1 FROM bookmarks b WHERE b.post_id = p.id)',
-    'EXISTS (SELECT 1 FROM pinned_posts pp WHERE pp.post_id = p.id)',
+export interface RetentionKeepRule {
+  /** 画面に出す理由（例: ブックマーク） */
+  label: string;
+  /** 「残す」述語（`p` エイリアス前提） */
+  match: string;
+}
+
+export function retentionKeepRules(opts: MaintenanceOptions): RetentionKeepRule[] {
+  const localReplies = 'SELECT in_reply_to FROM posts WHERE is_local = 1 AND in_reply_to IS NOT NULL';
+  const rules: RetentionKeepRule[] = [
+    { label: 'ブックマーク', match: 'p.id IN (SELECT post_id FROM bookmarks)' },
+    { label: 'ピン留め', match: 'p.id IN (SELECT post_id FROM pinned_posts)' },
     // ローカル投稿の返信先・引用元になっている投稿（自分の投稿の文脈を壊さない）
-    'EXISTS (SELECT 1 FROM posts c WHERE c.is_local = 1 AND (c.in_reply_to = p.id OR c.quote_id = p.id))',
+    {
+      label: 'ローカル投稿の返信先/引用元',
+      match: `p.id IN (${localReplies}) OR p.id IN (SELECT quote_id FROM posts WHERE is_local = 1 AND quote_id IS NOT NULL)`,
+    },
     // ローカルユーザーがリアクション/ブーストした投稿
-    'EXISTS (SELECT 1 FROM reactions r WHERE r.post_id = p.id AND r.is_local = 1)',
-    'EXISTS (SELECT 1 FROM announces a WHERE a.post_id = p.id AND a.is_local = 1)',
+    { label: 'ローカルからのリアクション', match: 'p.id IN (SELECT post_id FROM reactions WHERE is_local = 1)' },
+    { label: 'ローカルからのブースト', match: 'p.id IN (SELECT post_id FROM announces WHERE is_local = 1)' },
   ];
-  const reasons = ['ブックマーク', 'ピン留め', 'ローカル投稿の返信先/引用元', 'ローカルからのリアクション', 'ローカルからのブースト'];
   if (opts.keepRepliesToLocal) {
-    clauses.push('EXISTS (SELECT 1 FROM posts lp WHERE lp.is_local = 1 AND lp.id = p.in_reply_to)');
-    reasons.push('ローカル投稿への返信');
+    // 「リモート投稿がローカル投稿への返信である」＝ その投稿の `in_reply_to` がローカル投稿の id。
+    // 向きを間違えると 1 件多く消える（テストが削除件数で見張っている）
+    rules.push({
+      label: 'ローカル投稿への返信',
+      match: 'p.in_reply_to IS NOT NULL AND p.in_reply_to IN (SELECT id FROM posts WHERE is_local = 1)',
+    });
   }
   if (opts.keepFollowed) {
-    clauses.push("EXISTS (SELECT 1 FROM follows f WHERE f.following_url = p.author_url AND f.status = 'accepted')");
-    reasons.push('フォロー中アクターの投稿');
+    rules.push({
+      label: 'フォロー中アクターの投稿',
+      match: "p.author_url IN (SELECT following_url FROM follows WHERE status = 'accepted')",
+    });
   }
-  return { sql: clauses.join(' OR '), reasons };
+  return rules;
+}
+
+/** 保持ルールを 1 本の SQL 断片（OR でつないだ「残す」条件）と理由の一覧にする */
+export function keepConditions(opts: MaintenanceOptions): { sql: string; reasons: string[]; rules: RetentionKeepRule[] } {
+  const rules = retentionKeepRules(opts);
+  return { sql: rules.map((r) => r.match).join(' OR '), reasons: rules.map((r) => r.label), rules };
 }
 
 /** 削除対象になるリモート投稿 ID を一時テーブルに固定する（件数はここで確定する） */
@@ -215,7 +246,8 @@ async function materializeTargets(db: AsyncSpicaDatabase, opts: MaintenanceOptio
   let ageSql = '';
   if (opts.retentionDays > 0) {
     const cutoff = new Date(Date.now() - opts.retentionDays * 86400_000).toISOString();
-    ageSql = `datetime(p.published_at) < datetime('${cutoff}')`;
+    // 列を関数で包むと索引が使えない（ISO 8601 はそのまま比較できる）
+    ageSql = `p.published_at < '${cutoff}'`;
   }
 
   if (ageSql) {
@@ -231,7 +263,7 @@ async function materializeTargets(db: AsyncSpicaDatabase, opts: MaintenanceOptio
     await db.exec(`
       INSERT OR IGNORE INTO _maintenance_targets (id)
         SELECT id FROM (
-          SELECT p.id AS id, ROW_NUMBER() OVER (ORDER BY datetime(p.published_at) DESC, p.id DESC) AS rn
+          SELECT p.id AS id, ROW_NUMBER() OVER (ORDER BY p.published_at DESC, p.id DESC) AS rn
           FROM posts p
           WHERE p.is_local = 0 AND NOT (${keepSql})
         ) WHERE rn > ${Math.floor(opts.maxRemotePosts)}
@@ -243,36 +275,29 @@ async function materializeTargets(db: AsyncSpicaDatabase, opts: MaintenanceOptio
 
 /** 削除対象の内訳（保持ルールで何がどれだけ残るか）を調べる */
 export async function planRemotePostRemoval(db: AsyncSpicaDatabase, opts: MaintenanceOptions): Promise<RemotePostTargets> {
-  const { sql: keepSql, reasons } = keepConditions(opts);
+  const { sql: keepSql, rules } = keepConditions(opts);
   const one = async (sql: string): Promise<number> => Number((await db.prepare(sql).get() as any)?.c ?? 0);
 
   const remoteTotal = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0');
   const keptByReason: Record<string, number> = {};
-  for (const reason of reasons) {
-    // 理由ごとの件数は目安（重複して数えられる）
-    const map: Record<string, string> = {
-      ブックマーク: 'EXISTS (SELECT 1 FROM bookmarks b WHERE b.post_id = p.id)',
-      ピン留め: 'EXISTS (SELECT 1 FROM pinned_posts pp WHERE pp.post_id = p.id)',
-      'ローカル投稿の返信先/引用元': 'EXISTS (SELECT 1 FROM posts c WHERE c.is_local = 1 AND (c.in_reply_to = p.id OR c.quote_id = p.id))',
-      ローカルからのリアクション: 'EXISTS (SELECT 1 FROM reactions r WHERE r.post_id = p.id AND r.is_local = 1)',
-      ローカルからのブースト: 'EXISTS (SELECT 1 FROM announces a WHERE a.post_id = p.id AND a.is_local = 1)',
-      ローカル投稿への返信: 'EXISTS (SELECT 1 FROM posts lp WHERE lp.is_local = 1 AND lp.id = p.in_reply_to)',
-      フォロー中アクターの投稿: "EXISTS (SELECT 1 FROM follows f WHERE f.following_url = p.author_url AND f.status = 'accepted')",
-    };
-    keptByReason[reason] = await one(`SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND ${map[reason]}`);
+  for (const rule of rules) {
+    // 理由ごとの件数は目安（重複して数えられる）。集合演算なので 1 回の走査で済む
+    keptByReason[rule.label] = await one(
+      `SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND (${rule.match})`,
+    );
   }
 
   let byAge = 0;
   if (opts.retentionDays > 0) {
     const cutoff = new Date(Date.now() - opts.retentionDays * 86400_000).toISOString();
-    byAge = await one(`SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND datetime(p.published_at) < datetime('${cutoff}') AND NOT (${keepSql})`);
+    byAge = await one(`SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND p.published_at < '${cutoff}' AND NOT (${keepSql})`);
   }
 
   let byCount = 0;
   if (opts.maxRemotePosts > 0) {
     byCount = await one(`
       SELECT COUNT(*) AS c FROM (
-        SELECT ROW_NUMBER() OVER (ORDER BY datetime(p.published_at) DESC, p.id DESC) AS rn
+        SELECT ROW_NUMBER() OVER (ORDER BY p.published_at DESC, p.id DESC) AS rn
         FROM posts p WHERE p.is_local = 0 AND NOT (${keepSql})
       ) WHERE rn > ${Math.floor(opts.maxRemotePosts)}
     `);

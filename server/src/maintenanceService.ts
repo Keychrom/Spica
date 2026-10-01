@@ -8,6 +8,7 @@ import {
   applyRemotePostRemoval,
   backupDatabase,
   getDbSizeInfo,
+  keepConditions,
   planRemotePostRemoval,
   rotateBackups,
 } from './dbMaintenance.js';
@@ -303,15 +304,14 @@ export async function getMaintenanceStats(): Promise<MaintenanceStats> {
 
   const local = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 1');
   const remote = await one('SELECT COUNT(*) AS c FROM posts WHERE is_local = 0');
+  // 管理画面の「削除できる件数」。**保持ルールの SQL は dbMaintenance 側と共有する**
+  // （以前はここに同じ条件を書き写していて、片方だけ直すとずれる形だった）。
+  // 列を関数で包まない・OR を使わない書き方もそちらに揃える（索引が効かないため）
+  const keep = keepConditions({ ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: config.remotePostRetentionDays });
+  // keep.sql は集合演算（IN (SELECT …)）で組んである。相関サブクエリにすると候補 1 件ごとに
+  // ローカル投稿を全走査するため（dbMaintenance.ts の説明を参照）
   const prunable = await one(
-    `SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND datetime(p.published_at) < datetime('${cutoff}')
-       AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.post_id = p.id)
-       AND NOT EXISTS (SELECT 1 FROM pinned_posts pp WHERE pp.post_id = p.id)
-       AND NOT EXISTS (SELECT 1 FROM posts c WHERE c.is_local = 1 AND (c.in_reply_to = p.id OR c.quote_id = p.id))
-       AND NOT EXISTS (SELECT 1 FROM reactions r WHERE r.post_id = p.id AND r.is_local = 1)
-       AND NOT EXISTS (SELECT 1 FROM announces a WHERE a.post_id = p.id AND a.is_local = 1)
-       AND NOT EXISTS (SELECT 1 FROM posts lp WHERE lp.is_local = 1 AND lp.id = p.in_reply_to)
-       AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.following_url = p.author_url AND f.status = 'accepted')`,
+    `SELECT COUNT(*) AS c FROM posts p WHERE p.is_local = 0 AND p.published_at < '${cutoff}' AND NOT (${keep.sql})`,
   );
   const mediaRow = await db.prepare('SELECT COUNT(*) AS c, COALESCE(SUM(size),0) AS b FROM media').get() as any;
   const proxyStats = await getProxyStats();

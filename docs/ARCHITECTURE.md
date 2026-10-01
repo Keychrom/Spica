@@ -253,6 +253,23 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 逆に、**重複を検出して利用者に知らせたい処理**（同じユーザー名での登録など）は、
 事前の `SELECT` だけに頼らず、`INSERT` の結果も見るのが安全です。
 
+### 大量の行を判定するときの書き方（保持期間の削除）
+
+日次のメンテナンスは「消してよいリモート投稿」を **1 回の判定**で決めます。ここは書き方を誤ると
+**候補 1 件ごとに従属表を全走査**する形になり、件数が増えるほど効いてきます（2026-10-02 に実測:
+26.7 万件の判定が 5 時間相当 → 0.61 秒）。守ることは 3 つです。
+
+1. **相関サブクエリ（`EXISTS (SELECT … WHERE x = p.id)`）にしない。** `IN (SELECT …)` の集合演算にすると
+   副問い合わせが 1 度だけ実体化され、候補ごとの突き合わせになる（PostgreSQL ではハッシュ準結合）。
+2. **列を関数で包まない。** `datetime(published_at) < datetime('…')` は索引を使えない
+   （ISO 8601 の文字列はそのまま比較できる）。範囲は `published_at < ?` と書く。
+3. **参照される列には索引を張る。** 主キー `(user_id, post_id)` は `post_id` だけでは引けないので、
+   判定が使う列には単独の索引を用意する（`bookmarks(post_id)` / `pinned_posts(post_id)` がこれ）。
+
+同じ条件を複数か所に書き写さないこと（管理画面の件数と実際の削除で条件がずれます）。
+`dbMaintenance.ts` の `keepConditions` が唯一の定義で、`scripts/test-db-maintenance.ts` が
+**実行計画**（相関サブクエリを使わない・外側の `posts` を全走査しない）と索引の存在を見張っています。
+
 ---
 
 ## 🧪 何を検査で守っているか
@@ -266,6 +283,7 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 | `scripts/test-multiprocess.ts` | 2 プロセスでレート制限・SSE・設定が共有される / 予約投稿が二重に公開されない / 配送が二重に送られない |
 | `scripts/test-job-queue.ts` | 一覧→宣言の競合（バックオフ中の仕事を掴まない）/ 並列実行でも 1 件ずつ |
 | `scripts/test-redis.ts` / `test-stream-scope.ts` | ロック・Pub/Sub・配信先の絞り込み |
+| `scripts/test-db-maintenance.ts` | 保持期間の削除が**実行計画の上で**軽い形（相関サブクエリを使わない・全走査しない・索引がある）/ 残すべき投稿が残る / バックアップと VACUUM |
 | `scripts/test-backup-restore.ts` | SQLite / PostgreSQL のバックアップから復元して起動できる |
 
 ```bash
