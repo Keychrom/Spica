@@ -24,12 +24,13 @@ import { misskeyRouter, miauthRouter } from './routes/misskey.js';
 import { postPermalink, canonicalPostId } from './postLinks.js';
 import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
-import { startScheduler, startDeliveryQueueWorker, startJobWorker } from './scheduler.js';
+import { startScheduler, startDeliveryQueueWorker, startJobWorker, startInboxWorker } from './scheduler.js';
 import { registerGracefulShutdown } from './shutdown.js';
 import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
 import { getDeliveryQueueStats } from './deliveryQueue.js';
 import { getJobStats } from './jobs.js';
 import { getTimelineCacheStats } from './timelineCache.js';
+import { getInboxQueueStats } from './inboxQueue.js';
 import { recordRequest, formatPrometheus } from './metrics.js';
 import {
   mediaProxyMiddleware,
@@ -101,6 +102,11 @@ if (runsWorkers) {
 
   // ジョブキュー（リンクプレビュー取得などの背景処理）の起動
   startJobWorker(config.jobIntervalMs);
+
+  // 受信の非同期処理（`INBOX_ASYNC=true` のときだけ）。専用のタイマーで速く回す
+  if (config.inboxAsync) {
+    startInboxWorker(500, config.inboxConcurrency);
+  }
 }
 
 warnOnRoleMisconfiguration();
@@ -223,6 +229,8 @@ const healthHandler = async (req: Request, res: Response) => {
     timelineCache: getTimelineCacheStats(),
     // 受信の混み具合（溢れが出ているなら burst が来ている）
     inbox: inboxGate.stats(),
+    // 非同期モード（INBOX_ASYNC=true）のときは、キューに積まれたぶんの滞留が見える
+    inboxQueue: await getInboxQueueStats(),
   };
 
   // 認証済みなら運用の詳細も返す（監視ツールはヘッダーなしで叩ける）

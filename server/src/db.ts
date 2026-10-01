@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { SqliteDatabase } from './db/driver.js';
 import { createAsyncDatabase } from './db/asyncDriver.js';
+import { missingColumnStatements } from './db/schemaColumns.js';
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,8 +78,17 @@ async function initPostgresSchema(): Promise<void> {
         await db.prepare('SELECT pg_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY);
       }
       try {
+        // スキーマは `CREATE TABLE IF NOT EXISTS` なので、**既存の DB には列が増えない**。
+        // 生成物に書いてあって DB に無い列は、**スキーマを流す前に**足す
+        // （スキーマの中の索引が新しい列を参照していても通るようにするため）
+        const added = await addMissingColumns(sql);
         await db.exec(sql);
         console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+        if (added.length > 0) {
+          console.log(
+            `[DB] 🧩 足りない列を追加しました（${added.length} 件）: ${added.slice(0, 8).join(', ')}${added.length > 8 ? ' …' : ''}`,
+          );
+        }
         // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
         await recordMigration(`pg-schema:${migrationKey(sql)}`, 'schema');
       } finally {
@@ -92,18 +102,54 @@ async function initPostgresSchema(): Promise<void> {
   // 索引に入っていない投稿を同期する（SQLite 側と同じ処理）
   try {
     const ftsCount = Number((await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c);
-    const postsCount = Number((await db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c);
-    if (ftsCount < postsCount) {
+    // 比べる相手は「索引する対象」＝ fts_indexed = 1 の投稿。
+    // 全投稿と比べると、索引対象でない投稿がある限り**起動のたびに全件スキャンが走る**
+    const indexedCount = Number(
+      (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE fts_indexed = 1').get() as any).c,
+    );
+    if (ftsCount < indexedCount) {
       await db.prepare(`
         INSERT INTO posts_fts(post_id, content)
         SELECT id, content FROM posts
         WHERE fts_indexed = 1 AND NOT EXISTS (SELECT 1 FROM posts_fts f WHERE f.post_id = posts.id)
       `).run();
-      console.log(`[FTS] 🔄 posts_fts を同期しました（${ftsCount} → ${postsCount}）`);
+      console.log(`[FTS] 🔄 posts_fts を同期しました（${ftsCount} → ${indexedCount}）`);
     }
   } catch (ftsSyncErr) {
     console.warn('[FTS Sync Warning]:', ftsSyncErr);
   }
+}
+
+/**
+ * 生成済みスキーマにあって、実際の DB に無い**列**を足す（追加のみ）。
+ *
+ * `CREATE TABLE IF NOT EXISTS` は既存テーブルに列を足さないので、これをやらないと
+ * **db.ts に列を足しても PostgreSQL には届かない**（実際、受信の墓標と
+ * jobs.group_key が PostgreSQL だけ欠けていた）。足した列名を返す。
+ */
+async function addMissingColumns(schemaSql: string): Promise<string[]> {
+  const rows = (await db
+    .prepare(`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public'`)
+    .all()) as { table_name: string; column_name: string }[];
+  const existing = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const set = existing.get(row.table_name);
+    if (set) set.add(row.column_name);
+    else existing.set(row.table_name, new Set([row.column_name]));
+  }
+
+  const added: string[] = [];
+  for (const statement of missingColumnStatements(schemaSql, existing)) {
+    try {
+      await db.exec(statement);
+      const match = /ALTER TABLE "([^"]+)" ADD COLUMN IF NOT EXISTS\s+"?([A-Za-z_][A-Za-z0-9_]*)"?/.exec(statement);
+      if (match) added.push(`${match[1]}.${match[2]}`);
+    } catch (err: any) {
+      // 1 列の失敗で起動は止めない（足せなかったことは警告で残す）
+      console.warn(`[DB] 列を追加できませんでした: ${statement.slice(0, 120)} (${err?.message || err})`);
+    }
+  }
+  return added;
 }
 
 export async function initDatabase(): Promise<void> {
@@ -919,8 +965,20 @@ async function initDatabaseSchema(): Promise<void> {
       updated_at TEXT NOT NULL
     );`,
     "ALTER TABLE jobs ADD COLUMN result TEXT DEFAULT '';",
+    // 同じ「順序の単位」（受信ならアクター）の中では、古い仕事から順に片付ける。
+    // 非同期の受信処理で Create → Delete が入れ替わらないようにするための列
+    "ALTER TABLE jobs ADD COLUMN group_key TEXT DEFAULT NULL;",
     "CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);",
+    "CREATE INDEX IF NOT EXISTS idx_jobs_group ON jobs(kind, group_key, status, id);",
+    // 削除されたリモート投稿の ID（墓標）。連合では Delete の後に同じ投稿が
+    // 再送されてくることがある（再送・リレーの折り返し・相手の再起動）ので、
+    // 記録が無いと**消したはずの投稿が復活する**。受信の取り込み時に見る
+    `CREATE TABLE IF NOT EXISTS deleted_remote_posts (
+      id TEXT PRIMARY KEY,
+      deleted_at TEXT NOT NULL
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_deleted_remote_posts_at ON deleted_remote_posts(deleted_at);",
     // MiAuth（Misskey 互換のクライアント連携）: クライアントが作ったセッション ID ごとに
     // アプリ名・権限・承認状態を持つ。承認されると通常のセッションと同じトークンを発行する
     `CREATE TABLE IF NOT EXISTS miauth_sessions (
@@ -1064,9 +1122,10 @@ async function initDatabaseSchema(): Promise<void> {
   // FTS5 既存投稿データの同期（未同期の過去ノートを一括インデックス化）
   try {
     const ftsCount = (await db.prepare('SELECT COUNT(*) as c FROM posts_fts').get() as any).c;
-    const postsCount = (await db.prepare('SELECT COUNT(*) as c FROM posts').get() as any).c;
-    if (ftsCount < postsCount) {
-      console.log(`[FTS5] 🔄 Syncing existing posts to posts_fts (${ftsCount} -> ${postsCount})...`);
+    // 比べる相手は「索引する対象」＝ fts_indexed = 1 の投稿（上と同じ理由）
+    const indexedCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE fts_indexed = 1').get() as any).c;
+    if (ftsCount < indexedCount) {
+      console.log(`[FTS5] 🔄 Syncing existing posts to posts_fts (${ftsCount} -> ${indexedCount})...`);
       await db.prepare(`
         INSERT INTO posts_fts(post_id, content)
         SELECT id, content FROM posts

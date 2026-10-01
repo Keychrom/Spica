@@ -13,11 +13,19 @@ DEFAULT_SUITES=(
   secret-scan silence-featured image-proxy email-notify admin-audit metrics backup-restore
   antennas-and-scheduler account-deletion export-and-rules fts-push profile-lists misskey
   theme-channels-webauthn db-maintenance pg-translate db-async redis stream-scope job-queue multiprocess
-  process-roles hardening
+  process-roles hardening inbox-async
 )
 
 SUITES=("$@")
 if [ ${#SUITES[@]} -eq 0 ]; then SUITES=("${DEFAULT_SUITES[@]}"); fi
+
+# PostgreSQL のスキーマ（schema.pg.sql）が db.ts の migrations と一致しているか。
+# 生成物は `CREATE TABLE IF NOT EXISTS` なので、**再生成を忘れると列が増えない**
+# （実際に jobs.group_key と墓標テーブルが PostgreSQL だけ欠けていた）。
+if ! npx tsx scripts/pg-schema.ts --check; then
+  echo "❌ schema.pg.sql が古いです。npm run db:pg:schema で再生成してください。" >&2
+  exit 2
+fi
 
 # Redis の検査は接続先があれば実物でも回す（環境変数 → .env の順。無くても in-memory の検査は通る）
 TEST_REDIS_URL="${TEST_REDIS_URL:-}"
@@ -55,3 +63,8 @@ if [ $fail -gt 0 ]; then
   for n in "${failed_names[@]}"; do printf '   - %s\n' "$n"; done
 fi
 printf '  ログ: %s\n' "$LOG_DIR"
+
+# 失敗があれば非ゼロで終わる（CI とスクリプトから見て「緑」かどうかが分かるように）
+if [ $fail -gt 0 ]; then
+  exit 1
+fi

@@ -43,6 +43,8 @@ export interface JobRow {
   /** 完了時の結果（JSON 文字列。エクスポートのファイル名など） */
   result: string;
   dedupe_key: string | null;
+  /** 順序の単位（受信の非同期処理ではアクター）。同じ値の中では古い順に片付ける */
+  group_key: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -74,6 +76,11 @@ export interface EnqueueOptions {
   /** 実行を遅らせる（ミリ秒） */
   delayMs?: number;
   maxAttempts?: number;
+  /**
+   * 順序の単位。**同じ値の仕事は古い順にしか実行しない**（`claimJob` が見張る）。
+   * 受信の非同期処理で「同じアクターの Create → Delete」が入れ替わらないようにするために使う。
+   */
+  groupKey?: string;
 }
 
 /** 仕事を積む。既に同じ `dedupeKey` が動いていれば積まずに null を返す */
@@ -84,7 +91,10 @@ export async function enqueueJob(kind: string, payload: unknown, options: Enqueu
   }
   const now = new Date();
   const nowIso = now.toISOString();
-  const id = `job_${now.getTime()}_${crypto.randomBytes(4).toString('hex')}`;
+  // 同じミリ秒に複数積んでも順序が決まるように、プロセス内の連番を挟む
+  // （`group_key` の中の順序は `created_at` → `id` で見るため）
+  const seq = String(++enqueueSeq % 100000).padStart(5, '0');
+  const id = `job_${now.getTime()}_${seq}_${crypto.randomBytes(4).toString('hex')}`;
 
   try {
     if (options.dedupeKey) {
@@ -97,8 +107,8 @@ export async function enqueueJob(kind: string, payload: unknown, options: Enqueu
     }
 
     await db.prepare(`
-      INSERT INTO jobs (id, kind, payload, status, attempts, max_attempts, next_attempt_at, last_error, dedupe_key, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', 0, ?, ?, '', ?, ?, ?)
+      INSERT INTO jobs (id, kind, payload, status, attempts, max_attempts, next_attempt_at, last_error, dedupe_key, group_key, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', 0, ?, ?, '', ?, ?, ?, ?)
     `).run(
       id,
       kind,
@@ -106,6 +116,7 @@ export async function enqueueJob(kind: string, payload: unknown, options: Enqueu
       Math.max(1, Math.floor(options.maxAttempts ?? DEFAULT_JOB_MAX_ATTEMPTS)),
       new Date(now.getTime() + Math.max(0, options.delayMs ?? 0)).toISOString(),
       options.dedupeKey ?? null,
+      options.groupKey ?? null,
       nowIso,
       nowIso,
     );
@@ -116,14 +127,25 @@ export async function enqueueJob(kind: string, payload: unknown, options: Enqueu
   }
 }
 
-/** 実行の期限が来ているジョブ（古い順） */
+/** 積むときの連番（プロセス内）。同じミリ秒の順序を決めるために id へ入れる */
+let enqueueSeq = 0;
+
+/**
+ * 実行の期限が来ているジョブ（古い順）。
+ *
+ * 並びは **`created_at, id` の昇順**（＝ FIFO の順）。`claimJobInOrder` は
+ * 「同じ束の**先行**が残っていないこと」を `created_at, id` で判定するので、
+ * ここが別の順（`next_attempt_at` など）だと、束の 2 件目以降が
+ * 「先行がまだ pending」と見えていつまでも掴めない（実際、受信の非同期処理が
+ * 5 アクターで 11 件/s まで落ちていた）。
+ */
 export async function listDueJobs(kind: string, limit = 20): Promise<JobRow[]> {
   try {
     return (await db
       .prepare(`
         SELECT * FROM jobs
         WHERE kind = ? AND status = 'pending' AND next_attempt_at <= ?
-        ORDER BY next_attempt_at ASC
+        ORDER BY created_at ASC, id ASC
         LIMIT ?
       `)
       .all(kind, new Date().toISOString(), limit)) as unknown as JobRow[];
@@ -156,8 +178,38 @@ export async function claimJob(id: string): Promise<{ claimed: boolean; attempts
   }
 }
 
-/** 成功として確定する（`dedupeKey` を外して、次に同じ仕事を積めるようにする） */
-export async function finishJob(id: string): Promise<void> {
+/**
+ * 順序を守って 1 件を宣言する。
+ *
+ * `group_key` が入っている仕事は、**同じ種類・同じ group_key の先行が待機中か実行中なら掴めない**。
+ * 受信の非同期処理（同じアクターの Create → Delete を入れ替えない）で使う。
+ * 先行が失敗し続けている間は後続も待つ（順序を守るため。先行が諦めれば後続は流れる）。
+ *
+ * 比較は `created_at` → `id` の順（同じミリ秒に積まれたぶんも `id` の連番で決まる）。
+ */
+export async function claimJobInOrder(row: JobRow): Promise<{ claimed: boolean; attempts: number }> {
+  if (!row.group_key || !row.kind) return claimJob(row.id);
+  try {
+    const now = new Date().toISOString();
+    const result = await db.prepare(`
+      UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = ?
+      WHERE id = ? AND status = 'pending' AND next_attempt_at <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.kind = ? AND j.group_key = ? AND j.status IN ('pending', 'running')
+            AND (j.created_at < ? OR (j.created_at = ? AND j.id < ?))
+        )
+    `).run(now, row.id, now, row.kind, row.group_key, row.created_at, row.created_at, row.id);
+    if (Number(result.changes ?? 0) !== 1) return { claimed: false, attempts: 0 };
+    const fresh = (await db.prepare('SELECT attempts FROM jobs WHERE id = ?').get(row.id)) as { attempts: number } | undefined;
+    return { claimed: true, attempts: Number(fresh?.attempts ?? 1) };
+  } catch (err) {
+    console.error('[Jobs] ❌ ジョブの割り当て（順序つき）に失敗:', err);
+    return { claimed: false, attempts: 0 };
+  }
+}
+
+/** 成功として確定する（`dedupeKey` を外して、次に同じ仕事を積めるようにする） */export async function finishJob(id: string): Promise<void> {
   try {
     await db.prepare("UPDATE jobs SET status = 'done', last_error = '', dedupe_key = NULL, updated_at = ? WHERE id = ?").run(
       new Date().toISOString(),
@@ -286,6 +338,11 @@ export interface RunJobsResult {
 /**
  * 期限が来ているジョブを 1 回分実行する。
  * `concurrency` で同時に走らせる数、`limit` で 1 回に取り出す数を決める。
+ *
+ * **順序の単位（`group_key`）ごとに束ねて流す。** 束の中は古い順に 1 件ずつ（順序を守る）、
+ * 束どうしは並列（別のアクターの仕事は同時に進む）。1 件ずつ「期限が来ている順」に
+ * 掴んでいくと、**同じアクターの仕事が先頭に並んだときに並列度がアクター数まで落ちる**ため
+ * （リレーの burst を 5 アクターで受けると毎秒 10 件しか捌けなかった）。
  */
 export async function runJobsOnce(
   kind: string,
@@ -296,30 +353,44 @@ export async function runJobsOnce(
 
   await reclaimStaleJobs();
   const due = await listDueJobs(kind, options.limit ?? 20);
-  const outcomes = await runWithConcurrency(due, options.concurrency ?? 3, async (row) => {
-    const claim = await claimJob(row.id);
-    if (!claim.claimed) return null; // 他のワーカーが取った
-    // 試行回数はclaimで加算されているので、判定にはその値を使う
-    const current: JobRow = { ...row, attempts: claim.attempts };
-    try {
-      const payload = JSON.parse(row.payload || 'null');
-      await handler(payload, row.id);
-      await finishJob(row.id);
-      return true;
-    } catch (err) {
-      const outcome = await failJob(current, err);
-      console.warn(
-        `[Jobs] ⚠️ ${kind} の実行に失敗 (${row.id}, ${current.attempts}/${current.max_attempts}): ${(err as any)?.message || err}` +
-          (outcome.dead ? '（再試行しません）' : `（次回 ${outcome.nextAttemptAt}）`),
-      );
-      return false;
+
+  // 順序の単位で束ねる（group_key が無い仕事は 1 件ずつ＝今までどおり）
+  const buckets = new Map<string, JobRow[]>();
+  for (const row of due) {
+    const key = row.group_key ? `g:${row.group_key}` : `n:${row.id}`;
+    const list = buckets.get(key);
+    if (list) list.push(row);
+    else buckets.set(key, [row]);
+  }
+
+  let processed = 0;
+  let ok = 0;
+  let failedCount = 0;
+
+  await runWithConcurrency([...buckets.values()], options.concurrency ?? 3, async (rows) => {
+    for (const row of rows) {
+      // 順序つきで宣言する。掴めなければこの束はここで止める（先行が残っている＝順番待ち）
+      const claim = await claimJobInOrder(row);
+      if (!claim.claimed) return;
+      processed++;
+      // 試行回数は claim で加算されているので、判定にはその値を使う
+      const current: JobRow = { ...row, attempts: claim.attempts };
+      try {
+        const payload = JSON.parse(row.payload || 'null');
+        await handler(payload, row.id);
+        await finishJob(row.id);
+        ok++;
+      } catch (err) {
+        failedCount++;
+        const outcome = await failJob(current, err);
+        console.warn(
+          `[Jobs] ⚠️ ${kind} の実行に失敗 (${row.id}, ${current.attempts}/${current.max_attempts}): ${(err as any)?.message || err}` +
+            (outcome.dead ? '（再試行しません）' : `（次回 ${outcome.nextAttemptAt}）`),
+        );
+        return; // 失敗したら、この束の続きは次回（順序を飛ばさない）
+      }
     }
   });
 
-  const ran = outcomes.filter((o) => o !== null);
-  return {
-    processed: ran.length,
-    ok: ran.filter((o) => o === true).length,
-    failed: ran.filter((o) => o === false).length,
-  };
+  return { processed, ok, failed: failedCount };
 }

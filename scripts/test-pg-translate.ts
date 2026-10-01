@@ -4,7 +4,13 @@
  * PostgreSQL が無くても動きます（翻訳は純関数のため）。
  * プレースホルダの無限ループを作り込んだ反省から、機械的に検証できる形にしてあります。
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { translateSqlForPostgres, splitFtsTerms, splitExecStatements } from '../server/src/db/driver.js';
+import { parseSchemaColumns, missingColumnStatements } from '../server/src/db/schemaColumns.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 let passed = 0;
 let failed = 0;
@@ -226,6 +232,38 @@ for (const [sql, params] of realQueries) {
   }
 }
 check('実際に使われるクエリで無限ループせず、プレースホルダも揃う', loopGuardOk, true);
+
+// ── 生成済みスキーマと DB の列の差分（起動時に埋める仕組み）───────────────────
+// PostgreSQL の DDL は `CREATE TABLE IF NOT EXISTS` なので、**既存の DB に列は増えない**。
+// 生成物に書いてあって DB に無い列を足す仕組み（db.ts の addMissingColumns）を検証する。
+const realSchema = fs.readFileSync(path.join(ROOT, 'server', 'src', 'db', 'schema.pg.sql'), 'utf8');
+const parsed = parseSchemaColumns(realSchema);
+check('生成済みスキーマから jobs の列を読める', parsed.get('jobs')?.includes('group_key TEXT DEFAULT NULL'), true);
+check('生成済みスキーマに deleted_remote_posts がある', parsed.has('deleted_remote_posts'), true);
+// 表レベルの制約を列として拾っていないこと（PRIMARY KEY (...) など）
+check(
+  '表レベルの制約は列として拾わない',
+  [...parsed.values()].flat().some((d) => /^(PRIMARY|UNIQUE|FOREIGN|CHECK)\b/i.test(d)),
+  false,
+);
+
+// DB に無い列だけを ALTER する
+const existing = new Map<string, Set<string>>([
+  ['jobs', new Set(['id', 'kind', 'payload', 'status'])],
+  ['posts', new Set(['id', 'user_id'])],
+]);
+const alters = missingColumnStatements(realSchema, existing);
+check('足りない列だけを ALTER する（jobs.group_key）', alters.some((s) => s.includes('"jobs"') && s.includes('group_key')), true);
+check('既にある列は ALTER しない', alters.some((s) => /"jobs" ADD COLUMN IF NOT EXISTS "?id\b/.test(s)), false);
+check('知らないテーブルは触らない（スキーマ適用が作る）', alters.some((s) => s.includes('deleted_remote_posts')), false);
+// NOT NULL で DEFAULT が無い列は、既存行があると追加できないので足さない
+const notNullSchema = "CREATE TABLE IF NOT EXISTS t (\n  id TEXT PRIMARY KEY,\n  added TEXT NOT NULL,\n  safe TEXT NOT NULL DEFAULT ''\n);";
+const notNullAlters = missingColumnStatements(notNullSchema, new Map([['t', new Set(['id'])]]));
+check('NOT NULL で DEFAULT が無い列は足さない', notNullAlters.length, 1);
+check('NOT NULL + DEFAULT は足す', notNullAlters[0]?.includes('safe'), true);
+// DEFAULT の中のカンマで列を割らない
+const commaSchema = "CREATE TABLE IF NOT EXISTS t (\n  id TEXT PRIMARY KEY,\n  label TEXT DEFAULT ('a,b'),\n  note TEXT\n);";
+check('DEFAULT の中のカンマで割らない', parseSchemaColumns(commaSchema).get('t')?.length, 3);
 
 console.log('');
 console.log(`結果: ${passed} 件成功 / ${failed} 件失敗`);

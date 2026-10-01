@@ -15,7 +15,7 @@
 > | SQL 翻訳の単体検証 | ✅ 実装済み | `npm run test:pg-translate`（PG 不要） |
 > | 非同期データ層（案A） | ✅ 完了（610 箇所） | `npm run test:db-async` / 状態は `npm run db:async:status` |
 > | PG 上での検証（スキーマ・移送・検索・トリガー） | ✅ 実装済み | `TEST_DATABASE_URL=... npm run test:pg-port` |
-> | 既存テストスイートの PG 対応 | ✅ 主要どころ | 29 スイートが PG でも全項目緑（下記に個別の状態） |
+> | 既存テストスイートの PG 対応 | ✅ 主要どころ | 30 スイートが PG でも全項目緑（下記に個別の状態） |
 > | データ層の非同期化（案A） | ✅ 完了（同期ファサード・worker は削除済み） | 経緯は下の「歩んだ道」 |
 
 ---
@@ -171,6 +171,29 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
 外部キーは依存順に並べて生成します（PostgreSQL は参照先が先に必要）。生成物には SQLite 固有の構文が
 残っていないかを自己点検させており、混入していれば生成が失敗します。
 
+### 既存の DB には列が増えない（起動時に差分を足します）
+
+生成物はすべて `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` なので、
+**db.ts に列を足しても、既に動いている PostgreSQL の DB には届きません**（テーブルは増えますが、
+既存テーブルに列は増えません）。そこで起動時に、生成物にあって DB に無い列だけを
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` で足します（追加のみ・削除しません。`NOT NULL` で
+`DEFAULT` が無い列は既存行を埋められないので足しません）。
+
+```text
+[DB] 🐘 PostgreSQL スキーマを適用しました
+[DB] 🧩 足りない列を追加しました（1 件）: jobs.group_key
+```
+
+**これは実際に事故になりました。** 受信の非同期化で足した `jobs.group_key` と墓標テーブル
+（`deleted_remote_posts`）が PostgreSQL だけ欠けたまま動き続け、墓標の照会が**毎回失敗して
+接続が捨てられる**状態になっていました。プールが 1 リクエストごとに接続を張り直すため、
+1 文あたり 0.5ms の問い合わせに 78ms かかり、**受信は 481 件/s のはずが 13 件/s** まで落ちていました
+（[SCALE.md](SCALE.md) の「受信の burst」に実測）。列が足されていれば起きません。
+
+見落としを防ぐため、**両方のスイートランナーの入口で生成物の一致を検査**します
+（`npm run db:pg:schema -- --check`。古ければスイートを回す前に落ちます）。
+`test-pg-translate` にも、差分の取り出し（足す列・足さない列）の検査があります。
+
 ---
 
 ## 🚀 3. 手順A: 最初から PostgreSQL で建てる
@@ -301,7 +324,7 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 
 ### 検証済みの範囲（2026-09-22。その後のぶんは下の「テストスイートを PG で回す場合」）
 
-- **HTTP で完結するテストスイート**: `test-pagination` と `test-announcements` が全項目パス（2026-09-30 時点では 29 スイートが緑）。
+- **HTTP で完結するテストスイート**: `test-pagination` と `test-announcements` が全項目パス（2026-10-01 時点では 30 スイートが緑）。
 - **手動の一巡**: 登録 → ログイン → 投稿 → タイムライン → 検索（日本語の部分一致）→ 通知 → 管理画面。
 - **ビルド成果物でも起動**: `npm run build` 後の `dist` で PG 起動を確認。
 - **実データ**: ライブノードの 187,072 行を移送した DB で起動し、タイムラインと検索が返ること。

@@ -35,11 +35,19 @@ DEFAULT_SUITES=(
   reports silence-featured pagination announcements antennas-and-scheduler
   account-deletion fts-push export-and-rules theme-channels-webauthn
   password-auth federation search-policy redis stream-scope job-queue multiprocess
-  discovery profile-lists misskey process-roles hardening
+  discovery profile-lists misskey process-roles hardening inbox-async
 )
 
 SUITES=("$@")
 if [ ${#SUITES[@]} -eq 0 ]; then SUITES=("${DEFAULT_SUITES[@]}"); fi
+
+# PostgreSQL のスキーマ（schema.pg.sql）が db.ts の migrations と一致しているか。
+# 生成物は `CREATE TABLE IF NOT EXISTS` なので、**再生成を忘れると列が増えない**
+# （実際に jobs.group_key と墓標テーブルが PostgreSQL だけ欠けていた）。
+if ! npx tsx scripts/pg-schema.ts --check; then
+  echo "❌ schema.pg.sql が古いです。npm run db:pg:schema で再生成してください。" >&2
+  exit 2
+fi
 
 LOG_DIR="${LOG_DIR:-/tmp/spica-suites-pg}"
 mkdir -p "$LOG_DIR"
@@ -88,3 +96,8 @@ if [ $fail -gt 0 ]; then
   for n in "${failed_names[@]}"; do printf '   - %s\n' "$n"; done
 fi
 printf '  ログ: %s\n' "$LOG_DIR"
+
+# 失敗があれば非ゼロで終わる（CI とスクリプトから見て「緑」かどうかが分かるように）
+if [ $fail -gt 0 ]; then
+  exit 1
+fi

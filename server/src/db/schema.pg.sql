@@ -133,6 +133,10 @@ CREATE TABLE IF NOT EXISTS custom_emojis  (
   aliases TEXT DEFAULT '[]',
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS deleted_remote_posts  (
+  id TEXT PRIMARY KEY,
+  deleted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS drafts  (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -194,7 +198,8 @@ CREATE TABLE IF NOT EXISTS jobs  (
   result TEXT DEFAULT '',
   dedupe_key TEXT DEFAULT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  group_key TEXT DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS link_previews  (
   url TEXT PRIMARY KEY,
@@ -525,6 +530,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_follows_user ON channel_follows(user_id);
 CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_channels_user ON channels(user_id);
 CREATE INDEX IF NOT EXISTS idx_custom_emojis_name ON custom_emojis(name);
+CREATE INDEX IF NOT EXISTS idx_deleted_remote_posts_at ON deleted_remote_posts(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id, purpose);
 CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_url);
@@ -532,6 +538,7 @@ CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_url);
 CREATE INDEX IF NOT EXISTS idx_invitation_codes_created_by ON invitation_codes(created_by);
 CREATE INDEX IF NOT EXISTS idx_jobs_dedupe ON jobs(dedupe_key, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(kind, status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_group ON jobs(kind, group_key, status, id);
 CREATE INDEX IF NOT EXISTS idx_list_members_list ON list_members(list_id);
 CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id);
 CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);

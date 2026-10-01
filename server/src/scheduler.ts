@@ -5,6 +5,7 @@ import { attemptDelivery } from './activitypub.js';
 import { maybeRunScheduledMaintenance } from './maintenanceService.js';
 import { runExclusively } from './redis.js';
 import { runWithConcurrency, runJobsOnce, getJobKinds } from './jobs.js';
+import { INBOX_JOB_KIND } from './inboxQueue.js';
 import { cleanupOldUserExports } from './exportService.js';
 import {
   listDueDeliveries,
@@ -22,6 +23,8 @@ let isRunning = false;
 
 let deliveryTimer: NodeJS.Timeout | null = null;
 let jobTimer: NodeJS.Timeout | null = null;
+/** 受信の非同期処理（`INBOX_ASYNC=true` のときだけ動く） */
+let inboxTimer: NodeJS.Timeout | null = null;
 let isDeliveryRunning = false;
 let lastPruneAt = 0;
 
@@ -324,6 +327,8 @@ export function startJobWorker(intervalMs = 15000): void {
         // 掃除に失敗しても続ける
       }
       for (const kind of getJobKinds()) {
+        // 受信は専用のタイマー（startInboxWorker）が担当する。ここで二重に走らせない
+        if (kind === INBOX_JOB_KIND) continue;
         try {
           const result = await runJobsOnce(kind, { limit: 20, concurrency: 3 });
           if (result.processed > 0) {
@@ -332,6 +337,36 @@ export function startJobWorker(intervalMs = 15000): void {
         } catch (err) {
           console.error(`[Jobs] ジョブの実行でエラー (${kind}):`, err);
         }
+      }
+    })();
+  }, intervalMs);
+}
+
+/**
+ * 受信の非同期処理（`INBOX_ASYNC=true` のときだけ動く）。
+ *
+ * 汎用のジョブワーカー（既定 15 秒間隔）に相乗りさせると、リレーの burst を捌くのに
+ * 何分もかかってしまう（1 回 20 件 × 15 秒 = 毎秒 1.3 件）。受信だけは間隔を短くし、
+ * 1 回に掴む件数も多くする。
+ *
+ * 順序は `claimJobInOrder`（同じアクターの先行が残っている間は掴めない）が守るので、
+ * 並列に走らせても同じアクターの中では入れ替わらない。`limit` を並列数より大きく取るのは、
+ * **同じアクターの仕事が並んでいるときに、後ろの別アクターの仕事まで拾えるように**するため。
+ */
+export function startInboxWorker(intervalMs = 500, concurrency = config.inboxConcurrency): void {
+  if (inboxTimer) return;
+  console.log(
+    `[Inbox Queue] ⏱️ 受信の非同期処理を開始しました (interval: ${intervalMs}ms, 同時 ${concurrency}, 種類: ${INBOX_JOB_KIND})`,
+  );
+  inboxTimer = setInterval(() => {
+    void (async () => {
+      try {
+        const result = await runJobsOnce(INBOX_JOB_KIND, { limit: Math.max(20, concurrency * 20), concurrency });
+        if (result.failed > 0) {
+          console.warn(`[Inbox Queue] ⚠️ 受信の処理に失敗: ${result.failed} 件（再試行します）`);
+        }
+      } catch (err) {
+        console.error('[Inbox Queue] 受信の処理でエラー:', err);
       }
     })();
   }, intervalMs);
@@ -350,6 +385,11 @@ export function stopScheduler(): void {
     clearInterval(deliveryTimer);
     deliveryTimer = null;
     console.log('[Delivery Queue] ⏹️ 配送再送ワーカーを停止しました');
+  }
+  if (inboxTimer) {
+    clearInterval(inboxTimer);
+    inboxTimer = null;
+    console.log('[Inbox Queue] ⏹️ 受信の非同期処理を停止しました');
   }
   if (jobTimer) {
     clearInterval(jobTimer);

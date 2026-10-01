@@ -91,6 +91,30 @@ SET status = 'running' WHERE id = ? AND status = 'pending' AND next_attempt_at <
 `attempts` が 1 のはずの行が 30 ミリ秒後に 2 になりました）。
 `scripts/test-job-queue.ts` がこの不変条件を検査しています。
 
+### 順序が要る仕事は「束」ごとに FIFO で掴む
+
+受信の非同期処理（`INBOX_ASYNC`）のように**同じ相手の前後関係を壊せない**仕事は、
+`jobs.group_key`（受信ではアクター URL）で束ね、**束の中の先行が残っている間は掴めない**条件で
+宣言します（`claimJobInOrder`）。
+
+```sql
+-- 掴む（claimJobInOrder）— ★ 同じ束の「先行」が pending / running のうちは掴めない
+WHERE id = ? AND status = 'pending' AND next_attempt_at <= now
+  AND NOT EXISTS (SELECT 1 FROM jobs j
+                   WHERE j.kind = ? AND j.group_key = ?
+                     AND j.status IN ('pending','running')
+                     AND (j.created_at < ? OR (j.created_at = ? AND j.id < ?)))
+```
+
+**一覧の並びも同じ順にそろえる必要があります**（`listDueJobs` は `created_at, id` の昇順）。
+別の順（`next_attempt_at` など）で取り出すと、束の 2 件目以降が「先行がまだ残っている」と
+見えて掴めず、**束ごとに 1 件ずつしか進みません**（実測で 11 件/s まで落ちました）。
+順序を守る仕組みは、順序どおりに取るところまで 1 組です。
+
+削除の順序（Delete の後に遅れて届いた Create）は、束の中の入れ替わりとは別に
+**墓標**（`deleted_remote_posts`）でも止めます。Delete を処理したら ID を記録し、
+後から届いた Create はその ID を捨てます。
+
 ### 予約投稿はロックで 1 プロセスだけ
 
 予約投稿の公開は条件付き UPDATE ではなく、**`runExclusively('scheduler', 60 秒)` のロック**で
@@ -266,4 +290,4 @@ npx tsx scripts/test-redis.ts           # 個別に走らせる場合（一部�
   Redis の役割は [REDIS.md](REDIS.md)、設定は [CONFIGURATION.md](CONFIGURATION.md) にあります。
 - ここに書いた構成は**すべて任意**です。`PROCESS_ROLE` も `REDIS_URL` も `DB_DRIVER` も設定しなければ、
   今までどおり「1 プロセス・追加ミドルウェアなし」で動きます。
-- 実装が変われば更新します（最終更新: 2026-09-30。受信ルートの例外処理（`asyncHandler` と `check:routes`）、助言ロックの接続固定、Redis ロックの延長の持ち主確認、`INBOX_QUEUE_WAIT_MS=0` の扱い、アンケート更新の連合の集約、**タイムラインの読み取りキャッシュ（既定 15 秒 + 書き込みでの無効化）**を反映）。
+- 実装が変われば更新します（最終更新: 2026-10-01。受信ルートの例外処理（`asyncHandler` と `check:routes`）、助言ロックの接続固定、Redis ロックの延長の持ち主確認、`INBOX_QUEUE_WAIT_MS=0` の扱い、アンケート更新の連合の集約、**タイムラインの読み取りキャッシュ（既定 15 秒 + 書き込みでの無効化）**、**受信の非同期処理（`INBOX_ASYNC`）と束ごとの FIFO claim・墓標**、PostgreSQL の**列の差分適用**を反映）。

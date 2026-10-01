@@ -22,6 +22,13 @@ import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } fr
 import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 import { invalidateTimelineCache } from '../timelineCache.js';
+import {
+  enqueueInboxActivity,
+  registerInboxProcessor,
+  registerInboxJobHandler,
+  addDeletedRemotePost,
+  isDeletedRemotePost,
+} from '../inboxQueue.js';
 import { fallbackActivityId } from '../ids.js';
 
 export const inboxRouter = Router();
@@ -46,58 +53,26 @@ async function isLocalActorUrl(actorUrl: string): Promise<boolean> {
 /**
  * 共通の Activity 受信ハンドラ (User Inbox & Shared Inbox)
  */
-async function handleActivity(req: Request, res: Response, targetUsername?: string) {
-  const activity = req.body;
-  if (!activity || !activity.type) {
-    return res.status(400).json({ error: '無効な Activity 形式です。' });
-  }
+/**
+ * 受理した Activity を処理する（HTTP からもワーカーからも呼ばれる）。
+ *
+ * 呼ぶ側の違いは `res`（応答の書き先）だけに閉じ込めてある:
+ *   - HTTP（同期）… Express の `res` をそのまま渡す（そのまま応答になる）
+ *   - ワーカー（非同期）… 状態と本文を記録するだけのオブジェクトを渡す
+ * これで、重い処理の中身を 1 か所に保ったまま**実行の場所だけ**を選べる。
+ *
+ * ※ 形式の検査・署名検証・受け入れゲートは**呼ぶ前に**済ませておくこと（受理の判断は HTTP 側の仕事）。
+ */
+export interface ActivityResponder {
+  status(code: number): { json(body: unknown): void };
+}
 
-  console.log(`[Inbox] 📥 Received Activity: type=${activity.type}, id=${activity.id || '(no-id)'}, actor=${typeof activity.actor === 'string' ? activity.actor : activity.actor?.id}`);
-
+export async function processActivity(
+  activity: any,
+  res: ActivityResponder,
+  targetUsername?: string,
+): Promise<void> {
   const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
-  if (!actorUrl) {
-    return res.status(400).json({ error: 'Activity actor が指定されていません。' });
-  }
-
-  // 🚫 自分のローカル利用者を名乗る Activity は処理しない。
-  //    ローカルの投稿はこちらが正で、外部から届く正当なものは無い。実際に届くのは
-  //    **リレーが折り返してくる自分の投稿**（購読中のリレーは投稿を全購読者へ転送するので、
-  //    発信元である自分にも戻ってくる）。これを受理すると同じ投稿が「連合受信」＝他人の投稿として
-  //    もう 1 行増え、タイムラインに二重に並ぶ（署名が正しくても同じ）。
-  //    送信側に再送させないよう 202 を返して静かに落とす。
-  if (await isLocalActorUrl(actorUrl)) {
-    console.log(`[Inbox Ignored] ↩️ 自分の actor を名乗る Activity を無視: ${activity.type} from ${actorUrl}`);
-    return res.status(202).json({ message: 'Ignored: activity from a local actor.' });
-  }
-
-  // ドメインブロック判定: 送信元 Actor のドメインがブロックされている場合は 403 で拒絶
-  if (await isDomainBlocked(actorUrl)) {
-    console.log(`[Inbox Blocked] 🚫 Rejected activity (${activity.type}) from blocked domain actor: ${actorUrl}`);
-    return res.status(403).json({ error: 'This domain is blocked by server policy.' });
-  }
-
-  // HTTP Signature 検証: 失敗した Activity は受け付けない（なりすまし・改ざん防止）
-  const auth = await verifyInboxSignature(req, actorUrl);
-  if (!auth.verified) {
-    if (config.inboxSignatureMode === 'strict') {
-      console.log(`[Inbox Rejected] 🔒 ${activity.type} from ${actorUrl} (keyId: ${auth.keyActorUrl || 'unknown'}) - ${auth.error || 'verification failed'}`);
-      return res.status(401).json({ error: 'HTTP Signature verification failed.', reason: auth.error });
-    }
-    console.log(`[Inbox Auth Warn] ⚠️ Signature check failed but INBOX_SIGNATURE_MODE=log, processing anyway: ${activity.type} from ${actorUrl} - ${auth.error}`);
-  }
-
-  // ここから先は DB の書き込み・アンテナの照合・配信などの重い処理。
-  // リレーの burst で同じ数の処理が同時に走ると画面の応答まで遅くなるので、
-  // 同時に処理する数を区切る（溢れたら 503。送信側が指数バックオフで送り直す）。
-  const releaseSlot = await inboxGate.acquire();
-  if (!releaseSlot) {
-    const stats = inboxGate.stats();
-    console.warn(
-      `[Inbox Busy] 🚦 受信が混み合っているため 503 を返します (処理中 ${stats.active} / 待ち ${stats.waiting} / 溢れ ${stats.shed})`,
-    );
-    res.setHeader('Retry-After', '30');
-    return res.status(503).json({ error: 'Busy. Please retry later.' });
-  }
 
   try {
     switch (activity.type) {
@@ -280,6 +255,13 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
       case 'Create': {
         // 投稿 (Note / Question) の受信 (フォロワーまたはリレー経由)
+        // どの段で時間を使っているかは `INBOX_PROFILE=true` で 1 行ずつ出る（普段は出さない）
+        const profileStart = Date.now();
+        const mark = (label: string): void => {
+          if (config.inboxProfile) {
+            console.log(`[Inbox Profile] ${label}: ${Date.now() - profileStart}ms (${activity.id || '(no-id)'})`);
+          }
+        };
         const note = activity.object;
         if (!note || (note.type !== 'Note' && note.type !== 'Question')) {
           return res.status(200).json({ status: 'Ignored non-Note/Question object' });
@@ -290,6 +272,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           console.log(`[Inbox Blocked] 🚫 Ignored Note from blocked domain author: ${noteAuthor}`);
           return res.status(200).json({ status: 'Ignored blocked domain author' });
         }
+        mark('domain 判定');
 
         let remoteActor;
         try {
@@ -302,8 +285,15 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
             name: note.attributedTo || parsed.host,
           };
         }
+        mark('actor 取得');
 
         const noteId = note.id || fallbackActivityId(actorUrl, 'posts');
+        // 墓標が立っている投稿は取り込まない（Delete の後に再送・折り返しで戻ってきたぶん。
+        // 非同期で処理しているときは、Delete より後に処理される Create がここで止まる）
+        if (await isDeletedRemotePost(noteId)) {
+          console.log(`[Inbox Ignored] 🪦 削除済みの投稿なので取り込みません: ${noteId}`);
+          return res.status(200).json({ status: 'Ignored deleted post' });
+        }
         const rawContent = note.content || '';
         const publishedAt = note.published || new Date().toISOString();
         const inReplyTo = note.inReplyTo || null;
@@ -491,7 +481,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 
         // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）
         const noteFtsIndexed = await shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+        mark('索引方針の判定');
 
+        const insertStartedAt = Date.now();
         await db.prepare(`
           INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -523,7 +515,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           publishedAt,
           noteFtsIndexed
         );
-
+        if (config.inboxProfile) {
+          console.log(`[Inbox Profile]   INSERT INTO posts だけ: ${Date.now() - insertStartedAt}ms`);
+        }
         // 受信した投稿を、キャッシュ済みのタイムラインにも反映させる
         await invalidateTimelineCache();
 
@@ -624,6 +618,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           }
         }
 
+        mark('INSERT posts');
         // 📡 リアルタイム SSE ブロードキャスト（新着ノートをクライアントへプッシュ）
         //    フォロワー限定のノートは全クライアントへ配信すると存在自体が漏れるため配信しない
         if (noteIsPublic) {
@@ -658,6 +653,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           });
         }
 
+        mark('SSE 配信');
         // 📡 アンテナ条件チェック ＆ 通知
         // 📡 アンテナ条件チェック ＆ 通知（フォロワー限定は通知経由で内容が漏れるため対象外）
         if (noteIsPublic) {
@@ -674,6 +670,8 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           });
         }
 
+        mark('アンテナ・通知');
+        mark('保存・ブロードキャスト・通知');
         console.log(`[Inbox Note] 📝 Saved Note from ${authorHandle}: ${content.slice(0, 40)}...`);
         return res.status(201).json({ status: 'Note created' });
       }
@@ -1036,6 +1034,9 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
           await db.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
           await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
           await db.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
+          // 墓標を立てる。連合では Delete の後に同じ投稿が再送されてくることがあり、
+          // 記録が無いと**消したはずの投稿が復活する**（非同期で処理するときは特に）
+          await addDeletedRemotePost(targetId);
           console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId}`);
         }
         return res.status(200).json({ status: 'Delete processed' });
@@ -1192,11 +1193,136 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
   } catch (err: any) {
     console.error(`[Inbox Error] Failed to process ${activity.type}:`, err);
     return res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * HTTP の受信（ユーザー Inbox / 共有 Inbox）。
+ *
+ * ここでやるのは「受理してよいか」の判断だけ: 形式 → 自分宛 → ブロック → **署名検証** → ゲート。
+ * どれも軽い（DB を 1〜2 回引く程度）ので、リクエストの中で済ませる。
+ *
+ * 受理したあとの重い処理（DB と FTS への書き込み・アンテナの照合・通知・配信の積み込み）は:
+ *   - `INBOX_ASYNC=false`（既定）… その場で処理して 201 を返す（いままでどおり）
+ *   - `INBOX_ASYNC=true` … キューに積んで **202 を返す**（中身は worker が処理する）
+ *
+ * 非同期にする理由は docs/SCALE.md の「受信の burst」— 重い処理が Web と同じスレッドを
+ * 占有すると、**リレーの burst 中は画面が 190ms まで遅くなる**（読み取りキャッシュでは消せない）。
+ */
+async function handleActivityHttp(req: Request, res: Response, targetUsername?: string) {
+  const entryStartedAt = Date.now();
+  const entryId = typeof req.body?.id === 'string' ? req.body.id.replace(/^.*\//, '') : '?';
+  const entryMark = (label: string): void => {
+    if (config.inboxProfile) console.log(`[Inbox Entry] ${label}: ${Date.now() - entryStartedAt}ms [${entryId}]`);
+  };
+  const activity = req.body;
+  if (!activity || !activity.type) {
+    return res.status(400).json({ error: '無効な Activity 形式です。' });
+  }
+
+  console.log(`[Inbox] 📥 Received Activity: type=${activity.type}, id=${activity.id || '(no-id)'}, actor=${typeof activity.actor === 'string' ? activity.actor : activity.actor?.id}`);
+
+  const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
+  if (!actorUrl) {
+    return res.status(400).json({ error: 'Activity actor が指定されていません。' });
+  }
+
+  // 🚫 自分のローカル利用者を名乗る Activity は処理しない。
+  //    ローカルの投稿はこちらが正で、外部から届く正当なものは無い。実際に届くのは
+  //    **リレーが折り返してくる自分の投稿**（購読中のリレーは投稿を全購読者へ転送するので、
+  //    発信元である自分にも戻ってくる）。これを受理すると同じ投稿が「連合受信」＝他人の投稿として
+  //    もう 1 行増え、タイムラインに二重に並ぶ（署名が正しくても同じ）。
+  //    送信側に再送させないよう 202 を返して静かに落とす。
+  if (await isLocalActorUrl(actorUrl)) {
+    console.log(`[Inbox Ignored] ↩️ 自分の actor を名乗る Activity を無視: ${activity.type} from ${actorUrl}`);
+    return res.status(202).json({ message: 'Ignored: activity from a local actor.' });
+  }
+
+  // ドメインブロック判定: 送信元 Actor のドメインがブロックされている場合は 403 で拒絶
+  if (await isDomainBlocked(actorUrl)) {
+    console.log(`[Inbox Blocked] 🚫 Rejected activity (${activity.type}) from blocked domain actor: ${actorUrl}`);
+    return res.status(403).json({ error: 'This domain is blocked by server policy.' });
+  }
+
+  entryMark('前段（自分宛・ブロック判定）');
+  // HTTP Signature 検証: 失敗した Activity は受け付けない（なりすまし・改ざん防止）
+  const auth = await verifyInboxSignature(req, actorUrl);
+  entryMark('署名検証');
+  if (!auth.verified) {
+    if (config.inboxSignatureMode === 'strict') {
+      console.log(`[Inbox Rejected] 🔒 ${activity.type} from ${actorUrl} (keyId: ${auth.keyActorUrl || 'unknown'}) - ${auth.error || 'verification failed'}`);
+      return res.status(401).json({ error: 'HTTP Signature verification failed.', reason: auth.error });
+    }
+    console.log(`[Inbox Auth Warn] ⚠️ Signature check failed but INBOX_SIGNATURE_MODE=log, processing anyway: ${activity.type} from ${actorUrl} - ${auth.error}`);
+  }
+
+  // 非同期モード: 受理してよいと分かったので、中身はキューに任せて 202 を返す。
+  // 署名はここで検証済みなので、ワーカーは検証をやり直さない（CPU を二度使わない）。
+  if (config.inboxAsync) {
+    const queued = await enqueueInboxActivity(activity, {
+      actorUrl,
+      targetUsername,
+      forwardedBy: auth.forwarded ? auth.keyActorUrl : undefined,
+    });
+    if (!queued) {
+      // 積めなかった（DB が混んでいる等）。送信側に再送してもらう
+      res.setHeader('Retry-After', '30');
+      return res.status(503).json({ error: 'Busy. Please retry later.' });
+    }
+    return res.status(202).json({ status: 'Accepted' });
+  }
+
+  // 同期モード: ここから先は DB の書き込み・アンテナの照合・配信などの重い処理。
+  // リレーの burst で同じ数の処理が同時に走ると画面の応答まで遅くなるので、
+  // 同時に処理する数を区切る（溢れたら 503。送信側が指数バックオフで送り直す）。
+  const releaseSlot = await inboxGate.acquire();
+  if (!releaseSlot) {
+    const stats = inboxGate.stats();
+    console.warn(
+      `[Inbox Busy] 🚦 受信が混み合っているため 503 を返します (処理中 ${stats.active} / 待ち ${stats.waiting} / 溢れ ${stats.shed})`,
+    );
+    res.setHeader('Retry-After', '30');
+    return res.status(503).json({ error: 'Busy. Please retry later.' });
+  }
+  try {
+    await processActivity(activity, res, targetUsername);
   } finally {
-    // 受け入れ枠を返す（成功・失敗どちらでも）
     releaseSlot();
   }
 }
+
+/**
+ * ワーカー側の入口（`INBOX_ASYNC=true` のときに使われる）。
+ *
+ * HTTP 側で署名検証まで済ませてあるので、ここでは検証をやり直さない。
+ * 形式の検査と自分のローカルアクター・ブロックドメインの判定だけは**もう一度**見る
+ * （受理してから処理するまでの間に、ブロックされた・設定が変わった可能性がある）。
+ * 応答は記録するだけで、実際の HTTP の応答は 202（受理）で既に返っている。
+ */
+function activityRecorder(): { status: (code: number) => { json: (body: unknown) => void }; getStatus: () => number } {
+  let statusCode = 200;
+  return {
+    status(code: number) {
+      statusCode = code;
+      return { json: () => undefined };
+    },
+    getStatus: () => statusCode,
+  };
+}
+
+registerInboxProcessor(async (activity, options) => {
+  const { actorUrl, targetUsername } = options;
+  if (!activity || !activity.type || !actorUrl) return 400;
+
+  // 自分のローカルアクター（リレーが折り返してきた自分の投稿）は静かに落とす
+  if (await isLocalActorUrl(actorUrl)) return 202;
+  if (await isDomainBlocked(actorUrl)) return 403;
+
+  const recorder = activityRecorder();
+  await processActivity(activity, recorder, targetUsername);
+  return recorder.getStatus();
+});
+registerInboxJobHandler();
 
 // ユーザー専用 Inbox: POST /users/:username/inbox
 // asyncHandler で包む: handleActivity の手前（署名検証・ゲート待ち）で例外が出ても
@@ -1204,7 +1330,7 @@ async function handleActivity(req: Request, res: Response, targetUsername?: stri
 inboxRouter.post(
   '/users/:username/inbox',
   asyncHandler(async (req: Request, res: Response) => {
-    await handleActivity(req, res, req.params.username as string);
+    await handleActivityHttp(req, res, req.params.username as string);
   }),
 );
 
@@ -1212,7 +1338,7 @@ inboxRouter.post(
 inboxRouter.post(
   '/inbox',
   asyncHandler(async (req: Request, res: Response) => {
-    await handleActivity(req, res);
+    await handleActivityHttp(req, res);
   }),
 );
 

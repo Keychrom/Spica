@@ -102,6 +102,12 @@ export interface AppConfig {
   inboxQueueMax: number;
   /** Inbox を待たせる上限（ミリ秒） */
   inboxQueueWaitMs: number;
+  /** 受信の段階ごとの所要時間をログに出すか（調査用。既定は無効） */
+  inboxProfile: boolean;
+  /** 受信の中身を非同期（キュー + ワーカー）で処理するか */
+  inboxAsync: boolean;
+  /** 受信ジョブの実行をログに残すか（1 件ごとに出るので既定は無効） */
+  inboxAsyncVerbose: boolean;
   /** 連続稼働の記録の間隔（ミリ秒。0 で無効） */
   soakLogIntervalMs: number;
   /**
@@ -370,6 +376,17 @@ const INBOX_QUEUE_WAIT_MS = (() => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5000;
 })();
 
+// 受信の中身を非同期（キュー + ワーカー）で処理するか。**既定は無効**（いままでどおりリクエスト内で処理）。
+//
+// 有効にすると、署名検証と形式の検査だけリクエスト内で済ませ、**202 を返してから**
+// DB と FTS への書き込み・アンテナの照合・通知・配信の積み込みを行う。リレーの burst で
+// 画面の応答が引きずられるのを避けられる（docs/SCALE.md の「受信の burst」）。
+// 順序は `jobs.group_key`（アクターごとの FIFO）で守り、削除の墓標も見る。
+const INBOX_ASYNC = (process.env.INBOX_ASYNC || 'false').trim().toLowerCase() === 'true';
+const INBOX_ASYNC_VERBOSE = (process.env.INBOX_ASYNC_VERBOSE || 'false').trim().toLowerCase() === 'true';
+// 受信の段階ごとの所要時間をログに出す（調査用。1 件ごとに数行出るので既定は無効）
+const INBOX_PROFILE = (process.env.INBOX_PROFILE || 'false').trim().toLowerCase() === 'true';
+
 // 連続稼働の記録（soak log）の間隔（ミリ秒）。**既定 0 = 無効**。
 // 設定すると、その間隔で RSS・DB/WAL・キューの滞留を 1 行だけログに残す
 // （数時間〜数日動かしたときの増え方を見るため。`journalctl | grep '\[Soak\]'`）
@@ -456,6 +473,9 @@ export const config: AppConfig = {
   inboxConcurrency: INBOX_CONCURRENCY,
   inboxQueueMax: INBOX_QUEUE_MAX,
   inboxQueueWaitMs: INBOX_QUEUE_WAIT_MS,
+  inboxProfile: INBOX_PROFILE,
+  inboxAsync: INBOX_ASYNC,
+  inboxAsyncVerbose: INBOX_ASYNC_VERBOSE,
   soakLogIntervalMs: SOAK_LOG_INTERVAL_MS,
   remotePostRetentionDays: REMOTE_POST_RETENTION_DAYS,
   mediaQuotaMb: MEDIA_QUOTA_MB,

@@ -228,6 +228,10 @@ async function main(): Promise<number> {
     for (const f of [tempDb, `${tempDb}-wal`, `${tempDb}-shm`]) {
       try { fs.unlinkSync(f); } catch {}
     }
+    // **SQLite 側のスキーマを読むのがこの道具の仕事**なので、環境が PostgreSQL でも
+    // 必ず SQLite として動かす。これをしないと DB_DRIVER=postgres の環境では
+    // 空のファイルを読んで「古い」と誤判定する（PostgreSQL で回すスイートの入口で実際に起きた）
+    process.env.DB_DRIVER = 'sqlite';
     process.env.DB_PATH = tempDb;
     const dbModule: any = await import('../server/src/db.js');
     await dbModule.initDatabase();
