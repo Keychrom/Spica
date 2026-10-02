@@ -8,7 +8,7 @@
 >
 > 🌱 **1 人の学生がメインで開発しているプロジェクトです。大人数でのテストができていないため、規模を大きくすると不安定になる可能性があります**（詳しくは [docs/SCALE.md](docs/SCALE.md)）。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
 [![Node.js](https://img.shields.io/badge/Node.js-v22.13%2B-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
@@ -166,4 +166,7 @@ Spica は、**ダイレクトメッセージ（DM / Misskey 等でいう `specif
 
 ## 📄 ライセンス
 
-本プロジェクトは [MIT License](LICENSE) の下で公開されています。
+本プロジェクトは **[AGPL-3.0-or-later](LICENSE)**（GNU Affero General Public License v3.0 以降）の下で公開されています。
+
+- **2026-10-03 より前に公開された版**は MIT License で提供されていました。その版を受け取った方は、その版を MIT の条件で使い続けられます。
+- 改変した版をネットワーク越しに提供する場合は、AGPL 第 13 条に従い、**対応するソースを利用者に提供**してください（このリポジトリがその提供先になります）。

@@ -25,6 +25,8 @@ fi
 #    差分が数行なら手で当てる（下の「手で当てるファイル」を参照）。
 FILES=(
   .env.example
+  # ライセンス（2026-10-03 に MIT から AGPL-3.0-or-later へ。両ツリーで同じ本文にする）
+  LICENSE
   # client/ は src だけを運んでいたため、index.html の変更（メタ情報・フィード案内）が
   # 公開ツリーへ入らない事故になりかけた。単体のファイルはここに明示する
   client/index.html
