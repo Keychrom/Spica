@@ -8,6 +8,8 @@ import DOMPurify from 'dompurify';
 import type { Post } from '../App';
 import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, EyeOff, Globe, HardDrive, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, User, UserPlus, Users } from 'lucide-react';
 import { AutocompleteDropdown, PollInputEditor, createRenderPostCard } from '../components/PostRendering';
+import { Virtuoso } from 'react-virtuoso';
+import { useEffect, useRef, useState } from 'react';
 
 export interface TimelineViewProps {
   ArrowRight: any;
@@ -149,9 +151,28 @@ export interface TimelineViewProps {
 export default function TimelineView(props: TimelineViewProps) {
   const { ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, applyNewPostsQueue, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, dismissAnnouncement, dismissedAnnouncements, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, followHandle, followStatus, handleAutocompleteKeyDown, handleCreatePost, handleFollow, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, handleToggleChannelFollow, handleToggleSearchUserFollow, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingOlderPosts, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, loadOlderPosts, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openCreateChannelModal, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, postDeps, scheduledPosts, searchQuery, searchResults, searchTab, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setFollowHandle, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSearchTab, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText } = props;
   const { renderPostCard } = createRenderPostCard(postDeps);
+
+  // 仮想化のための「先頭に何件挿したか」。SSE の新着を先頭に挿しても
+  // スクロール位置が飛ばないように firstItemIndex をずらす
+  const [firstItemIndex, setFirstItemIndex] = useState(1000000);
+  const headIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const list = timeline as any[];
+    const head = list[0]?.id ?? null;
+    const prevHead = headIdRef.current;
+    if (head && prevHead && head !== prevHead) {
+      const idx = list.findIndex((p: any) => p.id === prevHead);
+      if (idx > 0) setFirstItemIndex((i) => i - idx);
+      else if (idx === -1) setFirstItemIndex(1000000);
+    } else if (head && !prevHead) {
+      setFirstItemIndex(1000000);
+    }
+    headIdRef.current = head;
+  }, [timeline]);
+
   return (
     <>
-        /* 🌟 Misskey風 3カラム統合レイアウト (PC: 左固定ナビ+中央タイムライン/検索+右ウィジェット / モバイル: 1カラム) */
+        {/* 🌟 Misskey風 3カラム統合レイアウト (PC: 左固定ナビ+中央タイムライン/検索+右ウィジェット / モバイル: 1カラム) */}
         <div className="max-w-[1440px] mx-auto px-2 sm:px-4 py-4 flex gap-6 w-full flex-1 pb-24 md:pb-6 min-w-0">
           {/* 📋 左サイドバー (Misskey デスクトップ固定ナビゲーション) */}
           <aside className="hidden md:flex flex-col w-56 lg:w-64 shrink-0 sticky top-16 h-[calc(100vh-5rem)] pb-2 select-none justify-between">
@@ -1647,20 +1668,29 @@ export default function TimelineView(props: TimelineViewProps) {
                       </p>
                     </div>
                   ) : (
-                    timeline.map((post: any) => renderPostCard(post))
-                  )}
-
-                  {/* 📜 過去のノート追加読み込み（カーソルページネーション） */}
-                  {timelineCursor && (
-                    <button
-                      type="button"
-                      onClick={loadOlderPosts}
-                      disabled={isLoadingOlderPosts}
-                      className="w-full py-3 px-4 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-white text-xs transition cursor-pointer flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingOlderPosts ? 'animate-spin' : ''}`} />
-                      <span>{isLoadingOlderPosts ? '過去のノートを読み込み中...' : '📜 過去のノートを読み込む'}</span>
-                    </button>
+                    /* 仮想化: 見えている行だけを DOM に置く（1,000 件でもノード数が一定）。
+                       ページ全体がスクロールするので useWindowScroll を使う */
+                    <Virtuoso
+                      useWindowScroll
+                      data={timeline}
+                      firstItemIndex={firstItemIndex}
+                      computeItemKey={(_i, post: any) => post.id}
+                      itemContent={(_index, post: any) => <div className="pb-3">{renderPostCard(post)}</div>}
+                      components={{
+                        Footer: () =>
+                          timelineCursor ? (
+                            <button
+                              type="button"
+                              onClick={loadOlderPosts}
+                              disabled={isLoadingOlderPosts}
+                              className="w-full py-3 px-4 rounded-2xl bg-slate-900/60 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-white text-xs transition cursor-pointer flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingOlderPosts ? 'animate-spin' : ''}`} />
+                              <span>{isLoadingOlderPosts ? '過去のノートを読み込み中...' : '📜 過去のノートを読み込む'}</span>
+                            </button>
+                          ) : null,
+                      }}
+                    />
                   )}
                 </div>
               </div>

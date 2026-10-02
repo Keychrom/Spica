@@ -119,9 +119,43 @@ export async function getUserFromToken(token: string): Promise<AuthenticatedUser
 }
 
 /**
- * 認証ミドルウェア（リクエストヘッダーからセッションを読み取る）
+ * ストリーミング用のワンタイムチケット
+ *
+ * EventSource はヘッダを付けられないため、これまでセッショントークンをクエリ文字列に
+ * 載せていた（アクセスログに残る）。代わりに「60 秒・1 回だけ有効」のチケットを発行して使う。
  */
-export function authenticate(req: Request, res: Response, next: NextFunction) {
+const STREAM_TICKET_TTL_MS = 60_000;
+
+export async function issueStreamTicket(userId: string): Promise<string> {
+  const ticket = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + STREAM_TICKET_TTL_MS).toISOString();
+  await db.prepare('INSERT INTO stream_tickets (ticket, user_id, expires_at, used) VALUES (?, ?, ?, 0)').run(ticket, userId, expiresAt);
+  // ついでに期限切れを掃除する（小さい表なので軽い）
+  await db.prepare('DELETE FROM stream_tickets WHERE expires_at < ?').run(new Date().toISOString());
+  return ticket;
+}
+
+/** チケットを検証して使い切る（同じチケットで 2 回は通らない） */
+export async function consumeStreamTicket(ticket: string): Promise<AuthenticatedUser | null> {
+  const now = new Date().toISOString();
+  const row = await db.prepare(
+    'SELECT user_id FROM stream_tickets WHERE ticket = ? AND expires_at > ? AND used = 0',
+  ).get(ticket, now) as { user_id: string } | undefined;
+  if (!row) return null;
+
+  const consumed = await db.prepare('UPDATE stream_tickets SET used = 1 WHERE ticket = ? AND used = 0').run(ticket);
+  if (Number((consumed as { changes?: number }).changes ?? 0) === 0) return null;
+
+  const user = await db.prepare(`
+    SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?
+  `).get(row.user_id) as unknown as AuthenticatedUser | undefined;
+  if (!user || user.is_frozen === 1) return null;
+  return user;
+}
+
+/**
+ * 認証ミドルウェア（リクエストヘッダーからセッションを読み取る）
+ */export function authenticate(req: Request, res: Response, next: NextFunction) {
   // 非同期の失敗は next(err) に流す（Express 4 は reject を拾わないため）
   void (async () => {
     const authHeader = req.headers['authorization'];

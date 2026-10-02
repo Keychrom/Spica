@@ -37,7 +37,7 @@ export default function ProfileView(props: ProfileViewProps) {
   const { renderPostCard } = createRenderPostCard(postDeps);
   return (
     <>
-        /* ユーザー詳細プロフィールビュー (Misskey / X 風) */
+        {/* ユーザー詳細プロフィールビュー (Misskey / X 風) */}
         <main className="max-w-4xl mx-auto px-4 py-6 w-full flex-1">
           {/* 戻るボタン */}
           <div className="mb-4">

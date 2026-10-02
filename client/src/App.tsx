@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { compressImage } from './utils/imageCompressor';
 import { api, setApiToken, type ApiResult } from './api/client';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // 画面ごとのコード分割（初回に読み込まない）
 const TimelineView = React.lazy(() => import('./views/TimelineView'));
@@ -4247,18 +4248,32 @@ export default function App() {
 
   // 📡 リアルタイム SSE (Server-Sent Events) ストリーミング接続
   useEffect(() => {
-    const sseUrl = authToken
-      ? `/api/streaming?token=${encodeURIComponent(authToken)}&streams=${encodeURIComponent(sseStreams)}`
-      : `/api/streaming?streams=${encodeURIComponent(sseStreams)}`;
-
     let eventSource: EventSource | null = null;
     let reconnectTimeout: any = null;
+    let attempt = 0;
+    let cancelled = false;
 
-    const connectSSE = () => {
+    const connectSSE = async () => {
+      if (cancelled) return;
+      // トークンはクエリ文字列に載せない（アクセスログに残るため）。
+      // 接続のたびに 60 秒・1 回限りのチケットを取ってから張る。
+      let ticket: string | null = null;
+      if (authToken) {
+        try {
+          const res = await api.post('/api/streaming/ticket');
+          if (res.ok && res.data?.ticket) ticket = String(res.data.ticket);
+        } catch {
+          // 取れなかったときは未認証でつなぐ（公開ストリームは受けられる）
+        }
+        if (cancelled) return;
+      }
+      const params = new URLSearchParams({ streams: sseStreams });
+      if (ticket) params.set('ticket', ticket);
       try {
-        eventSource = new EventSource(sseUrl);
+        eventSource = new EventSource(`/api/streaming?${params.toString()}`);
 
         eventSource.onopen = () => {
+          attempt = 0;
           setIsStreamingConnected(true);
         };
 
@@ -4268,8 +4283,12 @@ export default function App() {
             eventSource.close();
             eventSource = null;
           }
-          // 5秒後に再接続を試行
-          reconnectTimeout = setTimeout(connectSSE, 5000);
+          // 指数バックオフ + ゆらぎ（1s → 2s → 4s … 最大 30s）。
+          // サーバー再起動時に全クライアントが同時に再接続しないようにする
+          attempt += 1;
+          const base = Math.min(1000 * 2 ** (attempt - 1), 30000);
+          const delay = Math.round(base * (0.5 + Math.random() * 0.5));
+          reconnectTimeout = setTimeout(() => { void connectSSE(); }, delay);
         };
 
         // 1. 新着投稿イベント
@@ -4433,9 +4452,10 @@ export default function App() {
       }
     };
 
-    connectSSE();
+    void connectSSE();
 
     return () => {
+      cancelled = true;
       if (eventSource) eventSource.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
@@ -6026,6 +6046,7 @@ export default function App() {
 
       {/* メインビュー */}
       {currentView === 'admin' ? (
+        <ErrorBoundary key="admin" label="管理パネル">
         <Suspense
           fallback={
             <div className="flex-1 flex items-center justify-center py-24">
@@ -6035,7 +6056,9 @@ export default function App() {
         >
           <AdminDashboard {...{adminTab, maintenanceStats, setAdminTab, deliveryQueue, canAdmin, mailSettings, serverStats, setMailSettings, adminUsers, blockInputSeverity, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, storageMessage, serverSettingsMessage, roleActionMsg, reportActionMsg, relayMessage, mailSettingsMsg, isUploadingEmoji, isUpdatingReport, isUpdatingRegMode, isTestingStorage, isLoadingAudit, inviteActionMsg, fetchAuditLog, emojiActionMsg, deliveryQueueMsg, blockMessage, announcementMsg, adminUserSearch, adminFederation, adminEmojis, setAdminUserSearch, isUploadingServerIcon, isUploadingServerBanner, isSavingStorage, isSavingServerSettings, isSavingMail, isRunningMaintenance, isCreatingInvite, isActingOnDelivery, handleSaveMaintenanceSettings, handleResolveReport, handleChangeRegistrationMode, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, setNewRolePermissions, setNewRoleName, setBlockInputSeverity, relayInputUrl, newRolePermissions, newRoleName, newEmojiUrl, newEmojiName, newAnnouncementTitle, newAnnouncementContent, navigateToView, maintenanceMsg, isSavingContentPolicy, isSavingAnnouncement, isLoadingDeliveryQueue, isLoadingAdmin, isConnectingRelay, isClearingProxyCache, isBlockingDomain, handleSaveContentPolicy, handleCreateEmoji, handleAdminResendRelay, fetchDeliveryQueue, editingRoleId, contentPolicyMsg, contentPolicy, blockInputDomain, availablePermissions, auditMsg, auditLog, auditCursor, adminServerIcon, adminReports, setReportStatusFilter, setRelayInputUrl, setNewRoleColor, setNewInviteMemo, setNewInviteMaxUses, setNewInviteExpiresDays, setNewEmojiUrl, setNewEmojiName, setNewEmojiCategory, setNewAnnouncementTitle, setNewAnnouncementContent, setEditingRoleId, setDeliveryQueueMsg, setBlockInputReason, setBlockInputDomain, setAuditFilter, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, newRoleColor, newInviteMemo, newInviteMaxUses, newInviteExpiresDays, newEmojiCategory, handleUploadServerIcon, handleUploadServerBanner, handleUnblockDomain, handleToggleUserRole, handleToggleAnnouncement, handleTestStorage, handleTestMailSettings, handleSaveStorage, handleSaveServerSettings, handleSaveRole, handleSaveMailSettings, handleRunMaintenance, handleRetryDeliveries, handleQuickBlockDomain, handlePruneAuditLog, handleManualBlockDomain, handleEditRole, handleDisconnectRelay, handleDeleteRole, handleDeleteInvitation, handleDeleteEmoji, handleDeleteAnnouncement, handleCreateInvitation, handleCreateAnnouncement, handleConnectRelay, handleClearProxyCache, handleClearFailedDeliveries, handleAdminToggleRelayStatus, handleAdminToggleFreeze, handleAdminClearCache, handleAdminChangeRole, fetchRoles, fetchMailSettings, fetchAdminAnnouncements, blockInputReason, authUser, auditTotal, auditKinds, auditFilter, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, REPORT_CATEGORY_LABELS}} />
         </Suspense>
+        </ErrorBoundary>
       ) : currentView === 'settings' ? (
+        <ErrorBoundary key="settings" label="設定">
         <Suspense
           fallback={
             <div className="flex-1 flex items-center justify-center py-24">
@@ -6045,7 +6068,9 @@ export default function App() {
         >
           <SettingsView {...{SettingsView, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailInput, emailMsg, emailNotification, exportingFormat, fetchBlocksAndMutes, followRequests, handleAddMutedWord, handleCancelMove, handleChangePassword, handleDeleteEmail, handleDeleteMutedWord, handleDeletePasskey, handleExecuteMove, handleExportData, handleImportArchive, handleLogout, handleRegisterPasskey, handleRespondFollowRequest, handleSaveMigrationAlias, handleSavePreferences, handleSaveProfile, handleSendEmailCode, handleSendTestPush, handleSubscribePush, handleToggleEmailNotification, handleToggleNotificationPref, handleUnblockUser, handleUnmuteUser, handleUnsubscribePush, handleUploadAvatar, handleUploadBanner, handleVerifyEmail, importFile, importResult, isExportingData, isImporting, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isMigrating, isPasswordAuthMode, isPushSubscribed, isRegisteringPasskey, isRespondingRequest, isSavingMutedWord, isSavingNotifPrefs, isSavingPassword, isSavingProfile, isSendingEmail, isSendingTestPush, isSubscribingPush, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, migrationMsg, migrationTargetInput, mutedUsers, mutedWordCaseSensitive, mutedWordWholeWord, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, newMutedWord, notificationPrefs, notificationTypes, passkeyActionMessage, passkeyDeviceName, passkeys, passwordMsg, profileDiscoverable, profileIsLocked, pushPermission, pwCurrent, pwMasterKey, pwNew, pwNewConfirm, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setEmailInput, setImportFile, setMigrationAliasInput, setMigrationTargetInput, setMutedWordCaseSensitive, setMutedWordWholeWord, setNewMutedWord, setPasskeyDeviceName, setProfileDiscoverable, setProfileIsLocked, setPwCurrent, setPwMasterKey, setPwNew, setPwNewConfirm, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode}} />
         </Suspense>
+        </ErrorBoundary>
       ) : currentView === 'notifications' ? (
+        <ErrorBoundary key="notifications" label="通知">
         <Suspense
           fallback={
             <div className="flex-1 flex items-center justify-center py-24">
@@ -6055,7 +6080,9 @@ export default function App() {
         >
           <NotificationsView {...{NotificationsView, expandedNotifGroups, fetchNotifications, groupByFirstId, groupedAwayIds, handleMarkNotificationRead, handleNotificationClick, handleReadAllNotifications, isLoadingNotifications, navigateToView, notificationFilter, notifications, openUserProfile, setExpandedNotifGroups, setNotificationFilter, unreadNotificationsCount}} />
         </Suspense>
+        </ErrorBoundary>
       ) : currentView === 'profile' ? (
+        <ErrorBoundary key="profile" label="プロフィール">
         <Suspense
           fallback={
             <div className="flex-1 flex items-center justify-center py-24">
@@ -6065,7 +6092,9 @@ export default function App() {
         >
           <ProfileView {...{ProfileView, authUser, handleBlockUser, handleMuteUser, handleToggleProfileFollow, handleUnblockUser, handleUnmuteUser, isLoadingProfile, isTogglingFollow, navigateToView, openEditProfileModal, openFollowList, openSettings, profileData, profilePosts, profileTarget, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
         </Suspense>
+        </ErrorBoundary>
       ) : (
+        <ErrorBoundary key="timeline" label="タイムライン">
         <Suspense
           fallback={
             <div className="flex-1 flex items-center justify-center py-24">
@@ -6075,18 +6104,23 @@ export default function App() {
         >
           <TimelineView {...{ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, applyNewPostsQueue, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, dismissAnnouncement, dismissedAnnouncements, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, followHandle, followStatus, handleAutocompleteKeyDown, handleCreatePost, handleFollow, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, handleToggleChannelFollow, handleToggleSearchUserFollow, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingOlderPosts, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, loadOlderPosts, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openCreateChannelModal, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, scheduledPosts, searchQuery, searchResults, searchTab, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setFollowHandle, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSearchTab, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
         </Suspense>
+        </ErrorBoundary>
       )}
 
       {/* 🌟 Spica 主権型ソーシャルポータル画面 */}
       {showAuthPortal && (
+        <ErrorBoundary key="portal" label="ポータル">
         <Suspense fallback={null}>
           <AuthPortalView {...{AuthPortalView, agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, expandedAccordions, handleLogin, handleLoginWithPasskey, handleRegister, handleSendRegisterCode, inviteCodeInput, isLoggingInWithPasskey, isPasswordAuthMode, isSendingRegCode, loginId, loginKey, loginPassword, recoveryStatus, regBio, regCodeMsg, regEmail, regEmailCode, regId, regName, regPassword, regPasswordConfirm, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setExpandedAccordions, setHasAgreedToRules, setInviteCodeInput, setLoginId, setLoginKey, setLoginMethod, setLoginPassword, setRecoveryMsg, setRecoveryStep, setRegBio, setRegEmail, setRegEmailCode, setRegId, setRegName, setRegPassword, setRegPasswordConfirm, setShowAuthPortal, setShowRecoveryModal, setShowServerMenuPopover, showAuthPortal, showPasswordLoginForm, showServerMenuPopover}} />
         </Suspense>
+        </ErrorBoundary>
       )}
 
+      <ErrorBoundary key="modals" label="モーダル">
       <Suspense fallback={null}>
         <ModalsView {...{ModalsView, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, closeThreadModal, currentView, customEmojis, cwContent, directorySearch, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingAntenna, editingChannel, emojiCategoryTab, emojiSearchTerm, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAddListMember, handleAdminDeleteUser, handleAutocompleteKeyDown, handleCancelScheduledPost, handleCreateChannel, handleCreateList, handleCreatePost, handleCreateScheduledPost, handleDeleteAntenna, handleDeleteDraft, handleDeleteDriveMedia, handleDeleteList, handleDriveUpload, handleLoadDraft, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRecoveryRequest, handleRecoveryVerify, handleRemoveAttachment, handleRemoveListMember, handleSaveAntenna, handleSaveDraft, handleSaveProfile, handleSelectMedia, handleSelfDeleteAccount, handleSubmitReply, handleSubmitReport, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isAdminDeletingUser, isCopied, isCreatingChannel, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingListTimeline, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isRecovering, isReplying, isSavingProfile, isSelfDeleting, isSensitivePost, isSubmittingReport, isUploadingBanner, isUploadingIcon, isUploadingMedia, isUploadingToDrive, isVotingPoll, issuedMasterKey, listActionMsg, listTimelinePosts, lists, miAuthSession, navigateToView, newChannelCategory, newChannelColor, newChannelDesc, newChannelName, newListMember, newListName, notificationToast, openAntennaManageModal, openAntennaModal, openDraftsModal, openListTimeline, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryCode, recoveryEmail, recoveryMsg, recoveryStep, recoveryUserId, replyContent, replyCwContent, replyTargetPost, reportCategory, reportComment, reportTarget, saveChannelEdit, scheduledDateTime, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDirectorySearch, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingAntenna, setEditingChannel, setEmojiCategoryTab, setEmojiSearchTerm, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setListTimelinePosts, setMiAuthSession, setNewChannelCategory, setNewChannelColor, setNewChannelDesc, setNewChannelName, setNewListMember, setNewListName, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryCode, setRecoveryEmail, setRecoveryMsg, setRecoveryStep, setRecoveryUserId, setReplyContent, setReplyCwContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setScheduledDateTime, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowReplyCwInput, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showReplyCwInput, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
       </Suspense>
+      </ErrorBoundary>
     </div>
   );
 }

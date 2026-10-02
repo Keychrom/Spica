@@ -38,6 +38,8 @@ import {
   destroySession,
   requireAuth,
   getUserFromToken,
+  issueStreamTicket,
+  consumeStreamTicket,
 } from '../auth.js';
 import { deleteUserAccount, beginUserDeletion } from '../accountService.js';
 import { exportUserData, streamUserExportZip, buildUserExportFile } from '../exportService.js';
@@ -432,7 +434,17 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
 apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => {
   let user = req.user;
   if (!user && req.query.token && typeof req.query.token === 'string') {
+    // 旧経路（互換のため残す）。アプリ本体は下のチケットを使う
     user = await getUserFromToken(req.query.token) || undefined;
+  }
+  if (!user && req.query.ticket && typeof req.query.ticket === 'string') {
+    // ワンタイムチケット（60 秒・1 回だけ）。チケットを付けて無効なら、黙って
+    // 未認証にせず断る（アプリは取り直して張り直す）
+    user = await consumeStreamTicket(req.query.ticket) || undefined;
+    if (!user) {
+      res.status(401).json({ error: 'ストリーミングのチケットが無効です。' });
+      return;
+    }
   }
   // 常時接続の上限。溢れたら待たせずに断る（クライアントは少し待って張り直す）
   if (isStreamAtCapacity()) {
@@ -444,6 +456,19 @@ apiRouter.get('/streaming', asyncHandler(async (req: Request, res: Response) => 
   req.on('close', () => {
     removeStreamClient(clientId);
   });
+}));
+
+/**
+ * ストリーミング接続用のワンタイムチケットを発行する
+ * （EventSource はヘッダを付けられないため、トークンをクエリに載せないための経路）
+ */
+apiRouter.post('/streaming/ticket', asyncHandler(async (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ error: 'ログインが必要です。' });
+    return;
+  }
+  const ticket = await issueStreamTicket(req.user.id);
+  res.json({ ticket, expiresIn: 60 });
 }));
 
 /**

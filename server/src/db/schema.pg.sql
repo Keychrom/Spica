@@ -474,6 +474,12 @@ CREATE TABLE IF NOT EXISTS sessions  (
   expires_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS stream_tickets  (
+  ticket TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used BIGINT NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS user_blocks  (
   user_id TEXT NOT NULL,
   target_user_id TEXT NOT NULL,
@@ -578,6 +584,7 @@ CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_actor_url);
 CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status ON scheduled_posts(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_stream_tickets_expires ON stream_tickets(expires_at);
 CREATE INDEX IF NOT EXISTS idx_user_blocks_user ON user_blocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_mutes_user ON user_mutes(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);

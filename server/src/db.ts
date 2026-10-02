@@ -1128,6 +1128,15 @@ async function initDatabaseSchema(): Promise<void> {
     "CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at);",
     // 「相手がこちらをブロックしている」判定（配送のたびに引く）用
     "CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocker ON remote_blocks(blocker_actor_url);",
+    // ストリーミングのワンタイムチケット（クエリ文字列にトークンを載せないため）。
+    // 発行から 60 秒・1 回だけ有効
+    `CREATE TABLE IF NOT EXISTS stream_tickets (
+      ticket TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_stream_tickets_expires ON stream_tickets(expires_at);",
   ];
 
   // マイグレーションの適用。
