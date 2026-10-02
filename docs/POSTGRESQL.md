@@ -341,6 +341,8 @@ npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --tru
 | **バックアップ** | `VACUUM INTO` は SQLite 専用 | PG では `pg_dump -Fc` を使う（`npm run db:pg:backup`。自動メンテナンスでも毎日取る）。`pg_dump` が無い環境では警告してスキップする |
 | **手動メンテナンス CLI** | `npm run db:maintenance` は SQLite 専用 | PG では使わない。保持期間削除と方針適用はアプリ内の自動メンテナンスが担当する（下記） |
 | **自動メンテナンス** | 保持期間の削除・方針適用はどちらの DB でも動く | PG では削除のときに FTS 同期トリガを外さない（SQLite のトリガ定義を流すと構文エラーになるため修正済み） |
+| **起動時のスキーマ適用** | 記録したハッシュ（`pg-schema:<内容>`）と一致するときは**丸ごとスキップ**する（トリガの DROP / CREATE が毎回 `posts` に ACCESS EXCLUSIVE を取るため）。版が変わったときだけ列の差分適用＋適用 | 起動ログに `[DB] 🐘 PostgreSQL スキーマは適用済みです（スキップ）` と出ます |
+| **プールの待ち時間** | `DATABASE_POOL_WAIT_MS`（既定 10 秒）で**枯渇時に無限待ちしない**（超過すると 500 を返し、次のリクエストで再試行） |
 | **保持期間の判定** | **`IN (SELECT …)` の集合演算で書く**（`dbMaintenance.ts` の `keepConditions`）。相関 `EXISTS` にすると候補 1 件ごとに従属表を走査し、`datetime()` で列を包むと索引が使えない | 2026-10-02 に実測して直した（SQLite で 26.7 万件の判定が **5 時間相当 → 0.61 秒**。[SCALE.md](SCALE.md) の「DB を育てる」）。PG でも同じ形が効く（ハッシュ準結合になる）。`bookmarks(post_id)` / `pinned_posts(post_id)` の索引はこの判定のためにある |
 | **パーティション（未導入）** | `notifications` / `outbox_deliveries` は時間で切って**空になった古いパーティションを `DROP`** する形にできる（保持の判定が「読んだ通知」「送信済み/失敗」も見るので、落とす前に空を確認する）。`posts` は主キー `id` 単独・`REFERENCES posts(id)`・`ON CONFLICT(id)` の upsert があるため、時間パーティションにするには主キーを `(id, published_at)` に作り直す必要がある | 2026-10-02 時点で**入れていない**。測ると保持削除の重さは表の大きさではなく問い合わせの形だった（PG では 50 万件の削除が 1.93 秒）。**何百万件**になったときの設計として残してある |
 | **検索の順序** | SQLite の `bm25` 順位付けを `published_at` の新しい順で代用 | 語の出現頻度を考慮した順位にはならない（該当件数と内容は同じ） |

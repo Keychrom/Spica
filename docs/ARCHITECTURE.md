@@ -115,6 +115,21 @@ WHERE id = ? AND status = 'pending' AND next_attempt_at <= now
 **墓標**（`deleted_remote_posts`）でも止めます。Delete を処理したら ID を記録し、
 後から届いた Create はその ID を捨てます。
 
+### メンテナンスも同じトランザクションの仕組みを使う
+
+夜間のメンテナンス（保持期間の削除）は**バッチごとにトランザクション**を切りますが、これを
+生の `BEGIN IMMEDIATE` で書いてはいけません（2026-10-02 に直した）。ドライバは
+「トランザクションが開いている」ことを `transaction()` の中でしか知らないので、生の BEGIN だと
+
+- 同時リクエストの文が**そのトランザクションに相乗り**し、
+- そのリクエストが自分で `BEGIN` を張ろうとすると `cannot start a transaction within a transaction` になり、
+- その `ROLLBACK` が**メンテナンスのバッチまで巻き戻す**
+
+という事故になります（SQLite は 1 接続を共有しているため）。`withTransaction(db, …)` を使えば、
+開いている間は他の文が待たされ、PostgreSQL では接続を固定したまま BEGIN / COMMIT できます
+（`withSession()` の中から呼べます＝一時テーブルと両立します）。
+`scripts/test-db-maintenance.ts` が「メンテナンス中でも同時トランザクションがエラーにならない」を見張っています。
+
 ### 予約投稿はロックで 1 プロセスだけ
 
 予約投稿の公開は条件付き UPDATE ではなく、**`runExclusively('scheduler', 60 秒)` のロック**で

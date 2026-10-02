@@ -43,6 +43,7 @@
     "test:ops-automation": "npx tsx scripts/test-ops-automation.ts",
     "test:process-roles": "npx tsx scripts/test-process-roles.ts",
     "test:hardening": "npx tsx scripts/test-hardening.ts",
+    "test:inbox-async": "npx tsx scripts/test-inbox-async.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
     "check:await": "npx tsx scripts/check-await.ts",
     "check:routes": "npx tsx scripts/check-route-errors.ts",

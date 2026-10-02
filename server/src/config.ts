@@ -88,6 +88,8 @@ export interface AppConfig {
   timelineCacheTtlSec: number;
   /** タグタイムラインが走査する直近の投稿数（既定 20000。0 で無制限） */
   recentScanPosts: number;
+  /** ユーザー検索が走査する直近のリモートアクター数（0 で無制限） */
+  recentScanActors: number;
   /** メディアの公開 URL（CDN。未設定なら自ホストで配信） */
   mediaPublicBaseUrl: string;
   /** /metrics のトークン（未設定なら /metrics は 404） */
@@ -417,6 +419,15 @@ const RECENT_SCAN_POSTS = (() => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20000;
 })();
 
+// ユーザー検索が `LIKE '%語%'` で走査する「直近に見たリモートアクター」の数。
+// `remote_actors` は連合で育ち続ける（実測: このノードで 1 万行・増え続け）ので、
+// 全件走査のままだと検索のたびに線形に重くなる。更新の新しい順に N 件へ限る
+// （索引 `remote_actors(updated_at DESC)` と組で効く）。0 で無制限（従来の挙動）。
+const RECENT_SCAN_ACTORS = (() => {
+  const parsed = parseInt(process.env.RECENT_SCAN_ACTORS || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20000;
+})();
+
 // プロセスの役割。既定 all = HTTP も定期処理も 1 プロセス（従来どおり）。
 // 表記ゆれ（WEB / Web / http / worker / job …）を吸収し、知らない値は all に倒す。
 const rawProcessRole = (process.env.PROCESS_ROLE || 'all').trim().toLowerCase();
@@ -466,6 +477,7 @@ export const config: AppConfig = {
   deliveryConcurrency: DELIVERY_CONCURRENCY,
   timelineCacheTtlSec: TIMELINE_CACHE_TTL_SEC,
   recentScanPosts: RECENT_SCAN_POSTS,
+  recentScanActors: RECENT_SCAN_ACTORS,
   mediaPublicBaseUrl: MEDIA_PUBLIC_BASE_URL,
   metricsToken: METRICS_TOKEN,
   sseMaxClients: SSE_MAX_CLIENTS,

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createAsyncDatabase, type AsyncSpicaDatabase } from './db/asyncDriver.js';
+import { createAsyncDatabase, withTransaction, type AsyncSpicaDatabase } from './db/asyncDriver.js';
 import { applyAnnouncePolicy, applyFtsPolicy, getFtsIndexScope, getRemoteAnnouncePolicy, readSetting } from './searchPolicy.js';
 import { pruneProxyCacheOn } from './imageProxy.js';
 import { config } from './config.js';
@@ -363,8 +363,12 @@ async function applyRemotePostRemovalInSession(db: AsyncSpicaDatabase, opts: Mai
       const ids = (await selectIds.all(BATCH_SIZE) as Array<{ id: string }>).map((r) => r.id);
       if (ids.length === 0) break;
 
-      await db.exec('BEGIN IMMEDIATE');
-      try {
+      // 生の `BEGIN IMMEDIATE` を流してはいけない。ドライバは `transaction()` の中でしか
+      // 「開いている間は他のリクエストの文を待たせる」を知らないので、
+      // 素の BEGIN だと**同時リクエストの文がこのトランザクションに相乗り**し、
+      // その ROLLBACK がこちらのバッチまで巻き戻す（SQLite）。PostgreSQL では
+      // セッション内で BEGIN を張る必要がある（一時テーブルを同じ接続で見るため）。
+      await withTransaction(db, async () => {
         await clearBatch.run();
         for (const id of ids) await insertBatch.run(id);
         for (const [key, stmt] of batchDeletes) {
@@ -373,11 +377,7 @@ async function applyRemotePostRemovalInSession(db: AsyncSpicaDatabase, opts: Mai
         }
         counts.posts += Number((await deletePosts.run()).changes ?? 0);
         await dropTargets.run();
-        await db.exec('COMMIT');
-      } catch (err) {
-        await db.exec('ROLLBACK');
-        throw err;
-      }
+      });
 
       batch++;
       if (batch % 10 === 0) process.stdout.write(`  ... ${counts.posts} / ${total} 件削除\n`);
@@ -603,7 +603,8 @@ export function optimizeDatabase(db: DatabaseSync): OptimizeResult {
 // ---------------------------------------------------------------------------
 
 /** WAL の内容も含めた一貫性のあるスナップショットを 1 ファイルに書き出す */
-export function backupDatabase(db: DatabaseSync, dbPath: string, backupDir: string): BackupResult {
+/** VACUUM INTO の出力先と SQL を作る（同期版・非同期版で共有） */
+function vacuumIntoTarget(dbPath: string, backupDir: string): { target: string; sql: string } {
   fs.mkdirSync(backupDir, { recursive: true });
   // 同じ秒に連続実行しても衝突しないようミリ秒まで含める
   const d = new Date();
@@ -612,9 +613,32 @@ export function backupDatabase(db: DatabaseSync, dbPath: string, backupDir: stri
   const base = path.basename(dbPath).replace(/\.sqlite$/, '');
   const target = path.join(backupDir, `${base}-${stamp}.sqlite`);
   if (fs.existsSync(target)) fs.unlinkSync(target);
+  return { target, sql: `VACUUM INTO '${target.replace(/'/g, "''")}';` };
+}
 
-  const escaped = target.replace(/'/g, "''");
-  db.exec(`VACUUM INTO '${escaped}';`);
+/**
+ * 同期版（手動メンテナンス CLI 用。素の `DatabaseSync` を渡すこと）。
+ *
+ * **アプリの `db`（非同期ラッパ）を `as unknown as DatabaseSync` で渡してはいけない。**
+ * トランザクションが開いていると `exec` が遅延し、直後の `statSync` が ENOENT になって
+ * バックアップが静かに欠ける（2026-10-02 に直した）。アプリからは `backupDatabaseAsync` を使う。
+ */
+export function backupDatabase(db: DatabaseSync, dbPath: string, backupDir: string): BackupResult {
+  const { target, sql } = vacuumIntoTarget(dbPath, backupDir);
+  db.exec(sql);
+  return { path: target, bytes: fs.statSync(target).size, removed: [] };
+}
+
+/** 非同期版（アプリ用）。`VACUUM INTO` の完了を待ってから大きさを読む */
+export async function backupDatabaseAsync(
+  database: AsyncSpicaDatabase,
+  dbPath: string,
+  backupDir: string,
+): Promise<BackupResult> {
+  const { target, sql } = vacuumIntoTarget(dbPath, backupDir);
+  await database.exec(sql);
+  // 念のため（待たされた実行が別のマイクロタスクで終わる環境向け）: 見えなければ 1 度だけ待つ
+  if (!fs.existsSync(target)) await new Promise((resolve) => setTimeout(resolve, 50));
   return { path: target, bytes: fs.statSync(target).size, removed: [] };
 }
 
@@ -720,8 +744,10 @@ export async function runMaintenance(params: {
       }
       if (params.options.applyPolicy) {
         log('⑤ 保存・索引の方針を既存データへ適用しています...');
-        // 方針適用はどちらの DB でも動く（PostgreSQL でも同じ SQL が通る）
-        const ftsResult = await applyFtsPolicy(db);
+        // 方針適用はどちらの DB でも動く（PostgreSQL でも同じ SQL が通る）。
+        // 手動で回すときは「方針が同じでも適用し直す」（force）— 自動メンテナンスは
+        // 方針が変わっていなければ丸ごと飛ばす（毎晩の全件 UPDATE をやめた）
+        const ftsResult = await applyFtsPolicy(db, { force: true });
         const announceResult = await applyAnnouncePolicy(db);
         policyResult = {
           fts: { ...ftsResult, scope: await getFtsIndexScope(db) },

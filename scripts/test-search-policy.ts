@@ -344,6 +344,23 @@ async function run(): Promise<void> {
     const localFtsAfter = Number((await policyDb.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
     check('索引にはローカル投稿だけが残る（ローカル2件）', localFtsAfter, 2);
 
+    // 2026-10-02 に足した 2 つの性質:
+    //   (1) 方針が同じなら次回は何もしない（毎晩の全件 UPDATE をやめた。走ると 30k 行で 64 秒）
+    //   (2) そのとき FTS の同期トリガが元に戻っている（外したままにならない）
+    const secondRun = await applyFtsPolicy(policyDb);
+    check('方針が同じなら 2 回目はスキップする', secondRun.skipped === true, true);
+    // トリガの定義は SQLite にしか無い（PostgreSQL は plpgsql のトリガで、外していない）
+    if (process.env.DB_DRIVER !== 'postgres') {
+      const triggerAfter = Number(
+        (await policyDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_au'").get() as any).c,
+      );
+      check('FTS の更新トリガが戻っている', triggerAfter, 1);
+    } else {
+      console.log('  ⏭️  FTS の更新トリガの検査は SQLite のみ（PostgreSQL はトリガを外さない）');
+    }
+    const forced = await applyFtsPolicy(policyDb, { force: true });
+    check('force なら方針が同じでも走る', forced.skipped === false, true);
+
     const annApplied = await applyAnnouncePolicy(policyDb);
     check('方針に反するブーストが削除される', annApplied.toRemove, 1);
     check('フォロー中のブーストは残る', annApplied.remaining, 1);

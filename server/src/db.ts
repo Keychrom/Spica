@@ -78,19 +78,39 @@ async function initPostgresSchema(): Promise<void> {
         await db.prepare('SELECT pg_advisory_lock(?) AS ok').get(SCHEMA_LOCK_KEY);
       }
       try {
-        // スキーマは `CREATE TABLE IF NOT EXISTS` なので、**既存の DB には列が増えない**。
-        // 生成物に書いてあって DB に無い列は、**スキーマを流す前に**足す
-        // （スキーマの中の索引が新しい列を参照していても通るようにするため）
-        const added = await addMissingColumns(sql);
-        await db.exec(sql);
-        console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
-        if (added.length > 0) {
-          console.log(
-            `[DB] 🧩 足りない列を追加しました（${added.length} 件）: ${added.slice(0, 8).join(', ')}${added.length > 8 ? ' …' : ''}`,
-          );
+        // **同じ版が入っていれば丸ごと飛ばす。** スキーマには `CREATE OR REPLACE FUNCTION` と
+        // トリガの DROP / CREATE が含まれていて、毎回流すと posts などに
+        // ACCESS EXCLUSIVE ロックを取る（＝起動のたびに読み書きが一瞬止まる）。
+        // 記録（`pg-schema:<内容のハッシュ>`）と一致するときは何もしない。
+        // 列の追加（addMissingColumns）も同じ版なら不要。
+        const schemaKey = `pg-schema:${migrationKey(sql)}`;
+        // **まっさらな DB では `schema_migrations` 自体がまだ無い**ので、失敗は「未適用」として扱う
+        // （ここで例外を投げると、新しい DB でアプリが起動できなくなる）
+        let alreadyApplied: { key: string } | undefined;
+        try {
+          alreadyApplied = (await db.prepare('SELECT key FROM schema_migrations WHERE key = ?').get(schemaKey)) as
+            | { key: string }
+            | undefined;
+        } catch {
+          alreadyApplied = undefined;
         }
-        // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
-        await recordMigration(`pg-schema:${migrationKey(sql)}`, 'schema');
+        if (alreadyApplied) {
+          console.log('[DB] 🐘 PostgreSQL スキーマは適用済みです（スキップ）');
+        } else {
+          // スキーマは `CREATE TABLE IF NOT EXISTS` なので、**既存の DB には列が増えない**。
+          // 生成物に書いてあって DB に無い列は、**スキーマを流す前に**足す
+          // （スキーマの中の索引が新しい列を参照していても通るようにするため）
+          const added = await addMissingColumns(sql);
+          await db.exec(sql);
+          console.log('[DB] 🐘 PostgreSQL スキーマを適用しました');
+          if (added.length > 0) {
+            console.log(
+              `[DB] 🧩 足りない列を追加しました（${added.length} 件）: ${added.slice(0, 8).join(', ')}${added.length > 8 ? ' …' : ''}`,
+            );
+          }
+          // スキーマの版も記録する（どの版が入っているかを後から DB だけで確認できるように）
+          await recordMigration(schemaKey, 'schema');
+        }
       } finally {
         await db.prepare('SELECT pg_advisory_unlock(?) AS ok').get(SCHEMA_LOCK_KEY);
       }
@@ -276,9 +296,23 @@ async function pickLargeTableIndexes(sql: string): Promise<DeferredIndex[]> {
   const deferred: DeferredIndex[] = [];
   const rowsCache = new Map<string, number>();
   for (const candidate of candidates) {
-    // すでに索引があるなら何もしない（毎回の起動で行数を数えない）
-    const exists = await db.prepare('SELECT 1 AS ok FROM pg_class WHERE relname = ? AND relkind = ?').get(candidate.name, 'i');
-    if (exists) continue;
+    // 索引が**あって有効**なら何もしない（毎回の起動で行数を数えない）。
+    // 「存在する＝出来ている」と見てはいけない: `CREATE INDEX CONCURRENTLY` が途中で失敗すると
+    // **無効な索引**が残る。それをスキップしてしまうと、下の作り直し（indisvalid の判定）に
+    // 永久に辿り着かない（2026-10-02 に直した）。
+    const existing = (await db
+      .prepare(
+        `SELECT i.indisvalid AS valid
+           FROM pg_class c LEFT JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relname = ? AND c.relkind = 'i'`,
+      )
+      .get(candidate.name)) as { valid: boolean } | undefined;
+    if (existing && existing.valid !== false) continue;
+    if (existing) {
+      // 無効な索引は、テーブルの大きさに関わらず作り直す
+      deferred.push(candidate);
+      continue;
+    }
 
     let rows = rowsCache.get(candidate.table);
     if (rows === undefined) {
@@ -702,6 +736,8 @@ async function initDatabaseSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_announces_post ON announces(post_id);
     CREATE INDEX IF NOT EXISTS idx_announces_user ON announces(user_id);
     CREATE INDEX IF NOT EXISTS idx_blocked_domains_domain ON blocked_domains(domain);
+    -- ユーザー検索の走査窓（直近に見たリモートアクター N 件）を安く引くための索引
+    CREATE INDEX IF NOT EXISTS idx_remote_actors_updated ON remote_actors(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
     CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, created_at DESC);
@@ -1081,6 +1117,9 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE scheduled_posts ADD COLUMN updated_at TEXT DEFAULT '';",
     // 自分の投稿一覧・プロフィールの件数（COUNT(*) WHERE user_id = ?）が全表走査にならないようにする
     "CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);",
+    // 起動時の FTS 同期チェック（索引対象の件数）と、方針適用の走査を安くする部分索引。
+    // `COUNT(*) WHERE fts_indexed = 1` が索引だけで数えられる（実測 47 万行で 0.16s → 0.00s）
+    "CREATE INDEX IF NOT EXISTS idx_posts_fts_indexed ON posts(id) WHERE fts_indexed = 1;",
     // 期限切れセッションの掃除（DELETE ... WHERE expires_at <= ?）を索引で支える
     "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);",
     // 読み終わった通知の保持期間による削除（DELETE ... WHERE is_read = 1 AND created_at <= ?）用

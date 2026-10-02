@@ -1,12 +1,11 @@
 import fs from 'node:fs';
-import type { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   applyRemotePostRemoval,
-  backupDatabase,
+  backupDatabaseAsync,
   getDbSizeInfo,
   keepConditions,
   planRemotePostRemoval,
@@ -163,7 +162,8 @@ export async function runScheduledMaintenance(): Promise<{
   // SQLite は VACUUM INTO、PostgreSQL は pg_dump（pg_dump が無ければ警告してスキップ）
   if (config.autoBackup !== false && db.kind === 'sqlite') {
     try {
-      const result = backupDatabase(db as unknown as DatabaseSync, config.dbPath, backupDir());
+      // 非同期ラッパを同期型に偽装しない（VACUUM INTO を待ってから大きさを読む）
+      const result = await backupDatabaseAsync(db, config.dbPath, backupDir());
       const removed = rotateBackups(backupDir(), config.backupsKeep);
       backup = { path: result.path, bytes: result.bytes };
       console.log(

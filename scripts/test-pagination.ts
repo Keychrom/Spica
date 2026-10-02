@@ -198,6 +198,21 @@ async function run() {
     check('ホーム限定投稿もローカルTLに含まれる', tlIds.has(localOnlyId), true);
 
     // ------------------------------------------------------------------
+    // 2026-10-02: キャッシュ HIT でも続きのカーソルが返ること。
+    // 落とすと「15 秒以内の再アクセスで次ページが無い」と誤解され、無限スクロールが途切れる
+    console.log('\n💾 [1-b] キャッシュ HIT でもカーソルが返る');
+    // まだ誰も引いていない鍵（limit=6）で、1 回目 MISS → 2 回目 HIT を作る
+    const first = await fetch(`${BASE}/api/timeline?mode=local&limit=6`);
+    const firstCursor = first.headers.get('x-next-cursor');
+    check('新しい鍵では 1 回目は MISS（保存もされる）', first.headers.get('x-timeline-cache'), 'MISS');
+    check('1 回目にカーソルが付く', firstCursor !== null, true);
+    const again = await fetch(`${BASE}/api/timeline?mode=local&limit=6`);
+    check('2 回目はキャッシュに当たる', again.headers.get('x-timeline-cache'), 'HIT');
+    check('HIT でも同じカーソルが付く', again.headers.get('x-next-cursor'), firstCursor);
+    const againBody = await again.json();
+    check('HIT の本文も同じ件数', Array.isArray(againBody) ? againBody.length : -1, 6);
+
+    // ------------------------------------------------------------------
     console.log('\n🚫 [2] 不正なカーソルは 400');
     const badCursor = await fetch(`${BASE}/api/timeline?mode=local&cursor=!!!not-a-cursor!!!`);
     check('不正カーソルのステータス', badCursor.status, 400);

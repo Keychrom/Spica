@@ -560,6 +560,7 @@ CREATE INDEX IF NOT EXISTS idx_poll_votes_poll_user ON poll_votes(poll_id, user_
 CREATE INDEX IF NOT EXISTS idx_polls_post ON polls(post_id);
 CREATE INDEX IF NOT EXISTS idx_posts_author_published ON posts(author_url, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_fts_indexed ON posts(id) WHERE fts_indexed = 1;
 CREATE INDEX IF NOT EXISTS idx_posts_in_reply_to ON posts(in_reply_to);
 CREATE INDEX IF NOT EXISTS idx_posts_local_published ON posts(is_local, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at DESC);
@@ -569,6 +570,7 @@ CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_user ON reactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_remote_actors_updated ON remote_actors(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocked ON remote_blocks(blocked_actor_url);
 CREATE INDEX IF NOT EXISTS idx_remote_blocks_blocker ON remote_blocks(blocker_actor_url);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);

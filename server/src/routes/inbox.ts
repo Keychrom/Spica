@@ -253,6 +253,26 @@ export async function processActivity(
         return res.status(200).json({ status: 'Accept processed' });
       }
 
+      case 'Reject': {
+        // こちらから送った Follow が相手に拒否された（鍵アカウントなど）。
+        // 保留のままの行を消し、キャッシュも捨てる（見えないはずの投稿が残らないように）。
+        const rejected = activity.object;
+        const rejectedType = typeof rejected === 'object' ? rejected?.type : null;
+        if (rejectedType === 'Follow' || !rejectedType) {
+          const targetUrl = typeof rejected?.object === 'string' ? rejected.object : rejected?.object?.id;
+          if (targetUrl) {
+            const result = await db
+              .prepare("DELETE FROM follows WHERE following_url = ? AND is_local = 1 AND status <> 'accepted'")
+              .run(targetUrl);
+            await invalidateTimelineCache();
+            console.log(
+              `[Inbox Reject] 🚫 Follow rejected by ${actorUrl} for ${targetUrl}（保留の行を ${Number(result.changes ?? 0)} 件削除）`,
+            );
+          }
+        }
+        return res.status(200).json({ status: 'Reject processed' });
+      }
+
       case 'Create': {
         // 投稿 (Note / Question) の受信 (フォロワーまたはリレー経由)
         // どの段で時間を使っているかは `INBOX_PROFILE=true` で 1 行ずつ出る（普段は出さない）
@@ -982,6 +1002,9 @@ export async function processActivity(
         if (innerType === 'Follow') {
           const targetActorUrl = typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id;
           await db.prepare('DELETE FROM follows WHERE follower_url = ? AND following_url = ?').run(actorUrl, targetActorUrl);
+          // フォローが外れると、その相手の**フォロワー限定投稿はもう見えません**。
+          // キャッシュを捨てないと最大 TTL ぶん見えたままになる（2026-10-02 に直した）
+          await invalidateTimelineCache();
           console.log(`[Inbox Undo] ❌ Follow removed: ${actorUrl} unfollowed ${targetActorUrl}`);
         } else if (innerType === 'Like' || innerType === 'EmojiReact' || !innerType) {
           // リアクション / いいね取り消し

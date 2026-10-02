@@ -149,11 +149,38 @@ export interface FtsPolicyResult {
   toIndex: number;
   /** 方針適用後に残る索引行数 */
   ftsRowsAfter: number;
+  /** 方針が前回と同じで何もしなかったか */
+  skipped?: boolean;
 }
 
-/** 方針を既存データへ遡及適用する（db:maintenance と自動メンテナンスから呼ぶ） */
-export async function applyFtsPolicy(conn: AsyncSpicaDatabase): Promise<FtsPolicyResult> {
+/**
+ * 方針を既存データへ遡及適用する（db:maintenance と自動メンテナンスから呼ぶ）。
+ *
+ * **毎晩そのまま流してはいけない**（2026-10-02 に直した）。以前は
+ * `UPDATE posts SET fts_indexed = CASE … END` を **WHERE 無し**で流していたため、
+ * 変わらない行でも 1 行ごとに `posts_au` トリガが発火し、その中の
+ * `DELETE FROM posts_fts WHERE post_id = old.id` が（FTS5 の `post_id` は UNINDEXED なので）
+ * **1 行ごとに FTS 全体を走査**していました（O(n²)。リレーで投稿が溜まったノードでは事実上終わらない）。
+ *
+ * いまは 2 段構え:
+ *   1. **方針が前回と同じなら何もしない**（`fts_policy_applied` に適用済みの値を記録する）
+ *   2. 変わったときは `WHERE fts_indexed <> …` で**変わる行だけ**を更新し、
+ *      SQLite では FTS の同期トリガを外してから集合演算で索引を直す（削除パスと同じ形）
+ *
+ * `force: true` で 1 を飛ばせます（手動メンテナンスの「いま適用する」用）。
+ */
+export async function applyFtsPolicy(
+  conn: AsyncSpicaDatabase,
+  opts: { force?: boolean } = {},
+): Promise<FtsPolicyResult> {
   const scope = await getFtsIndexScope(conn);
+  const signature = `${scope}|${conn.kind}`;
+  const applied = getServerSetting('fts_policy_applied');
+  if (!opts.force && applied === signature) {
+    const ftsRows = Number((await conn.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
+    return { toUnindex: 0, toIndex: 0, ftsRowsAfter: ftsRows, skipped: true };
+  }
+
   const keepCondition = `
     is_local = 1 OR (
       '${scope}' = 'all' OR (
@@ -163,9 +190,27 @@ export async function applyFtsPolicy(conn: AsyncSpicaDatabase): Promise<FtsPolic
         )
       )
     )`;
+  const wanted = `CASE WHEN ${keepCondition} THEN 1 ELSE 0 END`;
 
-  // fts_indexed を方針どおりに更新する
-  await conn.exec(`UPDATE posts SET fts_indexed = CASE WHEN ${keepCondition} THEN 1 ELSE 0 END`);
+  // SQLite は FTS の同期トリガが post_id を全走査するので、まとめて更新する間だけ外す
+  // （PostgreSQL は posts_fts.post_id が主キーで索引が効くので、そのままトリガに任せる）
+  const triggerSql =
+    conn.kind === 'postgres'
+      ? undefined
+      : ((await conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'posts_au'").get() as any)?.sql as
+          | string
+          | undefined);
+
+  if (triggerSql) await conn.exec('DROP TRIGGER IF EXISTS posts_au');
+  try {
+    // **変わる行だけ**を更新する（変わらない行でトリガを起こさない）
+    await conn.exec(`UPDATE posts SET fts_indexed = ${wanted} WHERE fts_indexed <> (${wanted})`);
+  } finally {
+    if (triggerSql) {
+      await conn.exec('DROP TRIGGER IF EXISTS posts_au');
+      await conn.exec(triggerSql);
+    }
+  }
 
   const toUnindex = Number(
     (await conn.prepare(`SELECT COUNT(*) AS c FROM posts WHERE fts_indexed = 0 AND id IN (SELECT post_id FROM posts_fts)`).get() as any).c,
@@ -188,7 +233,9 @@ export async function applyFtsPolicy(conn: AsyncSpicaDatabase): Promise<FtsPolic
   await conn.exec('DELETE FROM posts_fts WHERE post_id NOT IN (SELECT id FROM posts)');
 
   const ftsRowsAfter = Number((await conn.prepare('SELECT COUNT(*) AS c FROM posts_fts').get() as any).c);
-  return { toUnindex, toIndex, ftsRowsAfter };
+  // 適用済みを記録する（次回以降は方針が変わるまで何もしない）
+  await setServerSetting('fts_policy_applied', signature).catch(() => undefined);
+  return { toUnindex, toIndex, ftsRowsAfter, skipped: false };
 }
 
 /** 方針に反して保存されているリモートのブーストを削除する */

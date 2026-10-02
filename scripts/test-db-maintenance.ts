@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
+import { createAsyncDatabase, withTransaction } from '../server/src/db/asyncDriver.js';
 import {
   DEFAULT_MAINTENANCE_OPTIONS,
   MaintenanceOptions,
@@ -216,6 +216,68 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('bookmarks(post_id) の索引がある', indexes.includes('idx_bookmarks_post'));
   check('pinned_posts(post_id) の索引がある', indexes.includes('idx_pinned_posts_post'));
   conn.close();
+}
+
+// ---------------------------------------------------------------------------
+// ①-c メンテナンス中に走った同時トランザクションが巻き戻されない
+//
+// バッチが生の `BEGIN IMMEDIATE` を流していると、ドライバはトランザクションが開いていることを
+// 知らないので、同時リクエストの文がそのトランザクションに相乗りする。同時リクエストが
+// 自分でトランザクションを張ろうとすると "cannot start a transaction within a transaction" になり、
+// その ROLLBACK が**メンテナンスのバッチまで巻き戻す**（2026-10-02 に直した）。
+// ---------------------------------------------------------------------------
+{
+  // **共有のフィクスチャを壊さないよう、DB をコピーしてから**この検査だけを行う
+  // （ここで候補を全部消してしまうため）
+  const workPath = `${dbPath}-a1.sqlite`;
+  {
+    const src = openMaintenanceDb(dbPath);
+    src.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    src.close();
+    fs.copyFileSync(dbPath, workPath);
+  }
+  const conn = openMaintenanceDb(workPath);
+  const db = createAsyncDatabase({ sqlite: conn });
+  // バッチが何度も回るように候補を増やす（1 バッチ 5000 件）
+  const iso40 = new Date(Date.now() - 40 * 86400_000).toISOString();
+  const fill = conn.prepare(
+    "INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, published_at, fts_indexed) VALUES (?, 'remote', 'R', 'http://remote/fill', '@fill@remote', '古い', 0, ?, 0)",
+  );
+  conn.exec('BEGIN');
+  for (let i = 0; i < 20000; i++) fill.run(`fill-${i}`, iso40);
+  conn.exec('COMMIT');
+
+  let done = false;
+  const maintenance = applyRemotePostRemoval(db, options).then((c) => {
+    done = true;
+    return c;
+  });
+  // **マイクロタスクだけで交互に進める**。SQLite の文は `Promise.resolve(fn())` で解決するので、
+  // 実際のリクエストもこの粒度でメンテナンスに割り込む（タイマー待ちにすると、
+  // メンテナンスが一気に走り切ってしまい割り込みが起きない）。
+  await Promise.resolve();
+
+  let errors = 0;
+  let writes = 0;
+  while (!done && writes + errors < 20) {
+    try {
+      const key = `probe-${writes + errors}`;
+      await withTransaction(db, async () => {
+        await db.prepare('INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?)').run(key, 'x', new Date().toISOString());
+      });
+      writes++;
+    } catch {
+      errors++;
+    }
+    await Promise.resolve();
+  }
+  const counts = await maintenance;
+  const probes = (conn.prepare("SELECT COUNT(*) AS c FROM server_settings WHERE key LIKE 'probe-%'").get() as any).c;
+  check('メンテナンス中でも同時トランザクションがエラーにならない', errors === 0, `errors=${errors}`);
+  check('同時トランザクションの書き込みが残る（巻き戻されない）', writes > 0 && probes === writes, `writes=${writes} probes=${probes}`);
+  check('メンテナンスは最後まで進む', counts.posts > 20000, `posts=${counts.posts}`);
+  conn.close();
+  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${workPath}${suffix}`, { force: true });
 }
 
 // ---------------------------------------------------------------------------

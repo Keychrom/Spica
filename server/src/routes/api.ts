@@ -995,7 +995,17 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     const cached = await cacheGet(cacheKey);
     if (cached) {
       res.setHeader('X-Timeline-Cache', 'HIT');
-      return res.json(cached);
+      // **続きのカーソルも一緒に返す。** HIT 経路でヘッダを落とすと、15 秒以内の再アクセス
+      // （＝スクロール直後の再取得）で「次ページ無し」と誤解され、無限スクロールが途切れる。
+      // 古い形（配列だけ）がキャッシュに残っていたらカーソル無しとして扱う
+      const entry = Array.isArray(cached)
+        ? { rows: cached, nextCursor: null as string | null }
+        : (cached as { rows: unknown; nextCursor?: string | null });
+      if (entry.nextCursor) {
+        res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+        res.setHeader('X-Next-Cursor', entry.nextCursor);
+      }
+      return res.json(entry.rows);
     }
   }
 
@@ -1006,12 +1016,13 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
+  const nextCursor = (res.getHeader('X-Next-Cursor') as string | undefined) ?? null;
   const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
 
   if (isTimelineCacheEnabled()) {
     res.setHeader('X-Timeline-Cache', 'MISS');
-    // 保存の完了は待たない（応答を遅らせない）
-    void cacheSet(cacheKey, enriched, config.timelineCacheTtlSec);
+    // 保存の完了は待たない（応答を遅らせない）。カーソルも一緒に持たせる
+    void cacheSet(cacheKey, { rows: enriched, nextCursor }, config.timelineCacheTtlSec);
   }
 
   res.json(enriched);
@@ -1159,12 +1170,26 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
     LIMIT 10
   `).all(searchPattern, searchPattern) as any[] : [];
 
-  const remoteActors = searchText ? await db.prepare(`
+  // リモートアクターは連合で育ち続けるので、**直近に見た N 件**に限って走査する
+  // （`LIKE '%語%'` は索引が使えず、全件だと件数に比例して重くなる）。
+  // `RECENT_SCAN_ACTORS=0` で従来どおり全件（遅い代わりに古い相手も見つかる）
+  const actorWindow = config.recentScanActors;
+  const remoteActors = searchText ? await db.prepare(actorWindow > 0 ? `
+    SELECT id, username, domain, name, summary, icon_url, 0 as is_local, ('@' || username || '@' || domain) as handle
+    FROM (
+      SELECT id, username, domain, name, summary, icon_url
+      FROM remote_actors
+      ORDER BY updated_at DESC
+      LIMIT ?
+    ) ra
+    WHERE ra.username LIKE ? OR ra.name LIKE ? OR ra.domain LIKE ?
+    LIMIT 10
+  ` : `
     SELECT id, username, domain, name, summary, icon_url, 0 as is_local, ('@' || username || '@' || domain) as handle
     FROM remote_actors
     WHERE username LIKE ? OR name LIKE ? OR domain LIKE ?
     LIMIT 10
-  `).all(searchPattern, searchPattern, searchPattern) as any[] : [];
+  `).all(...(actorWindow > 0 ? [actorWindow, searchPattern, searchPattern, searchPattern] : [searchPattern, searchPattern, searchPattern])) as any[] : [];
 
   const combinedUsers = await Promise.all([...localUsers, ...remoteActors].map(async (u) => {
     let isFollowing = false;
@@ -3397,6 +3422,9 @@ apiRouter.post('/users/:identifier/mute', requireAuth, asyncHandler(async (req: 
       INSERT OR REPLACE INTO user_mutes (user_id, target_user_id, target_handle, target_name, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(user.id, targetUserId, targetHandle, targetName, now);
+    // ミュートした直後は相手の投稿がタイムラインから消えるべきなので、キャッシュを捨てる
+    // （unmute / block は捨てていて、mute だけ抜けていた。2026-10-02 に直した）
+    await invalidateTimelineCache();
 
     res.json({ success: true, is_muted: true });
   } catch (err: any) {
@@ -4745,95 +4773,11 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
 
   const rows = await db.prepare(sql).all(...params) as any[];
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'id');
-  // 閲覧権限のない投稿（フォロワー限定など）とミュートワード該当投稿を除外
-  const antennaViewer = `${config.origin}/users/${user.id}`;
-  const antennaMutedWords = await getMutedWords(user.id);
-  const visibleRows = (await filterVisiblePosts(pageRows, antennaViewer))
-    .filter((post) => !postMatchesMutedWords(post, antennaMutedWords));
+  // 他のタイムラインと同じ整形（enrichAndFilterPosts）に任せる。
+  // 以前はここだけ**投稿 1 件ごとに 7〜9 本のクエリ**を撃っていた（limit 100 で最大 900 本）。
+  // 整形には閲覧権限（フォロワー限定）・ミュートワード・ブロック/ミュートの除外も入っている。
+  const decorated = await enrichAndFilterPosts(pageRows, `${config.origin}/users/${user.id}`, user.id);
 
-  // 各ノートのリアクション、アンケート、引用、ブックマーク状態の補完
-  const decorated = await Promise.all(visibleRows.map(async (post) => {
-    // 添付メディア
-    let parsedAttachments: any[] = [];
-    try {
-      if (typeof post.media_attachments === 'string') parsedAttachments = JSON.parse(post.media_attachments || '[]');
-      else if (Array.isArray(post.media_attachments)) parsedAttachments = post.media_attachments;
-    } catch {}
-
-    // アンケート
-    let pollData = null;
-    const pollRow = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(post.id) as any;
-    if (pollRow) {
-      const choices = await db.prepare('SELECT * FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(pollRow.id) as any[];
-      const myVotes = await db.prepare('SELECT choice_index FROM poll_votes WHERE poll_id = ? AND user_id = ?').all(pollRow.id, user.id) as any[];
-      const myVotedIndices = new Set(myVotes.map((v) => v.choice_index));
-      pollData = {
-        id: pollRow.id,
-        multiple: Boolean(pollRow.multiple),
-        expires_at: pollRow.expires_at,
-        is_expired: pollRow.expires_at ? new Date(pollRow.expires_at) <= new Date() : false,
-        total_votes: choices.reduce((acc, c) => acc + (c.votes_count || 0), 0),
-        my_voted: myVotes.length > 0,
-        choices: choices.map((c) => ({
-          choice_index: c.choice_index,
-          text: c.text,
-          votes_count: c.votes_count || 0,
-          me: myVotedIndices.has(c.choice_index),
-        })),
-      };
-    }
-
-    // 引用投稿
-    let quotePostData: any = null;
-    if (post.quote_id) {
-      const qRow = await db.prepare('SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at FROM posts WHERE id = ?').get(post.quote_id) as any;
-      if (qRow) {
-        quotePostData = {
-          ...qRow,
-          is_sensitive: Boolean(qRow.is_sensitive),
-          media_attachments: (() => {
-            try { return typeof qRow.media_attachments === 'string' ? JSON.parse(qRow.media_attachments || '[]') : (qRow.media_attachments || []); }
-            catch { return []; }
-          })(),
-        };
-      }
-    }
-
-    // リアクション
-    const reactionRows = await db.prepare(`
-      SELECT reaction, count(*) as count, max(CASE WHEN user_id = ? THEN 1 ELSE 0 END) as me
-      FROM reactions
-      WHERE post_id = ?
-      GROUP BY reaction
-    `).all(user.id, post.id) as any[];
-
-    // リノート集計
-    const announceCount = (await db.prepare('SELECT count(*) as c FROM announces WHERE post_id = ?').get(post.id) as any).c;
-    const myAnnounced = Boolean((await db.prepare('SELECT 1 FROM announces WHERE post_id = ? AND user_id = ?').get(post.id, user.id) as any));
-
-    // 返信カウント
-    const replyCount = (await db.prepare('SELECT count(*) as c FROM posts WHERE in_reply_to = ?').get(post.id) as any).c;
-
-    // ブックマーク判定
-    const isBookmarked = Boolean((await db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(user.id, post.id) as any));
-
-    return {
-      ...post,
-      is_sensitive: Boolean(post.is_sensitive),
-      media_attachments: parsedAttachments,
-      poll: pollData,
-      quote: quotePostData,
-      reactions: reactionRows.map((r) => ({
-        reaction: r.reaction,
-        count: r.count,
-        me: Boolean(r.me),
-      })),
-      announce_count: announceCount,
-      my_announced: myAnnounced,
-      reply_count: replyCount,
-      bookmarked: isBookmarked,
-    };
-  }));
 
   res.json({
     antenna: {

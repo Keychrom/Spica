@@ -219,6 +219,12 @@ interface PgQueryResult {
   rowCount: number | null;
 }
 
+/** プールが空くのを待つ上限（ミリ秒）。枯渇時に無限待ちしないためのもの */
+const DATABASE_POOL_WAIT_MS = (() => {
+  const parsed = Number(process.env.DATABASE_POOL_WAIT_MS ?? 10_000);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10_000;
+})();
+
 class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   readonly kind = 'postgres' as const;
 
@@ -234,6 +240,12 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
    * `withSession()` でこのコンテキストに入れてから実行する。
    */
   private readonly pinned = new AsyncLocalStorage<{ client: PoolClient; release: (err?: Error) => void }>();
+  /**
+   * トランザクションの中かどうか（**入れ子の検出だけ**に使う）。
+   * 接続の固定は `pinned` が担うので、こちらは「BEGIN の二重発行」を防ぐためだけの目印。
+   * セッション（`withSession`）の中からでもトランザクションは 1 段だけ張れる。
+   */
+  private readonly txOwner = new AsyncLocalStorage<symbol>();
   /** テーブルごとの主キー列（INSERT OR REPLACE の ON CONFLICT に使う） */
   private readonly primaryKeys = new Map<string, string[]>();
   private primaryKeysLoaded = false;
@@ -266,6 +278,11 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
       // pg_stat_activity でどのプロセスか分かるようにしておく
       application_name: 'spica',
       max: Math.max(1, Math.floor(poolMax)),
+      // プールが枯渇したときに**無限に待たない**（既定は 0 = 待ち続ける）。
+      // PostgreSQL 側が接続を受け付けられないと、待ち行列が永久に伸びて
+      // リクエストが返らなくなるため、上限を入れてエラーにする
+      // （呼び出し側は 500 を返し、次のリクエストはまた試せる）。
+      connectionTimeoutMillis: DATABASE_POOL_WAIT_MS,
       ...(startupOptions ? { options: startupOptions } : {}),
     });
 
@@ -444,14 +461,18 @@ class AsyncPostgresDatabase implements AsyncSpicaDatabase {
   /**
    * トランザクション。`fn` の中のクエリは 1 本の接続に固定され、
    * 他のリクエストのクエリが混ざらない。
-   * 入れ子には対応しない（SQLite / PostgreSQL どちらも暗黙の入れ子は危険なため）。
+   *
+   * `withSession()` の**中からでも呼べる**（接続を固定したまま BEGIN / COMMIT する）。
+   * たとえばメンテナンスは一時テーブルを使うので接続を固定したうえで、
+   * バッチごとにトランザクションを切る（`dbMaintenance.ts`）。
+   * 入れ子の**トランザクション**は作れない（暗黙の入れ子は SQLite / PostgreSQL どちらも危険）。
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.pinned.getStore()) throw new Error('トランザクションは入れ子にできません');
+    if (this.txOwner.getStore()) throw new Error('トランザクションは入れ子にできません');
     return this.withSession(async () => {
       await this.exec('BEGIN');
       try {
-        const result = await fn();
+        const result = await this.txOwner.run(Symbol('tx'), fn);
         await this.exec('COMMIT');
         return result;
       } catch (err) {
