@@ -167,6 +167,21 @@ Spica は、**ダイレクトメッセージ（DM / Misskey 等でいう `specif
 ## 📄 ライセンス
 
 本プロジェクトは **[AGPL-3.0-or-later](LICENSE)**（GNU Affero General Public License v3.0 以降）の下で公開されています。
+`LICENSE` には正文（gnu.org の配布テキスト）をそのまま置いています。
+
+```
+Spica - a sovereign ActivityPub node
+Copyright (C) 2026 Spica Project Contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+```
 
 - **2026-10-03 より前に公開された版**は MIT License で提供されていました。その版を受け取った方は、その版を MIT の条件で使い続けられます。
 - 改変した版をネットワーク越しに提供する場合は、AGPL 第 13 条に従い、**対応するソースを利用者に提供**してください（このリポジトリがその提供先になります）。
