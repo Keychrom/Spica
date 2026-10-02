@@ -89,6 +89,7 @@ import {
 } from 'lucide-react';
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import { compressImage } from './utils/imageCompressor';
+import { api, setApiToken, type ApiResult } from './api/client';
 
 // DOMPurify 設定: 安全な外部リンク処理
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -1889,9 +1890,7 @@ function MiAuthApproval({
         return;
       }
       try {
-        const res = await fetch(`/miauth/${encodeURIComponent(session)}/info`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const res = await api.get(`/miauth/${encodeURIComponent(session)}/info`, { token });
         if (!res.ok) throw new Error('この承認リクエストは見つかりませんでした。');
         const data = await res.json();
         if (!cancelled) setInfo(data);
@@ -1910,10 +1909,7 @@ function MiAuthApproval({
   const respond = async (action: 'approve' | 'deny') => {
     if (!token) return;
     try {
-      const res = await fetch(`/miauth/${encodeURIComponent(session)}/${action}`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await api.post(`/miauth/${encodeURIComponent(session)}/${action}`, { token });
       if (!res.ok) throw new Error('操作に失敗しました。');
       setDone(action === 'approve' ? 'approved' : 'denied');
     } catch (err) {
@@ -2560,6 +2556,9 @@ export default function App() {
   const canModerate = canAdmin || myPermissions.includes('moderate');
   const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('spica_token') || localStorage.getItem('astrabit_token'));
 
+  // 通信はすべて api/client.ts を通る。トークンの在処を 1 か所にする
+  useEffect(() => { setApiToken(authToken); }, [authToken]);
+
   // 認証ポータル (Misskey風ウェルカム・ログイン・登録画面: 未ログイン時は初期起動で自動表示)
   const [showAuthPortal, setShowAuthPortal] = useState<boolean>(!Boolean(localStorage.getItem('spica_token') || localStorage.getItem('astrabit_token')));
   const [authPortalTab, setAuthPortalTab] = useState<'welcome' | 'rules_agreement' | 'login' | 'register'>('welcome');
@@ -2687,6 +2686,17 @@ export default function App() {
   useEffect(() => {
     activeHashtagRef.current = activeHashtag;
   }, [activeHashtag]);
+
+  // 画面遷移・再取得で前の要求を中断する（速く切り替えたときに古い応答が新しい画面を上書きしないように）
+  const timelineAbortRef = useRef<AbortController | null>(null);
+  const profileAbortRef = useRef<AbortController | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const notificationsAbortRef = useRef<AbortController | null>(null);
+  const bookmarksAbortRef = useRef<AbortController | null>(null);
+  const channelsAbortRef = useRef<AbortController | null>(null);
+  const listAbortRef = useRef<AbortController | null>(null);
+  const threadAbortRef = useRef<AbortController | null>(null);
+  const adminAbortRef = useRef<AbortController | null>(null);
 
   const followingUrlsRef = useRef(followingUrls);
   useEffect(() => {
@@ -2882,9 +2892,7 @@ export default function App() {
           const endpoint = type === 'user'
             ? `/api/autocomplete/users?q=${encodeURIComponent(query)}`
             : `/api/autocomplete/tags?q=${encodeURIComponent(query)}`;
-          const res = await fetch(endpoint, {
-            headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-          });
+          const res = await api.get(endpoint);
           if (res.ok) {
             const data = await res.json();
             setAutocompleteSuggestions(data);
@@ -3368,14 +3376,16 @@ export default function App() {
     setIsLoadingProfile(true);
     setProfileData(null);
     setProfilePosts([]);
+    // 別のプロフィールへ速く切り替えたときは前の要求を中断する
+    profileAbortRef.current?.abort();
+    const ac = new AbortController();
+    profileAbortRef.current = ac;
     try {
       const encoded = encodeURIComponent(identifier);
-      const headers: Record<string, string> = {};
-      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
       const [userRes, postsRes] = await Promise.all([
-        fetch(`/api/users/${encoded}`, { headers }),
-        fetch(`/api/users/${encoded}/posts`, { headers }),
+        api.get(`/api/users/${encoded}`, { signal: ac.signal }),
+        api.get(`/api/users/${encoded}/posts`, { signal: ac.signal }),
       ]);
 
       if (userRes.ok) {
@@ -3387,9 +3397,10 @@ export default function App() {
         setProfilePosts(p);
       }
     } catch (e) {
+      if (ac.signal.aborted) return;
       console.error('Failed to load profile:', e);
     } finally {
-      setIsLoadingProfile(false);
+      if (!ac.signal.aborted) setIsLoadingProfile(false);
     }
   };
 
@@ -3477,22 +3488,7 @@ export default function App() {
     setIsSavingProfile(true);
     setSettingsMessage(null);
     try {
-      const res = await fetch('/api/user/profile', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          name: editName,
-          summary: editBio,
-          icon_url: editIconUrl,
-          banner_url: editBannerUrl,
-          is_locked: profileIsLocked,
-          discoverable: profileDiscoverable,
-          fields: editFields.filter((f) => f.name.trim() && f.value.trim()),
-        }),
-      });
+      const res = await api.put('/api/user/profile', { name: editName, summary: editBio, icon_url: editIconUrl, banner_url: editBannerUrl, is_locked: profileIsLocked, discoverable: profileDiscoverable, fields: editFields.filter((f) => f.name.trim() && f.value.trim()), });
 
       if (res.ok) {
         const updated = await res.json();
@@ -3543,11 +3539,7 @@ export default function App() {
       const formData = new FormData();
       formData.append('file', compressRes.file);
 
-      const res = await fetch('/api/media/upload', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: formData,
-      });
+      const res = await api.post('/api/media/upload', formData);
       if (res.ok) {
         const data = await res.json();
         const url = data.attachment?.url || data.media?.[0]?.url;
@@ -3584,11 +3576,7 @@ export default function App() {
       const formData = new FormData();
       formData.append('file', compressRes.file);
 
-      const res = await fetch('/api/media/upload', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: formData,
-      });
+      const res = await api.post('/api/media/upload', formData);
       if (res.ok) {
         const data = await res.json();
         const url = data.attachment?.url || data.media?.[0]?.url;
@@ -3631,17 +3619,7 @@ export default function App() {
     setIsTogglingFollow(true);
     try {
       const endpoint = profileData.is_following ? '/api/unfollow' : '/api/follow';
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          targetHandle: profileData.handle,
-          targetActorUrl: profileData.actor_url,
-        }),
-      });
+      const res = await api.post(endpoint, { targetHandle: profileData.handle, targetActorUrl: profileData.actor_url, });
 
       if (res.ok) {
         setProfileData(prev => prev ? {
@@ -3665,9 +3643,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/following', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await api.get('/api/following', { token });
       if (res.ok) {
         const data = await res.json();
         const urls = new Set<string>();
@@ -3691,9 +3667,7 @@ export default function App() {
   // トークンによる自動認証
   const checkAuth = async (token: string) => {
     try {
-      const res = await fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await api.get('/api/auth/me', { token });
       if (res.ok) {
         const user = await res.json();
         setAuthUser(user);
@@ -3719,7 +3693,7 @@ export default function App() {
   // サーバー情報取得
   const fetchServerStats = async () => {
     try {
-      const res = await fetch('/api/server-info');
+      const res = await api.get('/api/server-info', { auth: false });
       if (res.ok) {
         const data = await res.json();
         setServerStats(data);
@@ -3735,7 +3709,7 @@ export default function App() {
   // 公開カスタム絵文字一覧取得
   const fetchCustomEmojis = async () => {
     try {
-      const res = await fetch('/api/emojis');
+      const res = await api.get('/api/emojis', { auth: false });
       if (res.ok) {
         const data = await res.json();
         setCustomEmojis(data);
@@ -3752,6 +3726,10 @@ export default function App() {
     antennaIdParam?: string
   ) => {
     setIsLoadingTimeline(true);
+    // モード・タグ・アンテナを続けて切り替えたときは前の要求を中断する
+    timelineAbortRef.current?.abort();
+    const ac = new AbortController();
+    timelineAbortRef.current = ac;
     try {
       if (mode === 'antenna') {
         const targetAntennaId = antennaIdParam || activeAntenna?.id;
@@ -3760,9 +3738,7 @@ export default function App() {
           setTimelineCursor(null);
           return;
         }
-        const res = await fetch(`/api/antennas/${targetAntennaId}/timeline`, {
-          headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-        });
+        const res = await api.get(`/api/antennas/${targetAntennaId}/timeline`, { signal: ac.signal });
         if (res.ok) {
           const data = await res.json();
           setTimeline(data.posts || []);
@@ -3775,17 +3751,16 @@ export default function App() {
       const url = mode === 'tag' && currentTag
         ? `/api/timeline?mode=tag&tag=${encodeURIComponent(currentTag)}`
         : `/api/timeline?mode=${mode}`;
-      const res = await fetch(url, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      });
+      const res = await api.get(url, { signal: ac.signal });
       if (res.ok) {
         setTimeline(await res.json());
         setTimelineCursor(res.headers.get('X-Next-Cursor'));
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error(err);
     } finally {
-      setIsLoadingTimeline(false);
+      if (!ac.signal.aborted) setIsLoadingTimeline(false);
     }
   };
 
@@ -3810,9 +3785,7 @@ export default function App() {
         url = `/api/timeline?mode=${requestedMode}&cursor=${encodeURIComponent(timelineCursor)}`;
       }
 
-      const res = await fetch(url, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      });
+      const res = await api.get(url);
       // 失敗時はカーソルを保持して、再試行できるようにする
       if (!res.ok) return;
 
@@ -3860,9 +3833,7 @@ export default function App() {
   const fetchAntennas = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/antennas', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/antennas');
       if (res.ok) {
         const data = await res.json();
         setAntennas(data);
@@ -3878,14 +3849,7 @@ export default function App() {
       const isEdit = Boolean(antennaData.id);
       const method = isEdit ? 'PUT' : 'POST';
       const url = isEdit ? `/api/antennas/${antennaData.id}` : '/api/antennas';
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(antennaData),
-      });
+      const res = await api.request(method, url, antennaData);
       if (res.ok) {
         const saved = await res.json();
         await fetchAntennas();
@@ -3905,10 +3869,7 @@ export default function App() {
   const handleDeleteAntenna = async (id: string) => {
     if (!authToken || !window.confirm('このアンテナを削除してもよろしいですか？')) return;
     try {
-      const res = await fetch(`/api/antennas/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/antennas/${id}`);
       if (res.ok) {
         if (activeAntenna?.id === id) {
           setActiveAntenna(null);
@@ -3927,9 +3888,7 @@ export default function App() {
   const fetchDrafts = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/drafts', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/drafts');
       if (res.ok) {
         const data = await res.json();
         setDrafts(data);
@@ -3949,21 +3908,7 @@ export default function App() {
       const pollData = showPollInput && pollChoices.filter((c) => c.trim()).length >= 2
         ? { choices: pollChoices.filter((c) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
         : null;
-      const res = await fetch('/api/drafts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          content: postContent,
-          cw: showCwInput ? cwContent : '',
-          visibility: postVisibility,
-          attachments: postAttachments,
-          poll: pollData,
-          quote_id: quoteTargetPost?.id || null,
-        }),
-      });
+      const res = await api.post('/api/drafts', { content: postContent, cw: showCwInput ? cwContent : '', visibility: postVisibility, attachments: postAttachments, poll: pollData, quote_id: quoteTargetPost?.id || null, });
       if (res.ok) {
         await fetchDrafts();
         alert('下書きを保存しました。');
@@ -4004,10 +3949,7 @@ export default function App() {
   const handleDeleteDraft = async (id: string) => {
     if (!authToken || !window.confirm('この下書きを削除してもよろしいですか？')) return;
     try {
-      const res = await fetch(`/api/drafts/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/drafts/${id}`);
       if (res.ok) {
         await fetchDrafts();
       }
@@ -4022,9 +3964,7 @@ export default function App() {
   const fetchScheduledPosts = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/scheduled-posts', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/scheduled-posts');
       if (res.ok) {
         const data = await res.json();
         setScheduledPosts(data);
@@ -4053,22 +3993,7 @@ export default function App() {
       const pollData = showPollInput && pollChoices.filter((c) => c.trim()).length >= 2
         ? { choices: pollChoices.filter((c) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
         : null;
-      const res = await fetch('/api/scheduled-posts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          content: postContent,
-          cw: showCwInput ? cwContent : '',
-          visibility: postVisibility,
-          attachments: postAttachments,
-          poll: pollData,
-          quote_id: quoteTargetPost?.id || null,
-          scheduled_at: scheduledDate.toISOString(),
-        }),
-      });
+      const res = await api.post('/api/scheduled-posts', { content: postContent, cw: showCwInput ? cwContent : '', visibility: postVisibility, attachments: postAttachments, poll: pollData, quote_id: quoteTargetPost?.id || null, scheduled_at: scheduledDate.toISOString(), });
       if (res.ok) {
         await fetchScheduledPosts();
         setShowScheduleModal(false);
@@ -4092,10 +4017,7 @@ export default function App() {
   const handleCancelScheduledPost = async (id: string) => {
     if (!authToken || !window.confirm('この予約投稿をキャンセル（削除）してもよろしいですか？')) return;
     try {
-      const res = await fetch(`/api/scheduled-posts/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/scheduled-posts/${id}`);
       if (res.ok) {
         await fetchScheduledPosts();
       }
@@ -4122,7 +4044,7 @@ export default function App() {
   // トレンド・人気タグ一覧取得
   const fetchPopularTags = async () => {
     try {
-      const res = await fetch('/api/tags/popular');
+      const res = await api.get('/api/tags/popular', { auth: false });
       if (res.ok) {
         setPopularTags(await res.json());
       }
@@ -4136,17 +4058,20 @@ export default function App() {
     const cleanQ = q.trim();
     if (!cleanQ) return;
     setIsSearching(true);
+    // 続けて検索したときは前の要求を中断する
+    searchAbortRef.current?.abort();
+    const ac = new AbortController();
+    searchAbortRef.current = ac;
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(cleanQ)}`, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      });
+      const res = await api.get(`/api/search?q=${encodeURIComponent(cleanQ)}`, { signal: ac.signal });
       if (res.ok) {
         setSearchResults(await res.json());
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('検索失敗:', err);
     } finally {
-      setIsSearching(false);
+      if (!ac.signal.aborted) setIsSearching(false);
     }
   };
 
@@ -4168,17 +4093,7 @@ export default function App() {
     const handle = user.domain ? `@${user.username}@${user.domain}` : (user.id || user.username);
     const targetActorUrl = user.id?.startsWith('http') ? user.id : `${window.location.origin}/users/${user.id}`;
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          targetHandle: handle,
-          targetActorUrl,
-        }),
-      });
+      const res = await api.post(endpoint, { targetHandle: handle, targetActorUrl, });
       if (res.ok) {
         setSearchResults((prev) => {
           if (!prev) return null;
@@ -4208,9 +4123,7 @@ export default function App() {
   const fetchReports = async (status: 'open' | 'all' | 'resolved' | 'rejected' = reportStatusFilter) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/admin/reports?status=${status}`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get(`/api/admin/reports?status=${status}`);
       if (!res.ok) return;
       const data = await res.json();
       setAdminReports(data.reports || []);
@@ -4226,14 +4139,7 @@ export default function App() {
     setIsUpdatingReport(reportId);
     setReportActionMsg(null);
     try {
-      const res = await fetch(`/api/admin/reports/${encodeURIComponent(reportId)}/resolve`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ action }),
-      });
+      const res = await api.post(`/api/admin/reports/${encodeURIComponent(reportId)}/resolve`, { action });
       const data = await res.json();
       if (res.ok) {
         setReportActionMsg({
@@ -4261,18 +4167,7 @@ export default function App() {
     if (!authToken || !reportTarget) return;
     setIsSubmittingReport(true);
     try {
-      const res = await fetch('/api/reports', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(
-          reportTarget.type === 'post'
-            ? { targetPostId: reportTarget.id, category: reportCategory, comment: reportComment }
-            : { targetUserId: reportTarget.id, category: reportCategory, comment: reportComment },
-        ),
-      });
+      const res = await api.post('/api/reports', reportTarget.type === 'post' ? { targetPostId: reportTarget.id, category: reportCategory, comment: reportComment } : { targetUserId: reportTarget.id, category: reportCategory, comment: reportComment },);
       const data = await res.json();
       if (res.ok) {
         setReportTarget(null);
@@ -4299,7 +4194,7 @@ export default function App() {
       if (opts.before) params.set('before', opts.before);
       const action = opts.action !== undefined ? opts.action : auditFilter;
       if (action) params.set('action', action);
-      const res = await fetch(`/api/admin/audit?${params.toString()}`, { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get(`/api/admin/audit?${params.toString()}`);
       const data = await res.json();
       if (!res.ok) {
         setAuditMsg(data.error || '監査ログの取得に失敗しました。');
@@ -4323,11 +4218,7 @@ export default function App() {
     if (!authToken || !canAdmin) return;
     if (!confirm('180 日より古い監査ログを削除しますか？')) return;
     try {
-      const res = await fetch('/api/admin/audit/prune', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ days: 180 }),
-      });
+      const res = await api.post('/api/admin/audit/prune', { days: 180 });
       const data = await res.json();
       if (!res.ok) {
         setAuditMsg(data.error || '削除に失敗しました。');
@@ -4343,14 +4234,16 @@ export default function App() {
   const fetchAdminData = async () => {
     if (!authToken || !canModerate) return;
     setIsLoadingAdmin(true);
+    // 管理画面を開き直したときは前の要求を中断する
+    adminAbortRef.current?.abort();
+    const ac = new AbortController();
+    adminAbortRef.current = ac;
     try {
-      const headers = { Authorization: `Bearer ${authToken}` };
-
       // モデレーターは通報とドメイン制限だけを取得する（それ以外は 403 になる）
       if (!canAdmin) {
         const [bRes, repRes] = await Promise.all([
-          fetch('/api/admin/blocks', { headers }),
-          fetch('/api/admin/reports?status=all', { headers }),
+          api.get('/api/admin/blocks', { signal: ac.signal }),
+          api.get('/api/admin/reports?status=all', { signal: ac.signal }),
         ]);
         if (bRes.ok) setAdminBlockedDomains(await bRes.json());
         if (repRes.ok) {
@@ -4362,18 +4255,18 @@ export default function App() {
       }
 
       const [sRes, uRes, fRes, rRes, bRes, stRes, setRes, emRes, invRes, repRes, annRes, mtRes] = await Promise.all([
-        fetch('/api/admin/stats', { headers }),
-        fetch('/api/admin/users', { headers }),
-        fetch('/api/admin/federation', { headers }),
-        fetch('/api/admin/relays', { headers }),
-        fetch('/api/admin/blocks', { headers }),
-        fetch('/api/admin/storage', { headers }),
-        fetch('/api/admin/server-settings', { headers }),
-        fetch('/api/admin/emojis', { headers }),
-        fetch('/api/admin/invitations', { headers }),
-        fetch('/api/admin/reports?status=all', { headers }),
-        fetch('/api/admin/announcements', { headers }),
-        fetch('/api/admin/maintenance', { headers }),
+        api.get('/api/admin/stats', { signal: ac.signal }),
+        api.get('/api/admin/users', { signal: ac.signal }),
+        api.get('/api/admin/federation', { signal: ac.signal }),
+        api.get('/api/admin/relays', { signal: ac.signal }),
+        api.get('/api/admin/blocks', { signal: ac.signal }),
+        api.get('/api/admin/storage', { signal: ac.signal }),
+        api.get('/api/admin/server-settings', { signal: ac.signal }),
+        api.get('/api/admin/emojis', { signal: ac.signal }),
+        api.get('/api/admin/invitations', { signal: ac.signal }),
+        api.get('/api/admin/reports?status=all', { signal: ac.signal }),
+        api.get('/api/admin/announcements', { signal: ac.signal }),
+        api.get('/api/admin/maintenance', { signal: ac.signal }),
       ]);
       if (mtRes.ok) setMaintenanceStats(await mtRes.json());
       if (sRes.ok) setAdminStats(await sRes.json());
@@ -4422,9 +4315,10 @@ export default function App() {
         });
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('管理者データ取得エラー:', err);
     } finally {
-      setIsLoadingAdmin(false);
+      if (!ac.signal.aborted) setIsLoadingAdmin(false);
     }
   };
 
@@ -4438,11 +4332,7 @@ export default function App() {
     setIsSavingContentPolicy(true);
     setContentPolicyMsg(null);
     try {
-      const res = await fetch('/api/admin/content-policy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify(next),
-      });
+      const res = await api.post('/api/admin/content-policy', next);
       const data = await res.json();
       if (!res.ok) {
         setContentPolicy(previous);
@@ -4469,7 +4359,7 @@ export default function App() {
     setIsRunningMaintenance(true);
     setMaintenanceMsg(null);
     try {
-      const res = await fetch('/api/admin/maintenance/run', { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.post('/api/admin/maintenance/run');
       const data = await res.json();
       if (!res.ok) {
         setMaintenanceMsg(data.error || '実行に失敗しました。');
@@ -4488,11 +4378,7 @@ export default function App() {
   const handleSaveMaintenanceSettings = async (next: { autoMaintenance?: boolean; hour?: number; imageProxy?: boolean; imageProxyMaxMb?: number }) => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/admin/maintenance/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify(next),
-      });
+      const res = await api.post('/api/admin/maintenance/settings', next);
       const data = await res.json();
       if (!res.ok) {
         setMaintenanceMsg(data.error || '設定の保存に失敗しました。');
@@ -4510,11 +4396,7 @@ export default function App() {
     if (!authToken) return;
     setIsClearingProxyCache(true);
     try {
-      const res = await fetch('/api/admin/image-proxy/cache', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({}),
-      });
+      const res = await api.post('/api/admin/image-proxy/cache', {});
       const data = await res.json();
       if (res.ok) {
         setMaintenanceMsg(data.message || 'キャッシュを整理しました。');
@@ -4537,11 +4419,7 @@ export default function App() {
     if (!authToken) return;
     setIsSavingNotifPrefs(true);
     try {
-      const res = await fetch('/api/notifications/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ enabled }),
-      });
+      const res = await api.post('/api/notifications/email', { enabled });
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || 'メール通知の設定に失敗しました。');
@@ -4565,26 +4443,7 @@ export default function App() {
     setIsSavingServerSettings(true);
     setServerSettingsMessage(null);
     try {
-      const res = await fetch('/api/admin/server-settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          name: adminServerName.trim(),
-          description: adminServerDesc.trim(),
-          icon_url: adminServerIcon.trim(),
-          banner_url: adminServerBanner.trim(),
-          tos_url: adminTosUrl.trim(),
-          privacy_policy_url: adminPrivacyPolicyUrl.trim(),
-          contact_url: adminContactUrl.trim(),
-          repository_url: adminRepositoryUrl.trim(),
-          operator_url: adminOperatorUrl.trim(),
-          server_rules: adminServerRulesText.split('\n').map((r) => r.trim()).filter((r) => r.length > 0),
-          require_rules_agreement: adminRequireRulesAgreement,
-        }),
-      });
+      const res = await api.post('/api/admin/server-settings', { name: adminServerName.trim(), description: adminServerDesc.trim(), icon_url: adminServerIcon.trim(), banner_url: adminServerBanner.trim(), tos_url: adminTosUrl.trim(), privacy_policy_url: adminPrivacyPolicyUrl.trim(), contact_url: adminContactUrl.trim(), repository_url: adminRepositoryUrl.trim(), operator_url: adminOperatorUrl.trim(), server_rules: adminServerRulesText.split('\n').map((r) => r.trim()).filter((r) => r.length > 0), require_rules_agreement: adminRequireRulesAgreement, });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '設定の保存に失敗しました。');
 
@@ -4619,11 +4478,7 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append('icon', file);
-      const res = await fetch('/api/admin/server-icon', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: formData,
-      });
+      const res = await api.post('/api/admin/server-icon', formData);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'アップロードに失敗しました。');
       setAdminServerIcon(data.icon_url);
@@ -4644,11 +4499,7 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append('banner', file);
-      const res = await fetch('/api/admin/server-banner', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: formData,
-      });
+      const res = await api.post('/api/admin/server-banner', formData);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'バナーのアップロードに失敗しました。');
       setAdminServerBanner(data.banner_url);
@@ -4675,30 +4526,15 @@ export default function App() {
     setIsUploadingEmoji(true);
     setEmojiActionMsg(null);
     try {
-      let res: Response;
+      let res: ApiResult;
       if (file) {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('name', newEmojiName.trim());
         formData.append('category', newEmojiCategory.trim() || '一般');
-        res = await fetch('/api/admin/emojis', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${authToken}` },
-          body: formData,
-        });
+        res = await api.post('/api/admin/emojis', formData);
       } else {
-        res = await fetch('/api/admin/emojis', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-          },
-          body: JSON.stringify({
-            name: newEmojiName.trim(),
-            category: newEmojiCategory.trim() || '一般',
-            url: newEmojiUrl.trim(),
-          }),
-        });
+        res = await api.post('/api/admin/emojis', { name: newEmojiName.trim(), category: newEmojiCategory.trim() || '一般', url: newEmojiUrl.trim(), });
       }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '絵文字の登録に失敗しました。');
@@ -4719,10 +4555,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm(`:${emojiName}: を削除してもよろしいですか？`)) return;
     try {
-      const res = await fetch(`/api/admin/emojis/${encodeURIComponent(emojiId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/admin/emojis/${encodeURIComponent(emojiId)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '削除に失敗しました。');
       setEmojiActionMsg({ type: 'success', text: data.message || '絵文字を削除しました。' });
@@ -4740,18 +4573,7 @@ export default function App() {
     setIsCreatingInvite(true);
     setInviteActionMsg(null);
     try {
-      const res = await fetch('/api/admin/invitations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          maxUses: newInviteMaxUses,
-          expiresInDays: newInviteExpiresDays === 'infinite' ? null : parseInt(newInviteExpiresDays, 10),
-          memo: newInviteMemo.trim(),
-        }),
-      });
+      const res = await api.post('/api/admin/invitations', { maxUses: newInviteMaxUses, expiresInDays: newInviteExpiresDays === 'infinite' ? null : parseInt(newInviteExpiresDays, 10), memo: newInviteMemo.trim(), });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '招待コードの発行に失敗しました。');
       setNewInviteMemo('');
@@ -4769,10 +4591,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm(`招待コード ${code} を無効化・削除しますか？`)) return;
     try {
-      const res = await fetch(`/api/admin/invitations/${encodeURIComponent(code)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/admin/invitations/${encodeURIComponent(code)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '削除に失敗しました。');
       setInviteActionMsg({ type: 'success', text: data.message || '招待コードを削除しました。' });
@@ -4788,14 +4607,7 @@ export default function App() {
     setIsUpdatingRegMode(true);
     setInviteActionMsg(null);
     try {
-      const res = await fetch('/api/admin/registration-mode', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ mode }),
-      });
+      const res = await api.post('/api/admin/registration-mode', { mode });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '登録モードの更新に失敗しました。');
       setServerStats((prev: any) => prev ? { ...prev, registration_mode: mode } : prev);
@@ -4815,9 +4627,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/notifications/unread-count', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/notifications/unread-count');
       if (res.ok) {
         const data = await res.json();
         setUnreadNotificationsCount(data.unreadCount || 0);
@@ -4831,19 +4641,22 @@ export default function App() {
   const fetchNotifications = async (filter = notificationFilter) => {
     if (!authToken) return;
     setIsLoadingNotifications(true);
+    // フィルタを続けて切り替えたときは前の要求を中断する
+    notificationsAbortRef.current?.abort();
+    const ac = new AbortController();
+    notificationsAbortRef.current = ac;
     try {
       const query = filter !== 'all' ? `?filter=${filter}` : '';
-      const res = await fetch(`/api/notifications${query}`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get(`/api/notifications${query}`, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setNotifications(data);
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('通知一覧取得エラー:', err);
     } finally {
-      setIsLoadingNotifications(false);
+      if (!ac.signal.aborted) setIsLoadingNotifications(false);
     }
   };
 
@@ -4851,10 +4664,7 @@ export default function App() {
   const handleReadAllNotifications = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/notifications/read-all', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post('/api/notifications/read-all');
       if (res.ok) {
         setNotifications((prev) => prev.map((n) => ({ ...n, is_read: 1 })));
         setUnreadNotificationsCount(0);
@@ -4868,10 +4678,7 @@ export default function App() {
   const handleMarkNotificationRead = async (id: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/notifications/${id}/read`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/notifications/${id}/read`);
       if (res.ok) {
         setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: 1 } : n)));
         setUnreadNotificationsCount((prev) => Math.max(0, prev - 1));
@@ -4891,10 +4698,12 @@ export default function App() {
     }
     setIsLoadingThread(true);
     setThreadModalPost({ id: postId } as any);
+    // 別のスレッドを開いたときは前の要求を中断する
+    threadAbortRef.current?.abort();
+    const ac = new AbortController();
+    threadAbortRef.current = ac;
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(postId)}/thread`, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      });
+      const res = await api.get(`/api/posts/${encodeURIComponent(postId)}/thread`, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setThreadData(data);
@@ -4904,10 +4713,11 @@ export default function App() {
         setThreadModalPost(null);
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('会話スレッド読み込みエラー:', err);
       setThreadModalPost(null);
     } finally {
-      setIsLoadingThread(false);
+      if (!ac.signal.aborted) setIsLoadingThread(false);
     }
   };
 
@@ -4973,18 +4783,21 @@ export default function App() {
   const fetchBookmarks = async () => {
     if (!authToken) return;
     setIsLoadingBookmarks(true);
+    // 別の画面へ移ってから戻ったときなど、前の要求を中断する
+    bookmarksAbortRef.current?.abort();
+    const ac = new AbortController();
+    bookmarksAbortRef.current = ac;
     try {
-      const res = await fetch('/api/bookmarks', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/bookmarks', { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setBookmarks(data);
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('ブックマーク取得エラー:', err);
     } finally {
-      setIsLoadingBookmarks(false);
+      if (!ac.signal.aborted) setIsLoadingBookmarks(false);
     }
   };
 
@@ -4995,14 +4808,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/bookmarks/toggle', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ postId }),
-      });
+      const res = await api.post('/api/bookmarks/toggle', { postId });
       if (res.ok) {
         const data = await res.json();
         const isBookmarked = data.bookmarked;
@@ -5048,14 +4854,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/posts/pin/toggle', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ postId }),
-      });
+      const res = await api.post('/api/posts/pin/toggle', { postId });
       if (res.ok) {
         const data = await res.json();
         const isPinned = data.pinned;
@@ -5105,7 +4904,7 @@ export default function App() {
   const fetchMutedWords = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/muted-words', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/muted-words');
       if (res.ok) setMutedWords(await res.json());
     } catch (err) {
       console.error('ミュートワードの取得エラー:', err);
@@ -5117,18 +4916,7 @@ export default function App() {
     if (!authToken || !newMutedWord.trim()) return;
     setIsSavingMutedWord(true);
     try {
-      const res = await fetch('/api/muted-words', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          keyword: newMutedWord.trim(),
-          caseSensitive: mutedWordCaseSensitive,
-          wholeWord: mutedWordWholeWord,
-        }),
-      });
+      const res = await api.post('/api/muted-words', { keyword: newMutedWord.trim(), caseSensitive: mutedWordCaseSensitive, wholeWord: mutedWordWholeWord, });
       const data = await res.json();
       if (res.ok) {
         setNewMutedWord('');
@@ -5149,10 +4937,7 @@ export default function App() {
   const handleDeleteMutedWord = async (id: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/muted-words/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/muted-words/${encodeURIComponent(id)}`);
       if (res.ok) {
         await fetchMutedWords();
         await fetchTimeline();
@@ -5166,7 +4951,7 @@ export default function App() {
   const fetchFollowRequests = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/follow-requests', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/follow-requests');
       if (res.ok) setFollowRequests(await res.json());
     } catch (err) {
       console.error('フォローリクエストの取得エラー:', err);
@@ -5177,14 +4962,7 @@ export default function App() {
     if (!authToken) return;
     setIsRespondingRequest(actorUrl);
     try {
-      const res = await fetch('/api/follow-requests/respond', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ actorUrl, action }),
-      });
+      const res = await api.post('/api/follow-requests/respond', { actorUrl, action });
       const data = await res.json();
       if (res.ok) {
         await fetchFollowRequests();
@@ -5244,7 +5022,7 @@ export default function App() {
     if (!authToken) return;
     setIsLoadingDrive(true);
     try {
-      const res = await fetch('/api/drive', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/drive');
       const data = await res.json();
       if (res.ok) {
         setDriveItems(Array.isArray(data.items) ? data.items : []);
@@ -5265,7 +5043,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm('このファイルを削除しますか？（元に戻せません）')) return;
     try {
-      const res = await fetch(`/api/drive/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.delete(`/api/drive/${encodeURIComponent(id)}`);
       const data = await res.json();
       if (!res.ok) {
         setDriveMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
@@ -5287,7 +5065,7 @@ export default function App() {
     try {
       const form = new FormData();
       Array.from(files).slice(0, 4).forEach((file) => form.append('file', file));
-      const res = await fetch('/api/media/upload', { method: 'POST', headers: { Authorization: `Bearer ${authToken}` }, body: form });
+      const res = await api.post('/api/media/upload', form);
       const data = await res.json();
       if (!res.ok) {
         setDriveMsg({ type: 'error', text: data.error || 'アップロードに失敗しました。' });
@@ -5306,7 +5084,7 @@ export default function App() {
   const fetchNotificationSettings = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/notifications/settings', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/notifications/settings');
       if (!res.ok) return;
       const data = await res.json();
       setNotificationPrefs(data.prefs || {});
@@ -5324,11 +5102,7 @@ export default function App() {
     setNotificationPrefs(next);
     setIsSavingNotifPrefs(true);
     try {
-      const res = await fetch('/api/notifications/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ prefs: next }),
-      });
+      const res = await api.post('/api/notifications/settings', { prefs: next });
       const data = await res.json();
       if (!res.ok) {
         setNotificationPrefs(notificationPrefs);
@@ -5347,7 +5121,7 @@ export default function App() {
   const fetchLists = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/lists', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/lists');
       if (res.ok) {
         const data = await res.json();
         setLists(data);
@@ -5364,11 +5138,7 @@ export default function App() {
     e?.preventDefault();
     if (!authToken || !newListName.trim()) return;
     try {
-      const res = await fetch('/api/lists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ name: newListName.trim() }),
-      });
+      const res = await api.post('/api/lists', { name: newListName.trim() });
       const data = await res.json();
       if (res.ok) {
         setNewListName('');
@@ -5386,10 +5156,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm('このリストを削除しますか？')) return;
     try {
-      const res = await fetch(`/api/lists/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/lists/${encodeURIComponent(id)}`);
       if (res.ok) {
         if (activeListId === id) {
           setActiveListId(null);
@@ -5407,11 +5174,7 @@ export default function App() {
     e?.preventDefault();
     if (!authToken || !newListMember.trim()) return;
     try {
-      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/members`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ member: newListMember.trim() }),
-      });
+      const res = await api.post(`/api/lists/${encodeURIComponent(listId)}/members`, { member: newListMember.trim() });
       const data = await res.json();
       if (res.ok) {
         setNewListMember('');
@@ -5428,10 +5191,7 @@ export default function App() {
   const handleRemoveListMember = async (listId: string, memberId: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(memberId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(memberId)}`);
       if (res.ok) {
         await fetchLists();
       }
@@ -5444,18 +5204,21 @@ export default function App() {
     if (!authToken) return;
     setActiveListId(listId);
     setIsLoadingListTimeline(true);
+    // 別のリストへ速く切り替えたときは前の要求を中断する
+    listAbortRef.current?.abort();
+    const ac = new AbortController();
+    listAbortRef.current = ac;
     try {
-      const res = await fetch(`/api/lists/${encodeURIComponent(listId)}/timeline`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get(`/api/lists/${encodeURIComponent(listId)}/timeline`, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setListTimelinePosts(data.posts || []);
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error('リストタイムラインの取得エラー:', err);
     } finally {
-      setIsLoadingListTimeline(false);
+      if (!ac.signal.aborted) setIsLoadingListTimeline(false);
     }
   };
 
@@ -5552,7 +5315,7 @@ export default function App() {
 
   const fetchRecoveryStatus = async () => {
     try {
-      const res = await fetch('/api/auth/recovery/status');
+      const res = await api.get('/api/auth/recovery/status', { auth: false });
       if (res.ok) setRecoveryStatus(await res.json());
     } catch (err) {
       console.error('認証設定の取得エラー:', err);
@@ -5564,7 +5327,7 @@ export default function App() {
     if (!authToken) return;
     setIsLoadingDeliveryQueue(true);
     try {
-      const res = await fetch('/api/admin/delivery-queue', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/admin/delivery-queue');
       if (res.ok) setDeliveryQueue(await res.json());
     } catch (err) {
       console.error('配送キューの取得エラー:', err);
@@ -5578,10 +5341,7 @@ export default function App() {
     setIsActingOnDelivery(true);
     setDeliveryQueueMsg(null);
     try {
-      const res = await fetch('/api/admin/delivery-queue/retry', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post('/api/admin/delivery-queue/retry');
       const data = await res.json();
       if (!res.ok) {
         setDeliveryQueueMsg({ type: 'error', text: data.error || '再送の実行に失敗しました。' });
@@ -5602,10 +5362,7 @@ export default function App() {
     setIsActingOnDelivery(true);
     setDeliveryQueueMsg(null);
     try {
-      const res = await fetch('/api/admin/delivery-queue/clear-failed', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post('/api/admin/delivery-queue/clear-failed');
       const data = await res.json();
       if (!res.ok) {
         setDeliveryQueueMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
@@ -5623,7 +5380,7 @@ export default function App() {
   const fetchMailSettings = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/admin/mail-settings', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/admin/mail-settings');
       if (res.ok) setMailSettings(await res.json());
     } catch (err) {
       console.error('メール設定の取得エラー:', err);
@@ -5636,18 +5393,7 @@ export default function App() {
     setIsSavingMail(true);
     setMailSettingsMsg(null);
     try {
-      const res = await fetch('/api/admin/mail-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          host: mailSettings.host,
-          port: mailSettings.port,
-          secure: mailSettings.secure,
-          user: mailSettings.user,
-          pass: mailSettings.pass,
-          from: mailSettings.from,
-        }),
-      });
+      const res = await api.post('/api/admin/mail-settings', { host: mailSettings.host, port: mailSettings.port, secure: mailSettings.secure, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from, });
       const data = await res.json();
       if (!res.ok) {
         setMailSettingsMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
@@ -5655,14 +5401,7 @@ export default function App() {
       }
 
       // 認証方式・メール登録可否も同時に保存する
-      const authRes = await fetch('/api/admin/auth-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          authMode: mailSettings.authMode,
-          allowEmailRegistration: mailSettings.allowEmailRegistration,
-        }),
-      });
+      const authRes = await api.post('/api/admin/auth-settings', { authMode: mailSettings.authMode, allowEmailRegistration: mailSettings.allowEmailRegistration, });
       if (!authRes.ok) {
         const authData = await authRes.json();
         setMailSettingsMsg({ type: 'error', text: authData.error || '認証設定の保存に失敗しました。' });
@@ -5684,11 +5423,7 @@ export default function App() {
     setIsSavingMail(true);
     setMailSettingsMsg(null);
     try {
-      const res = await fetch('/api/admin/mail-settings/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ host: mailSettings.host, port: mailSettings.port, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from }),
-      });
+      const res = await api.post('/api/admin/mail-settings/test', { host: mailSettings.host, port: mailSettings.port, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from });
       const data = await res.json();
       setMailSettingsMsg(
         res.ok
@@ -5709,11 +5444,7 @@ export default function App() {
     setIsSendingEmail(true);
     setEmailMsg(null);
     try {
-      const res = await fetch('/api/user/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ email: emailInput.trim() }),
-      });
+      const res = await api.post('/api/user/email', { email: emailInput.trim() });
       const data = await res.json();
       setEmailMsg(res.ok
         ? { type: 'success', text: data.message || '確認コードを送信しました。' }
@@ -5731,11 +5462,7 @@ export default function App() {
     setIsSendingEmail(true);
     setEmailMsg(null);
     try {
-      const res = await fetch('/api/user/email/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ email: emailInput.trim(), code: emailCode.trim() }),
-      });
+      const res = await api.post('/api/user/email/verify', { email: emailInput.trim(), code: emailCode.trim() });
       const data = await res.json();
       if (res.ok) {
         setMyEmail(emailInput.trim().toLowerCase());
@@ -5756,7 +5483,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm('登録したメールアドレスを削除しますか？（マスターキーの復元ができなくなります）')) return;
     try {
-      const res = await fetch('/api/user/email', { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.delete('/api/user/email');
       if (res.ok) {
         setMyEmail('');
         setMyEmailVerified(false);
@@ -5796,15 +5523,7 @@ export default function App() {
 
     setIsSavingPassword(true);
     try {
-      const res = await fetch('/api/user/password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          newPassword: pwNew,
-          ...(pwCurrent ? { currentPassword: pwCurrent } : {}),
-          ...(pwMasterKey.trim() ? { masterKey: pwMasterKey.trim() } : {}),
-        }),
-      });
+      const res = await api.post('/api/user/password', { newPassword: pwNew, ...(pwCurrent ? { currentPassword: pwCurrent } : {}), ...(pwMasterKey.trim() ? { masterKey: pwMasterKey.trim() } : {}), });
       const data = await res.json();
       if (!res.ok) {
         setPasswordMsg({ type: 'error', text: data.error || 'パスワードの変更に失敗しました。' });
@@ -5830,11 +5549,7 @@ export default function App() {
     setIsRecovering(true);
     setRecoveryMsg(null);
     try {
-      const res = await fetch('/api/auth/recovery/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: recoveryUserId.trim(), email: recoveryEmail.trim() }),
-      });
+      const res = await api.post('/api/auth/recovery/request', { userId: recoveryUserId.trim(), email: recoveryEmail.trim() });
       const data = await res.json();
       setRecoveryStep('verify');
       setRecoveryMsg({ type: 'success', text: data.message || '確認コードを送信しました。メールをご確認ください。' });
@@ -5851,11 +5566,7 @@ export default function App() {
     setIsRecovering(true);
     setRecoveryMsg(null);
     try {
-      const res = await fetch('/api/auth/recovery/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: recoveryUserId.trim(), email: recoveryEmail.trim(), code: recoveryCode.trim() }),
-      });
+      const res = await api.post('/api/auth/recovery/verify', { userId: recoveryUserId.trim(), email: recoveryEmail.trim(), code: recoveryCode.trim() });
       const data = await res.json();
       if (res.ok) {
         setRecoveryStep('done');
@@ -5880,7 +5591,7 @@ export default function App() {
     setFollowListError(null);
     setIsLoadingFollowList(true);
     try {
-      const res = await fetch(`/api/${mode}?userId=${encodeURIComponent(userId)}`);
+      const res = await api.get(`/api/${mode}?userId=${encodeURIComponent(userId)}`, { auth: false });
       if (!res.ok) {
         throw new Error('一覧を取得できませんでした。');
       }
@@ -5922,11 +5633,7 @@ export default function App() {
     is_archived: boolean;
   }) => {
     if (!editingChannel || !authToken) return;
-    const res = await fetch(`/api/channels/${encodeURIComponent(editingChannel.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-      body: JSON.stringify(patch),
-    });
+    const res = await api.put(`/api/channels/${encodeURIComponent(editingChannel.id)}`, patch);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       alert(data.error || 'チャンネルの更新に失敗しました。');
@@ -5945,7 +5652,7 @@ export default function App() {
     if (!authToken) return;
     setIsLoadingMyReports(true);
     try {
-      const res = await fetch('/api/reports/mine', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/reports/mine');
       if (res.ok) {
         setMyReports(await res.json());
       }
@@ -5959,7 +5666,7 @@ export default function App() {
   const fetchDirectory = async (query = '') => {
     setIsLoadingDirectory(true);
     try {
-      const res = await fetch(`/api/directory?limit=100${query ? `&q=${encodeURIComponent(query)}` : ''}`);
+      const res = await api.get(`/api/directory?limit=100${query ? `&q=${encodeURIComponent(query)}` : ''}`, { auth: false });
       if (res.ok) {
         const data = await res.json();
         setDirectoryUsers(data.users || []);
@@ -5974,7 +5681,7 @@ export default function App() {
   const fetchRoles = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/admin/roles', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/admin/roles');
       if (res.ok) {
         const data = await res.json();
         setAdminRoles(data.roles || []);
@@ -5990,11 +5697,7 @@ export default function App() {
     if (!authToken || !newRoleName.trim() || newRolePermissions.length === 0) return;
     const isEdit = Boolean(editingRoleId);
     try {
-      const res = await fetch(isEdit ? `/api/admin/roles/${encodeURIComponent(editingRoleId as string)}` : '/api/admin/roles', {
-        method: isEdit ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ name: newRoleName.trim(), color: newRoleColor, permissions: newRolePermissions }),
-      });
+      const res = await api.request(isEdit ? 'PUT' : 'POST', isEdit ? `/api/admin/roles/${encodeURIComponent(editingRoleId as string)}` : '/api/admin/roles', { name: newRoleName.trim(), color: newRoleColor, permissions: newRolePermissions });
       const data = await res.json();
       if (res.ok) {
         setRoleActionMsg({ type: 'success', text: isEdit ? 'ロールを更新しました。' : `ロール「${newRoleName.trim()}」を作成しました。` });
@@ -6024,10 +5727,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm('このロールを削除しますか？（付与済みのユーザーからも外れます）')) return;
     try {
-      const res = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/admin/roles/${encodeURIComponent(id)}`);
       if (res.ok) {
         setRoleActionMsg({ type: 'success', text: 'ロールを削除しました。' });
         if (editingRoleId === id) {
@@ -6057,11 +5757,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/roles`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ roleIds: Array.from(currentIds) }),
-      });
+      const res = await api.post(`/api/admin/users/${encodeURIComponent(userId)}/roles`, { roleIds: Array.from(currentIds) });
       const data = await res.json();
       if (res.ok) {
         setRoleActionMsg({ type: 'success', text: `@${userId} のロールを更新しました。` });
@@ -6083,7 +5779,7 @@ export default function App() {
   // 📢 お知らせの取得（全ユーザー向け / 管理者向け）
   const fetchAnnouncements = async () => {
     try {
-      const res = await fetch('/api/announcements');
+      const res = await api.get('/api/announcements', { auth: false });
       if (res.ok) setPublicAnnouncements(await res.json());
     } catch (err) {
       console.error('お知らせの取得エラー:', err);
@@ -6093,7 +5789,7 @@ export default function App() {
   const fetchAdminAnnouncements = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/admin/announcements', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/admin/announcements');
       if (res.ok) setAdminAnnouncements(await res.json());
     } catch (err) {
       console.error('お知らせ管理の取得エラー:', err);
@@ -6106,14 +5802,7 @@ export default function App() {
     setIsSavingAnnouncement(true);
     setAnnouncementMsg(null);
     try {
-      const res = await fetch('/api/admin/announcements', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ title: newAnnouncementTitle.trim(), content: newAnnouncementContent.trim() }),
-      });
+      const res = await api.post('/api/admin/announcements', { title: newAnnouncementTitle.trim(), content: newAnnouncementContent.trim() });
       const data = await res.json();
       if (res.ok) {
         setNewAnnouncementTitle('');
@@ -6134,14 +5823,7 @@ export default function App() {
   const handleToggleAnnouncement = async (id: string, isActive: boolean) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ isActive }),
-      });
+      const res = await api.put(`/api/admin/announcements/${encodeURIComponent(id)}`, { isActive });
       if (res.ok) {
         await fetchAdminAnnouncements();
         await fetchAnnouncements();
@@ -6155,10 +5837,7 @@ export default function App() {
     if (!authToken) return;
     if (!confirm('このお知らせを削除しますか？')) return;
     try {
-      const res = await fetch(`/api/admin/announcements/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/admin/announcements/${encodeURIComponent(id)}`);
       if (res.ok) {
         await fetchAdminAnnouncements();
         await fetchAnnouncements();
@@ -6196,11 +5875,7 @@ export default function App() {
       const form = new FormData();
       form.append('archive', importFile);
 
-      const res = await fetch('/api/import/archive', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-        body: form,
-      });
+      const res = await api.post('/api/import/archive', form);
       const data = await res.json();
 
       if (res.ok) {
@@ -6228,8 +5903,8 @@ export default function App() {
     setIsLoadingBlocksMutes(true);
     try {
       const [bRes, mRes] = await Promise.all([
-        fetch('/api/user/blocks', { headers: { Authorization: `Bearer ${authToken}` } }),
-        fetch('/api/user/mutes', { headers: { Authorization: `Bearer ${authToken}` } }),
+        api.get('/api/user/blocks'),
+        api.get('/api/user/mutes'),
       ]);
       if (bRes.ok) setBlockedUsers(await bRes.json());
       if (mRes.ok) setMutedUsers(await mRes.json());
@@ -6250,10 +5925,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(targetIdentifier)}/block`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/users/${encodeURIComponent(targetIdentifier)}/block`);
       if (res.ok) {
         // タイムライン・検索結果から即座に対象の投稿を除外
         const filterOut = (p: Post) => p.user_id !== targetIdentifier && p.author_handle !== targetIdentifier && p.author_url !== targetIdentifier;
@@ -6283,10 +5955,7 @@ export default function App() {
   const handleUnblockUser = async (targetIdentifier: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(targetIdentifier)}/unblock`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/users/${encodeURIComponent(targetIdentifier)}/unblock`);
       if (res.ok) {
         if (profileData && (profileData.id === targetIdentifier || profileData.handle === targetIdentifier || profileData.actor_url === targetIdentifier)) {
           setProfileData({ ...profileData, is_blocked: false });
@@ -6311,10 +5980,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(targetIdentifier)}/mute`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/users/${encodeURIComponent(targetIdentifier)}/mute`);
       if (res.ok) {
         const filterOut = (p: Post) => p.user_id !== targetIdentifier && p.author_handle !== targetIdentifier && p.author_url !== targetIdentifier;
         setTimeline((prev) => prev.filter(filterOut));
@@ -6343,10 +6009,7 @@ export default function App() {
   const handleUnmuteUser = async (targetIdentifier: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(targetIdentifier)}/unmute`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/users/${encodeURIComponent(targetIdentifier)}/unmute`);
       if (res.ok) {
         if (profileData && (profileData.id === targetIdentifier || profileData.handle === targetIdentifier || profileData.actor_url === targetIdentifier)) {
           setProfileData({ ...profileData, is_muted: false });
@@ -6822,11 +6485,7 @@ export default function App() {
     setIsSendingRegCode(true);
     setRegCodeMsg(null);
     try {
-      const res = await fetch('/api/auth/register/email-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
+      const res = await api.post('/api/auth/register/email-code', { email });
       const data = await res.json();
       setRegCodeMsg(res.ok
         ? { type: 'success', text: data.message || '確認コードを送信しました（10分有効）。' }
@@ -6866,18 +6525,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: regId.trim(),
-          name: regName.trim(),
-          summary: regBio.trim(),
-          inviteCode: inviteCodeInput.trim() || undefined,
-          agreedToRules: hasAgreedToRules || true,
-          ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}),
-        }),
-      });
+      const res = await api.post('/api/auth/register', { id: regId.trim(), name: regName.trim(), summary: regBio.trim(), inviteCode: inviteCodeInput.trim() || undefined, agreedToRules: hasAgreedToRules || true, ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}), });
 
       const data = await res.json();
       if (!res.ok) {
@@ -6912,7 +6560,7 @@ export default function App() {
   const fetchMigrationInfo = async () => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/user/migration', { headers: { Authorization: `Bearer ${authToken}` } });
+      const res = await api.get('/api/user/migration');
       if (res.ok) {
         const data = await res.json();
         setMigrationInfo(data);
@@ -6928,11 +6576,7 @@ export default function App() {
     setIsMigrating(true);
     setMigrationMsg(null);
     try {
-      const res = await fetch('/api/user/migration/alias', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ alias: migrationAliasInput.trim() }),
-      });
+      const res = await api.post('/api/user/migration/alias', { alias: migrationAliasInput.trim() });
       const data = await res.json();
       if (!res.ok) {
         setMigrationMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
@@ -6960,11 +6604,7 @@ export default function App() {
     setIsMigrating(true);
     setMigrationMsg(null);
     try {
-      const res = await fetch('/api/user/migration/move', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ target }),
-      });
+      const res = await api.post('/api/user/migration/move', { target });
       const data = await res.json();
       if (!res.ok) {
         setMigrationMsg({ type: 'error', text: data.error || '引っ越しに失敗しました。' });
@@ -6986,10 +6626,7 @@ export default function App() {
     setIsMigrating(true);
     setMigrationMsg(null);
     try {
-      const res = await fetch('/api/user/migration/cancel', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post('/api/user/migration/cancel');
       const data = await res.json();
       setMigrationMsg(
         res.ok ? { type: 'success', text: data.message || '解除しました。' } : { type: 'error', text: data.error || '解除に失敗しました。' },
@@ -7010,14 +6647,7 @@ export default function App() {
     setIsExportingData(true);
     setExportingFormat(format);
     try {
-      const started = await fetch('/api/user/export', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ format }),
-      });
+      const started = await api.post('/api/user/export', { format });
       if (!started.ok) {
         const err = await started.json().catch(() => ({}));
         alert(err.error || 'データのエクスポートを開始できませんでした。');
@@ -7029,7 +6659,7 @@ export default function App() {
       // 出来上がるまで見に行く（最大 2 分。ZIP はアカウントが大きいと時間がかかる）
       for (let attempt = 0; attempt < 60; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const statusRes = await fetch(`/api/user/export/${jobId}`, { headers: { Authorization: `Bearer ${authToken}` } });
+        const statusRes = await api.get(`/api/user/export/${jobId}`);
         if (!statusRes.ok) continue;
         const info = await statusRes.json();
         if (info.status === 'failed') {
@@ -7039,7 +6669,7 @@ export default function App() {
         }
         if (info.status !== 'done') continue;
 
-        const fileRes = await fetch(info.downloadUrl, { headers: { Authorization: `Bearer ${authToken}` } });
+        const fileRes = await api.fetch(info.downloadUrl);
         if (!fileRes.ok) {
           alert('エクスポートのダウンロードに失敗しました。');
           setSettingsMessage(null);
@@ -7073,21 +6703,24 @@ export default function App() {
   // ==========================================
   const fetchChannels = async () => {
     setIsLoadingChannels(true);
+    // カテゴリを続けて切り替えたときは前の要求を中断する
+    channelsAbortRef.current?.abort();
+    const ac = new AbortController();
+    channelsAbortRef.current = ac;
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
       const url = channelCategoryFilter && channelCategoryFilter !== 'all'
         ? `/api/channels?category=${encodeURIComponent(channelCategoryFilter)}`
         : '/api/channels';
-      const res = await fetch(url, { headers });
+      const res = await api.get(url, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setChannels(data);
       }
     } catch (e) {
+      if (ac.signal.aborted) return;
       console.error('Failed to fetch channels:', e);
     } finally {
-      setIsLoadingChannels(false);
+      if (!ac.signal.aborted) setIsLoadingChannels(false);
     }
   };
 
@@ -7101,10 +6734,12 @@ export default function App() {
     }
     setSelectedChannel(channel);
     setIsLoadingChannelTimeline(true);
+    // 別のチャンネルへ速く切り替えたときは前の要求を中断する
+    channelsAbortRef.current?.abort();
+    const ac = new AbortController();
+    channelsAbortRef.current = ac;
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const res = await fetch(`/api/channels/${channel.id}/timeline`, { headers });
+      const res = await api.get(`/api/channels/${channel.id}/timeline`, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setChannelTimelinePosts(data.posts || []);
@@ -7113,9 +6748,10 @@ export default function App() {
         }
       }
     } catch (e) {
+      if (ac.signal.aborted) return;
       console.error('Failed to fetch channel timeline:', e);
     } finally {
-      setIsLoadingChannelTimeline(false);
+      if (!ac.signal.aborted) setIsLoadingChannelTimeline(false);
     }
   };
 
@@ -7128,10 +6764,12 @@ export default function App() {
       } catch {}
     }
     setIsLoadingChannelTimeline(true);
+    // 別のチャンネルへ速く切り替えたときは前の要求を中断する
+    channelsAbortRef.current?.abort();
+    const ac = new AbortController();
+    channelsAbortRef.current = ac;
     try {
-      const headers: Record<string, string> = {};
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const res = await fetch(`/api/channels/${channelId}/timeline`, { headers });
+      const res = await api.get(`/api/channels/${channelId}/timeline`, { signal: ac.signal });
       if (res.ok) {
         const data = await res.json();
         setChannelTimelinePosts(data.posts || []);
@@ -7140,9 +6778,10 @@ export default function App() {
         }
       }
     } catch (e) {
+      if (ac.signal.aborted) return;
       console.error('Failed to fetch channel timeline:', e);
     } finally {
-      setIsLoadingChannelTimeline(false);
+      if (!ac.signal.aborted) setIsLoadingChannelTimeline(false);
     }
   };
 
@@ -7152,10 +6791,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/channels/${channelId}/follow`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.post(`/api/channels/${channelId}/follow`);
       if (res.ok) {
         const data = await res.json();
         setChannels((prev) =>
@@ -7191,19 +6827,7 @@ export default function App() {
     if (!authToken || !newChannelName.trim()) return;
     setIsCreatingChannel(true);
     try {
-      const res = await fetch('/api/channels', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          name: newChannelName.trim(),
-          description: newChannelDesc.trim(),
-          color: newChannelColor,
-          category: newChannelCategory,
-        }),
-      });
+      const res = await api.post('/api/channels', { name: newChannelName.trim(), description: newChannelDesc.trim(), color: newChannelColor, category: newChannelCategory, });
       if (res.ok) {
         const created = await res.json();
         setChannels((prev) => [created, ...prev]);
@@ -7229,9 +6853,7 @@ export default function App() {
     if (!authToken) return;
     setIsLoadingPasskeys(true);
     try {
-      const res = await fetch('/api/webauthn/credentials', {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.get('/api/webauthn/credentials');
       if (res.ok) {
         const data = await res.json();
         setPasskeys(data);
@@ -7248,10 +6870,7 @@ export default function App() {
     setIsRegisteringPasskey(true);
     setPasskeyActionMessage(null);
     try {
-      const optRes = await fetch('/api/webauthn/register/options', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const optRes = await api.post('/api/webauthn/register/options');
       if (!optRes.ok) {
         const err = await optRes.json();
         throw new Error(err.error || 'オプション取得に失敗しました。');
@@ -7261,18 +6880,7 @@ export default function App() {
       // SimpleWebAuthn ブラウザ側 API 実行
       const regResponse = await startRegistration({ optionsJSON: options });
 
-      const verifyRes = await fetch('/api/webauthn/register/verify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          response: regResponse,
-          credential: regResponse,
-          device_name: passkeyDeviceName.trim() || undefined,
-        }),
-      });
+      const verifyRes = await api.post('/api/webauthn/register/verify', { response: regResponse, credential: regResponse, device_name: passkeyDeviceName.trim() || undefined, });
 
       if (!verifyRes.ok) {
         const err = await verifyRes.json();
@@ -7296,10 +6904,7 @@ export default function App() {
   const handleDeletePasskey = async (credId: string) => {
     if (!authToken || !confirm('このパスキーを削除しますか？')) return;
     try {
-      const res = await fetch(`/api/webauthn/credentials/${credId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await api.delete(`/api/webauthn/credentials/${credId}`);
       if (res.ok) {
         setPasskeys((prev) => prev.filter((p) => p.id !== credId));
         setPasskeyActionMessage({ type: 'success', text: 'パスキーを削除しました。' });
@@ -7317,11 +6922,7 @@ export default function App() {
     setIsLoggingInWithPasskey(true);
     setAuthError(null);
     try {
-      const optRes = await fetch('/api/webauthn/authenticate/options', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: loginId.trim() || undefined }),
-      });
+      const optRes = await api.post('/api/webauthn/authenticate/options', { user_id: loginId.trim() || undefined });
       if (!optRes.ok) {
         const err = await optRes.json();
         throw new Error(err.error || '認証オプションの取得に失敗しました。');
@@ -7331,14 +6932,7 @@ export default function App() {
       // SimpleWebAuthn ブラウザ側 生体認証 / パスキープロンプト起動
       const authResponse = await startAuthentication({ optionsJSON: options });
 
-      const verifyRes = await fetch('/api/webauthn/authenticate/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: authResponse,
-          expectedChallenge: options.challenge,
-        }),
-      });
+      const verifyRes = await api.post('/api/webauthn/authenticate/verify', { credential: authResponse, expectedChallenge: options.challenge, });
 
       if (!verifyRes.ok) {
         const err = await verifyRes.json();
@@ -7382,16 +6976,8 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          usePassword
-            // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
-            ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) }
-            : { id: identifier, masterKey: loginKey.trim() },
-        ),
-      });
+      const res = await api.post('/api/auth/login', usePassword // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
+ ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) } : { id: identifier, masterKey: loginKey.trim() },);
 
       const data = await res.json();
       if (!res.ok) {
@@ -7418,10 +7004,7 @@ export default function App() {
   const handleLogout = async () => {
     if (authToken) {
       try {
-        await fetch('/api/auth/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
+        await api.post('/api/auth/logout');
       } catch {}
     }
     localStorage.removeItem('spica_token');
@@ -7488,13 +7071,7 @@ export default function App() {
         const formData = new FormData();
         formData.append('file', fileToUpload);
 
-        const res = await fetch('/api/media/upload', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-          },
-          body: formData,
-        });
+        const res = await api.post('/api/media/upload', formData);
 
         if (res.ok) {
           const data = await res.json();
@@ -7528,21 +7105,12 @@ export default function App() {
     setIsSavingStorage(true);
     setStorageMessage(null);
     try {
-      const res = await fetch('/api/admin/storage', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(storageForm),
-      });
+      const res = await api.post('/api/admin/storage', storageForm);
       const data = await res.json();
       if (res.ok) {
         setStorageMessage({ type: 'success', text: data.message || '保存しました。' });
         // 再取得してステート反映
-        const stRes = await fetch('/api/admin/storage', {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
+        const stRes = await api.get('/api/admin/storage');
         if (stRes.ok) {
           const sData = await stRes.json();
           setAdminStorageConfig(sData);
@@ -7563,14 +7131,7 @@ export default function App() {
     setIsTestingStorage(true);
     setStorageMessage(null);
     try {
-      const res = await fetch('/api/admin/storage/test', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(storageForm),
-      });
+      const res = await api.post('/api/admin/storage/test', storageForm);
       const data = await res.json();
       if (res.ok) {
         setStorageMessage({ type: 'success', text: data.message || '接続テストに成功しました！' });
@@ -7593,14 +7154,7 @@ export default function App() {
     if (selectedChoiceIndices.length === 0) return;
     setIsVotingPoll(postId);
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(postId)}/poll/vote`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ choices: selectedChoiceIndices }),
-      });
+      const res = await api.post(`/api/posts/${encodeURIComponent(postId)}/poll/vote`, { choices: selectedChoiceIndices });
       if (res.ok) {
         const data = await res.json();
         const updatePoll = (p: Post) => (p.id === postId ? { ...p, poll: data.poll } : p);
@@ -7641,29 +7195,7 @@ export default function App() {
 
     setIsPosting(true);
     try {
-      const res = await fetch('/api/posts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          content: trimmed,
-          visibility: postVisibility,
-          attachments: postAttachments,
-          quote_id: quoteTargetPost ? quoteTargetPost.id : undefined,
-          is_sensitive: isSensitivePost,
-          cw: showCwInput && cwContent.trim() ? cwContent.trim() : undefined,
-          channel_id: postTargetChannelId || undefined,
-          poll: hasPoll
-            ? {
-                choices: validChoices,
-                multiple: pollMultiple,
-                expires_in: pollExpiresIn,
-              }
-            : undefined,
-        }),
-      });
+      const res = await api.post('/api/posts', { content: trimmed, visibility: postVisibility, attachments: postAttachments, quote_id: quoteTargetPost ? quoteTargetPost.id : undefined, is_sensitive: isSensitivePost, cw: showCwInput && cwContent.trim() ? cwContent.trim() : undefined, channel_id: postTargetChannelId || undefined, poll: hasPoll ? { choices: validChoices, multiple: pollMultiple, expires_in: pollExpiresIn, } : undefined, });
 
       if (res.ok) {
         setPostContent('');
@@ -7704,12 +7236,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(postId)}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      const res = await api.delete(`/api/posts/${encodeURIComponent(postId)}`);
       if (res.ok) {
         setTimeline((prev) => prev.filter((p) => p.id !== postId));
         setProfilePosts((prev) => prev.filter((p) => p.id !== postId));
@@ -7734,14 +7261,7 @@ export default function App() {
     }
     setActiveReactionPostId(null);
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(postId)}/react`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ reaction }),
-      });
+      const res = await api.post(`/api/posts/${encodeURIComponent(postId)}/react`, { reaction });
       if (res.ok) {
         const data = await res.json();
         setTimeline((prev) =>
@@ -7771,13 +7291,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(postId)}/announce`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      const res = await api.post(`/api/posts/${encodeURIComponent(postId)}/announce`);
       if (res.ok) {
         const data = await res.json();
         setTimeline((prev) =>
@@ -7825,19 +7339,7 @@ export default function App() {
     if (!authToken || !replyTargetPost || !replyContent.trim() || isReplying) return;
     setIsReplying(true);
     try {
-      const res = await fetch('/api/posts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          content: replyContent.trim(),
-          visibility: postVisibility,
-          in_reply_to: replyTargetPost.id,
-          cw: showReplyCwInput && replyCwContent.trim() ? replyCwContent.trim() : undefined,
-        }),
-      });
+      const res = await api.post('/api/posts', { content: replyContent.trim(), visibility: postVisibility, in_reply_to: replyTargetPost.id, cw: showReplyCwInput && replyCwContent.trim() ? replyCwContent.trim() : undefined, });
       if (res.ok) {
         setReplyContent('');
         setShowReplyCwInput(false);
@@ -7867,17 +7369,20 @@ export default function App() {
     }
     setThreadModalPost(post);
     setIsLoadingThread(true);
+    // 別のスレッドを開いたときは前の要求を中断する
+    threadAbortRef.current?.abort();
+    const ac = new AbortController();
+    threadAbortRef.current = ac;
     try {
-      const res = await fetch(`/api/posts/${encodeURIComponent(post.id)}/thread`, {
-        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
-      });
+      const res = await api.get(`/api/posts/${encodeURIComponent(post.id)}/thread`, { signal: ac.signal });
       if (res.ok) {
         setThreadData(await res.json());
       }
     } catch (err) {
+      if (ac.signal.aborted) return;
       console.error(err);
     } finally {
-      setIsLoadingThread(false);
+      if (!ac.signal.aborted) setIsLoadingThread(false);
     }
   };
 
@@ -7888,14 +7393,7 @@ export default function App() {
 
     setFollowStatus({ type: 'loading', msg: 'WebFinger解決 ＆ Follow Activity送信中...' });
     try {
-      const res = await fetch('/api/follow', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ targetHandle: followHandle.trim() }),
-      });
+      const res = await api.post('/api/follow', { targetHandle: followHandle.trim() });
 
       const data = await res.json();
       if (res.ok) {
@@ -7920,14 +7418,7 @@ export default function App() {
     if (!confirm(`ユーザー @${userId} のロールを ${newRole} に変更しますか？`)) return;
 
     try {
-      const res = await fetch(`/api/admin/users/${userId}/role`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ role: newRole }),
-      });
+      const res = await api.post(`/api/admin/users/${userId}/role`, { role: newRole });
       if (res.ok) {
         fetchAdminData();
       } else {
@@ -7946,14 +7437,7 @@ export default function App() {
     if (!confirm(`ユーザー @${userId} を${action}しますか？`)) return;
 
     try {
-      const res = await fetch(`/api/admin/users/${userId}/freeze`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ isFrozen: !isFrozen }),
-      });
+      const res = await api.post(`/api/admin/users/${userId}/freeze`, { isFrozen: !isFrozen });
       if (res.ok) {
         fetchAdminData();
       } else {
@@ -7970,12 +7454,7 @@ export default function App() {
     if (!authToken || !adminDeleteTargetUser) return;
     setIsAdminDeletingUser(true);
     try {
-      const res = await fetch(`/api/admin/users/${adminDeleteTargetUser.id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      const res = await api.delete(`/api/admin/users/${adminDeleteTargetUser.id}`);
       const data = await res.json();
       if (res.ok) {
         const deletedId = adminDeleteTargetUser.id;
@@ -8004,17 +7483,7 @@ export default function App() {
     setIsSelfDeleting(true);
     setSelfDeleteError(null);
     try {
-      const res = await fetch('/api/user/delete-me', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({
-          confirmUserId: selfDeleteConfirmId.trim(),
-          masterKey: selfDeleteMasterKey.trim() || undefined,
-        }),
-      });
+      const res = await api.post('/api/user/delete-me', { confirmUserId: selfDeleteConfirmId.trim(), masterKey: selfDeleteMasterKey.trim() || undefined, });
 
       const data = await res.json();
       if (!res.ok) {
@@ -8086,7 +7555,7 @@ export default function App() {
       }
 
       // 2. サーバーから VAPID 公開鍵を取得
-      const keyRes = await fetch('/api/push/vapid-public-key');
+      const keyRes = await api.get('/api/push/vapid-public-key', { auth: false });
       const { publicKey } = await keyRes.json();
       if (!publicKey) throw new Error('VAPID 公開鍵を取得できませんでした。');
 
@@ -8098,14 +7567,7 @@ export default function App() {
       });
 
       // 4. サーバーへ登録
-      const subRes = await fetch('/api/push/subscribe', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ subscription: sub.toJSON() }),
-      });
+      const subRes = await api.post('/api/push/subscribe', { subscription: sub.toJSON() });
 
       if (subRes.ok) {
         setIsPushSubscribed(true);
@@ -8129,14 +7591,7 @@ export default function App() {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
       if (sub) {
-        await fetch('/api/push/unsubscribe', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${authToken}`,
-          },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        });
+        await api.post('/api/push/unsubscribe', { endpoint: sub.endpoint });
         await sub.unsubscribe();
       }
       setIsPushSubscribed(false);
@@ -8153,12 +7608,7 @@ export default function App() {
     if (!authToken) return;
     setIsSendingTestPush(true);
     try {
-      const res = await fetch('/api/push/test', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      const res = await api.post('/api/push/test');
       const data = await res.json();
       if (res.ok) {
         alert('テスト通知を送信しました！スマホまたはデスクトップの通知欄をご確認ください。');
@@ -8180,14 +7630,7 @@ export default function App() {
     setIsConnectingRelay(true);
     setRelayMessage(null);
     try {
-      const res = await fetch('/api/admin/relays', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ url: relayInputUrl.trim() }),
-      });
+      const res = await api.post('/api/admin/relays', { url: relayInputUrl.trim() });
       const data = await res.json();
       if (res.ok) {
         setRelayMessage({ type: 'success', text: data.message });
@@ -8209,14 +7652,7 @@ export default function App() {
     if (!confirm(`リレー (${inboxUrl}) の購読を解除しますか？`)) return;
 
     try {
-      const res = await fetch('/api/admin/relays', {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ inboxUrl }),
-      });
+      const res = await api.delete('/api/admin/relays', { inboxUrl });
       if (res.ok) {
         fetchAdminData();
       } else {
@@ -8234,14 +7670,7 @@ export default function App() {
     if (!confirm('提携先FediverseドメインのActor情報、および外部から受信した投稿キャッシュをすべて消去しますか？\n（※自ノードの投稿やアカウントは保持されます）')) return;
 
     try {
-      const res = await fetch('/api/admin/cache/clear', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ clearPosts: true }),
-      });
+      const res = await api.post('/api/admin/cache/clear', { clearPosts: true });
       const data = await res.json();
       if (res.ok) {
         alert(data.message);
@@ -8261,14 +7690,7 @@ export default function App() {
     if (!authToken) return;
     const newStatus = currentStatus === 'accepted' ? 'pending' : 'accepted';
     try {
-      const res = await fetch('/api/admin/relays/toggle-status', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ inboxUrl, status: newStatus }),
-      });
+      const res = await api.post('/api/admin/relays/toggle-status', { inboxUrl, status: newStatus });
       if (res.ok) {
         fetchAdminData();
       } else {
@@ -8284,14 +7706,7 @@ export default function App() {
   const handleAdminResendRelay = async (inboxUrl?: string) => {
     if (!authToken) return;
     try {
-      const res = await fetch('/api/admin/relays/resend', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(inboxUrl ? { inboxUrl } : {}),
-      });
+      const res = await api.post('/api/admin/relays/resend', inboxUrl ? { inboxUrl } : {});
       const data = await res.json();
       if (res.ok) {
         alert(data.message || 'Follow Activity を再送しました。');
@@ -8310,14 +7725,7 @@ export default function App() {
     setIsBlockingDomain(true);
     setBlockMessage(null);
     try {
-      const res = await fetch('/api/admin/blocks', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify({ domain, reason, severity, purgeData: severity === 'suspend' }),
-      });
+      const res = await api.post('/api/admin/blocks', { domain, reason, severity, purgeData: severity === 'suspend' });
       const data = await res.json();
       if (res.ok) {
         setBlockMessage({
@@ -8361,12 +7769,7 @@ export default function App() {
     if (!confirm(`ドメイン "${domain}" のブロックを解除しますか？`)) return;
 
     try {
-      const res = await fetch(`/api/admin/blocks/${encodeURIComponent(domain)}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${authToken}`,
-        },
-      });
+      const res = await api.delete(`/api/admin/blocks/${encodeURIComponent(domain)}`);
       const data = await res.json();
       if (res.ok) {
         setBlockMessage({ type: 'success', text: data.message || `ドメイン "${domain}" のブロックを解除しました。` });
