@@ -44,6 +44,8 @@ FILES=(
   # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
   package-lock.json
   server/package.json
+  # client ワークスペースの依存（react-virtuoso など）もここ。運び忘れると .17 のビルドが失敗する
+  client/package.json
 )
 DIRS=(
   .github/workflows
