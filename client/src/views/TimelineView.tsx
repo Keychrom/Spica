@@ -12,6 +12,21 @@ import { Virtuoso } from 'react-virtuoso';
 import { useEffect, useRef, useState } from 'react';
 
 export interface TimelineViewProps {
+  setTimeline: any;
+  isPostMatchingTimeline: any;
+  followingUrls: any;
+  setNewPostsQueue: any;
+  setShowCreateChannelModal: any;
+  pushModalState: any;
+  api: any;
+  timelineModeRef: any;
+  activeHashtagRef: any;
+  setTimelineCursor: any;
+  authToken: any;
+  setSearchResults: any;
+  fetchMyFollowingUrls: any;
+  setChannels: any;
+  checkAuth: any;
   ArrowRight: any;
   BarChart2: any;
   Bell: any;
@@ -36,7 +51,6 @@ export interface TimelineViewProps {
   activeHashtag: any;
   antennas: any;
   applyAutocomplete: any;
-  applyNewPostsQueue: any;
   authUser: any;
   autoCompressImages: any;
   autocompleteIndex: any;
@@ -49,8 +63,6 @@ export interface TimelineViewProps {
   checkAutocomplete: any;
   currentView: any;
   cwContent: any;
-  dismissAnnouncement: any;
-  dismissedAnnouncements: any;
   drafts: any;
   fetchBookmarks: any;
   fetchChannels: any;
@@ -59,23 +71,17 @@ export interface TimelineViewProps {
   fetchLists: any;
   fetchPopularTags: any;
   fetchTimeline: any;
-  followHandle: any;
-  followStatus: any;
   handleAutocompleteKeyDown: any;
   handleCreatePost: any;
-  handleFollow: any;
   handleLogout: any;
   handleRemoveAttachment: any;
   handleSearchSubmit: any;
   handleSelectHashtag: any;
   handleSelectMedia: any;
   handleSwitchTimelineMode: any;
-  handleToggleChannelFollow: any;
-  handleToggleSearchUserFollow: any;
   isLoadingBookmarks: any;
   isLoadingChannelTimeline: any;
   isLoadingChannels: any;
-  isLoadingOlderPosts: any;
   isLoadingTimeline: any;
   isPosting: any;
   isSearching: any;
@@ -83,12 +89,10 @@ export interface TimelineViewProps {
   isStreamingConnected: any;
   isUploadingMedia: any;
   lists: any;
-  loadOlderPosts: any;
   navigateToView: any;
   newPostsQueue: any;
   openAntennaManageModal: any;
   openChannelDetail: any;
-  openCreateChannelModal: any;
   openDraftsModal: any;
   openScheduleModal: any;
   openSettings: any;
@@ -109,14 +113,12 @@ export interface TimelineViewProps {
   scheduledPosts: any;
   searchQuery: any;
   searchResults: any;
-  searchTab: any;
   selectedChannel: any;
   serverStats: any;
   setAutoCompressImages: any;
   setChannelCategoryFilter: any;
   setCwContent: any;
   setEditingChannel: any;
-  setFollowHandle: any;
   setIsSensitivePost: any;
   setPollChoices: any;
   setPollExpiresIn: any;
@@ -127,7 +129,6 @@ export interface TimelineViewProps {
   setPostVisibility: any;
   setQuoteTargetPost: any;
   setSearchQuery: any;
-  setSearchTab: any;
   setSelectedChannel: any;
   setShowCwInput: any;
   setShowDirectoryModal: any;
@@ -149,7 +150,184 @@ export interface TimelineViewProps {
 }
 
 export default function TimelineView(props: TimelineViewProps) {
-  const { ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, applyNewPostsQueue, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, dismissAnnouncement, dismissedAnnouncements, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, followHandle, followStatus, handleAutocompleteKeyDown, handleCreatePost, handleFollow, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, handleToggleChannelFollow, handleToggleSearchUserFollow, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingOlderPosts, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, loadOlderPosts, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openCreateChannelModal, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, postDeps, scheduledPosts, searchQuery, searchResults, searchTab, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setFollowHandle, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSearchTab, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText } = props;
+  const { checkAuth, setChannels, fetchMyFollowingUrls, setSearchResults, authToken, setTimelineCursor, activeHashtagRef, timelineModeRef, api, pushModalState, setShowCreateChannelModal, setNewPostsQueue, followingUrls, isPostMatchingTimeline, setTimeline, ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, postDeps, scheduledPosts, searchQuery, searchResults, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [isLoadingOlderPosts, setIsLoadingOlderPosts] = useState<boolean>(false);
+
+  const applyNewPostsQueue = () => {
+    if (newPostsQueue.length === 0) return;
+    setTimeline((prev: any) => {
+      const existingIds = new Set(prev.map((p: any) => p.id));
+      const fresh = newPostsQueue.filter((p: any) => {
+        if (existingIds.has(p.id)) return false;
+        return isPostMatchingTimeline(p, timelineMode, activeHashtag, followingUrls, authUser);
+      });
+      return [...fresh, ...prev];
+    });
+    setNewPostsQueue([]);
+  };
+
+  const [searchTab, setSearchTab] = useState<'all' | 'users' | 'posts'>('all');
+
+  const [followHandle, setFollowHandle] = useState<string>('');
+
+  const [followStatus, setFollowStatus] = useState<{ type: 'success' | 'error' | 'loading'; msg: string } | null>(null);
+
+  function openCreateChannelModal() {
+    if (!authUser) {
+      setShowLoginModal(true);
+      return;
+    }
+    setShowCreateChannelModal(true);
+    pushModalState('create_channel');
+  }
+
+  const loadOlderPosts = async () => {
+    if (!timelineCursor || isLoadingOlderPosts) return;
+
+    // 取得中にモードが変わっていたら結果を破棄するためのスナップショット
+    const requestedMode = timelineMode;
+    const requestedTag = activeHashtag;
+    const requestedAntennaId = activeAntenna?.id;
+
+    setIsLoadingOlderPosts(true);
+    try {
+      let url: string;
+      if (requestedMode === 'antenna') {
+        if (!requestedAntennaId) return;
+        url = `/api/antennas/${requestedAntennaId}/timeline?cursor=${encodeURIComponent(timelineCursor)}`;
+      } else if (requestedMode === 'tag' && requestedTag) {
+        url = `/api/timeline?mode=tag&tag=${encodeURIComponent(requestedTag)}&cursor=${encodeURIComponent(timelineCursor)}`;
+      } else {
+        url = `/api/timeline?mode=${requestedMode}&cursor=${encodeURIComponent(timelineCursor)}`;
+      }
+
+      const res = await api.get(url);
+      // 失敗時はカーソルを保持して、再試行できるようにする
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const older: Post[] = Array.isArray(data) ? data : (data.posts || []);
+
+      // 取得中にタイムラインの表示条件が変わっていたら破棄
+      if (timelineModeRef.current !== requestedMode) return;
+      if (requestedMode === 'tag' && activeHashtagRef.current !== requestedTag) return;
+
+      setTimeline((prev: any) => {
+        const existing = new Set(prev.map((p: any) => p.id));
+        return [...prev, ...older.filter((p) => !existing.has(p.id))];
+      });
+      setTimelineCursor(res.headers.get('X-Next-Cursor'));
+    } catch (err) {
+      console.error('過去のノート読み込みエラー:', err);
+    } finally {
+      setIsLoadingOlderPosts(false);
+    }
+  };
+
+  const handleToggleSearchUserFollow = async (user: any) => {
+    if (!authToken) {
+      setShowLoginModal(true);
+      return;
+    }
+    const endpoint = user.is_following ? '/api/unfollow' : '/api/follow';
+    const handle = user.domain ? `@${user.username}@${user.domain}` : (user.id || user.username);
+    const targetActorUrl = user.id?.startsWith('http') ? user.id : `${window.location.origin}/users/${user.id}`;
+    try {
+      const res = await api.post(endpoint, { targetHandle: handle, targetActorUrl, });
+      if (res.ok) {
+        setSearchResults((prev: any) => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            remoteUser: prev.remoteUser?.id === user.id ? { ...prev.remoteUser, is_following: !user.is_following } : prev.remoteUser,
+            users: prev.users.map((u: any) => (u.id === user.id ? { ...u, is_following: !user.is_following } : u)),
+          };
+        });
+        fetchMyFollowingUrls();
+      }
+    } catch (err) {
+      console.error('フォロー切り替えエラー:', err);
+    }
+  };
+
+  const [dismissedAnnouncements, setDismissedAnnouncements] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('spica_dismissed_announcements') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  const dismissAnnouncement = (id: string) => {
+    const next = Array.from(new Set([...dismissedAnnouncements, id]));
+    setDismissedAnnouncements(next);
+    try {
+      localStorage.setItem('spica_dismissed_announcements', JSON.stringify(next));
+    } catch {}
+  };
+
+  const handleToggleChannelFollow = async (channelId: string) => {
+    if (!authToken) {
+      setShowLoginModal(true);
+      return;
+    }
+    try {
+      const res = await api.post(`/api/channels/${channelId}/follow`);
+      if (res.ok) {
+        const data = await res.json();
+        setChannels((prev: any) =>
+          prev.map((c: any) =>
+            c.id === channelId
+              ? {
+                  ...c,
+                  is_following: data.following,
+                  followers_count: data.following ? c.followers_count + 1 : Math.max(0, c.followers_count - 1),
+                }
+              : c
+          )
+        );
+        if (selectedChannel && selectedChannel.id === channelId) {
+          setSelectedChannel((prev: any) =>
+            prev
+              ? {
+                  ...prev,
+                  is_following: data.following,
+                  followers_count: data.following ? prev.followers_count + 1 : Math.max(0, prev.followers_count - 1),
+                }
+              : null
+          );
+        }
+      }
+    } catch (e) {
+      console.error('Failed to toggle channel follow:', e);
+    }
+  };
+
+  const handleFollow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !followHandle.trim()) return;
+
+    setFollowStatus({ type: 'loading', msg: 'WebFinger解決 ＆ Follow Activity送信中...' });
+    try {
+      const res = await api.post('/api/follow', { targetHandle: followHandle.trim() });
+
+      const data = await res.json();
+      if (res.ok) {
+        setFollowStatus({
+          type: 'success',
+          msg: `${data.target.name} (@${data.target.username}@${data.target.domain}) をフォローしました！`,
+        });
+        setFollowHandle('');
+        checkAuth(authToken);
+      } else {
+        setFollowStatus({ type: 'error', msg: data.error || 'フォローに失敗しました。' });
+      }
+    } catch (err: any) {
+      setFollowStatus({ type: 'error', msg: err.message });
+    }
+  };
   const { renderPostCard } = createRenderPostCard(postDeps);
 
   // 仮想化のための「先頭に何件挿したか」。SSE の新着を先頭に挿しても

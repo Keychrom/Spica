@@ -5,22 +5,32 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
+import { useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Calendar, Edit3, ExternalLink, Globe, MessageSquare, Pin, RefreshCw, Server, Settings, ShieldAlert, UserCheck, UserPlus, Volume2, VolumeX } from 'lucide-react';
 import { FormattedPostContent, createRenderPostCard } from '../components/PostRendering';
 
 export interface ProfileViewProps {
-  ProfileView: any;
+  setEditName: any;
+  setEditBio: any;
+  setEditIconUrl: any;
+  setEditBannerUrl: any;
+  setShowEditProfileModal: any;
+  pushModalState: any;
+  authToken: any;
+  api: any;
+  setProfileData: any;
+  fetchMyFollowingUrls: any;
+  setFollowList: any;
+  setFollowListRows: any;
+  setFollowListError: any;
+  setIsLoadingFollowList: any;
   authUser: any;
   handleBlockUser: any;
   handleMuteUser: any;
-  handleToggleProfileFollow: any;
   handleUnblockUser: any;
   handleUnmuteUser: any;
   isLoadingProfile: any;
-  isTogglingFollow: any;
   navigateToView: any;
-  openEditProfileModal: any;
-  openFollowList: any;
   openSettings: any;
   profileData: any;
   profilePosts: any;
@@ -33,7 +43,84 @@ export interface ProfileViewProps {
 }
 
 export default function ProfileView(props: ProfileViewProps) {
-  const { authUser, handleBlockUser, handleMuteUser, handleToggleProfileFollow, handleUnblockUser, handleUnmuteUser, isLoadingProfile, isTogglingFollow, navigateToView, openEditProfileModal, openFollowList, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal } = props;
+  const { setIsLoadingFollowList, setFollowListError, setFollowListRows, setFollowList, fetchMyFollowingUrls, setProfileData, api, authToken, pushModalState, setShowEditProfileModal, setEditBannerUrl, setEditIconUrl, setEditBio, setEditName, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [isTogglingFollow, setIsTogglingFollow] = useState<boolean>(false);
+
+  const openEditProfileModal = () => {
+    if (!authUser) return;
+    setEditName(authUser.name || '');
+    setEditBio(authUser.summary || '');
+    setEditIconUrl(authUser.icon_url || '');
+    setEditBannerUrl(authUser.banner_url || '');
+    setShowEditProfileModal(true);
+    pushModalState('edit_profile');
+  };
+
+  const handleToggleProfileFollow = async () => {
+    if (!authToken) {
+      setShowLoginModal(true);
+      return;
+    }
+    if (!profileData || isTogglingFollow) return;
+    setIsTogglingFollow(true);
+    try {
+      const endpoint = profileData.is_following ? '/api/unfollow' : '/api/follow';
+      const res = await api.post(endpoint, { targetHandle: profileData.handle, targetActorUrl: profileData.actor_url, });
+
+      if (res.ok) {
+        setProfileData((prev: any) => prev ? {
+          ...prev,
+          is_following: !prev.is_following,
+          follower_count: prev.is_following ? Math.max(0, prev.follower_count - 1) : prev.follower_count + 1,
+        } : prev);
+        fetchMyFollowingUrls();
+      }
+    } catch (err) {
+      console.error('Failed to toggle follow:', err);
+    } finally {
+      setIsTogglingFollow(false);
+    }
+  };
+
+  const openFollowList = async (mode: 'followers' | 'following', userId: string, name: string) => {
+    setFollowList({ mode, userId, name });
+    setFollowListRows([]);
+    setFollowListError(null);
+    setIsLoadingFollowList(true);
+    try {
+      const res = await api.get(`/api/${mode}?userId=${encodeURIComponent(userId)}`, { auth: false });
+      if (!res.ok) {
+        throw new Error('一覧を取得できませんでした。');
+      }
+      const data = (await res.json()) as any[];
+      setFollowListRows(
+        data.map((row) => {
+          const actorUrl = String(mode === 'followers' ? row.follower_url : row.following_url || '');
+          const username = row.username || '';
+          const domain = row.domain || '';
+          const isLocal = Number(row.is_local || 0) === 1;
+          return {
+            actor_url: actorUrl,
+            // ローカルの相手は actor URL からユーザー ID を取り出す（そのままプロフィールを開ける）
+            user_id: isLocal && username ? username : actorUrl,
+            username,
+            domain,
+            name: row.name || username || actorUrl,
+            icon_url: row.icon_url || '',
+            is_local: isLocal ? 1 : 0,
+            created_at: row.created_at,
+          };
+        }),
+      );
+    } catch (err) {
+      console.error('フォロー一覧の取得エラー:', err);
+      setFollowListError(err instanceof Error ? err.message : '一覧を取得できませんでした。');
+    } finally {
+      setIsLoadingFollowList(false);
+    }
+  };
   const { renderPostCard } = createRenderPostCard(postDeps);
   return (
     <>

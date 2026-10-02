@@ -5,19 +5,31 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
+import { useState } from 'react';
+import type { ApiResult } from '../api/client';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, ClipboardList, Cloud, Copy, Database, ExternalLink, EyeOff, Image as ImageIcon, Globe, HardDrive, LayoutDashboard, Lock, Mail, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, Tag, Ticket, Trash2, Upload, UserPlus, Users } from 'lucide-react';
 
 export interface AdminDashboardProps {
+  authToken: any;
+  api: any;
+  setContentPolicy: any;
+  setMaintenanceStats: any;
+  setServerStats: any;
+  fetchCustomEmojis: any;
+  fetchServerStats: any;
+  fetchRecoveryStatus: any;
+  setAdminAnnouncements: any;
+  fetchAnnouncements: any;
+  setAdminStorageConfig: any;
+  fetchTimeline: any;
+  executeBlockDomain: any;
+  setBlockMessage: any;
   adminTab: any;
   maintenanceStats: any;
   setAdminTab: any;
-  deliveryQueue: any;
   canAdmin: any;
-  mailSettings: any;
   serverStats: any;
-  setMailSettings: any;
   adminUsers: any;
-  blockInputSeverity: any;
   adminRoles: any;
   adminRelays: any;
   storageForm: any;
@@ -28,92 +40,25 @@ export interface AdminDashboardProps {
   reportStatusFilter: any;
   adminBlockedDomains: any;
   adminAnnouncements: any;
-  storageMessage: any;
-  serverSettingsMessage: any;
-  roleActionMsg: any;
-  reportActionMsg: any;
-  relayMessage: any;
-  mailSettingsMsg: any;
-  isUploadingEmoji: any;
-  isUpdatingReport: any;
-  isUpdatingRegMode: any;
-  isTestingStorage: any;
-  isLoadingAudit: any;
-  inviteActionMsg: any;
-  fetchAuditLog: any;
-  emojiActionMsg: any;
-  deliveryQueueMsg: any;
   blockMessage: any;
-  announcementMsg: any;
-  adminUserSearch: any;
   adminFederation: any;
   adminEmojis: any;
-  setAdminUserSearch: any;
-  isUploadingServerIcon: any;
-  isUploadingServerBanner: any;
-  isSavingStorage: any;
-  isSavingServerSettings: any;
-  isSavingMail: any;
-  isRunningMaintenance: any;
-  isCreatingInvite: any;
-  isActingOnDelivery: any;
-  handleSaveMaintenanceSettings: any;
-  handleResolveReport: any;
-  handleChangeRegistrationMode: any;
   fetchReports: any;
   fetchAdminData: any;
   adminServerRulesText: any;
   adminServerBanner: any;
   adminInvitations: any;
-  setNewRolePermissions: any;
-  setNewRoleName: any;
-  setBlockInputSeverity: any;
-  relayInputUrl: any;
-  newRolePermissions: any;
-  newRoleName: any;
-  newEmojiUrl: any;
-  newEmojiName: any;
-  newAnnouncementTitle: any;
-  newAnnouncementContent: any;
   navigateToView: any;
-  maintenanceMsg: any;
-  isSavingContentPolicy: any;
-  isSavingAnnouncement: any;
-  isLoadingDeliveryQueue: any;
   isLoadingAdmin: any;
-  isConnectingRelay: any;
-  isClearingProxyCache: any;
   isBlockingDomain: any;
-  handleSaveContentPolicy: any;
-  handleCreateEmoji: any;
-  handleAdminResendRelay: any;
-  fetchDeliveryQueue: any;
-  editingRoleId: any;
-  contentPolicyMsg: any;
   contentPolicy: any;
   blockInputDomain: any;
   availablePermissions: any;
-  auditMsg: any;
-  auditLog: any;
-  auditCursor: any;
   adminServerIcon: any;
   adminReports: any;
   setReportStatusFilter: any;
-  setRelayInputUrl: any;
-  setNewRoleColor: any;
-  setNewInviteMemo: any;
-  setNewInviteMaxUses: any;
-  setNewInviteExpiresDays: any;
-  setNewEmojiUrl: any;
-  setNewEmojiName: any;
-  setNewEmojiCategory: any;
-  setNewAnnouncementTitle: any;
-  setNewAnnouncementContent: any;
-  setEditingRoleId: any;
-  setDeliveryQueueMsg: any;
   setBlockInputReason: any;
   setBlockInputDomain: any;
-  setAuditFilter: any;
   setAdminTosUrl: any;
   setAdminServerRulesText: any;
   setAdminServerName: any;
@@ -126,50 +71,9 @@ export interface AdminDashboardProps {
   setAdminOperatorUrl: any;
   setAdminDeleteTargetUser: any;
   setAdminContactUrl: any;
-  newRoleColor: any;
-  newInviteMemo: any;
-  newInviteMaxUses: any;
-  newInviteExpiresDays: any;
-  newEmojiCategory: any;
-  handleUploadServerIcon: any;
-  handleUploadServerBanner: any;
-  handleUnblockDomain: any;
-  handleToggleUserRole: any;
-  handleToggleAnnouncement: any;
-  handleTestStorage: any;
-  handleTestMailSettings: any;
-  handleSaveStorage: any;
-  handleSaveServerSettings: any;
-  handleSaveRole: any;
-  handleSaveMailSettings: any;
-  handleRunMaintenance: any;
-  handleRetryDeliveries: any;
-  handleQuickBlockDomain: any;
-  handlePruneAuditLog: any;
-  handleManualBlockDomain: any;
-  handleEditRole: any;
-  handleDisconnectRelay: any;
-  handleDeleteRole: any;
-  handleDeleteInvitation: any;
-  handleDeleteEmoji: any;
-  handleDeleteAnnouncement: any;
-  handleCreateInvitation: any;
-  handleCreateAnnouncement: any;
-  handleConnectRelay: any;
-  handleClearProxyCache: any;
-  handleClearFailedDeliveries: any;
-  handleAdminToggleRelayStatus: any;
-  handleAdminToggleFreeze: any;
-  handleAdminClearCache: any;
-  handleAdminChangeRole: any;
   fetchRoles: any;
-  fetchMailSettings: any;
-  fetchAdminAnnouncements: any;
   blockInputReason: any;
   authUser: any;
-  auditTotal: any;
-  auditKinds: any;
-  auditFilter: any;
   adminTosUrl: any;
   adminServerName: any;
   adminServerDesc: any;
@@ -178,11 +82,927 @@ export interface AdminDashboardProps {
   adminPrivacyPolicyUrl: any;
   adminOperatorUrl: any;
   adminContactUrl: any;
-  REPORT_CATEGORY_LABELS: any;
 }
 
 export default function AdminDashboard(props: AdminDashboardProps) {
-  const { adminTab, maintenanceStats, setAdminTab, deliveryQueue, canAdmin, mailSettings, serverStats, setMailSettings, adminUsers, blockInputSeverity, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, storageMessage, serverSettingsMessage, roleActionMsg, reportActionMsg, relayMessage, mailSettingsMsg, isUploadingEmoji, isUpdatingReport, isUpdatingRegMode, isTestingStorage, isLoadingAudit, inviteActionMsg, fetchAuditLog, emojiActionMsg, deliveryQueueMsg, blockMessage, announcementMsg, adminUserSearch, adminFederation, adminEmojis, setAdminUserSearch, isUploadingServerIcon, isUploadingServerBanner, isSavingStorage, isSavingServerSettings, isSavingMail, isRunningMaintenance, isCreatingInvite, isActingOnDelivery, handleSaveMaintenanceSettings, handleResolveReport, handleChangeRegistrationMode, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, setNewRolePermissions, setNewRoleName, setBlockInputSeverity, relayInputUrl, newRolePermissions, newRoleName, newEmojiUrl, newEmojiName, newAnnouncementTitle, newAnnouncementContent, navigateToView, maintenanceMsg, isSavingContentPolicy, isSavingAnnouncement, isLoadingDeliveryQueue, isLoadingAdmin, isConnectingRelay, isClearingProxyCache, isBlockingDomain, handleSaveContentPolicy, handleCreateEmoji, handleAdminResendRelay, fetchDeliveryQueue, editingRoleId, contentPolicyMsg, contentPolicy, blockInputDomain, availablePermissions, auditMsg, auditLog, auditCursor, adminServerIcon, adminReports, setReportStatusFilter, setRelayInputUrl, setNewRoleColor, setNewInviteMemo, setNewInviteMaxUses, setNewInviteExpiresDays, setNewEmojiUrl, setNewEmojiName, setNewEmojiCategory, setNewAnnouncementTitle, setNewAnnouncementContent, setEditingRoleId, setDeliveryQueueMsg, setBlockInputReason, setBlockInputDomain, setAuditFilter, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, newRoleColor, newInviteMemo, newInviteMaxUses, newInviteExpiresDays, newEmojiCategory, handleUploadServerIcon, handleUploadServerBanner, handleUnblockDomain, handleToggleUserRole, handleToggleAnnouncement, handleTestStorage, handleTestMailSettings, handleSaveStorage, handleSaveServerSettings, handleSaveRole, handleSaveMailSettings, handleRunMaintenance, handleRetryDeliveries, handleQuickBlockDomain, handlePruneAuditLog, handleManualBlockDomain, handleEditRole, handleDisconnectRelay, handleDeleteRole, handleDeleteInvitation, handleDeleteEmoji, handleDeleteAnnouncement, handleCreateInvitation, handleCreateAnnouncement, handleConnectRelay, handleClearProxyCache, handleClearFailedDeliveries, handleAdminToggleRelayStatus, handleAdminToggleFreeze, handleAdminClearCache, handleAdminChangeRole, fetchRoles, fetchMailSettings, fetchAdminAnnouncements, blockInputReason, authUser, auditTotal, auditKinds, auditFilter, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, REPORT_CATEGORY_LABELS } = props;
+  const { authToken, api, setContentPolicy, setMaintenanceStats, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, setAdminAnnouncements, fetchAnnouncements, setAdminStorageConfig, fetchTimeline, executeBlockDomain, setBlockMessage, adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [adminUserSearch, setAdminUserSearch] = useState<string>('');
+
+  const [newEmojiName, setNewEmojiName] = useState<string>('');
+
+  const [newEmojiCategory, setNewEmojiCategory] = useState<string>('一般');
+
+  const [newEmojiUrl, setNewEmojiUrl] = useState<string>('');
+
+  const [isUploadingEmoji, setIsUploadingEmoji] = useState<boolean>(false);
+
+  const [emojiActionMsg, setEmojiActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [newInviteMaxUses, setNewInviteMaxUses] = useState<number>(1);
+
+  const [newInviteExpiresDays, setNewInviteExpiresDays] = useState<string>('7');
+
+  const [newInviteMemo, setNewInviteMemo] = useState<string>('');
+
+  const [isCreatingInvite, setIsCreatingInvite] = useState<boolean>(false);
+
+  const [isUpdatingRegMode, setIsUpdatingRegMode] = useState<boolean>(false);
+
+  const [inviteActionMsg, setInviteActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isSavingContentPolicy, setIsSavingContentPolicy] = useState<boolean>(false);
+
+  const [contentPolicyMsg, setContentPolicyMsg] = useState<string | null>(null);
+
+  const [auditLog, setAuditLog] = useState<any[]>([]);
+
+  const [auditKinds, setAuditKinds] = useState<any[]>([]);
+
+  const [auditFilter, setAuditFilter] = useState<string>('');
+
+  const [auditTotal, setAuditTotal] = useState<number>(0);
+
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
+
+  const [isLoadingAudit, setIsLoadingAudit] = useState<boolean>(false);
+
+  const [auditMsg, setAuditMsg] = useState<string | null>(null);
+
+  const [isClearingProxyCache, setIsClearingProxyCache] = useState<boolean>(false);
+
+  const [isRunningMaintenance, setIsRunningMaintenance] = useState<boolean>(false);
+
+  const [maintenanceMsg, setMaintenanceMsg] = useState<string | null>(null);
+
+  const [isUploadingServerIcon, setIsUploadingServerIcon] = useState<boolean>(false);
+
+  const [isUploadingServerBanner, setIsUploadingServerBanner] = useState<boolean>(false);
+
+  const [isSavingServerSettings, setIsSavingServerSettings] = useState<boolean>(false);
+
+  const [serverSettingsMessage, setServerSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [relayInputUrl, setRelayInputUrl] = useState<string>('');
+
+  const [isConnectingRelay, setIsConnectingRelay] = useState<boolean>(false);
+
+  const [relayMessage, setRelayMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [blockInputSeverity, setBlockInputSeverity] = useState<'suspend' | 'silence'>('suspend');
+
+  const [isUpdatingReport, setIsUpdatingReport] = useState<string | null>(null);
+
+  const [reportActionMsg, setReportActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isTestingStorage, setIsTestingStorage] = useState<boolean>(false);
+
+  const [isSavingStorage, setIsSavingStorage] = useState<boolean>(false);
+
+  const [storageMessage, setStorageMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const REPORT_CATEGORY_LABELS: Record<string, string> = {
+    spam: 'スパム',
+    abuse: '嫌がらせ・誹謗中傷',
+    sensitive: '不適切な内容',
+    impersonation: 'なりすまし',
+    other: 'その他',
+  };
+
+  const handleResolveReport = async (reportId: string, action: 'resolve' | 'reject' | 'reopen') => {
+    if (!authToken) return;
+    setIsUpdatingReport(reportId);
+    setReportActionMsg(null);
+    try {
+      const res = await api.post(`/api/admin/reports/${encodeURIComponent(reportId)}/resolve`, { action });
+      const data = await res.json();
+      if (res.ok) {
+        setReportActionMsg({
+          type: 'success',
+          text:
+            action === 'resolve'
+              ? '通報を「対応済み」にしました。'
+              : action === 'reject'
+                ? '通報を「却下」にしました。'
+                : '通報を再オープンしました。',
+        });
+        await fetchAdminData();
+      } else {
+        setReportActionMsg({ type: 'error', text: data.error || '通報の更新に失敗しました。' });
+      }
+    } catch (err: any) {
+      setReportActionMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsUpdatingReport(null);
+    }
+  };
+
+  const fetchAuditLog = async (opts: { before?: string | null; action?: string } = {}) => {
+    if (!authToken || !canAdmin) return;
+    setIsLoadingAudit(true);
+    try {
+      const params = new URLSearchParams({ limit: '60' });
+      if (opts.before) params.set('before', opts.before);
+      const action = opts.action !== undefined ? opts.action : auditFilter;
+      if (action) params.set('action', action);
+      const res = await api.get(`/api/admin/audit?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setAuditMsg(data.error || '監査ログの取得に失敗しました。');
+        return;
+      }
+      const rows: any[] = Array.isArray(data.actions) ? data.actions : [];
+      setAuditLog(opts.before ? [...auditLog, ...rows] : rows);
+      setAuditCursor(data.nextCursor || null);
+      setAuditTotal(Number(data.total) || 0);
+      setAuditKinds(Array.isArray(data.kinds) ? data.kinds : []);
+      setAuditMsg(null);
+    } catch (err: any) {
+      setAuditMsg(err.message);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  const handlePruneAuditLog = async () => {
+    if (!authToken || !canAdmin) return;
+    if (!confirm('180 日より古い監査ログを削除しますか？')) return;
+    try {
+      const res = await api.post('/api/admin/audit/prune', { days: 180 });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuditMsg(data.error || '削除に失敗しました。');
+        return;
+      }
+      setAuditMsg(data.message || '削除しました。');
+      await fetchAuditLog();
+    } catch (err: any) {
+      setAuditMsg(err.message);
+    }
+  };
+
+  const handleSaveContentPolicy = async (next: { ftsIndexScope?: string; remoteAnnouncePolicy?: string }) => {
+    if (!authToken) return;
+    const previous = contentPolicy;
+    const updated = { ...contentPolicy, ...next };
+    setContentPolicy(updated);
+    setIsSavingContentPolicy(true);
+    setContentPolicyMsg(null);
+    try {
+      const res = await api.post('/api/admin/content-policy', next);
+      const data = await res.json();
+      if (!res.ok) {
+        setContentPolicy(previous);
+        setContentPolicyMsg(data.error || '保存に失敗しました。');
+        return;
+      }
+      setContentPolicy({
+        ftsIndexScope: data.fts_index_scope || updated.ftsIndexScope,
+        remoteAnnouncePolicy: data.remote_announce_policy || updated.remoteAnnouncePolicy,
+      });
+      setContentPolicyMsg(data.message || '保存しました。');
+    } catch (err: any) {
+      setContentPolicy(previous);
+      setContentPolicyMsg(err.message);
+    } finally {
+      setIsSavingContentPolicy(false);
+    }
+  };
+
+  const handleRunMaintenance = async () => {
+    if (!authToken) return;
+    if (!confirm('定期メンテナンスを実行しますか？（バックアップ → 方針適用 → 保持期間を超えたリモート投稿の削除）')) return;
+    setIsRunningMaintenance(true);
+    setMaintenanceMsg(null);
+    try {
+      const res = await api.post('/api/admin/maintenance/run');
+      const data = await res.json();
+      if (!res.ok) {
+        setMaintenanceMsg(data.error || '実行に失敗しました。');
+        return;
+      }
+      setMaintenanceMsg(data.message || '実行しました。');
+      if (data.stats) setMaintenanceStats(data.stats);
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
+    } finally {
+      setIsRunningMaintenance(false);
+    }
+  };
+
+  const handleSaveMaintenanceSettings = async (next: { autoMaintenance?: boolean; hour?: number; imageProxy?: boolean; imageProxyMaxMb?: number }) => {
+    if (!authToken) return;
+    try {
+      const res = await api.post('/api/admin/maintenance/settings', next);
+      const data = await res.json();
+      if (!res.ok) {
+        setMaintenanceMsg(data.error || '設定の保存に失敗しました。');
+        return;
+      }
+      setMaintenanceMsg(data.message || '設定を保存しました。');
+      if (data.stats) setMaintenanceStats(data.stats);
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
+    }
+  };
+
+  const handleClearProxyCache = async () => {
+    if (!authToken) return;
+    setIsClearingProxyCache(true);
+    try {
+      const res = await api.post('/api/admin/image-proxy/cache', {});
+      const data = await res.json();
+      if (res.ok) {
+        setMaintenanceMsg(data.message || 'キャッシュを整理しました。');
+        if (data.stats) {
+          setMaintenanceStats((prev: any) => (prev ? { ...prev, imageProxy: data.stats } : prev));
+          fetchAdminData();
+        }
+      } else {
+        setMaintenanceMsg(data.error || 'キャッシュの整理に失敗しました。');
+      }
+    } catch (err: any) {
+      setMaintenanceMsg(err.message);
+    } finally {
+      setIsClearingProxyCache(false);
+    }
+  };
+
+  const handleSaveServerSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    if (!adminServerName.trim()) {
+      setServerSettingsMessage({ type: 'error', text: 'サーバー名は空にできません。' });
+      return;
+    }
+    setIsSavingServerSettings(true);
+    setServerSettingsMessage(null);
+    try {
+      const res = await api.post('/api/admin/server-settings', { name: adminServerName.trim(), description: adminServerDesc.trim(), icon_url: adminServerIcon.trim(), banner_url: adminServerBanner.trim(), tos_url: adminTosUrl.trim(), privacy_policy_url: adminPrivacyPolicyUrl.trim(), contact_url: adminContactUrl.trim(), repository_url: adminRepositoryUrl.trim(), operator_url: adminOperatorUrl.trim(), server_rules: adminServerRulesText.split('\n').map((r: any) => r.trim()).filter((r: any) => r.length > 0), require_rules_agreement: adminRequireRulesAgreement, });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '設定の保存に失敗しました。');
+
+      setServerStats((prev: any) => prev ? {
+        ...prev,
+        name: data.settings.name,
+        description: data.settings.description,
+        icon_url: data.settings.icon_url,
+        banner_url: data.settings.banner_url,
+        tos_url: data.settings.tos_url,
+        privacy_policy_url: data.settings.privacy_policy_url,
+        contact_url: data.settings.contact_url,
+        repository_url: data.settings.repository_url,
+        operator_url: data.settings.operator_url,
+        server_rules: data.settings.server_rules,
+        require_rules_agreement: data.settings.require_rules_agreement,
+      } : prev);
+      document.title = data.settings.name;
+      setServerSettingsMessage({ type: 'success', text: 'サーバー設定を保存しました！' });
+    } catch (err: any) {
+      setServerSettingsMessage({ type: 'error', text: err.message || '保存に失敗しました。' });
+    } finally {
+      setIsSavingServerSettings(false);
+    }
+  };
+
+  const handleUploadServerIcon = async (file: File) => {
+    if (!authToken) return;
+    setIsUploadingServerIcon(true);
+    setServerSettingsMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append('icon', file);
+      const res = await api.post('/api/admin/server-icon', formData);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'アップロードに失敗しました。');
+      setAdminServerIcon(data.icon_url);
+      setServerStats((prev: any) => prev ? { ...prev, icon_url: data.icon_url } : prev);
+      setServerSettingsMessage({ type: 'success', text: 'サーバーアイコンを更新しました！' });
+    } catch (err: any) {
+      setServerSettingsMessage({ type: 'error', text: err.message || 'アイコンのアップロードに失敗しました。' });
+    } finally {
+      setIsUploadingServerIcon(false);
+    }
+  };
+
+  const handleUploadServerBanner = async (file: File) => {
+    if (!authToken) return;
+    setIsUploadingServerBanner(true);
+    setServerSettingsMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append('banner', file);
+      const res = await api.post('/api/admin/server-banner', formData);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'バナーのアップロードに失敗しました。');
+      setAdminServerBanner(data.banner_url);
+      setServerStats((prev: any) => prev ? { ...prev, banner_url: data.banner_url } : prev);
+      setServerSettingsMessage({ type: 'success', text: 'サーバーバナー画像を更新しました！' });
+    } catch (err: any) {
+      setServerSettingsMessage({ type: 'error', text: err.message || 'バナーのアップロードに失敗しました。' });
+    } finally {
+      setIsUploadingServerBanner(false);
+    }
+  };
+
+  const handleCreateEmoji = async (file?: File) => {
+    if (!authToken) return;
+    if (!newEmojiName.trim()) {
+      setEmojiActionMsg({ type: 'error', text: '絵文字のショートコード名を入力してください。' });
+      return;
+    }
+    if (!file && !newEmojiUrl.trim()) {
+      setEmojiActionMsg({ type: 'error', text: '画像ファイルを選択するか、画像URLを入力してください。' });
+      return;
+    }
+    setIsUploadingEmoji(true);
+    setEmojiActionMsg(null);
+    try {
+      let res: ApiResult;
+      if (file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('name', newEmojiName.trim());
+        formData.append('category', newEmojiCategory.trim() || '一般');
+        res = await api.post('/api/admin/emojis', formData);
+      } else {
+        res = await api.post('/api/admin/emojis', { name: newEmojiName.trim(), category: newEmojiCategory.trim() || '一般', url: newEmojiUrl.trim(), });
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '絵文字の登録に失敗しました。');
+      setNewEmojiName('');
+      setNewEmojiUrl('');
+      setEmojiActionMsg({ type: 'success', text: data.message || 'カスタム絵文字を登録しました！' });
+      fetchCustomEmojis();
+      fetchAdminData();
+    } catch (err: any) {
+      setEmojiActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    } finally {
+      setIsUploadingEmoji(false);
+    }
+  };
+
+  const handleDeleteEmoji = async (emojiId: string, emojiName: string) => {
+    if (!authToken) return;
+    if (!confirm(`:${emojiName}: を削除してもよろしいですか？`)) return;
+    try {
+      const res = await api.delete(`/api/admin/emojis/${encodeURIComponent(emojiId)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '削除に失敗しました。');
+      setEmojiActionMsg({ type: 'success', text: data.message || '絵文字を削除しました。' });
+      fetchCustomEmojis();
+      fetchAdminData();
+    } catch (err: any) {
+      setEmojiActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    }
+  };
+
+  const handleCreateInvitation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    setIsCreatingInvite(true);
+    setInviteActionMsg(null);
+    try {
+      const res = await api.post('/api/admin/invitations', { maxUses: newInviteMaxUses, expiresInDays: newInviteExpiresDays === 'infinite' ? null : parseInt(newInviteExpiresDays, 10), memo: newInviteMemo.trim(), });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '招待コードの発行に失敗しました。');
+      setNewInviteMemo('');
+      setInviteActionMsg({ type: 'success', text: `招待コード ${data.invitation.code} を発行しました！` });
+      fetchAdminData();
+    } catch (err: any) {
+      setInviteActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    } finally {
+      setIsCreatingInvite(false);
+    }
+  };
+
+  const handleDeleteInvitation = async (code: string) => {
+    if (!authToken) return;
+    if (!confirm(`招待コード ${code} を無効化・削除しますか？`)) return;
+    try {
+      const res = await api.delete(`/api/admin/invitations/${encodeURIComponent(code)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '削除に失敗しました。');
+      setInviteActionMsg({ type: 'success', text: data.message || '招待コードを削除しました。' });
+      fetchAdminData();
+    } catch (err: any) {
+      setInviteActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    }
+  };
+
+  const handleChangeRegistrationMode = async (mode: 'open' | 'invite' | 'closed') => {
+    if (!authToken) return;
+    setIsUpdatingRegMode(true);
+    setInviteActionMsg(null);
+    try {
+      const res = await api.post('/api/admin/registration-mode', { mode });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '登録モードの更新に失敗しました。');
+      setServerStats((prev: any) => prev ? { ...prev, registration_mode: mode } : prev);
+      setInviteActionMsg({ type: 'success', text: data.message });
+      fetchServerStats();
+    } catch (err: any) {
+      setInviteActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    } finally {
+      setIsUpdatingRegMode(false);
+    }
+  };
+
+  const [newAnnouncementTitle, setNewAnnouncementTitle] = useState<string>('');
+
+  const [newAnnouncementContent, setNewAnnouncementContent] = useState<string>('');
+
+  const [isSavingAnnouncement, setIsSavingAnnouncement] = useState<boolean>(false);
+
+  const [announcementMsg, setAnnouncementMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [newRoleName, setNewRoleName] = useState<string>('');
+
+  const [newRoleColor, setNewRoleColor] = useState<string>('#6366f1');
+
+  const [newRolePermissions, setNewRolePermissions] = useState<string[]>([]);
+
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
+
+  const [roleActionMsg, setRoleActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [mailSettings, setMailSettings] = useState<any>({ host: '', port: 587, secure: false, user: '', pass: '', from: '', allowEmailRegistration: false, authMode: 'master_key' });
+
+  const [mailSettingsMsg, setMailSettingsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isSavingMail, setIsSavingMail] = useState<boolean>(false);
+
+  const [deliveryQueue, setDeliveryQueue] = useState<any>({
+    stats: { pending: 0, delivered: 0, failed: 0, nextAttemptAt: null },
+    pending: [],
+    recentFailures: [],
+    maxAttempts: 9,
+    retryDelaysMs: [],
+  });
+
+  const [isLoadingDeliveryQueue, setIsLoadingDeliveryQueue] = useState<boolean>(false);
+
+  const [isActingOnDelivery, setIsActingOnDelivery] = useState<boolean>(false);
+
+  const [deliveryQueueMsg, setDeliveryQueueMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const fetchDeliveryQueue = async () => {
+    if (!authToken) return;
+    setIsLoadingDeliveryQueue(true);
+    try {
+      const res = await api.get('/api/admin/delivery-queue');
+      if (res.ok) setDeliveryQueue(await res.json());
+    } catch (err) {
+      console.error('配送キューの取得エラー:', err);
+    } finally {
+      setIsLoadingDeliveryQueue(false);
+    }
+  };
+
+  const handleRetryDeliveries = async () => {
+    if (!authToken) return;
+    setIsActingOnDelivery(true);
+    setDeliveryQueueMsg(null);
+    try {
+      const res = await api.post('/api/admin/delivery-queue/retry');
+      const data = await res.json();
+      if (!res.ok) {
+        setDeliveryQueueMsg({ type: 'error', text: data.error || '再送の実行に失敗しました。' });
+        return;
+      }
+      setDeliveryQueueMsg({ type: 'success', text: data.message || '再送を開始しました。' });
+      await fetchDeliveryQueue();
+    } catch (err: any) {
+      setDeliveryQueueMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsActingOnDelivery(false);
+    }
+  };
+
+  const handleClearFailedDeliveries = async () => {
+    if (!authToken) return;
+    if (!window.confirm('失敗が確定した配送の記録を削除しますか？（再送は行われません）')) return;
+    setIsActingOnDelivery(true);
+    setDeliveryQueueMsg(null);
+    try {
+      const res = await api.post('/api/admin/delivery-queue/clear-failed');
+      const data = await res.json();
+      if (!res.ok) {
+        setDeliveryQueueMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
+        return;
+      }
+      setDeliveryQueueMsg({ type: 'success', text: data.message || '削除しました。' });
+      await fetchDeliveryQueue();
+    } catch (err: any) {
+      setDeliveryQueueMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsActingOnDelivery(false);
+    }
+  };
+
+  const fetchMailSettings = async () => {
+    if (!authToken) return;
+    try {
+      const res = await api.get('/api/admin/mail-settings');
+      if (res.ok) setMailSettings(await res.json());
+    } catch (err) {
+      console.error('メール設定の取得エラー:', err);
+    }
+  };
+
+  const handleSaveMailSettings = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken) return;
+    setIsSavingMail(true);
+    setMailSettingsMsg(null);
+    try {
+      const res = await api.post('/api/admin/mail-settings', { host: mailSettings.host, port: mailSettings.port, secure: mailSettings.secure, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from, });
+      const data = await res.json();
+      if (!res.ok) {
+        setMailSettingsMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
+        return;
+      }
+
+      // 認証方式・メール登録可否も同時に保存する
+      const authRes = await api.post('/api/admin/auth-settings', { authMode: mailSettings.authMode, allowEmailRegistration: mailSettings.allowEmailRegistration, });
+      if (!authRes.ok) {
+        const authData = await authRes.json();
+        setMailSettingsMsg({ type: 'error', text: authData.error || '認証設定の保存に失敗しました。' });
+        return;
+      }
+
+      setMailSettingsMsg({ type: 'success', text: 'メール・認証設定を保存しました。' });
+      setMailSettings((prev: any) => ({ ...prev, pass: '' }));
+      await fetchRecoveryStatus();
+    } catch (err: any) {
+      setMailSettingsMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingMail(false);
+    }
+  };
+
+  const handleTestMailSettings = async () => {
+    if (!authToken) return;
+    setIsSavingMail(true);
+    setMailSettingsMsg(null);
+    try {
+      const res = await api.post('/api/admin/mail-settings/test', { host: mailSettings.host, port: mailSettings.port, user: mailSettings.user, pass: mailSettings.pass, from: mailSettings.from });
+      const data = await res.json();
+      setMailSettingsMsg(
+        res.ok
+          ? { type: 'success', text: data.message || 'SMTP に接続できました。' }
+          : { type: 'error', text: data.error || '接続テストに失敗しました。' },
+      );
+    } catch (err: any) {
+      setMailSettingsMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingMail(false);
+    }
+  };
+
+  const handleSaveRole = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newRoleName.trim() || newRolePermissions.length === 0) return;
+    const isEdit = Boolean(editingRoleId);
+    try {
+      const res = await api.request(isEdit ? 'PUT' : 'POST', isEdit ? `/api/admin/roles/${encodeURIComponent(editingRoleId as string)}` : '/api/admin/roles', { name: newRoleName.trim(), color: newRoleColor, permissions: newRolePermissions });
+      const data = await res.json();
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: isEdit ? 'ロールを更新しました。' : `ロール「${newRoleName.trim()}」を作成しました。` });
+        setNewRoleName('');
+        setNewRoleColor('#6366f1');
+        setNewRolePermissions([]);
+        setEditingRoleId(null);
+        await fetchRoles();
+        await fetchAdminData();
+      } else {
+        setRoleActionMsg({ type: 'error', text: data.error || 'ロールの保存に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRoleActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleEditRole = (role: any) => {
+    setEditingRoleId(role.id);
+    setNewRoleName(role.name);
+    setNewRoleColor(role.color || '#6366f1');
+    setNewRolePermissions(String(role.permissions || '').split(',').map((p) => p.trim()).filter(Boolean));
+    setRoleActionMsg(null);
+  };
+
+  const handleDeleteRole = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このロールを削除しますか？（付与済みのユーザーからも外れます）')) return;
+    try {
+      const res = await api.delete(`/api/admin/roles/${encodeURIComponent(id)}`);
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: 'ロールを削除しました。' });
+        if (editingRoleId === id) {
+          setEditingRoleId(null);
+          setNewRoleName('');
+          setNewRolePermissions([]);
+        }
+        await fetchRoles();
+        await fetchAdminData();
+      }
+    } catch (err) {
+      console.error('ロールの削除エラー:', err);
+    }
+  };
+
+  const handleToggleUserRole = async (userId: string, roleId: string) => {
+    if (!authToken) return;
+    const user = adminUsers.find((u: any) => u.id === userId);
+    if (!user) return;
+
+    const currentIds = new Set((user.roles || []).map((r: any) => r.id));
+    if (currentIds.has(roleId)) {
+      currentIds.delete(roleId);
+    } else {
+      currentIds.add(roleId);
+    }
+
+    try {
+      const res = await api.post(`/api/admin/users/${encodeURIComponent(userId)}/roles`, { roleIds: Array.from(currentIds) });
+      const data = await res.json();
+      if (res.ok) {
+        setRoleActionMsg({ type: 'success', text: `@${userId} のロールを更新しました。` });
+        await fetchAdminData();
+        await fetchRoles();
+      } else {
+        setRoleActionMsg({ type: 'error', text: data.error || 'ロールの更新に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRoleActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const fetchAdminAnnouncements = async () => {
+    if (!authToken) return;
+    try {
+      const res = await api.get('/api/admin/announcements');
+      if (res.ok) setAdminAnnouncements(await res.json());
+    } catch (err) {
+      console.error('お知らせ管理の取得エラー:', err);
+    }
+  };
+
+  const handleCreateAnnouncement = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newAnnouncementTitle.trim() || !newAnnouncementContent.trim()) return;
+    setIsSavingAnnouncement(true);
+    setAnnouncementMsg(null);
+    try {
+      const res = await api.post('/api/admin/announcements', { title: newAnnouncementTitle.trim(), content: newAnnouncementContent.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setNewAnnouncementTitle('');
+        setNewAnnouncementContent('');
+        setAnnouncementMsg({ type: 'success', text: 'お知らせを投稿しました。' });
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      } else {
+        setAnnouncementMsg({ type: 'error', text: data.error || 'お知らせの投稿に失敗しました。' });
+      }
+    } catch (err: any) {
+      setAnnouncementMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingAnnouncement(false);
+    }
+  };
+
+  const handleToggleAnnouncement = async (id: string, isActive: boolean) => {
+    if (!authToken) return;
+    try {
+      const res = await api.put(`/api/admin/announcements/${encodeURIComponent(id)}`, { isActive });
+      if (res.ok) {
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      }
+    } catch (err) {
+      console.error('お知らせの更新エラー:', err);
+    }
+  };
+
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このお知らせを削除しますか？')) return;
+    try {
+      const res = await api.delete(`/api/admin/announcements/${encodeURIComponent(id)}`);
+      if (res.ok) {
+        await fetchAdminAnnouncements();
+        await fetchAnnouncements();
+      }
+    } catch (err) {
+      console.error('お知らせの削除エラー:', err);
+    }
+  };
+
+  const handleSaveStorage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    setIsSavingStorage(true);
+    setStorageMessage(null);
+    try {
+      const res = await api.post('/api/admin/storage', storageForm);
+      const data = await res.json();
+      if (res.ok) {
+        setStorageMessage({ type: 'success', text: data.message || '保存しました。' });
+        // 再取得してステート反映
+        const stRes = await api.get('/api/admin/storage');
+        if (stRes.ok) {
+          const sData = await stRes.json();
+          setAdminStorageConfig(sData);
+        }
+      } else {
+        setStorageMessage({ type: 'error', text: data.error || '保存に失敗しました。' });
+      }
+    } catch (err: any) {
+      setStorageMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingStorage(false);
+    }
+  };
+
+  const handleTestStorage = async () => {
+    if (!authToken) return;
+    setIsTestingStorage(true);
+    setStorageMessage(null);
+    try {
+      const res = await api.post('/api/admin/storage/test', storageForm);
+      const data = await res.json();
+      if (res.ok) {
+        setStorageMessage({ type: 'success', text: data.message || '接続テストに成功しました！' });
+      } else {
+        setStorageMessage({ type: 'error', text: data.error || '接続テストに失敗しました。' });
+      }
+    } catch (err: any) {
+      setStorageMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsTestingStorage(false);
+    }
+  };
+
+  const handleAdminChangeRole = async (userId: string, currentRole: string) => {
+    if (!authToken) return;
+    const newRole = currentRole === 'admin' ? 'user' : 'admin';
+    if (!confirm(`ユーザー @${userId} のロールを ${newRole} に変更しますか？`)) return;
+
+    try {
+      const res = await api.post(`/api/admin/users/${userId}/role`, { role: newRole });
+      if (res.ok) {
+        fetchAdminData();
+      } else {
+        const err = await res.json();
+        alert(err.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleAdminToggleFreeze = async (userId: string, isFrozen: boolean) => {
+    if (!authToken) return;
+    const action = isFrozen ? '凍結解除' : '凍結';
+    if (!confirm(`ユーザー @${userId} を${action}しますか？`)) return;
+
+    try {
+      const res = await api.post(`/api/admin/users/${userId}/freeze`, { isFrozen: !isFrozen });
+      if (res.ok) {
+        fetchAdminData();
+      } else {
+        const err = await res.json();
+        alert(err.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleConnectRelay = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !relayInputUrl.trim() || isConnectingRelay) return;
+
+    setIsConnectingRelay(true);
+    setRelayMessage(null);
+    try {
+      const res = await api.post('/api/admin/relays', { url: relayInputUrl.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setRelayMessage({ type: 'success', text: data.message });
+        setRelayInputUrl('');
+        fetchAdminData();
+      } else {
+        setRelayMessage({ type: 'error', text: data.error || '接続に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRelayMessage({ type: 'error', text: err.message });
+    } finally {
+      setIsConnectingRelay(false);
+    }
+  };
+
+  const handleDisconnectRelay = async (inboxUrl: string) => {
+    if (!authToken) return;
+    if (!confirm(`リレー (${inboxUrl}) の購読を解除しますか？`)) return;
+
+    try {
+      const res = await api.delete('/api/admin/relays', { inboxUrl });
+      if (res.ok) {
+        fetchAdminData();
+      } else {
+        const data = await res.json();
+        alert(data.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleAdminClearCache = async () => {
+    if (!authToken) return;
+    if (!confirm('提携先FediverseドメインのActor情報、および外部から受信した投稿キャッシュをすべて消去しますか？\n（※自ノードの投稿やアカウントは保持されます）')) return;
+
+    try {
+      const res = await api.post('/api/admin/cache/clear', { clearPosts: true });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message);
+        await fetchAdminData();
+        await fetchTimeline();
+        await fetchServerStats();
+      } else {
+        alert(`エラー: ${data.error}`);
+      }
+    } catch (err: any) {
+      alert(`エラー: ${err.message}`);
+    }
+  };
+
+  const handleAdminToggleRelayStatus = async (inboxUrl: string, currentStatus: string) => {
+    if (!authToken) return;
+    const newStatus = currentStatus === 'accepted' ? 'pending' : 'accepted';
+    try {
+      const res = await api.post('/api/admin/relays/toggle-status', { inboxUrl, status: newStatus });
+      if (res.ok) {
+        fetchAdminData();
+      } else {
+        const data = await res.json();
+        alert(data.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleAdminResendRelay = async (inboxUrl?: string) => {
+    if (!authToken) return;
+    try {
+      const res = await api.post('/api/admin/relays/resend', inboxUrl ? { inboxUrl } : {});
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Follow Activity を再送しました。');
+        fetchAdminData();
+      } else {
+        alert(data.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleQuickBlockDomain = async (domain: string) => {
+    if (!confirm(`ドメイン "${domain}" をブロックしますか？\n\n・このサーバーからの通信（Inbox）を遮断します\n・蓄積されたキャッシュや投稿を即時削除します`)) {
+      return;
+    }
+    await executeBlockDomain(domain, '連携先一覧からのクイックブロック');
+  };
+
+  const handleManualBlockDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!blockInputDomain.trim()) return;
+    await executeBlockDomain(blockInputDomain.trim(), blockInputReason.trim(), blockInputSeverity);
+  };
+
+  const handleUnblockDomain = async (domain: string) => {
+    if (!authToken) return;
+    if (!confirm(`ドメイン "${domain}" のブロックを解除しますか？`)) return;
+
+    try {
+      const res = await api.delete(`/api/admin/blocks/${encodeURIComponent(domain)}`);
+      const data = await res.json();
+      if (res.ok) {
+        setBlockMessage({ type: 'success', text: data.message || `ドメイン "${domain}" のブロックを解除しました。` });
+        await fetchAdminData();
+      } else {
+        alert(data.error);
+      }
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
   return (
     <>
         {/* 🛡️ 管理者コントロールパネル (Misskey風 2カラムレイアウト) */}

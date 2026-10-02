@@ -4,68 +4,249 @@
  * 表示条件（showXxx）は App 側の state のままで、ここは props で受け取る。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない（開いたときに読み込む）。
  */
+import { useState } from 'react';
 import { AlertCircle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ClipboardCheck, ExternalLink, Eye, Fingerprint, Globe, Key, Lock, LogIn, MessageSquare, MoreHorizontal, RefreshCw, Sparkles, Ticket, UserPlus, Users, X, Zap } from 'lucide-react';
 
 export interface AuthPortalViewProps {
-  AuthPortalView: any;
+  loginMethod: any;
+  isValidEmailFormat: any;
+  api: any;
+  hasAgreedToRules: any;
+  setIssuedMasterKey: any;
+  setAuthToken: any;
+  setAuthUser: any;
+  fetchMyFollowingUrls: any;
+  setShowRegisterModal: any;
+  setShowMasterKeyModal: any;
+  setHasConfirmedSaved: any;
+  setIsCopied: any;
+  fetchServerStats: any;
+  setShowLoginModal: any;
+  fetchTimeline: any;
   agreeBasicNotes: any;
   agreeRules: any;
   agreeTosPrivacy: any;
   authError: any;
   authPortalTab: any;
-  expandedAccordions: any;
-  handleLogin: any;
-  handleLoginWithPasskey: any;
-  handleRegister: any;
-  handleSendRegisterCode: any;
   inviteCodeInput: any;
-  isLoggingInWithPasskey: any;
   isPasswordAuthMode: any;
-  isSendingRegCode: any;
-  loginId: any;
-  loginKey: any;
-  loginPassword: any;
   recoveryStatus: any;
-  regBio: any;
-  regCodeMsg: any;
-  regEmail: any;
-  regEmailCode: any;
-  regId: any;
-  regName: any;
-  regPassword: any;
-  regPasswordConfirm: any;
   serverStats: any;
   setAgreeBasicNotes: any;
   setAgreeRules: any;
   setAgreeTosPrivacy: any;
   setAuthError: any;
   setAuthPortalTab: any;
-  setExpandedAccordions: any;
   setHasAgreedToRules: any;
   setInviteCodeInput: any;
-  setLoginId: any;
-  setLoginKey: any;
   setLoginMethod: any;
-  setLoginPassword: any;
   setRecoveryMsg: any;
   setRecoveryStep: any;
-  setRegBio: any;
-  setRegEmail: any;
-  setRegEmailCode: any;
-  setRegId: any;
-  setRegName: any;
-  setRegPassword: any;
-  setRegPasswordConfirm: any;
   setShowAuthPortal: any;
   setShowRecoveryModal: any;
-  setShowServerMenuPopover: any;
   showAuthPortal: any;
-  showPasswordLoginForm: any;
-  showServerMenuPopover: any;
 }
 
 export default function AuthPortalView(props: AuthPortalViewProps) {
-  const { agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, expandedAccordions, handleLogin, handleLoginWithPasskey, handleRegister, handleSendRegisterCode, inviteCodeInput, isLoggingInWithPasskey, isPasswordAuthMode, isSendingRegCode, loginId, loginKey, loginPassword, recoveryStatus, regBio, regCodeMsg, regEmail, regEmailCode, regId, regName, regPassword, regPasswordConfirm, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setExpandedAccordions, setHasAgreedToRules, setInviteCodeInput, setLoginId, setLoginKey, setLoginMethod, setLoginPassword, setRecoveryMsg, setRecoveryStep, setRegBio, setRegEmail, setRegEmailCode, setRegId, setRegName, setRegPassword, setRegPasswordConfirm, setShowAuthPortal, setShowRecoveryModal, setShowServerMenuPopover, showAuthPortal, showPasswordLoginForm, showServerMenuPopover } = props;
+  const { fetchTimeline, setShowLoginModal, fetchServerStats, setIsCopied, setHasConfirmedSaved, setShowMasterKeyModal, setShowRegisterModal, fetchMyFollowingUrls, setAuthUser, setAuthToken, setIssuedMasterKey, hasAgreedToRules, api, isValidEmailFormat, loginMethod, agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, inviteCodeInput, isPasswordAuthMode, recoveryStatus, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setHasAgreedToRules, setInviteCodeInput, setLoginMethod, setRecoveryMsg, setRecoveryStep, setShowAuthPortal, setShowRecoveryModal, showAuthPortal } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [isLoggingInWithPasskey, setIsLoggingInWithPasskey] = useState<boolean>(false);
+
+  const [showServerMenuPopover, setShowServerMenuPopover] = useState<boolean>(false);
+
+  const [expandedAccordions, setExpandedAccordions] = useState<{ rules: boolean; tos: boolean; basic: boolean }>({
+    rules: true,
+    tos: true,
+    basic: true,
+  });
+
+  const [loginId, setLoginId] = useState<string>('');
+
+  const [loginKey, setLoginKey] = useState<string>('');
+
+  const [loginPassword, setLoginPassword] = useState<string>('');
+
+  const [regId, setRegId] = useState<string>('');
+
+  const [regName, setRegName] = useState<string>('');
+
+  const [regBio, setRegBio] = useState<string>('');
+
+  const [regEmail, setRegEmail] = useState<string>('');
+
+  const [regPassword, setRegPassword] = useState<string>('');
+
+  const [regPasswordConfirm, setRegPasswordConfirm] = useState<string>('');
+
+  const [regEmailCode, setRegEmailCode] = useState<string>('');
+
+  const [isSendingRegCode, setIsSendingRegCode] = useState<boolean>(false);
+
+  const [regCodeMsg, setRegCodeMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const showPasswordLoginForm = isPasswordAuthMode && loginMethod === 'password';
+
+  // サーバー側 (routes/api.ts の isValidEmail) と同じ形式チェック
+
+  const handleSendRegisterCode = async () => {
+    const email = regEmail.trim();
+    if (!isValidEmailFormat(email)) {
+      setRegCodeMsg({ type: 'error', text: 'メールアドレスの形式をご確認ください。' });
+      return;
+    }
+    setIsSendingRegCode(true);
+    setRegCodeMsg(null);
+    try {
+      const res = await api.post('/api/auth/register/email-code', { email });
+      const data = await res.json();
+      setRegCodeMsg(res.ok
+        ? { type: 'success', text: data.message || '確認コードを送信しました（10分有効）。' }
+        : { type: 'error', text: data.error || '送信に失敗しました。' });
+    } catch (err: any) {
+      setRegCodeMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingRegCode(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    // メールアドレス＋パスワード方式: 送信前にフォーム側でも検証する (サーバーも 400 を返す)
+    if (isPasswordAuthMode) {
+      const email = regEmail.trim();
+      if (!isValidEmailFormat(email)) {
+        setAuthError('メールアドレスの形式をご確認ください。');
+        return;
+      }
+      if (regPassword.length < 8) {
+        setAuthError('パスワードは8文字以上で入力してください。');
+        return;
+      }
+      if (regPassword !== regPasswordConfirm) {
+        setAuthError('確認用パスワードが一致しません。');
+        return;
+      }
+      // SMTP が設定されているサーバーでは、なりすまし登録を防ぐため確認コードを必須にする
+      if (recoveryStatus.mailConfigured && !regEmailCode.trim()) {
+        setAuthError('メールアドレスの確認コードを入力してください（「確認コードを送信」から取得できます）。');
+        return;
+      }
+    }
+
+    try {
+      const res = await api.post('/api/auth/register', { id: regId.trim(), name: regName.trim(), summary: regBio.trim(), inviteCode: inviteCodeInput.trim() || undefined, agreedToRules: hasAgreedToRules || true, ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}), });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthError(data.error || 'アカウント作成に失敗しました。');
+        return;
+      }
+
+      // マスターキー表示用モーダルを起動
+      setIssuedMasterKey(data.masterKey);
+      setAuthToken(data.sessionToken);
+      localStorage.setItem('spica_token', data.sessionToken);
+      localStorage.setItem('astrabit_token', data.sessionToken);
+      setAuthUser(data.user);
+      fetchMyFollowingUrls(data.sessionToken);
+      setShowRegisterModal(false);
+      setShowMasterKeyModal(true);
+      setHasConfirmedSaved(false);
+      setIsCopied(false);
+      setRegPassword('');
+      setRegPasswordConfirm('');
+      setRegEmailCode('');
+      setRegCodeMsg(null);
+      fetchServerStats();
+    } catch (err: any) {
+      setAuthError(err.message);
+    }
+  };
+
+  const handleLoginWithPasskey = async () => {
+    setIsLoggingInWithPasskey(true);
+    setAuthError(null);
+    try {
+      const optRes = await api.post('/api/webauthn/authenticate/options', { user_id: loginId.trim() || undefined });
+      if (!optRes.ok) {
+        const err = await optRes.json();
+        throw new Error(err.error || '認証オプションの取得に失敗しました。');
+      }
+      const options = await optRes.json();
+
+      // SimpleWebAuthn ブラウザ側 生体認証 / パスキープロンプト起動
+      const { startAuthentication } = await import('@simplewebauthn/browser');
+      const authResponse = await startAuthentication({ optionsJSON: options });
+
+      const verifyRes = await api.post('/api/webauthn/authenticate/verify', { credential: authResponse, expectedChallenge: options.challenge, });
+
+      if (!verifyRes.ok) {
+        const err = await verifyRes.json();
+        throw new Error(err.error || 'パスキー認証に失敗しました。');
+      }
+
+      const data = await verifyRes.json();
+      setAuthToken(data.token);
+      localStorage.setItem('spica_token', data.token);
+      localStorage.setItem('astrabit_token', data.token);
+      setAuthUser(data.user);
+      fetchMyFollowingUrls(data.token);
+      setShowLoginModal(false);
+      fetchTimeline();
+    } catch (e: any) {
+      console.error('Passkey login error:', e);
+      if (e.name !== 'NotAllowedError') {
+        setAuthError(e.message || 'パスキー認証に失敗しました。');
+      }
+    } finally {
+      setIsLoggingInWithPasskey(false);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    const identifier = loginId.trim();
+    const usePassword = isPasswordAuthMode && loginMethod === 'password';
+    if (usePassword) {
+      if (!identifier) {
+        setAuthError('ユーザーIDまたはメールアドレスを入力してください。');
+        return;
+      }
+      if (!loginPassword) {
+        setAuthError('パスワードを入力してください。');
+        return;
+      }
+    }
+
+    try {
+      const res = await api.post('/api/auth/login', usePassword // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
+ ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) } : { id: identifier, masterKey: loginKey.trim() },);
+
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthError(data.error || 'ログインに失敗しました。');
+        return;
+      }
+
+      setAuthToken(data.sessionToken);
+      localStorage.setItem('spica_token', data.sessionToken);
+      localStorage.setItem('astrabit_token', data.sessionToken);
+      setAuthUser(data.user);
+      fetchMyFollowingUrls(data.sessionToken);
+      setShowLoginModal(false);
+      setLoginKey('');
+      setLoginPassword('');
+      setLoginId('');
+      fetchTimeline();
+    } catch (err: any) {
+      setAuthError(err.message);
+    }
+  };
   return (
     <>
       {showAuthPortal && (

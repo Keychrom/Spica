@@ -5,29 +5,60 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
+import { useState, useMemo } from 'react';
+import type { AppNotification } from '../App';
 import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
 
 export interface NotificationsViewProps {
-  NotificationsView: any;
-  expandedNotifGroups: any;
+  authToken: any;
+  api: any;
+  setNotifications: any;
+  setUnreadNotificationsCount: any;
+  notifGroups: any;
   fetchNotifications: any;
-  groupByFirstId: any;
-  groupedAwayIds: any;
   handleMarkNotificationRead: any;
   handleNotificationClick: any;
-  handleReadAllNotifications: any;
   isLoadingNotifications: any;
   navigateToView: any;
   notificationFilter: any;
   notifications: any;
   openUserProfile: any;
-  setExpandedNotifGroups: any;
   setNotificationFilter: any;
   unreadNotificationsCount: any;
 }
 
 export default function NotificationsView(props: NotificationsViewProps) {
-  const { expandedNotifGroups, fetchNotifications, groupByFirstId, groupedAwayIds, handleMarkNotificationRead, handleNotificationClick, handleReadAllNotifications, isLoadingNotifications, navigateToView, notificationFilter, notifications, openUserProfile, setExpandedNotifGroups, setNotificationFilter, unreadNotificationsCount } = props;
+  const { notifGroups, setUnreadNotificationsCount, setNotifications, api, authToken, fetchNotifications, handleMarkNotificationRead, handleNotificationClick, isLoadingNotifications, navigateToView, notificationFilter, notifications, openUserProfile, setNotificationFilter, unreadNotificationsCount } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [expandedNotifGroups, setExpandedNotifGroups] = useState<Set<string>>(new Set());
+
+  const handleReadAllNotifications = async () => {
+    if (!authToken) return;
+    try {
+      const res = await api.post('/api/notifications/read-all');
+      if (res.ok) {
+        setNotifications((prev: any) => prev.map((n: any) => ({ ...n, is_read: 1 })));
+        setUnreadNotificationsCount(0);
+      }
+    } catch (err) {
+      console.error('一括既読エラー:', err);
+    }
+  };
+
+  const groupByFirstId = useMemo(() => {
+    const map = new Map<string, { key: string; items: AppNotification[] }>();
+    for (const group of notifGroups) map.set(group.items[0].id, group);
+    return map;
+  }, [notifGroups]);
+
+  const groupedAwayIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const group of notifGroups) {
+      if (group.items.length > 1) for (const item of group.items.slice(1)) ids.add(item.id);
+    }
+    return ids;
+  }, [notifGroups]);
   return (
     <>
         {/* 通知センター (Notifications View) */}
@@ -255,7 +286,7 @@ export default function NotificationsView(props: NotificationsViewProps) {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setExpandedNotifGroups((prev: any) => new Set(prev).add(group.key));
+                                  setExpandedNotifGroups((prev: any) => new Set<string>(prev).add(group.key));
                                 }}
                                 className="text-slate-400 hover:text-slate-200 hover:underline transition"
                               >

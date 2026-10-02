@@ -5,10 +5,26 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
+import { useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
 
 export interface SettingsViewProps {
-  SettingsView: any;
+  setPostVisibility: any;
+  api: any;
+  setEmailNotification: any;
+  fetchMutedWords: any;
+  fetchTimeline: any;
+  fetchFollowRequests: any;
+  setNotificationPrefs: any;
+  setMyEmail: any;
+  setMyEmailVerified: any;
+  setAuthUser: any;
+  fetchMigrationInfo: any;
+  fetchPasskeys: any;
+  setPasskeys: any;
+  setPushPermission: any;
+  urlBase64ToUint8Array: any;
+  setIsPushSubscribed: any;
   accentColor: any;
   authToken: any;
   authUser: any;
@@ -22,85 +38,37 @@ export interface SettingsViewProps {
   editIconUrl: any;
   editName: any;
   emailCode: any;
-  emailInput: any;
-  emailMsg: any;
   emailNotification: any;
-  exportingFormat: any;
   fetchBlocksAndMutes: any;
   followRequests: any;
-  handleAddMutedWord: any;
-  handleCancelMove: any;
-  handleChangePassword: any;
-  handleDeleteEmail: any;
-  handleDeleteMutedWord: any;
-  handleDeletePasskey: any;
-  handleExecuteMove: any;
-  handleExportData: any;
-  handleImportArchive: any;
   handleLogout: any;
-  handleRegisterPasskey: any;
-  handleRespondFollowRequest: any;
-  handleSaveMigrationAlias: any;
-  handleSavePreferences: any;
   handleSaveProfile: any;
-  handleSendEmailCode: any;
-  handleSendTestPush: any;
-  handleSubscribePush: any;
-  handleToggleEmailNotification: any;
-  handleToggleNotificationPref: any;
   handleUnblockUser: any;
   handleUnmuteUser: any;
-  handleUnsubscribePush: any;
   handleUploadAvatar: any;
   handleUploadBanner: any;
-  handleVerifyEmail: any;
-  importFile: any;
-  importResult: any;
-  isExportingData: any;
-  isImporting: any;
   isLoadingBlocksMutes: any;
   isLoadingMyReports: any;
   isLoadingPasskeys: any;
-  isMigrating: any;
   isPasswordAuthMode: any;
   isPushSubscribed: any;
-  isRegisteringPasskey: any;
-  isRespondingRequest: any;
-  isSavingMutedWord: any;
-  isSavingNotifPrefs: any;
-  isSavingPassword: any;
   isSavingProfile: any;
-  isSendingEmail: any;
-  isSendingTestPush: any;
-  isSubscribingPush: any;
   isUploadingBanner: any;
   isUploadingIcon: any;
   migrationAliasInput: any;
   migrationInfo: any;
-  migrationMsg: any;
-  migrationTargetInput: any;
   mutedUsers: any;
-  mutedWordCaseSensitive: any;
-  mutedWordWholeWord: any;
   mutedWords: any;
   myEmail: any;
   myEmailVerified: any;
   myReports: any;
   navigateToView: any;
-  newMutedWord: any;
   notificationPrefs: any;
   notificationTypes: any;
-  passkeyActionMessage: any;
-  passkeyDeviceName: any;
   passkeys: any;
-  passwordMsg: any;
   profileDiscoverable: any;
   profileIsLocked: any;
   pushPermission: any;
-  pwCurrent: any;
-  pwMasterKey: any;
-  pwNew: any;
-  pwNewConfirm: any;
   recoveryStatus: any;
   serverStats: any;
   setAccentColor: any;
@@ -113,20 +81,9 @@ export interface SettingsViewProps {
   setEditIconUrl: any;
   setEditName: any;
   setEmailCode: any;
-  setEmailInput: any;
-  setImportFile: any;
   setMigrationAliasInput: any;
-  setMigrationTargetInput: any;
-  setMutedWordCaseSensitive: any;
-  setMutedWordWholeWord: any;
-  setNewMutedWord: any;
-  setPasskeyDeviceName: any;
   setProfileDiscoverable: any;
   setProfileIsLocked: any;
-  setPwCurrent: any;
-  setPwMasterKey: any;
-  setPwNew: any;
-  setPwNewConfirm: any;
   setSelfDeleteConfirmId: any;
   setSelfDeleteError: any;
   setSelfDeleteMasterKey: any;
@@ -142,7 +99,568 @@ export interface SettingsViewProps {
 }
 
 export default function SettingsView(props: SettingsViewProps) {
-  const { accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailInput, emailMsg, emailNotification, exportingFormat, fetchBlocksAndMutes, followRequests, handleAddMutedWord, handleCancelMove, handleChangePassword, handleDeleteEmail, handleDeleteMutedWord, handleDeletePasskey, handleExecuteMove, handleExportData, handleImportArchive, handleLogout, handleRegisterPasskey, handleRespondFollowRequest, handleSaveMigrationAlias, handleSavePreferences, handleSaveProfile, handleSendEmailCode, handleSendTestPush, handleSubscribePush, handleToggleEmailNotification, handleToggleNotificationPref, handleUnblockUser, handleUnmuteUser, handleUnsubscribePush, handleUploadAvatar, handleUploadBanner, handleVerifyEmail, importFile, importResult, isExportingData, isImporting, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isMigrating, isPasswordAuthMode, isPushSubscribed, isRegisteringPasskey, isRespondingRequest, isSavingMutedWord, isSavingNotifPrefs, isSavingPassword, isSavingProfile, isSendingEmail, isSendingTestPush, isSubscribingPush, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, migrationMsg, migrationTargetInput, mutedUsers, mutedWordCaseSensitive, mutedWordWholeWord, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, newMutedWord, notificationPrefs, notificationTypes, passkeyActionMessage, passkeyDeviceName, passkeys, passwordMsg, profileDiscoverable, profileIsLocked, pushPermission, pwCurrent, pwMasterKey, pwNew, pwNewConfirm, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setEmailInput, setImportFile, setMigrationAliasInput, setMigrationTargetInput, setMutedWordCaseSensitive, setMutedWordWholeWord, setNewMutedWord, setPasskeyDeviceName, setProfileDiscoverable, setProfileIsLocked, setPwCurrent, setPwMasterKey, setPwNew, setPwNewConfirm, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
+  const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+
+  const [isRegisteringPasskey, setIsRegisteringPasskey] = useState<boolean>(false);
+
+  const [passkeyDeviceName, setPasskeyDeviceName] = useState<string>('');
+
+  const [passkeyActionMessage, setPasskeyActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [newMutedWord, setNewMutedWord] = useState<string>('');
+
+  const [mutedWordCaseSensitive, setMutedWordCaseSensitive] = useState<boolean>(false);
+
+  const [mutedWordWholeWord, setMutedWordWholeWord] = useState<boolean>(false);
+
+  const [isSavingMutedWord, setIsSavingMutedWord] = useState<boolean>(false);
+
+  const [isRespondingRequest, setIsRespondingRequest] = useState<string | null>(null);
+
+  const [isExportingData, setIsExportingData] = useState<boolean>(false);
+
+  const [exportingFormat, setExportingFormat] = useState<'json' | 'zip' | null>(null);
+
+  const [migrationTargetInput, setMigrationTargetInput] = useState<string>('');
+
+  const [migrationMsg, setMigrationMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isMigrating, setIsMigrating] = useState<boolean>(false);
+
+  const [isSubscribingPush, setIsSubscribingPush] = useState<boolean>(false);
+
+  const [isSendingTestPush, setIsSendingTestPush] = useState<boolean>(false);
+
+  const handleSavePreferences = (e: React.FormEvent) => {
+    e.preventDefault();
+    localStorage.setItem('spica_pref_visibility', defaultVisibility);
+    localStorage.setItem('spica_pref_timeline', defaultTimeline);
+    localStorage.setItem('spica_pref_emojis', String(showCustomEmojis));
+    localStorage.setItem('spica_auto_compress', String(autoCompressImages));
+    localStorage.setItem('astrabit_pref_visibility', defaultVisibility);
+    localStorage.setItem('astrabit_pref_timeline', defaultTimeline);
+    localStorage.setItem('astrabit_pref_emojis', String(showCustomEmojis));
+    setPostVisibility(defaultVisibility);
+    setSettingsMessage({ type: 'success', text: '環境設定を保存しました！' });
+    setTimeout(() => setSettingsMessage(null), 4000);
+  };
+
+  const handleToggleEmailNotification = async (enabled: boolean) => {
+    if (!authToken) return;
+    setIsSavingNotifPrefs(true);
+    try {
+      const res = await api.post('/api/notifications/email', { enabled });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'メール通知の設定に失敗しました。');
+        return;
+      }
+      setEmailNotification(data.email || null);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSavingNotifPrefs(false);
+    }
+  };
+
+  const handleAddMutedWord = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newMutedWord.trim()) return;
+    setIsSavingMutedWord(true);
+    try {
+      const res = await api.post('/api/muted-words', { keyword: newMutedWord.trim(), caseSensitive: mutedWordCaseSensitive, wholeWord: mutedWordWholeWord, });
+      const data = await res.json();
+      if (res.ok) {
+        setNewMutedWord('');
+        setMutedWordCaseSensitive(false);
+        setMutedWordWholeWord(false);
+        await fetchMutedWords();
+        await fetchTimeline();
+      } else {
+        alert(data.error || 'キーワードの登録に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSavingMutedWord(false);
+    }
+  };
+
+  const handleDeleteMutedWord = async (id: string) => {
+    if (!authToken) return;
+    try {
+      const res = await api.delete(`/api/muted-words/${encodeURIComponent(id)}`);
+      if (res.ok) {
+        await fetchMutedWords();
+        await fetchTimeline();
+      }
+    } catch (err) {
+      console.error('ミュートワードの削除エラー:', err);
+    }
+  };
+
+  const handleRespondFollowRequest = async (actorUrl: string, action: 'accept' | 'reject') => {
+    if (!authToken) return;
+    setIsRespondingRequest(actorUrl);
+    try {
+      const res = await api.post('/api/follow-requests/respond', { actorUrl, action });
+      const data = await res.json();
+      if (res.ok) {
+        await fetchFollowRequests();
+        alert(action === 'accept' ? 'フォローを承認しました。' : 'フォローを拒否しました。');
+      } else {
+        alert(data.error || '処理に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsRespondingRequest(null);
+    }
+  };
+
+  const [isSavingNotifPrefs, setIsSavingNotifPrefs] = useState<boolean>(false);
+
+  const handleToggleNotificationPref = async (type: string, enabled: boolean) => {
+    if (!authToken || !notificationPrefs) return;
+    const next = { ...notificationPrefs, [type]: enabled };
+    setNotificationPrefs(next);
+    setIsSavingNotifPrefs(true);
+    try {
+      const res = await api.post('/api/notifications/settings', { prefs: next });
+      const data = await res.json();
+      if (!res.ok) {
+        setNotificationPrefs(notificationPrefs);
+        alert(data.error || '通知設定の保存に失敗しました。');
+        return;
+      }
+      setNotificationPrefs(data.prefs || next);
+    } catch (err: any) {
+      setNotificationPrefs(notificationPrefs);
+      alert(err.message);
+    } finally {
+      setIsSavingNotifPrefs(false);
+    }
+  };
+
+  const [emailInput, setEmailInput] = useState<string>('');
+
+  const [emailMsg, setEmailMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
+
+  const [pwCurrent, setPwCurrent] = useState<string>('');
+
+  const [pwMasterKey, setPwMasterKey] = useState<string>('');
+
+  const [pwNew, setPwNew] = useState<string>('');
+
+  const [pwNewConfirm, setPwNewConfirm] = useState<string>('');
+
+  const [isSavingPassword, setIsSavingPassword] = useState<boolean>(false);
+
+  const [passwordMsg, setPasswordMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleSendEmailCode = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !emailInput.trim()) return;
+    setIsSendingEmail(true);
+    setEmailMsg(null);
+    try {
+      const res = await api.post('/api/user/email', { email: emailInput.trim() });
+      const data = await res.json();
+      setEmailMsg(res.ok
+        ? { type: 'success', text: data.message || '確認コードを送信しました。' }
+        : { type: 'error', text: data.error || '送信に失敗しました。' });
+    } catch (err: any) {
+      setEmailMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleVerifyEmail = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !emailInput.trim() || !emailCode.trim()) return;
+    setIsSendingEmail(true);
+    setEmailMsg(null);
+    try {
+      const res = await api.post('/api/user/email/verify', { email: emailInput.trim(), code: emailCode.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setMyEmail(emailInput.trim().toLowerCase());
+        setMyEmailVerified(true);
+        setEmailCode('');
+        setEmailMsg({ type: 'success', text: data.message || 'メールアドレスを確認しました。' });
+      } else {
+        setEmailMsg({ type: 'error', text: data.error || '確認に失敗しました。' });
+      }
+    } catch (err: any) {
+      setEmailMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleDeleteEmail = async () => {
+    if (!authToken) return;
+    if (!confirm('登録したメールアドレスを削除しますか？（マスターキーの復元ができなくなります）')) return;
+    try {
+      const res = await api.delete('/api/user/email');
+      if (res.ok) {
+        setMyEmail('');
+        setMyEmailVerified(false);
+        setEmailInput('');
+        setEmailMsg({ type: 'success', text: 'メールアドレスを削除しました。' });
+      }
+    } catch (err) {
+      console.error('メールアドレスの削除エラー:', err);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    setPasswordMsg(null);
+
+    const hasPassword = Boolean(authUser?.hasPassword);
+    if (pwNew.length < 8) {
+      setPasswordMsg({ type: 'error', text: '新しいパスワードは8文字以上で入力してください。' });
+      return;
+    }
+    if (pwNew !== pwNewConfirm) {
+      setPasswordMsg({ type: 'error', text: '確認用の新しいパスワードが一致しません。' });
+      return;
+    }
+    if (hasPassword ? (!pwCurrent && !pwMasterKey.trim()) : !pwMasterKey.trim()) {
+      setPasswordMsg({
+        type: 'error',
+        text: hasPassword
+          ? '現在のパスワード、またはマスターキーを入力してください。'
+          : 'パスワードを新しく設定するにはマスターキーが必要です。',
+      });
+      return;
+    }
+
+    setIsSavingPassword(true);
+    try {
+      const res = await api.post('/api/user/password', { newPassword: pwNew, ...(pwCurrent ? { currentPassword: pwCurrent } : {}), ...(pwMasterKey.trim() ? { masterKey: pwMasterKey.trim() } : {}), });
+      const data = await res.json();
+      if (!res.ok) {
+        setPasswordMsg({ type: 'error', text: data.error || 'パスワードの変更に失敗しました。' });
+        return;
+      }
+      setPasswordMsg({ type: 'success', text: data.message || 'パスワードを変更しました。' });
+      setPwCurrent('');
+      setPwMasterKey('');
+      setPwNew('');
+      setPwNewConfirm('');
+      setAuthUser((prev: any) => (prev ? { ...prev, hasPassword: true } : prev));
+    } catch (err: any) {
+      setPasswordMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
+
+  const [importFile, setImportFile] = useState<File | null>(null);
+
+  const [isImporting, setIsImporting] = useState<boolean>(false);
+
+  const [importResult, setImportResult] = useState<{ type: 'success' | 'error'; text: string; detail?: string } | null>(null);
+
+  const handleImportArchive = async () => {
+    if (!authToken || !importFile) return;
+    setIsImporting(true);
+    setImportResult(null);
+    try {
+      const form = new FormData();
+      form.append('archive', importFile);
+
+      const res = await api.post('/api/import/archive', form);
+      const data = await res.json();
+
+      if (res.ok) {
+        setImportResult({
+          type: 'success',
+          text: data.message || `${data.imported} 件の投稿を取り込みました。`,
+          detail: `形式: ${data.format} / 取り込み: ${data.imported} / 重複スキップ: ${data.skipped} / 失敗: ${data.failed}${data.total ? ` / 対象: ${data.total}` : ''}${
+            Array.isArray(data.errors) && data.errors.length > 0 ? `\n${data.errors.join('\n')}` : ''
+          }`,
+        });
+        setImportFile(null);
+        await fetchTimeline();
+      } else {
+        setImportResult({ type: 'error', text: data.error || 'インポートに失敗しました。' });
+      }
+    } catch (err: any) {
+      setImportResult({ type: 'error', text: err.message });
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleSaveMigrationAlias = async () => {
+    if (!authToken) return;
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await api.post('/api/user/migration/alias', { alias: migrationAliasInput.trim() });
+      const data = await res.json();
+      if (!res.ok) {
+        setMigrationMsg({ type: 'error', text: data.error || '保存に失敗しました。' });
+        return;
+      }
+      setMigrationMsg({ type: 'success', text: data.message || '保存しました。' });
+      await fetchMigrationInfo();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleExecuteMove = async () => {
+    if (!authToken) return;
+    const target = migrationTargetInput.trim();
+    if (!target) {
+      setMigrationMsg({ type: 'error', text: '引っ越し先アカウント（@ユーザー名@サーバー）を入力してください。' });
+      return;
+    }
+    if (!window.confirm(`このアカウントから ${target} へ引っ越しますか？\nフォロワー全員に通知され、元には戻せません。`)) {
+      return;
+    }
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await api.post('/api/user/migration/move', { target });
+      const data = await res.json();
+      if (!res.ok) {
+        setMigrationMsg({ type: 'error', text: data.error || '引っ越しに失敗しました。' });
+        return;
+      }
+      setMigrationMsg({ type: 'success', text: data.message || '引っ越しを実行しました。' });
+      await fetchMigrationInfo();
+      fetchTimeline();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleCancelMove = async () => {
+    if (!authToken) return;
+    if (!window.confirm('引っ越し先の記録を解除しますか？（連合先へ配送済みの通知は取り消せません）')) return;
+    setIsMigrating(true);
+    setMigrationMsg(null);
+    try {
+      const res = await api.post('/api/user/migration/cancel');
+      const data = await res.json();
+      setMigrationMsg(
+        res.ok ? { type: 'success', text: data.message || '解除しました。' } : { type: 'error', text: data.error || '解除に失敗しました。' },
+      );
+      await fetchMigrationInfo();
+    } catch (err: any) {
+      setMigrationMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
+
+  const handleExportData = async (format: 'json' | 'zip') => {
+    if (!authToken) return;
+    setIsExportingData(true);
+    setExportingFormat(format);
+    try {
+      const started = await api.post('/api/user/export', { format });
+      if (!started.ok) {
+        const err = await started.json().catch(() => ({}));
+        alert(err.error || 'データのエクスポートを開始できませんでした。');
+        return;
+      }
+      const { jobId } = await started.json();
+      setSettingsMessage({ type: 'success', text: `${format.toUpperCase()} を作成しています…（そのままお待ちください）` });
+
+      // 出来上がるまで見に行く（最大 2 分。ZIP はアカウントが大きいと時間がかかる）
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const statusRes = await api.get(`/api/user/export/${jobId}`);
+        if (!statusRes.ok) continue;
+        const info = await statusRes.json();
+        if (info.status === 'failed') {
+          alert(info.error || 'エクスポートに失敗しました。');
+          setSettingsMessage(null);
+          return;
+        }
+        if (info.status !== 'done') continue;
+
+        const fileRes = await api.fetch(info.downloadUrl);
+        if (!fileRes.ok) {
+          alert('エクスポートのダウンロードに失敗しました。');
+          setSettingsMessage(null);
+          return;
+        }
+        const blob = await fileRes.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = info.filename || `spica-export-${authUser?.id || 'me'}.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        setSettingsMessage({ type: 'success', text: `データを${format.toUpperCase()}形式でダウンロードしました！` });
+        setTimeout(() => setSettingsMessage(null), 4000);
+        return;
+      }
+      alert('エクスポートに時間がかかっています。しばらくしてから、もう一度お試しください。');
+      setSettingsMessage(null);
+    } catch (err: any) {
+      alert(`エクスポートエラー: ${err.message}`);
+    } finally {
+      setIsExportingData(false);
+      setExportingFormat(null);
+    }
+  };
+
+  const handleRegisterPasskey = async () => {
+    if (!authToken) return;
+    setIsRegisteringPasskey(true);
+    setPasskeyActionMessage(null);
+    try {
+      const optRes = await api.post('/api/webauthn/register/options');
+      if (!optRes.ok) {
+        const err = await optRes.json();
+        throw new Error(err.error || 'オプション取得に失敗しました。');
+      }
+      const options = await optRes.json();
+
+      // SimpleWebAuthn ブラウザ側 API 実行
+      const { startRegistration } = await import('@simplewebauthn/browser');
+      const regResponse = await startRegistration({ optionsJSON: options });
+
+      const verifyRes = await api.post('/api/webauthn/register/verify', { response: regResponse, credential: regResponse, device_name: passkeyDeviceName.trim() || undefined, });
+
+      if (!verifyRes.ok) {
+        const err = await verifyRes.json();
+        throw new Error(err.error || '登録検証に失敗しました。');
+      }
+
+      setPasskeyDeviceName('');
+      setPasskeyActionMessage({ type: 'success', text: 'パスキーを正常に登録しました！次回から生体認証でワンタップログインできます。' });
+      fetchPasskeys();
+      setTimeout(() => setPasskeyActionMessage(null), 5000);
+    } catch (e: any) {
+      console.error('Passkey registration error:', e);
+      if (e.name !== 'NotAllowedError') {
+        setPasskeyActionMessage({ type: 'error', text: e.message || 'パスキー登録に失敗しました。' });
+      }
+    } finally {
+      setIsRegisteringPasskey(false);
+    }
+  };
+
+  const handleDeletePasskey = async (credId: string) => {
+    if (!authToken || !confirm('このパスキーを削除しますか？')) return;
+    try {
+      const res = await api.delete(`/api/webauthn/credentials/${credId}`);
+      if (res.ok) {
+        setPasskeys((prev: any) => prev.filter((p: any) => p.id !== credId));
+        setPasskeyActionMessage({ type: 'success', text: 'パスキーを削除しました。' });
+        setTimeout(() => setPasskeyActionMessage(null), 4000);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'パスキーの削除に失敗しました。');
+      }
+    } catch (e: any) {
+      alert(`エラー: ${e.message}`);
+    }
+  };
+
+  const handleSubscribePush = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator)) {
+      alert('お使いのブラウザまたは環境は Web Push 通知に対応していません。');
+      return;
+    }
+
+    setIsSubscribingPush(true);
+    try {
+      // 1. 通知パーミッションの要求
+      const perm = await Notification.requestPermission();
+      setPushPermission(perm);
+      if (perm !== 'granted') {
+        alert('プッシュ通知の許可が拒否されました。ブラウザの設定から通知を許可してください。');
+        setIsSubscribingPush(false);
+        return;
+      }
+
+      // 2. サーバーから VAPID 公開鍵を取得
+      const keyRes = await api.get('/api/push/vapid-public-key', { auth: false });
+      const { publicKey } = await keyRes.json();
+      if (!publicKey) throw new Error('VAPID 公開鍵を取得できませんでした。');
+
+      // 3. Service Worker で PushManager.subscribe
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey),
+      });
+
+      // 4. サーバーへ登録
+      const subRes = await api.post('/api/push/subscribe', { subscription: sub.toJSON() });
+
+      if (subRes.ok) {
+        setIsPushSubscribed(true);
+        alert('Web Push 通知が有効になりました！通知をテストしたい場合は「テスト通知を送信」をお試しください。');
+      } else {
+        const err = await subRes.json();
+        alert(err.error || 'プッシュ通知の登録に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message || 'プッシュ通知の登録中にエラーが発生しました。');
+    } finally {
+      setIsSubscribingPush(false);
+    }
+  };
+
+  const handleUnsubscribePush = async () => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+    setIsSubscribingPush(true);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        await api.post('/api/push/unsubscribe', { endpoint: sub.endpoint });
+        await sub.unsubscribe();
+      }
+      setIsPushSubscribed(false);
+      alert('プッシュ通知の登録を解除しました。');
+    } catch (err: any) {
+      alert(err.message || '解除中にエラーが発生しました。');
+    } finally {
+      setIsSubscribingPush(false);
+    }
+  };
+
+  const handleSendTestPush = async () => {
+    if (!authToken) return;
+    setIsSendingTestPush(true);
+    try {
+      const res = await api.post('/api/push/test');
+      const data = await res.json();
+      if (res.ok) {
+        alert('テスト通知を送信しました！スマホまたはデスクトップの通知欄をご確認ください。');
+      } else {
+        alert(data.error || 'テスト通知の送信に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message || '通信エラーが発生しました。');
+    } finally {
+      setIsSendingTestPush(false);
+    }
+  };
   return (
     <>
         {/* ユーザー向け設定画面 (Settings View) */}

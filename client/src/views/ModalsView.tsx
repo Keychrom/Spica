@@ -8,9 +8,32 @@ import { useEffect, useState } from 'react';
 import { AlertCircle, BarChart2, Bell, Bookmark, Check, CheckCircle2, Clock, Copy, Edit3, ExternalLink, EyeOff, FileText, FileVideo, FolderArchive, FolderOpen, GitBranch, Globe, HardDrive, Hash, Home, ImageIcon, Key, KeyRound, ListIcon, Lock, LogOut, Menu, MessageCircle, MessageSquare, Plus, Quote, Radio, RefreshCw, Repeat, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, Trash2, User, UserPlus, Users, X, Zap } from 'lucide-react';
 import { api } from '../api/client';
 import { AutocompleteDropdown, FormattedPostContent, PollCard, PollInputEditor, PostMediaGrid, QuoteCard, createRenderPostCard } from '../components/PostRendering';
-import type { Antenna, Channel, Draft, FollowListEntry, ScheduledPost } from '../App';
+import type { Antenna, Channel, Draft, FollowListEntry, Post, ScheduledPost } from '../App';
 
 export interface ModalsViewProps {
+  setThreadModalPost: any;
+  setThreadData: any;
+  currentViewRef: any;
+  fetchAntennas: any;
+  setActiveAntenna: any;
+  fetchDrafts: any;
+  setPostAttachments: any;
+  fetchScheduledPosts: any;
+  setDriveItems: any;
+  setDriveStats: any;
+  listAbortRef: any;
+  setChannels: any;
+  selectedChannel: any;
+  setSelectedChannel: any;
+  openChannelDetail: any;
+  fetchTimeline: any;
+  fetchAdminData: any;
+  setSelfDeleteError: any;
+  setAuthToken: any;
+  setAuthUser: any;
+  setCurrentView: any;
+  setShowAuthPortal: any;
+  setAuthPortalTab: any;
   activeAntenna: any;
   activeListId: any;
   adminDeleteTargetUser: any;
@@ -24,11 +47,9 @@ export interface ModalsViewProps {
   autocompleteType: any;
   channels: any;
   checkAutocomplete: any;
-  closeThreadModal: any;
   currentView: any;
   customEmojis: any;
   cwContent: any;
-  directorySearch: any;
   directoryUsers: any;
   drafts: any;
   driveItems: any;
@@ -38,10 +59,7 @@ export interface ModalsViewProps {
   editBio: any;
   editIconUrl: any;
   editName: any;
-  editingAntenna: any;
   editingChannel: any;
-  emojiCategoryTab: any;
-  emojiSearchTerm: any;
   fetchBookmarks: any;
   fetchChannels: any;
   fetchDirectory: any;
@@ -50,80 +68,42 @@ export interface ModalsViewProps {
   followList: any;
   followListError: any;
   followListRows: any;
-  handleAddListMember: any;
-  handleAdminDeleteUser: any;
   handleAutocompleteKeyDown: any;
-  handleCancelScheduledPost: any;
-  handleCreateChannel: any;
-  handleCreateList: any;
   handleCreatePost: any;
-  handleCreateScheduledPost: any;
-  handleDeleteAntenna: any;
-  handleDeleteDraft: any;
-  handleDeleteDriveMedia: any;
-  handleDeleteList: any;
-  handleDriveUpload: any;
-  handleLoadDraft: any;
   handleLogout: any;
   handleNotificationClick: any;
   handleOpenReply: any;
   handleOpenThread: any;
-  handleRecoveryRequest: any;
-  handleRecoveryVerify: any;
   handleRemoveAttachment: any;
-  handleRemoveListMember: any;
-  handleSaveAntenna: any;
-  handleSaveDraft: any;
   handleSaveProfile: any;
   handleSelectMedia: any;
-  handleSelfDeleteAccount: any;
-  handleSubmitReply: any;
-  handleSubmitReport: any;
   handleSwitchTimelineMode: any;
   handleToggleReaction: any;
   handleUploadAvatar: any;
   handleUploadBanner: any;
   handleVotePoll: any;
   hasConfirmedSaved: any;
-  isAdminDeletingUser: any;
   isCopied: any;
-  isCreatingChannel: any;
   isLoadingDirectory: any;
   isLoadingDrive: any;
   isLoadingFollowList: any;
-  isLoadingListTimeline: any;
   isLoadingThread: any;
   isMobileMenuOpen: any;
   isPasswordAuthMode: any;
   isPosting: any;
-  isRecovering: any;
-  isReplying: any;
   isSavingProfile: any;
-  isSelfDeleting: any;
   isSensitivePost: any;
-  isSubmittingReport: any;
   isUploadingBanner: any;
   isUploadingIcon: any;
   isUploadingMedia: any;
-  isUploadingToDrive: any;
   isVotingPoll: any;
   issuedMasterKey: any;
-  listActionMsg: any;
-  listTimelinePosts: any;
   lists: any;
   miAuthSession: any;
   navigateToView: any;
-  newChannelCategory: any;
-  newChannelColor: any;
-  newChannelDesc: any;
-  newChannelName: any;
-  newListMember: any;
-  newListName: any;
   notificationToast: any;
   openAntennaManageModal: any;
-  openAntennaModal: any;
   openDraftsModal: any;
-  openListTimeline: any;
   openMediaPreview: any;
   openMobilePostModal: any;
   openScheduleModal: any;
@@ -140,20 +120,14 @@ export interface ModalsViewProps {
   profileTarget: any;
   pushModalState: any;
   quoteTargetPost: any;
-  recoveryCode: any;
-  recoveryEmail: any;
   recoveryMsg: any;
   recoveryStep: any;
-  recoveryUserId: any;
   postDeps: any;
   replyContent: any;
-  replyCwContent: any;
   replyTargetPost: any;
   reportCategory: any;
   reportComment: any;
   reportTarget: any;
-  saveChannelEdit: any;
-  scheduledDateTime: any;
   scheduledPosts: any;
   selfDeleteConfirmId: any;
   selfDeleteError: any;
@@ -163,29 +137,18 @@ export interface ModalsViewProps {
   setAdminDeleteTargetUser: any;
   setAutoCompressImages: any;
   setCwContent: any;
-  setDirectorySearch: any;
   setDriveMsg: any;
   setEditBannerUrl: any;
   setEditBio: any;
   setEditIconUrl: any;
   setEditName: any;
-  setEditingAntenna: any;
   setEditingChannel: any;
-  setEmojiCategoryTab: any;
-  setEmojiSearchTerm: any;
   setFollowList: any;
   setHasConfirmedSaved: any;
   setIsCopied: any;
   setIsMobileMenuOpen: any;
   setIsSensitivePost: any;
-  setListTimelinePosts: any;
   setMiAuthSession: any;
-  setNewChannelCategory: any;
-  setNewChannelColor: any;
-  setNewChannelDesc: any;
-  setNewChannelName: any;
-  setNewListMember: any;
-  setNewListName: any;
   setNotificationToast: any;
   setPollChoices: any;
   setPollExpiresIn: any;
@@ -195,18 +158,13 @@ export interface ModalsViewProps {
   setPostVisibility: any;
   setPreviewMediaUrl: any;
   setQuoteTargetPost: any;
-  setRecoveryCode: any;
-  setRecoveryEmail: any;
   setRecoveryMsg: any;
   setRecoveryStep: any;
-  setRecoveryUserId: any;
   setReplyContent: any;
-  setReplyCwContent: any;
   setReplyTargetPost: any;
   setReportCategory: any;
   setReportComment: any;
   setReportTarget: any;
-  setScheduledDateTime: any;
   setSelfDeleteConfirmId: any;
   setSelfDeleteMasterKey: any;
   setShowAntennaManageModal: any;
@@ -224,7 +182,6 @@ export interface ModalsViewProps {
   setShowPollInput: any;
   setShowRecoveryModal: any;
   setShowRegisterModal: any;
-  setShowReplyCwInput: any;
   setShowRichEmojiPicker: any;
   setShowScheduleModal: any;
   setShowSelfDeleteModal: any;
@@ -243,7 +200,6 @@ export interface ModalsViewProps {
   showMobilePostModal: any;
   showPollInput: any;
   showRecoveryModal: any;
-  showReplyCwInput: any;
   showRichEmojiPicker: any;
   showScheduleModal: any;
   showSelfDeleteModal: any;
@@ -1400,7 +1356,550 @@ function ScheduleModal({
 }
 
 export default function ModalsView(props: ModalsViewProps) {
-  const { activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, closeThreadModal, currentView, customEmojis, cwContent, directorySearch, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingAntenna, editingChannel, emojiCategoryTab, emojiSearchTerm, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAddListMember, handleAdminDeleteUser, handleAutocompleteKeyDown, handleCancelScheduledPost, handleCreateChannel, handleCreateList, handleCreatePost, handleCreateScheduledPost, handleDeleteAntenna, handleDeleteDraft, handleDeleteDriveMedia, handleDeleteList, handleDriveUpload, handleLoadDraft, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRecoveryRequest, handleRecoveryVerify, handleRemoveAttachment, handleRemoveListMember, handleSaveAntenna, handleSaveDraft, handleSaveProfile, handleSelectMedia, handleSelfDeleteAccount, handleSubmitReply, handleSubmitReport, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isAdminDeletingUser, isCopied, isCreatingChannel, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingListTimeline, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isRecovering, isReplying, isSavingProfile, isSelfDeleting, isSensitivePost, isSubmittingReport, isUploadingBanner, isUploadingIcon, isUploadingMedia, isUploadingToDrive, isVotingPoll, issuedMasterKey, listActionMsg, listTimelinePosts, lists, miAuthSession, navigateToView, newChannelCategory, newChannelColor, newChannelDesc, newChannelName, newListMember, newListName, notificationToast, openAntennaManageModal, openAntennaModal, openDraftsModal, openListTimeline, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryCode, recoveryEmail, recoveryMsg, recoveryStep, recoveryUserId, postDeps, replyContent, replyCwContent, replyTargetPost, reportCategory, reportComment, reportTarget, saveChannelEdit, scheduledDateTime, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDirectorySearch, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingAntenna, setEditingChannel, setEmojiCategoryTab, setEmojiSearchTerm, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setListTimelinePosts, setMiAuthSession, setNewChannelCategory, setNewChannelColor, setNewChannelDesc, setNewChannelName, setNewListMember, setNewListName, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryCode, setRecoveryEmail, setRecoveryMsg, setRecoveryStep, setRecoveryUserId, setReplyContent, setReplyCwContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setScheduledDateTime, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowReplyCwInput, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showReplyCwInput, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
+  const { setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, postDeps, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
+
+  // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+  const [newChannelName, setNewChannelName] = useState<string>('');
+
+  const [newChannelDesc, setNewChannelDesc] = useState<string>('');
+
+  const [newChannelColor, setNewChannelColor] = useState<string>('#6366f1');
+
+  const [newChannelCategory, setNewChannelCategory] = useState<string>('general');
+
+  const [isCreatingChannel, setIsCreatingChannel] = useState<boolean>(false);
+
+  const [editingAntenna, setEditingAntenna] = useState<Partial<Antenna> | null>(null);
+
+  const [scheduledDateTime, setScheduledDateTime] = useState<string>('');
+
+  const [emojiSearchTerm, setEmojiSearchTerm] = useState<string>('');
+
+  const [emojiCategoryTab, setEmojiCategoryTab] = useState<string>('custom');
+
+  const [showReplyCwInput, setShowReplyCwInput] = useState<boolean>(false);
+
+  const [replyCwContent, setReplyCwContent] = useState<string>('');
+
+  const [isReplying, setIsReplying] = useState<boolean>(false);
+
+  const [isAdminDeletingUser, setIsAdminDeletingUser] = useState<boolean>(false);
+
+  const [isSelfDeleting, setIsSelfDeleting] = useState<boolean>(false);
+
+  const [isSubmittingReport, setIsSubmittingReport] = useState<boolean>(false);
+
+  const closeThreadModal = () => {
+    setThreadModalPost(null);
+    setThreadData(null);
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('post')) {
+        url.searchParams.delete('post');
+        const newPath = (url.pathname || '/') + (url.search ? url.search : '');
+        window.history.replaceState({ spica_guard: 'active', view: currentViewRef.current }, '', newPath);
+      }
+    } catch {}
+  };
+
+  function openAntennaModal(ant?: Partial<Antenna> | null) {
+    setEditingAntenna(ant || null);
+    setShowAntennaModal(true);
+    pushModalState('edit_antenna');
+  }
+
+  const handleSaveAntenna = async (antennaData: Partial<Antenna>) => {
+    if (!authToken) return;
+    try {
+      const isEdit = Boolean(antennaData.id);
+      const method = isEdit ? 'PUT' : 'POST';
+      const url = isEdit ? `/api/antennas/${antennaData.id}` : '/api/antennas';
+      const res = await api.request(method, url, antennaData);
+      if (res.ok) {
+        const saved = await res.json();
+        await fetchAntennas();
+        setShowAntennaModal(false);
+        setEditingAntenna(null);
+        setActiveAntenna(saved);
+        handleSwitchTimelineMode('antenna', saved);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'アンテナの保存に失敗しました。');
+      }
+    } catch (err) {
+      console.error('アンテナ保存エラー:', err);
+    }
+  };
+
+  const handleDeleteAntenna = async (id: string) => {
+    if (!authToken || !window.confirm('このアンテナを削除してもよろしいですか？')) return;
+    try {
+      const res = await api.delete(`/api/antennas/${id}`);
+      if (res.ok) {
+        if (activeAntenna?.id === id) {
+          setActiveAntenna(null);
+          handleSwitchTimelineMode('local');
+        }
+        await fetchAntennas();
+      }
+    } catch (err) {
+      console.error('アンテナ削除エラー:', err);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    if (!authToken) return;
+    if (!postContent.trim() && postAttachments.length === 0 && !quoteTargetPost) {
+      alert('保存する内容がありません。');
+      return;
+    }
+    try {
+      const pollData = showPollInput && pollChoices.filter((c: any) => c.trim()).length >= 2
+        ? { choices: pollChoices.filter((c: any) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
+        : null;
+      const res = await api.post('/api/drafts', { content: postContent, cw: showCwInput ? cwContent : '', visibility: postVisibility, attachments: postAttachments, poll: pollData, quote_id: quoteTargetPost?.id || null, });
+      if (res.ok) {
+        await fetchDrafts();
+        alert('下書きを保存しました。');
+      } else {
+        alert('下書きの保存に失敗しました。');
+      }
+    } catch (err) {
+      console.error('下書き保存エラー:', err);
+    }
+  };
+
+  const handleLoadDraft = (draft: Draft) => {
+    if (postContent.trim() || postAttachments.length > 0) {
+      if (!window.confirm('入力中の内容が上書きされます。よろしいですか？')) return;
+    }
+    setPostContent(draft.content || '');
+    if (draft.cw) {
+      setCwContent(draft.cw);
+      setShowCwInput(true);
+    } else {
+      setCwContent('');
+      setShowCwInput(false);
+    }
+    setPostVisibility(draft.visibility || 'public');
+    setPostAttachments(draft.media_attachments || []);
+    if (draft.poll && draft.poll.choices) {
+      setShowPollInput(true);
+      setPollChoices(draft.poll.choices);
+      setPollMultiple(Boolean(draft.poll.multiple));
+      setPollExpiresIn(draft.poll.expiresIn || 86400);
+    } else {
+      setShowPollInput(false);
+      setPollChoices(['', '']);
+    }
+    setShowDraftsModal(false);
+  };
+
+  const handleDeleteDraft = async (id: string) => {
+    if (!authToken || !window.confirm('この下書きを削除してもよろしいですか？')) return;
+    try {
+      const res = await api.delete(`/api/drafts/${id}`);
+      if (res.ok) {
+        await fetchDrafts();
+      }
+    } catch (err) {
+      console.error('下書き削除エラー:', err);
+    }
+  };
+
+  const handleCreateScheduledPost = async () => {
+    if (!authToken) return;
+    if (!scheduledDateTime) {
+      alert('予約日時を選択してください。');
+      return;
+    }
+    const scheduledDate = new Date(scheduledDateTime);
+    if (isNaN(scheduledDate.getTime()) || scheduledDate.getTime() <= Date.now()) {
+      alert('予約日時は現在より未来の日時を指定してください。');
+      return;
+    }
+    if (!postContent.trim() && postAttachments.length === 0 && !quoteTargetPost) {
+      alert('投稿内容または画像を入力してください。');
+      return;
+    }
+    try {
+      const pollData = showPollInput && pollChoices.filter((c: any) => c.trim()).length >= 2
+        ? { choices: pollChoices.filter((c: any) => c.trim()), multiple: pollMultiple, expiresIn: pollExpiresIn }
+        : null;
+      const res = await api.post('/api/scheduled-posts', { content: postContent, cw: showCwInput ? cwContent : '', visibility: postVisibility, attachments: postAttachments, poll: pollData, quote_id: quoteTargetPost?.id || null, scheduled_at: scheduledDate.toISOString(), });
+      if (res.ok) {
+        await fetchScheduledPosts();
+        setShowScheduleModal(false);
+        setScheduledDateTime('');
+        setPostContent('');
+        setPostAttachments([]);
+        setCwContent('');
+        setShowCwInput(false);
+        setShowPollInput(false);
+        setQuoteTargetPost(null);
+        alert('投稿を予約しました！指定時刻に自動公開されます。');
+      } else {
+        const err = await res.json();
+        alert(err.error || '予約投稿の作成に失敗しました。');
+      }
+    } catch (err) {
+      console.error('予約投稿エラー:', err);
+    }
+  };
+
+  const handleCancelScheduledPost = async (id: string) => {
+    if (!authToken || !window.confirm('この予約投稿をキャンセル（削除）してもよろしいですか？')) return;
+    try {
+      const res = await api.delete(`/api/scheduled-posts/${id}`);
+      if (res.ok) {
+        await fetchScheduledPosts();
+      }
+    } catch (err) {
+      console.error('予約投稿キャンセルエラー:', err);
+    }
+  };
+
+  const handleSubmitReport = async () => {
+    if (!authToken || !reportTarget) return;
+    setIsSubmittingReport(true);
+    try {
+      const res = await api.post('/api/reports', reportTarget.type === 'post' ? { targetPostId: reportTarget.id, category: reportCategory, comment: reportComment } : { targetUserId: reportTarget.id, category: reportCategory, comment: reportComment },);
+      const data = await res.json();
+      if (res.ok) {
+        setReportTarget(null);
+        setReportComment('');
+        setReportCategory('spam');
+        alert(data.message || '通報を受け付けました。ご協力ありがとうございます。');
+      } else {
+        alert(data.error || '通報の送信に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
+
+  const [listTimelinePosts, setListTimelinePosts] = useState<Post[]>([]);
+
+  const [isLoadingListTimeline, setIsLoadingListTimeline] = useState<boolean>(false);
+
+  const [newListName, setNewListName] = useState<string>('');
+
+  const [newListMember, setNewListMember] = useState<string>('');
+
+  const [listActionMsg, setListActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [isUploadingToDrive, setIsUploadingToDrive] = useState<boolean>(false);
+
+  const handleDeleteDriveMedia = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このファイルを削除しますか？（元に戻せません）')) return;
+    try {
+      const res = await api.delete(`/api/drive/${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setDriveMsg({ type: 'error', text: data.error || '削除に失敗しました。' });
+        return;
+      }
+      setDriveItems((prev: any) => prev.filter((item: any) => item.id !== id));
+      if (data.stats) setDriveStats(data.stats);
+      setDriveMsg({ type: 'success', text: 'ファイルを削除しました。' });
+    } catch (err: any) {
+      setDriveMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleDriveUpload = async (files: FileList | null) => {
+    if (!authToken || !files || files.length === 0) return;
+    setIsUploadingToDrive(true);
+    setDriveMsg(null);
+    try {
+      const form = new FormData();
+      Array.from(files).slice(0, 4).forEach((file) => form.append('file', file));
+      const res = await api.post('/api/media/upload', form);
+      const data = await res.json();
+      if (!res.ok) {
+        setDriveMsg({ type: 'error', text: data.error || 'アップロードに失敗しました。' });
+        return;
+      }
+      setDriveMsg({ type: 'success', text: `${data.media?.length ?? 0} 件アップロードしました。` });
+      await fetchDrive();
+    } catch (err: any) {
+      setDriveMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsUploadingToDrive(false);
+    }
+  };
+
+  const handleCreateList = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newListName.trim()) return;
+    try {
+      const res = await api.post('/api/lists', { name: newListName.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setNewListName('');
+        setListActionMsg({ type: 'success', text: `リスト「${data.name}」を作成しました。` });
+        await fetchLists();
+      } else {
+        setListActionMsg({ type: 'error', text: data.error || 'リストの作成に失敗しました。' });
+      }
+    } catch (err: any) {
+      setListActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleDeleteList = async (id: string) => {
+    if (!authToken) return;
+    if (!confirm('このリストを削除しますか？')) return;
+    try {
+      const res = await api.delete(`/api/lists/${encodeURIComponent(id)}`);
+      if (res.ok) {
+        if (activeListId === id) {
+          setActiveListId(null);
+          setListTimelinePosts([]);
+        }
+        setListActionMsg({ type: 'success', text: 'リストを削除しました。' });
+        await fetchLists();
+      }
+    } catch (err) {
+      console.error('リストの削除エラー:', err);
+    }
+  };
+
+  const handleAddListMember = async (listId: string, e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!authToken || !newListMember.trim()) return;
+    try {
+      const res = await api.post(`/api/lists/${encodeURIComponent(listId)}/members`, { member: newListMember.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setNewListMember('');
+        setListActionMsg({ type: 'success', text: `${data.display_name} を追加しました。` });
+        await fetchLists();
+      } else {
+        setListActionMsg({ type: 'error', text: data.error || 'メンバーの追加に失敗しました。' });
+      }
+    } catch (err: any) {
+      setListActionMsg({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleRemoveListMember = async (listId: string, memberId: string) => {
+    if (!authToken) return;
+    try {
+      const res = await api.delete(`/api/lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(memberId)}`);
+      if (res.ok) {
+        await fetchLists();
+      }
+    } catch (err) {
+      console.error('メンバーの削除エラー:', err);
+    }
+  };
+
+  const openListTimeline = async (listId: string) => {
+    if (!authToken) return;
+    setActiveListId(listId);
+    setIsLoadingListTimeline(true);
+    // 別のリストへ速く切り替えたときは前の要求を中断する
+    listAbortRef.current?.abort();
+    const ac = new AbortController();
+    listAbortRef.current = ac;
+    try {
+      const res = await api.get(`/api/lists/${encodeURIComponent(listId)}/timeline`, { signal: ac.signal });
+      if (res.ok) {
+        const data = await res.json();
+        setListTimelinePosts(data.posts || []);
+      }
+    } catch (err) {
+      if (ac.signal.aborted) return;
+      console.error('リストタイムラインの取得エラー:', err);
+    } finally {
+      if (!ac.signal.aborted) setIsLoadingListTimeline(false);
+    }
+  };
+
+  const [directorySearch, setDirectorySearch] = useState<string>('');
+
+  const [recoveryUserId, setRecoveryUserId] = useState<string>('');
+
+  const [recoveryEmail, setRecoveryEmail] = useState<string>('');
+
+  const [recoveryCode, setRecoveryCode] = useState<string>('');
+
+  const [isRecovering, setIsRecovering] = useState<boolean>(false);
+
+  const handleRecoveryRequest = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!recoveryUserId.trim() || !recoveryEmail.trim()) return;
+    setIsRecovering(true);
+    setRecoveryMsg(null);
+    try {
+      const res = await api.post('/api/auth/recovery/request', { userId: recoveryUserId.trim(), email: recoveryEmail.trim() });
+      const data = await res.json();
+      setRecoveryStep('verify');
+      setRecoveryMsg({ type: 'success', text: data.message || '確認コードを送信しました。メールをご確認ください。' });
+    } catch (err: any) {
+      setRecoveryMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
+  const handleRecoveryVerify = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!recoveryCode.trim()) return;
+    setIsRecovering(true);
+    setRecoveryMsg(null);
+    try {
+      const res = await api.post('/api/auth/recovery/verify', { userId: recoveryUserId.trim(), email: recoveryEmail.trim(), code: recoveryCode.trim() });
+      const data = await res.json();
+      if (res.ok) {
+        setRecoveryStep('done');
+        setRecoveryMsg({ type: 'success', text: data.message || '新しいマスターキーをメールで送信しました。' });
+      } else {
+        setRecoveryMsg({ type: 'error', text: data.error || '復元に失敗しました。' });
+      }
+    } catch (err: any) {
+      setRecoveryMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsRecovering(false);
+    }
+  };
+
+  const saveChannelEdit = async (patch: {
+    name: string;
+    description: string;
+    banner_url: string;
+    color: string;
+    category: string;
+    is_archived: boolean;
+  }) => {
+    if (!editingChannel || !authToken) return;
+    const res = await api.put(`/api/channels/${encodeURIComponent(editingChannel.id)}`, patch);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'チャンネルの更新に失敗しました。');
+      return;
+    }
+    const updated = (await res.json()) as Channel;
+    setChannels((prev: any) => prev.map((ch: any) => (ch.id === updated.id ? { ...ch, ...updated } : ch)));
+    if (selectedChannel?.id === updated.id) {
+      setSelectedChannel((prev: any) => (prev ? { ...prev, ...updated } : prev));
+    }
+    alert('チャンネルを更新しました！');
+  };
+
+  const handleCreateChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !newChannelName.trim()) return;
+    setIsCreatingChannel(true);
+    try {
+      const res = await api.post('/api/channels', { name: newChannelName.trim(), description: newChannelDesc.trim(), color: newChannelColor, category: newChannelCategory, });
+      if (res.ok) {
+        const created = await res.json();
+        setChannels((prev: any) => [created, ...prev]);
+        setShowCreateChannelModal(false);
+        setNewChannelName('');
+        setNewChannelDesc('');
+        openChannelDetail(created);
+      } else {
+        const err = await res.json();
+        alert(err.error || 'チャンネルの作成に失敗しました。');
+      }
+    } catch (e: any) {
+      alert(`エラー: ${e.message}`);
+    } finally {
+      setIsCreatingChannel(false);
+    }
+  };
+
+  const handleSubmitReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !replyTargetPost || !replyContent.trim() || isReplying) return;
+    setIsReplying(true);
+    try {
+      const res = await api.post('/api/posts', { content: replyContent.trim(), visibility: postVisibility, in_reply_to: replyTargetPost.id, cw: showReplyCwInput && replyCwContent.trim() ? replyCwContent.trim() : undefined, });
+      if (res.ok) {
+        setReplyContent('');
+        setShowReplyCwInput(false);
+        setReplyCwContent('');
+        setReplyTargetPost(null);
+        await fetchTimeline();
+        if (threadModalPost) {
+          handleOpenThread(threadModalPost);
+        }
+      } else {
+        const err = await res.json();
+        alert(`返信エラー: ${err.error}`);
+      }
+    } catch (err: any) {
+      alert(`エラー: ${err.message}`);
+    } finally {
+      setIsReplying(false);
+    }
+  };
+
+  const handleAdminDeleteUser = async () => {
+    if (!authToken || !adminDeleteTargetUser) return;
+    setIsAdminDeletingUser(true);
+    try {
+      const res = await api.delete(`/api/admin/users/${adminDeleteTargetUser.id}`);
+      const data = await res.json();
+      if (res.ok) {
+        const deletedId = adminDeleteTargetUser.id;
+        setAdminDeleteTargetUser(null);
+        fetchAdminData();
+        alert(`ユーザー @${deletedId} を完全に削除しました。`);
+      } else {
+        alert(data.error || 'アカウントの削除に失敗しました。');
+      }
+    } catch (err: any) {
+      alert(err.message || '通信エラーが発生しました。');
+    } finally {
+      setIsAdminDeletingUser(false);
+    }
+  };
+
+  const handleSelfDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !authUser) return;
+    if (selfDeleteConfirmId.trim().toLowerCase() !== authUser.id.toLowerCase()) {
+      setSelfDeleteError(`確認用ユーザーIDが一致しません。「${authUser.id}」と正確に入力してください。`);
+      return;
+    }
+
+    setIsSelfDeleting(true);
+    setSelfDeleteError(null);
+    try {
+      const res = await api.post('/api/user/delete-me', { confirmUserId: selfDeleteConfirmId.trim(), masterKey: selfDeleteMasterKey.trim() || undefined, });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setSelfDeleteError(data.error || '退会処理に失敗しました。');
+        setIsSelfDeleting(false);
+        return;
+      }
+
+      // 退会完了: セッションストレージクリアしてウェルカムポータルへ
+      localStorage.removeItem('spica_token');
+      localStorage.removeItem('astrabit_token');
+      setAuthToken(null);
+      setAuthUser(null);
+      setShowSelfDeleteModal(false);
+      setSelfDeleteConfirmId('');
+      setSelfDeleteMasterKey('');
+      setIsSelfDeleting(false);
+      setCurrentView('timeline');
+      setShowAuthPortal(true);
+      setAuthPortalTab('welcome');
+      alert('アカウントと関連データを完全に削除しました。ご利用ありがとうございました。');
+    } catch (err: any) {
+      setSelfDeleteError(err.message || '通信エラーが発生しました。');
+      setIsSelfDeleting(false);
+    }
+  };
   const { renderPostCard, renderReactionBadgeContent } = createRenderPostCard(postDeps);
   return (
     <>
