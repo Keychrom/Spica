@@ -2826,6 +2826,19 @@ export default function App() {
             setProfilePosts((prev) => prev.map(updateReaction));
             setBookmarks((prev) => prev.map(updateReaction));
             setNewPostsQueue((prev) => prev.map(updateReaction));
+            // スレッド表示（投稿の詳細）も開いていれば合わせる。
+            // ここを入れないと、詳細を開いたままリモートのリアクションが増えても
+            // 再読み込みするまでバッジが出ない（2026-10-04 に追加）
+            setThreadData((td) =>
+              td
+                ? {
+                    ...td,
+                    post: updateReaction(td.post),
+                    parent: td.parent ? updateReaction(td.parent) : td.parent,
+                    replies: td.replies.map(updateReaction),
+                  }
+                : td
+            );
           } catch (err) {
             console.error('[SSE] Error parsing reaction:', err);
           }

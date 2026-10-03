@@ -1007,10 +1007,81 @@ export async function processActivity(
           await invalidateTimelineCache();
           console.log(`[Inbox Undo] ❌ Follow removed: ${actorUrl} unfollowed ${targetActorUrl}`);
         } else if (innerType === 'Like' || innerType === 'EmojiReact' || !innerType) {
-          // リアクション / いいね取り消し
-          if (targetObjId) {
-            await db.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ?').run(actorUrl, targetObjId);
-            console.log(`[Inbox Undo] ❌ Reaction removed: ${actorUrl} on ${targetObjId}`);
+          // リアクション / いいね取り消し。
+          // Undo の object は「取り消す活動」を指す（活動 id の文字列か、活動の埋め込み）。
+          // 埋め込みなら content / _misskey_reaction に絵文字、object に投稿が入っている。
+          // 受け取った活動の id は reactions.id に入れてあるので、まずはその 1 件だけを消す。
+          // (人, 投稿) の単位で消すと、切り替え（❤️→💯）の直後に届いた Undo が
+          // 新しいリアクションまで巻き込んで消してしまう（2026-10-04 に直した）。
+          const undoneId = typeof innerObject === 'string' ? innerObject : innerObject.id;
+          const undonePostId = typeof innerObject === 'object'
+            ? (typeof innerObject.object === 'string' ? innerObject.object : innerObject.object?.id)
+            : null;
+          const undoneReaction = typeof innerObject === 'object'
+            ? (innerObject._misskey_reaction || innerObject.content || null)
+            : null;
+
+          let removedRows: { post_id: string; reaction: string }[] = [];
+          if (undoneId) {
+            const rows = (await db.prepare(
+              'SELECT post_id, reaction FROM reactions WHERE id = ? AND user_id = ?'
+            ).all(undoneId, actorUrl)) as any[];
+            if (rows.length > 0) {
+              await db.prepare('DELETE FROM reactions WHERE id = ? AND user_id = ?').run(undoneId, actorUrl);
+              removedRows = rows.map((r) => ({ post_id: r.post_id, reaction: r.reaction }));
+            }
+          }
+          if (removedRows.length === 0 && undonePostId && undoneReaction) {
+            const rows = (await db.prepare(
+              'SELECT post_id, reaction FROM reactions WHERE user_id = ? AND post_id = ? AND reaction = ?'
+            ).all(actorUrl, undonePostId, undoneReaction)) as any[];
+            if (rows.length > 0) {
+              await db.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ? AND reaction = ?')
+                .run(actorUrl, undonePostId, undoneReaction);
+              removedRows = rows.map((r) => ({ post_id: r.post_id, reaction: r.reaction }));
+            }
+          }
+          if (removedRows.length === 0 && typeof innerObject === 'string') {
+            // object が活動 id ではなく投稿 URL の実装もある（古い Misskey など）→ 投稿として消してみる
+            const rows = (await db.prepare(
+              'SELECT post_id, reaction FROM reactions WHERE user_id = ? AND post_id = ?'
+            ).all(actorUrl, innerObject)) as any[];
+            if (rows.length > 0) {
+              await db.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ?').run(actorUrl, innerObject);
+              removedRows = rows.map((r) => ({ post_id: r.post_id, reaction: r.reaction }));
+            }
+          }
+          if (removedRows.length === 0 && undonePostId && !undoneId && !undoneReaction) {
+            // 活動 id も絵文字も無い（object に投稿しか無い）→ 手がかりが無いので投稿単位でまとめて消す
+            const rows = (await db.prepare(
+              'SELECT post_id, reaction FROM reactions WHERE user_id = ? AND post_id = ?'
+            ).all(actorUrl, undonePostId)) as any[];
+            if (rows.length > 0) {
+              await db.prepare('DELETE FROM reactions WHERE user_id = ? AND post_id = ?').run(actorUrl, undonePostId);
+              removedRows = rows.map((r) => ({ post_id: r.post_id, reaction: r.reaction }));
+            }
+          }
+
+          if (removedRows.length > 0) {
+            // 見ている人のバッジを消す（残数を配る。0 ならクライアント側で消える）
+            for (const row of removedRows) {
+              const countRow = await db.prepare(
+                'SELECT count(*) AS c FROM reactions WHERE post_id = ? AND reaction = ?'
+              ).get(row.post_id, row.reaction) as any;
+              broadcastReaction({
+                postId: row.post_id,
+                reaction: row.reaction,
+                count: countRow ? countRow.c : 0,
+                action: 'remove',
+              });
+            }
+            console.log(
+              `[Inbox Undo] ❌ Reaction removed: ${actorUrl} on ${[...new Set(removedRows.map((r) => r.post_id))].join(', ')} (${removedRows.length} 件)`
+            );
+          } else {
+            console.warn(
+              `[Inbox Undo] ⚠️ 取り消すリアクションが見つかりません: ${actorUrl} object=${undoneId || JSON.stringify(innerObject).slice(0, 120)}`
+            );
           }
         } else if (innerType === 'Announce') {
           // ブースト取り消し
