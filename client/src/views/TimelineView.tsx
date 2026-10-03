@@ -157,6 +157,9 @@ export default function TimelineView(props: TimelineViewProps) {
 
   const applyNewPostsQueue = () => {
     if (newPostsQueue.length === 0) return;
+    // 押したときは新着を見せたいので、位置を保たずに先頭へ戻す
+    // （仮想化で「挿しても位置が飛ばない」ようにしたぶん、明示的に動かす）
+    skipAnchorRef.current = true;
     setTimeline((prev: any) => {
       const existingIds = new Set(prev.map((p: any) => p.id));
       const fresh = newPostsQueue.filter((p: any) => {
@@ -166,6 +169,7 @@ export default function TimelineView(props: TimelineViewProps) {
       return [...fresh, ...prev];
     });
     setNewPostsQueue([]);
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   };
 
   const [searchTab, setSearchTab] = useState<'all' | 'users' | 'posts'>('all');
@@ -334,14 +338,24 @@ export default function TimelineView(props: TimelineViewProps) {
   // スクロール位置が飛ばないように firstItemIndex をずらす
   const [firstItemIndex, setFirstItemIndex] = useState(1000000);
   const headIdRef = useRef<string | null>(null);
+  // 「新着を表示」を押した直後は位置を保たない（先頭を見せる）
+  const skipAnchorRef = useRef(false);
   useEffect(() => {
     const list = timeline as any[];
     const head = list[0]?.id ?? null;
     const prevHead = headIdRef.current;
     if (head && prevHead && head !== prevHead) {
       const idx = list.findIndex((p: any) => p.id === prevHead);
-      if (idx > 0) setFirstItemIndex((i) => i - idx);
-      else if (idx === -1) setFirstItemIndex(1000000);
+      if (idx > 0) {
+        if (skipAnchorRef.current) {
+          skipAnchorRef.current = false;
+          setFirstItemIndex(1000000);
+        } else if (window.scrollY > 64) {
+          // 下を読んでいる最中は、見ている位置が飛ばないように補正する
+          setFirstItemIndex((i) => i - idx);
+        }
+        // てっぺんに居るときは何もしない（新着がそのまま見える）
+      } else if (idx === -1) setFirstItemIndex(1000000);
     } else if (head && !prevHead) {
       setFirstItemIndex(1000000);
     }
