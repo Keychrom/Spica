@@ -52,6 +52,8 @@ FILES=(
 DIRS=(
   .github/workflows
   client/src
+  # manifest / アイコンなど（2026-10-04 追加: manifest.json の share_target が運ばれなかった）
+  client/public
   server/src
   scripts
 )

@@ -6,7 +6,11 @@
   "scope": "/",
   "id": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui", "browser"],
+  "display_override": [
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
   "background_color": "#020617",
   "theme_color": "#020617",
   "orientation": "portrait",
@@ -27,5 +31,26 @@
   "categories": [
     "social",
     "news"
+  ],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "shortcuts": [
+    {
+      "name": "新規投稿",
+      "short_name": "投稿",
+      "url": "/?compose=1"
+    },
+    {
+      "name": "検索",
+      "short_name": "検索",
+      "url": "/?focus=search"
+    }
   ]
 }
