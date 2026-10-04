@@ -9,6 +9,7 @@ import type { Post } from '../App';
 import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, EyeOff, Globe, HardDrive, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, User, UserPlus, Users } from 'lucide-react';
 import { AutocompleteDropdown, PollInputEditor, createRenderPostCard } from '../components/PostRendering';
 import { Virtuoso } from 'react-virtuoso';
+import { usePrefs } from '../prefs';
 import { useEffect, useRef, useState } from 'react';
 
 export interface TimelineViewProps {
@@ -154,23 +155,43 @@ export default function TimelineView(props: TimelineViewProps) {
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [isLoadingOlderPosts, setIsLoadingOlderPosts] = useState<boolean>(false);
+  const prefValues = usePrefs();
+
+  /** 貯めた新着を先頭に挿す（挿すだけで、位置は呼び出し側が決める） */
+  const mergeNewPostsInto = (prev: any[]) => {
+    const existingIds = new Set(prev.map((p: any) => p.id));
+    const fresh = newPostsQueue.filter((p: any) => {
+      if (existingIds.has(p.id)) return false;
+      return isPostMatchingTimeline(p, timelineMode, activeHashtag, followingUrls, authUser);
+    });
+    return [...fresh, ...prev];
+  };
 
   const applyNewPostsQueue = () => {
     if (newPostsQueue.length === 0) return;
     // 押したときは新着を見せたいので、位置を保たずに先頭へ戻す
     // （仮想化で「挿しても位置が飛ばない」ようにしたぶん、明示的に動かす）
     skipAnchorRef.current = true;
-    setTimeline((prev: any) => {
-      const existingIds = new Set(prev.map((p: any) => p.id));
-      const fresh = newPostsQueue.filter((p: any) => {
-        if (existingIds.has(p.id)) return false;
-        return isPostMatchingTimeline(p, timelineMode, activeHashtag, followingUrls, authUser);
-      });
-      return [...fresh, ...prev];
-    });
+    setTimeline(mergeNewPostsInto);
     setNewPostsQueue([]);
     window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   };
+
+  // 「新着はそのまま反映」のときは、貯めずに先頭へ挿す（読んでいる位置は保たれる＝
+  // firstItemIndex の補正が効くので、下を読んでいる最中に飛ばされない）
+  useEffect(() => {
+    if (prefValues.newPostsBehavior !== 'auto' || newPostsQueue.length === 0) return;
+    setTimeline(mergeNewPostsInto);
+    setNewPostsQueue([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newPostsQueue, prefValues.newPostsBehavior]);
+
+  // 「手動で読み込む」のときは貯めない（バッジも出さない。更新は再読み込みかタブの切り替えで）
+  useEffect(() => {
+    if (prefValues.newPostsBehavior === 'manual' && newPostsQueue.length > 0) {
+      setNewPostsQueue([]);
+    }
+  }, [newPostsQueue, prefValues.newPostsBehavior, setNewPostsQueue]);
 
   const [searchTab, setSearchTab] = useState<'all' | 'users' | 'posts'>('all');
 
@@ -1841,7 +1862,7 @@ export default function TimelineView(props: TimelineViewProps) {
                 {/* 投稿一覧 */}
                 <div className="space-y-4">
                   {/* 📡 新着投稿バッジ (Misskey風) */}
-                  {newPostsQueue.length > 0 && (
+                  {newPostsQueue.length > 0 && prefValues.newPostsBehavior === 'badge' && (
                     <button
                       type="button"
                       onClick={applyNewPostsQueue}
@@ -1867,7 +1888,7 @@ export default function TimelineView(props: TimelineViewProps) {
                       data={timeline}
                       firstItemIndex={firstItemIndex}
                       computeItemKey={(_i, post: any) => post.id}
-                      itemContent={(_index, post: any) => <div className="pb-3">{renderPostCard(post)}</div>}
+                      itemContent={(_index, post: any) => <div className="timeline-item pb-3">{renderPostCard(post)}</div>}
                       components={{
                         Footer: () =>
                           timelineCursor ? (

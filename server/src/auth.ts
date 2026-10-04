@@ -73,18 +73,58 @@ export function verifyPassword(password: string, stored: string | null | undefin
 
 /**
  * セッショントークンを発行して DB に保存（有効期限: 30日）
+ *
+ * `userAgent` は「ログイン中の端末」一覧（設定 → セッション）に出すための控え。
+ * 省略可（古いセッションは空文字のまま）。
  */
-export async function createSession(userId: string): Promise<{ token: string; expiresAt: string }> {
+export async function createSession(userId: string, userAgent?: string | null): Promise<{ token: string; expiresAt: string }> {
   const token = `spica_sess_${crypto.randomBytes(32).toString('hex')}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
   await db.prepare(`
-    INSERT INTO sessions (token, user_id, created_at, expires_at)
-    VALUES (?, ?, ?, ?)
-  `).run(token, userId, now.toISOString(), expiresAt);
+    INSERT INTO sessions (token, user_id, created_at, expires_at, user_agent)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(token, userId, now.toISOString(), expiresAt, (userAgent || '').slice(0, 300));
 
   return { token, expiresAt };
+}
+
+/** その利用者のセッション一覧（トークンそのものは返さない。id はトークンのハッシュ） */
+export async function listUserSessions(userId: string): Promise<{ id: string; created_at: string; expires_at: string; user_agent: string }[]> {
+  const rows = await db.prepare(`
+    SELECT token, created_at, expires_at, user_agent FROM sessions
+    WHERE user_id = ? ORDER BY created_at DESC
+  `).all(userId) as { token: string; created_at: string; expires_at: string; user_agent?: string | null }[];
+  return rows.map((r) => ({
+    id: sessionPublicId(r.token),
+    created_at: r.created_at,
+    expires_at: r.expires_at,
+    user_agent: r.user_agent || '',
+  }));
+}
+
+/** トークンから、外向けに晒してよい短い id を作る（取り消しの宛先に使う） */
+export function sessionPublicId(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+/**
+ * 指定した id（= トークンのハッシュ）のセッションを破棄する。
+ * 自分のセッション以外は消せない（user_id で絞る）。消せたら true。
+ */
+export async function destroySessionById(userId: string, publicId: string): Promise<boolean> {
+  const rows = await db.prepare('SELECT token FROM sessions WHERE user_id = ?').all(userId) as { token: string }[];
+  const target = rows.find((r) => sessionPublicId(r.token) === publicId);
+  if (!target) return false;
+  await destroySession(target.token);
+  return true;
+}
+
+/** 現在の端末以外のセッションをすべて破棄する（返り値は消した件数） */
+export async function destroyOtherSessions(userId: string, currentToken: string): Promise<number> {
+  const result = await db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?').run(userId, currentToken);
+  return Number((result as any)?.changes ?? 0);
 }
 
 /**

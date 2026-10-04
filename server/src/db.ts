@@ -1093,6 +1093,10 @@ async function initDatabaseSchema(): Promise<void> {
     "CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at);",
     // 通知の種類別設定（JSON: { reaction: false, ... } 無効にする種類だけ false で保存）
     "ALTER TABLE users ADD COLUMN notification_prefs TEXT DEFAULT '{}';",
+    // 表示と投稿の好み（JSON。検証は userPrefs.ts が唯一の正）。端末ごとの localStorage から移した
+    "ALTER TABLE users ADD COLUMN prefs TEXT DEFAULT '{}';",
+    // ログイン中の端末一覧に出す User-Agent の控え（設定 → セッション）
+    "ALTER TABLE sessions ADD COLUMN user_agent TEXT DEFAULT '';",
     // ドメインブロックの強さ（suspend = 完全遮断 / silence = 表示から除外のみ・配送は継続）
     "ALTER TABLE blocked_domains ADD COLUMN severity TEXT NOT NULL DEFAULT 'suspend';",
     // メール通知のオプトイン（既定 OFF。SMTP 未設定なら機能ごと無効）

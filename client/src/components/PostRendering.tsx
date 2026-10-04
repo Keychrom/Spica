@@ -10,6 +10,26 @@ import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Ban, BarChart2, Bookmark, Check, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageCircle, MessageSquare, MoreHorizontal, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
 import type { MediaAttachment, PollData, Post } from '../App';
+import { getPrefs } from '../prefs';
+
+/**
+ * 相対時刻（設定 → 表示 → 時刻の表し方）。
+ * 1 週間より古いものは日付にフォールバックする（「365日前」は嬉しくない）。
+ */
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const minutes = Math.floor((Date.now() - then) / 60000);
+  if (minutes < 1) return 'たった今';
+  if (minutes < 60) return `${minutes}分前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}時間前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}日前`;
+  const date = new Date(then);
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  return date.toLocaleDateString('ja-JP', sameYear ? { month: 'numeric', day: 'numeric' } : { year: 'numeric', month: 'numeric', day: 'numeric' });
+}
 
 export interface PostRendererDeps {
   activeMenuPostId: any;
@@ -161,6 +181,9 @@ export function PostMediaGrid({
   const [revealed, setRevealed] = useState(false);
   // サムネイル表示から実際の再生に切り替えたか（動画）
   const [videoPlaying, setVideoPlaying] = useState(false);
+  // 利用者が自分でミュートを外したか（自動再生の既定ミュートを勝手に戻さない）
+  const [userUnmuted, setUserUnmuted] = useState(false);
+  const mediaPrefs = getPrefs();
   if (!attachments || attachments.length === 0) return null;
 
   const count = attachments.length;
@@ -207,7 +230,9 @@ export function PostMediaGrid({
             <video
               src={att.url}
               controls
-              autoPlay={videoPlaying}
+              autoPlay={videoPlaying || mediaPrefs.autoPlayMedia}
+              muted={!userUnmuted && !videoPlaying && mediaPrefs.muteMediaByDefault}
+              onVolumeChange={(e) => setUserUnmuted(!(e.target as HTMLVideoElement).muted)}
               preload="metadata"
               playsInline
               poster={att.thumbnailUrl || undefined}
@@ -919,7 +944,7 @@ export function createRenderPostCard(deps: PostRendererDeps) {
     return (
       <div
         key={post.feed_id || post.id}
-        className="bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 sm:p-5 shadow-lg transition overflow-hidden"
+        className="post-card bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 sm:p-5 shadow-lg transition overflow-hidden"
       >
         {/* 📌 ピン留めバッジ */}
         {post.is_pinned && (
@@ -990,7 +1015,11 @@ export function createRenderPostCard(deps: PostRendererDeps) {
                 </span>
               </div>
               <div className="flex items-center space-x-2 text-[11px] text-slate-500 mt-0.5 truncate flex-wrap gap-y-1">
-                <span className="shrink-0">{new Date(post.published_at).toLocaleString('ja-JP')}</span>
+                <span className="shrink-0" title={new Date(post.published_at).toLocaleString('ja-JP')}>
+                  {getPrefs().timeFormat === 'relative'
+                    ? formatRelativeTime(post.published_at)
+                    : new Date(post.published_at).toLocaleString('ja-JP')}
+                </span>
                 {post.channel && (
                   <button
                     type="button"
@@ -1174,7 +1203,7 @@ export function createRenderPostCard(deps: PostRendererDeps) {
               attachments={post.media_attachments}
               onImageClick={openMediaPreview}
               className="mt-3"
-              isSensitive={post.is_sensitive}
+              isSensitive={Boolean(post.is_sensitive) && getPrefs().alwaysHideSensitive}
             />
 
             {/* 🔗 リンクプレビュー（OGPカード） */}

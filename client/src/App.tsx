@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { compressImage } from './utils/imageCompressor';
 import { api, setApiToken } from './api/client';
+import { usePrefs, loadPrefs, updatePrefs, resetPrefsToLocalCache, getPrefs } from './prefs';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppHeader from './components/AppHeader';
 
@@ -441,6 +442,31 @@ export default function App() {
     localStorage.setItem('spica_accent_color', accentColor);
   }, [accentColor]);
 
+  // 🗄️ サーバー保存の設定（userPrefs）。読み込みは authToken の宣言後（下）で行う
+  const prefs = usePrefs();
+
+  // サーバーから来た設定を、既存の state（設定画面が直接見ている値）へ流し込む。
+  // サーバー側が正なので、ログイン時はこちらで上書きする。
+  useEffect(() => {
+    setThemeMode(prefs.themeMode);
+    setAccentColor(prefs.accentColor);
+    setDefaultVisibility(prefs.defaultVisibility as any);
+    setDefaultTimeline(prefs.defaultTimeline as any);
+    setShowCustomEmojis(prefs.showCustomEmojiImages);
+    setAutoCompressImages(prefs.autoCompressImages);
+    // リアクションの入力欄は既定のリアクションで埋めておく（変えたいときは書き換えるだけ）
+    setCustomReactionInput((current) => (current ? current : prefs.defaultReaction));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.themeMode, prefs.accentColor, prefs.defaultVisibility, prefs.defaultTimeline, prefs.showCustomEmojiImages, prefs.autoCompressImages, prefs.defaultReaction]);
+
+  // 設定画面からの変更は、そのままサーバーへも保存する（端末をまたいで同じ見た目にする）
+  const setThemeModePersist = (value: 'dark' | 'pure_black' | 'light') => { setThemeMode(value); updatePrefs({ themeMode: value }); };
+  const setAccentColorPersist = (value: 'indigo' | 'cyan' | 'emerald' | 'purple' | 'rose' | 'amber') => { setAccentColor(value); updatePrefs({ accentColor: value }); };
+  const setDefaultVisibilityPersist = (value: 'public' | 'local' | 'followers') => { setDefaultVisibility(value); updatePrefs({ defaultVisibility: value }); };
+  const setDefaultTimelinePersist = (value: 'local' | 'home' | 'all') => { setDefaultTimeline(value); updatePrefs({ defaultTimeline: value }); };
+  const setShowCustomEmojisPersist = (value: boolean) => { setShowCustomEmojis(value); updatePrefs({ showCustomEmojiImages: value }); };
+  const setAutoCompressImagesPersist = (value: boolean) => { setAutoCompressImages(value); updatePrefs({ autoCompressImages: value }); };
+
   // 📢 チャンネル機能関連ステート
   const [channels, setChannels] = useState<Channel[]>([]);
   const [isLoadingChannels, setIsLoadingChannels] = useState<boolean>(false);
@@ -538,6 +564,15 @@ export default function App() {
 
   // 通信はすべて api/client.ts を通る。トークンの在処を 1 か所にする
   useEffect(() => { setApiToken(authToken); }, [authToken]);
+
+  // 🗄️ サーバー保存の設定を読む（ログイン時）。ログアウトしたら端末の控えに戻す
+  useEffect(() => {
+    if (authToken) {
+      void loadPrefs();
+    } else {
+      resetPrefsToLocalCache();
+    }
+  }, [authToken]);
 
   // 認証ポータル (Misskey風ウェルカム・ログイン・登録画面: 未ログイン時は初期起動で自動表示)
   const [showAuthPortal, setShowAuthPortal] = useState<boolean>(!Boolean(localStorage.getItem('spica_token') || localStorage.getItem('astrabit_token')));
@@ -777,7 +812,13 @@ export default function App() {
   // 絵文字リアクションステート
   const [activeReactionPostId, setActiveReactionPostId] = useState<string | null>(null);
   const [customReactionInput, setCustomReactionInput] = useState<string>('');
-  const quickEmojis = ['👍', '❤️', '🚀', '🎉', '✨', '🔥', '🥺', '😂', '👀', '💯'];
+  // 既定のリアクション（設定 → 投稿の既定）を先頭に出す
+  const quickEmojis = useMemo(() => {
+    const base = ['👍', '❤️', '🚀', '🎉', '✨', '🔥', '🥺', '😂', '👀', '💯'];
+    const preferred = prefs.defaultReaction;
+    if (!preferred) return base;
+    return [preferred, ...base.filter((emoji) => emoji !== preferred)];
+  }, [prefs.defaultReaction]);
 
   // 🎨 カスタム絵文字 & リッチピッカーステート
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
@@ -3238,12 +3279,14 @@ export default function App() {
       const res = await api.post('/api/posts', { content: trimmed, visibility: postVisibility, attachments: postAttachments, quote_id: quoteTargetPost ? quoteTargetPost.id : undefined, is_sensitive: isSensitivePost, cw: showCwInput && cwContent.trim() ? cwContent.trim() : undefined, channel_id: postTargetChannelId || undefined, poll: hasPoll ? { choices: validChoices, multiple: pollMultiple, expires_in: pollExpiresIn, } : undefined, });
 
       if (res.ok) {
+        // 次の投稿に備えて、設定の既定値へ戻す（設定 → 投稿の既定）
+        const postPrefs = getPrefs();
         setPostContent('');
         setPostAttachments([]);
         setQuoteTargetPost(null);
-        setIsSensitivePost(false);
-        setShowCwInput(false);
-        setCwContent('');
+        setIsSensitivePost(postPrefs.defaultSensitive);
+        setShowCwInput(Boolean(postPrefs.defaultCwText));
+        setCwContent(postPrefs.defaultCwText);
         setShowPollInput(false);
         setPollChoices(['', '']);
         setPollMultiple(false);
@@ -3257,6 +3300,10 @@ export default function App() {
         }
         if (authUser) {
           checkAuth(authToken);
+        }
+        // 「投稿後にタイムラインへ戻る」設定なら、投稿欄のモーダル類を閉じたうえで先頭を見せる
+        if (postPrefs.afterPost === 'timeline') {
+          window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
         }
       } else {
         const err = await res.json();
@@ -3491,7 +3538,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
-      <AppHeader {...{authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw }} />
+      <AppHeader {...{authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode: setThemeModePersist, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw }} />
 
       {/* メインビュー */}
       {currentView === 'admin' ? (
@@ -3515,7 +3562,7 @@ export default function App() {
             </div>
           }
         >
- <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed }} />
+ <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor: setAccentColorPersist, setAutoCompressImages: setAutoCompressImagesPersist, setDefaultTimeline: setDefaultTimelinePersist, setDefaultVisibility: setDefaultVisibilityPersist, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis: setShowCustomEmojisPersist, setShowSelfDeleteModal, setThemeMode: setThemeModePersist, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed }} />
         </Suspense>
         </ErrorBoundary>
       ) : currentView === 'notifications' ? (

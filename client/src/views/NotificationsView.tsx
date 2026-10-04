@@ -8,6 +8,7 @@
 import { useState, useMemo } from 'react';
 import type { AppNotification } from '../App';
 import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
+import { usePrefs } from '../prefs';
 
 export interface NotificationsViewProps {
   authToken: any;
@@ -46,15 +47,22 @@ export default function NotificationsView(props: NotificationsViewProps) {
     }
   };
 
+  // 設定「通知のまとめ方」: 「個別に表示」なら 1 件ずつのグループに割って、まとめをやめる
+  const prefs = usePrefs();
+  const effectiveGroups = useMemo(() => {
+    if (prefs.notificationGrouping !== 'individual') return notifGroups;
+    return (notifications || []).map((n: any) => ({ key: n.id, items: [n] }));
+  }, [prefs.notificationGrouping, notifGroups, notifications]);
+
   const groupByFirstId = useMemo(() => {
     const map = new Map<string, { key: string; items: AppNotification[] }>();
-    for (const group of notifGroups) map.set(group.items[0].id, group);
+    for (const group of effectiveGroups) map.set(group.items[0].id, group);
     return map;
-  }, [notifGroups]);
+  }, [effectiveGroups]);
 
   const groupedAwayIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const group of notifGroups) {
+    for (const group of effectiveGroups) {
       if (group.items.length > 1) for (const item of group.items.slice(1)) ids.add(item.id);
     }
     return ids;

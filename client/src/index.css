@@ -424,3 +424,25 @@ select option {
   font-size: 0.75rem;
   line-height: 1.35;
 }
+
+/* ============================================================
+   文字サイズ（設定 → 表示）
+   Tailwind は rem 基準なので、html のフォントサイズを変えると
+   文字と余白が一緒にスケールする（画面全体の大きさ調整として自然）
+   ============================================================ */
+html[data-font-size="small"] { font-size: 14px; }
+html[data-font-size="large"] { font-size: 18px; }
+
+/* ============================================================
+   コンパクト表示（設定 → 表示）
+   カードの余白と、タイムラインの行間だけを詰める
+   ============================================================ */
+[data-density="compact"] .post-card {
+  padding: 0.7rem 0.85rem;
+}
+[data-density="compact"] .timeline-item {
+  padding-bottom: 0.35rem;
+}
+[data-density="compact"] .post-card .prose-post {
+  line-height: 1.45;
+}

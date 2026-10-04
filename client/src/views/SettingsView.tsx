@@ -5,8 +5,144 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
+import { usePrefs, updatePrefs } from '../prefs';
+
+/**
+ * 設定の選択肢 1 行（表示と動作の各項目で使う）。
+ * 変更はそのままサーバーへ保存される（`updatePrefs`）。
+ */
+function PrefChoice<T extends string>({ label, hint, value, options, onChange }: {
+  label: string;
+  hint?: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+      <div>
+        <span className="text-xs font-bold text-slate-200 block">{label}</span>
+        {hint && <span className="text-[11px] text-slate-500 block mt-0.5">{hint}</span>}
+      </div>
+      <div className="flex gap-1.5 shrink-0">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`px-3 py-1.5 rounded-xl text-[11px] font-bold border transition cursor-pointer ${
+              value === option.value
+                ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
+                : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 設定のチェックボックス 1 行 */
+function PrefToggle({ label, hint, checked, onChange }: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start justify-between space-x-3 cursor-pointer">
+      <span>
+        <span className="text-xs font-bold text-slate-200 block">{label}</span>
+        {hint && <span className="text-[11px] text-slate-500 block mt-0.5 leading-relaxed">{hint}</span>}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 w-4 h-4 accent-indigo-500 cursor-pointer shrink-0"
+      />
+    </label>
+  );
+}
+
+/** 自分用のドメインミュート（ホスト名を足す / 消す） */function MutedDomainsEditor() {
+  const prefs = usePrefs();
+  const [input, setInput] = useState('');
+
+  const addDomain = () => {
+    let host = input.trim().toLowerCase();
+    if (!host) return;
+    host = host.replace(/^https?:\/\//, '').replace(/^@/, '').split('/')[0].split(':')[0];
+    if (!host.includes('.') || prefs.mutedDomains.includes(host)) {
+      setInput('');
+      return;
+    }
+    updatePrefs({ mutedDomains: [...prefs.mutedDomains, host] });
+    setInput('');
+  };
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <span className="text-xs font-bold text-slate-200 block">ミュートするドメイン（自分用）</span>
+        <span className="text-[11px] text-slate-500 block mt-0.5 leading-relaxed">
+          ここに入れたサーバーの投稿が、あなたの画面（タイムライン・検索）に出なくなります。
+          サーバー全体の遮断（管理者の設定）とは別で、あなただけに効きます。
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              addDomain();
+            }
+          }}
+          placeholder="example.com"
+          className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+        />
+        <button
+          type="button"
+          onClick={addDomain}
+          className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer flex items-center space-x-1"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          <span>追加</span>
+        </button>
+      </div>
+      {prefs.mutedDomains.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {prefs.mutedDomains.map((domain) => (
+            <span
+              key={domain}
+              className="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-700 text-[11px] font-mono text-slate-300"
+            >
+              <span>{domain}</span>
+              <button
+                type="button"
+                onClick={() => updatePrefs({ mutedDomains: prefs.mutedDomains.filter((d) => d !== domain) })}
+                className="text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                title="ミュートを解除"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-slate-600">まだ登録されていません。</p>
+      )}
+    </div>
+  );
+}
+
 
 export interface SettingsViewProps {
   setPostVisibility: any;
@@ -98,10 +234,151 @@ export interface SettingsViewProps {
   themeMode: any;
 }
 
+/** User-Agent を「Windows / Chrome」のような短い説明にする（端末一覧用） */
+function describeUserAgent(userAgent: string): string {
+  if (!userAgent) return '不明な端末';
+  const os = /Windows/.test(userAgent) ? 'Windows'
+    : /Android/.test(userAgent) ? 'Android'
+    : /iPhone|iPad|iPod/.test(userAgent) ? 'iOS'
+    : /Mac OS X/.test(userAgent) ? 'macOS'
+    : /Linux/.test(userAgent) ? 'Linux'
+    : 'その他のOS';
+  const browser = /Edg\//.test(userAgent) ? 'Edge'
+    : /Chrome\//.test(userAgent) ? 'Chrome'
+    : /Firefox\//.test(userAgent) ? 'Firefox'
+    : /Safari\//.test(userAgent) ? 'Safari'
+    : 'ブラウザ';
+  return `${os} / ${browser}`;
+}
+
+/**
+ * ログイン中の端末（セッション）一覧。
+ * トークンそのものはサーバーが返さない（ハッシュ id で失効させる）。
+ */
+function SessionsPanel({ api, authToken }: { api: any; authToken: any }) {
+  const [sessions, setSessions] = useState<{ id: string; created_at: string; expires_at: string; user_agent: string; current: boolean }[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const load = async () => {
+    if (!authToken) return;
+    setIsLoading(true);
+    try {
+      const res = await api.get('/api/sessions');
+      if (res.ok) {
+        const data = await res.json();
+        setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+      }
+    } catch (err) {
+      console.error('セッション一覧の取得に失敗:', err);
+    }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  const revoke = async (id: string) => {
+    if (!confirm('この端末からログアウトさせますか？')) return;
+    try {
+      const res = await api.delete(`/api/sessions/${encodeURIComponent(id)}`);
+      if (res.ok) {
+        setSessions((prev) => prev.filter((s) => s.id !== id));
+        setMessage('ログアウトさせました。');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setMessage(data.error || 'ログアウトに失敗しました。');
+      }
+    } catch {
+      setMessage('ログアウトに失敗しました。');
+    }
+  };
+
+  const revokeOthers = async () => {
+    if (!confirm('この端末以外のすべての端末からログアウトさせますか？')) return;
+    try {
+      const res = await api.post('/api/sessions/revoke-others');
+      if (res.ok) {
+        await load();
+        setMessage('この端末以外をログアウトさせました。');
+      }
+    } catch {
+      setMessage('ログアウトに失敗しました。');
+    }
+  };
+
+  const others = sessions.filter((s) => !s.current).length;
+
+  return (
+    <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <span className="text-xs font-bold text-slate-300 block">ログイン中の端末</span>
+          <span className="text-[11px] text-slate-500 block mt-0.5">
+            心当たりのない端末があれば、そこでログアウトさせてください（パスワードやマスターキーを変えるとなお安全です）。
+          </span>
+        </div>
+        {others > 0 && (
+          <button
+            type="button"
+            onClick={revokeOthers}
+            className="shrink-0 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
+          >
+            ほかの端末をすべてログアウト
+          </button>
+        )}
+      </div>
+
+      {message && <p className="text-[11px] text-slate-400">{message}</p>}
+
+      {isLoading ? (
+        <p className="text-[11px] text-slate-500">読み込み中...</p>
+      ) : sessions.length === 0 ? (
+        <p className="text-[11px] text-slate-500">セッションが見つかりません。</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {sessions.map((session) => (
+            <li
+              key={session.id}
+              className="flex items-center justify-between gap-3 bg-slate-900/70 border border-slate-800 rounded-xl px-3 py-2"
+            >
+              <div className="min-w-0">
+                <span className="text-xs text-slate-200 flex items-center space-x-2">
+                  <span className="truncate">{describeUserAgent(session.user_agent)}</span>
+                  {session.current && (
+                    <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] font-bold shrink-0">この端末</span>
+                  )}
+                </span>
+                <span className="text-[10px] text-slate-500 block mt-0.5 font-mono">
+                  ログイン {new Date(session.created_at).toLocaleString('ja-JP')} / 期限 {new Date(session.expires_at).toLocaleDateString('ja-JP')}
+                </span>
+              </div>
+              {!session.current && (
+                <button
+                  type="button"
+                  onClick={() => revoke(session.id)}
+                  className="shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold text-rose-300 hover:text-white hover:bg-rose-600/80 border border-rose-500/30 transition cursor-pointer"
+                >
+                  ログアウト
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsView(props: SettingsViewProps) {
   const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
+
+  // 🗄️ サーバー保存の設定（表示と動作）。変更は updatePrefs がそのまま保存する
+  const prefs = usePrefs();
 
   const [isRegisteringPasskey, setIsRegisteringPasskey] = useState<boolean>(false);
 
@@ -1421,6 +1698,161 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
                   )}
 
+                  {/* 🧭 表示と動作（サーバー保存・端末をまたいで同じ） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
+                    <div>
+                      <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
+                        <Palette className="w-4 h-4 text-indigo-400" />
+                        <span>表示と動作</span>
+                        <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold">どの端末でも同じ</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        ここで変えたものはアカウントに保存され、別の端末でログインしても同じ見た目になります。
+                      </p>
+                    </div>
+
+                    <PrefChoice
+                      label="文字サイズ"
+                      hint="画面全体の大きさが変わります（余白も少し変わります）"
+                      value={prefs.fontSize}
+                      options={[
+                        { value: 'small', label: '小' },
+                        { value: 'normal', label: '標準' },
+                        { value: 'large', label: '大' },
+                      ]}
+                      onChange={(value) => updatePrefs({ fontSize: value })}
+                    />
+
+                    <PrefChoice
+                      label="行間・余白"
+                      value={prefs.density}
+                      options={[
+                        { value: 'comfortable', label: 'ゆったり' },
+                        { value: 'compact', label: 'コンパクト' },
+                      ]}
+                      onChange={(value) => updatePrefs({ density: value })}
+                    />
+
+                    <PrefChoice
+                      label="時刻の表し方"
+                      value={prefs.timeFormat}
+                      options={[
+                        { value: 'absolute', label: '日時' },
+                        { value: 'relative', label: '相対（3分前）' },
+                      ]}
+                      onChange={(value) => updatePrefs({ timeFormat: value })}
+                    />
+
+                    <PrefChoice
+                      label="新しい投稿が届いたとき"
+                      value={prefs.newPostsBehavior}
+                      options={[
+                        { value: 'badge', label: '件数バッジ' },
+                        { value: 'auto', label: 'そのまま反映' },
+                        { value: 'manual', label: '手動で読み込む' },
+                      ]}
+                      onChange={(value) => updatePrefs({ newPostsBehavior: value })}
+                    />
+
+                    <div className="border-t border-slate-800 pt-3 space-y-3">
+                      <PrefToggle
+                        label="ホームでブーストを隠す"
+                        hint="ホームタイムラインに他人のブーストを出しません（次に読み込んだときから）"
+                        checked={prefs.hideBoostsInHome}
+                        onChange={(checked) => updatePrefs({ hideBoostsInHome: checked })}
+                      />
+                      <PrefToggle
+                        label="ホームで返信を隠す"
+                        hint="自分が書いた返信は残します（次に読み込んだときから）"
+                        checked={prefs.hideRepliesInHome}
+                        onChange={(checked) => updatePrefs({ hideRepliesInHome: checked })}
+                      />
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3 space-y-3">
+                      <PrefToggle
+                        label="動画を自動再生する"
+                        hint="タイムラインの動画が、表示された時点で再生されます"
+                        checked={prefs.autoPlayMedia}
+                        onChange={(checked) => updatePrefs({ autoPlayMedia: checked })}
+                      />
+                      <PrefToggle
+                        label="自動再生はミュートで始める"
+                        checked={prefs.muteMediaByDefault}
+                        onChange={(checked) => updatePrefs({ muteMediaByDefault: checked })}
+                      />
+                      <PrefToggle
+                        label="センシティブを常に隠す"
+                        hint="オフにすると、センシティブでもクリックなしで表示します（初期値は隠す）"
+                        checked={prefs.alwaysHideSensitive}
+                        onChange={(checked) => updatePrefs({ alwaysHideSensitive: checked })}
+                      />
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3">
+                      <PrefChoice
+                        label="通知のまとめ方"
+                        hint="「1件ずつ」にすると、同じ投稿への複数リアクションなどもまとめずに並べます"
+                        value={prefs.notificationGrouping}
+                        options={[
+                          { value: 'group', label: 'まとめる' },
+                          { value: 'individual', label: '1件ずつ' },
+                        ]}
+                        onChange={(value) => updatePrefs({ notificationGrouping: value })}
+                      />
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3 space-y-3">
+                      <h5 className="text-xs font-bold text-slate-200">投稿の既定</h5>
+                      <PrefToggle
+                        label="センシティブを既定で ON"
+                        checked={prefs.defaultSensitive}
+                        onChange={(checked) => updatePrefs({ defaultSensitive: checked })}
+                      />
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                          <span className="text-xs font-bold text-slate-200 block">CW（内容の注意書き）の既定文言</span>
+                          <span className="text-[11px] text-slate-500 block mt-0.5">入れておくと、投稿欄の CW が最初から開いてこの文言が入ります</span>
+                        </div>
+                        <input
+                          type="text"
+                          defaultValue={prefs.defaultCwText}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                          onBlur={(e) => updatePrefs({ defaultCwText: e.target.value })}
+                          placeholder="例: ネタバレ注意"
+                          className="w-full sm:w-56 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <PrefChoice
+                        label="投稿したあと"
+                        value={prefs.afterPost}
+                        options={[
+                          { value: 'timeline', label: 'タイムラインへ戻る' },
+                          { value: 'stay', label: 'そのまま留まる' },
+                        ]}
+                        onChange={(value) => updatePrefs({ afterPost: value })}
+                      />
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <div>
+                          <span className="text-xs font-bold text-slate-200 block">既定のリアクション</span>
+                          <span className="text-[11px] text-slate-500 block mt-0.5">リアクションの候補の先頭に出ます</span>
+                        </div>
+                        <input
+                          type="text"
+                          defaultValue={prefs.defaultReaction}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                          onBlur={(e) => { const value = e.target.value.trim(); if (value) updatePrefs({ defaultReaction: value }); }}
+                          placeholder="👍"
+                          className="w-full sm:w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 text-center focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3">
+                      <MutedDomainsEditor />
+                    </div>
+                  </div>
+
                   {/* 保存ボタン */}
                   <div className="pt-3 flex justify-end">
                     <button
@@ -2446,6 +2878,9 @@ export default function SettingsView(props: SettingsViewProps) {
                       </button>
                     </div>
                   </div>
+
+                  {/* 🖥️ ログイン中の端末（セッション）一覧 */}
+                  <SessionsPanel api={api} authToken={authToken} />
                 </div>
               )}
             </div>

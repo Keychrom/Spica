@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS users  (
   moved_to TEXT DEFAULT '',
   also_known_as TEXT DEFAULT '',
   notification_prefs TEXT DEFAULT '{}',
+  prefs TEXT DEFAULT '{}',
   email_notifications BIGINT NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS antennas  (
@@ -472,6 +473,7 @@ CREATE TABLE IF NOT EXISTS sessions  (
   user_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  user_agent TEXT DEFAULT '',
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS stream_tickets  (

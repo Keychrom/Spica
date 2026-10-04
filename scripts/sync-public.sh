@@ -85,7 +85,9 @@ for dir in "${DIRS[@]}"; do
   # 公開ツリーに無いファイル（新規）と、内容が違うファイルを運ぶ
   while IFS= read -r rel; do
     case "$rel" in
-      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml) copy_file "$rel" ;;
+      # ★ 拡張子を増やすときは注意: ここに無い種類（かつては .css）は**黙って運ばれない**。
+      #   2026-10-04 に .css を追加（文字サイズ・密度の見た目が公開ツリーへ入らなかった）
+      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml|*.css) copy_file "$rel" ;;
     esac
   done < <(cd "$DEV_DIR" && find "$dir" -type f \
     -not -path "*/node_modules/*" -not -path "*/dist/*" \

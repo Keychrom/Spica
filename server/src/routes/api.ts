@@ -36,12 +36,17 @@ import {
   verifyPassword,
   createSession,
   destroySession,
+  listUserSessions,
+  destroySessionById,
+  destroyOtherSessions,
+  sessionPublicId,
   requireAuth,
   getUserFromToken,
   issueStreamTicket,
   consumeStreamTicket,
 } from '../auth.js';
 import { deleteUserAccount, beginUserDeletion } from '../accountService.js';
+import { getUserPrefs, saveUserPrefs, isDomainMutedByPrefs } from '../userPrefs.js';
 import { exportUserData, streamUserExportZip, buildUserExportFile } from '../exportService.js';
 import { enqueueJob, getJob } from '../jobs.js';
 import {
@@ -299,7 +304,7 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
   }
 
   // 4. 初回セッションを発行
-  const session = await createSession(cleanId);
+  const session = await createSession(cleanId, req.headers["user-agent"]);
 
   const actorUrl = `${config.origin}/users/${cleanId}`;
   const handle = `@${cleanId}@${config.domain}`;
@@ -369,7 +374,7 @@ apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) =
     return res.status(401).json({ error: '認証情報が一致しません。' });
   }
 
-  const session = await createSession(user.id);
+  const session = await createSession(user.id, req.headers["user-agent"]);
   const handle = `@${user.id}@${config.domain}`;
 
   res.json({
@@ -400,6 +405,44 @@ apiRouter.post('/auth/logout', asyncHandler(async (req: Request, res: Response) 
     await destroySession(token);
   }
   res.json({ success: true });
+}));
+
+/** いま使われているセッショントークン（Bearer かクエリの token）を取り出す */
+function currentSessionToken(req: Request): string {
+  const header = req.headers['authorization'];
+  if (header && header.startsWith('Bearer ')) return header.slice(7).trim();
+  const queryToken = req.query?.token;
+  return typeof queryToken === 'string' ? queryToken : '';
+}
+
+// ログイン中の端末（セッション）一覧。トークンそのものは返さず、ハッシュ id で扱う
+apiRouter.get('/sessions', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const current = sessionPublicId(currentSessionToken(req));
+  const sessions = await listUserSessions(user.id);
+  res.json({ sessions: sessions.map((s) => ({ ...s, current: s.id === current })) });
+}));
+
+// 指定した端末（自分以外のセッション）からログアウトさせる
+apiRouter.delete('/sessions/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const id = String(req.params.id);
+  if (currentSessionToken(req) && sessionPublicId(currentSessionToken(req)) === id) {
+    return res.status(400).json({ error: '現在の端末は「この端末からログアウト」から行ってください。' });
+  }
+  const removed = await destroySessionById(user.id, id);
+  if (!removed) return res.status(404).json({ error: 'その端末は見つかりませんでした。' });
+  res.json({ success: true });
+}));
+
+// 現在の端末以外をまとめてログアウト
+apiRouter.post('/sessions/revoke-others', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const token = currentSessionToken(req);
+  if (!token) return res.status(400).json({ error: 'セッションを特定できませんでした。' });
+  const removed = await destroyOtherSessions(user.id, token);
+  console.log(`[Sessions] 🔐 @${user.id} が他の端末 ${removed} 件をログアウトさせました`);
+  res.json({ success: true, removed });
 }));
 
 // 現在のログインユーザー情報
@@ -815,6 +858,9 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
     };
   });
 
+  // 🔇 自分用のドメインミュート（設定から。表示から除外する）
+  const mutedDomains = currentUserId ? (await getUserPrefs(currentUserId)).mutedDomains : [];
+
   // ブロック対象ドメインおよび個人ブロック・ミュート対象ユーザーの投稿を除外
   const filteredItems = enrichedItems.filter((item) => {
     if (blockedOrMutedUserIds.size > 0) {
@@ -827,6 +873,11 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
       }
     }
     if (item.is_local === 1) return true;
+    // 自分用のドメインミュート（ローカル投稿には効かせない＝自分のサーバーを誤って消せないように）
+    if (mutedDomains.length > 0) {
+      if (isDomainMutedByPrefs(mutedDomains, item.author_url) || isDomainMutedByPrefs(mutedDomains, item.author_handle)) return false;
+      if (item.renote && (isDomainMutedByPrefs(mutedDomains, item.renote.url) || isDomainMutedByPrefs(mutedDomains, item.renote.handle))) return false;
+    }
     // 表示の絞り込みは suspend / silence のどちらでも隠す（判定は読み込み済みルールに対して同期で行う）
     if (matchesBlockedDomainRule(blockedDomainRules, item.author_url) || matchesBlockedDomainRule(blockedDomainRules, item.author_handle)) return false;
     if (item.renote && (matchesBlockedDomainRule(blockedDomainRules, item.renote.url) || matchesBlockedDomainRule(blockedDomainRules, item.renote.handle))) return false;
@@ -866,6 +917,8 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   let postFollowJoin = '';
   let announceFollowJoin = '';
   let followParam: string | null = null;
+  // ホームでブーストを隠す設定のときは、ブースト側の枝ごと落とす（行を読まない）
+  let hideAnnounces = false;
 
   // 投稿側の FROM 句。タグのときだけ FTS を噛ませる（下の tag 分岐を参照）
   let postFrom = 'posts p';
@@ -901,6 +954,14 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       postConds.push('(p.is_local = 1 OR f.follower_url IS NOT NULL)');
       announceConds.push('(a.is_local = 1 OR f.follower_url IS NOT NULL)');
       followParam = myActorUrl;
+      // 本人の設定（ホームでブースト・返信を隠す）。ゲストには設定が無いので触らない
+      const homePrefs = await getUserPrefs(req.user!.id);
+      if (homePrefs.hideRepliesInHome) {
+        // 自分の返信は残す（自分が書いた返信が消えると会話の文脈が切れる）
+        postConds.push('(p.in_reply_to IS NULL OR p.user_id = ?)');
+        params.push(req.user!.id);
+      }
+      if (homePrefs.hideBoostsInHome) hideAnnounces = true;
     } else {
       postConds.push('p.is_local = 1');
       announceConds.push('a.is_local = 1');
@@ -961,7 +1022,8 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     ORDER BY p.published_at DESC, p.id DESC
     LIMIT ?
 
-    ) UNION ALL SELECT * FROM (
+    )${hideAnnounces ? '' : `
+    UNION ALL SELECT * FROM (
 
     SELECT 
       p.id AS post_id,
@@ -1000,7 +1062,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     ORDER BY a.created_at DESC, p.id DESC
     LIMIT ?
 
-    )
+    )`}
     ORDER BY timeline_at DESC, post_id DESC
     LIMIT ?
   `;
@@ -1037,7 +1099,11 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   // パラメータは SQL に現れる順に並べる（枝の中の JOIN → 条件 → 枝の LIMIT、最後に外側の LIMIT）
   const postsBranchParams = [...(followParam ? [followParam] : []), ...params, branchLimit];
   const announcesBranchParams = [...(followParam ? [followParam] : []), ...announceParams, branchLimit];
-  const rows = await db.prepare(query).all(...postsBranchParams, ...announcesBranchParams, branchLimit) as any[];
+  const rows = await db.prepare(query).all(
+    ...postsBranchParams,
+    ...(hideAnnounces ? [] : announcesBranchParams),
+    branchLimit,
+  ) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
   const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
@@ -2940,6 +3006,25 @@ apiRouter.get('/notifications', requireAuth, asyncHandler(async (req: Request, r
     console.error('[API Notification Error]:', err);
     res.status(500).json({ error: err.message });
   }
+}));
+
+// 表示と投稿の好み（ユーザーごと・サーバー保存。端末をまたいで同じ見た目になる）
+// 検証と既定値は userPrefs.ts が唯一の正。ここは入出力だけ。
+apiRouter.get('/me/prefs', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  res.json({ prefs: await getUserPrefs(user.id) });
+}));
+
+apiRouter.put('/me/prefs', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const source = body.prefs && typeof body.prefs === 'object' ? body.prefs : body;
+  const prefs = await saveUserPrefs(user.id, source);
+  // ホームでブースト/返信を隠す・ドメインミュートはサーバー側の組み立てに効くので、
+  // 読取りキャッシュを捨てる（次の取得から新しい設定で組み立てる）
+  await invalidateTimelineCache();
+  console.log(`[Prefs] ⚙️ @${user.id} が表示・投稿設定を更新しました`);
+  res.json({ success: true, prefs });
 }));
 
 // 通知の種類別設定（フォロー・返信・メンション・リアクション・リノート・アンテナ・引っ越し）
@@ -5042,10 +5127,12 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
     const reqOrigin = req.headers.origin as string | undefined;
     const result = await verifyWebAuthnAuthentication(req.body, reqOrigin);
     if (result.verified && result.user) {
-      const token = createSession(result.user.id);
+      // ここは以前 await が抜けていて、Promise がそのまま JSON に化けて
+      // `token: {}` が返っていた（＝パスキーログインが必ず失敗していた）。2026-10-04 に修正。
+      const session = await createSession(result.user.id, req.headers['user-agent']);
       res.json({
         success: true,
-        token,
+        token: session.token,
         user: {
           id: result.user.id,
           name: result.user.name,

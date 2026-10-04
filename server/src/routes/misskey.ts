@@ -1179,7 +1179,7 @@ miauthRouter.post('/:session/approve', asyncHandler(async (req: Request, res: Re
   }
 
   // 通常のセッションと同じトークンを発行する（設定画面のセッション一覧から失効できる）
-  const { token } = await createSession(user.id);
+  const { token } = await createSession(user.id, req.headers["user-agent"]);
   await db.prepare('UPDATE miauth_sessions SET status = ?, approved_user_id = ?, token = ? WHERE id = ?')
     .run('approved', user.id, token, session);
   res.json({ success: true });
