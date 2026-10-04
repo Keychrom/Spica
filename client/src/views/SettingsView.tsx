@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
 import { usePrefs, updatePrefs } from '../prefs';
+import { useInstallAvailable, promptInstall, isStandalone } from '../pwa';
 
 /**
  * 設定の選択肢 1 行（表示と動作の各項目で使う）。
@@ -66,6 +67,127 @@ function PrefToggle({ label, hint, checked, onChange }: {
         className="mt-0.5 w-4 h-4 accent-indigo-500 cursor-pointer shrink-0"
       />
     </label>
+  );
+}
+
+/**
+ * 自分のリアクション履歴（設定 → 自分の記録）。
+ * エクスポートには含まれていたのに画面が無かったもの。
+ */
+function ReactionHistoryModal({ api, onClose }: { api: any; onClose: () => void }) {
+  const [items, setItems] = useState<any[] | null>(null);
+  useEffect(() => {
+    api
+      .get('/api/me/reactions')
+      .then(async (res: any) => setItems(res.ok ? await res.json() : []))
+      .catch(() => setItems([]));
+  }, [api]);
+  return (
+    <div className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-slate-900 border border-slate-750 rounded-3xl p-5 w-full max-w-lg space-y-3 max-h-[80vh] overflow-y-auto"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-100">リアクション履歴</h3>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-200 text-xs cursor-pointer">✕</button>
+        </div>
+        {items === null ? (
+          <p className="text-xs text-slate-500">読み込み中...</p>
+        ) : items.length === 0 ? (
+          <p className="text-xs text-slate-500">まだリアクションはありません。</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {items.map((item) => (
+              <li key={item.id} className="flex items-start space-x-3 bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2">
+                <span className="text-lg shrink-0">{item.reaction}</span>
+                <span className="min-w-0">
+                  <span className="block text-[11px] text-slate-400 truncate">
+                    {item.post?.author_name} <span className="font-mono opacity-70">{item.post?.author_handle}</span>
+                    <span className="ml-2">{new Date(item.created_at).toLocaleString('ja-JP')}</span>
+                  </span>
+                  <span className="block text-xs text-slate-300 mt-0.5">
+                    {String(item.post?.content || '').replace(/<[^>]*>/g, ' ').slice(0, 160)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 自分の投稿カレンダー（日付ごとの件数） */
+function PostCalendarModal({ api, onClose }: { api: any; onClose: () => void }) {
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [days, setDays] = useState<Record<string, number>>({});
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    setIsLoading(true);
+    api
+      .get(`/api/me/post-calendar?month=${month}`)
+      .then(async (res: any) => {
+        const data = res.ok ? await res.json() : { days: [] };
+        const map: Record<string, number> = {};
+        for (const row of data.days || []) map[row.day] = row.count;
+        setDays(map);
+      })
+      .catch(() => setDays({}))
+      .finally(() => setIsLoading(false));
+  }, [api, month]);
+
+  const [yearStr, monthStr] = month.split('-');
+  const firstDayOfWeek = new Date(Number(yearStr), Number(monthStr) - 1, 1).getDay();
+  const daysInMonth = new Date(Number(yearStr), Number(monthStr), 0).getDate();
+  const cells: (string | null)[] = [];
+  for (let i = 0; i < firstDayOfWeek; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) cells.push(`${month}-${String(day).padStart(2, '0')}`);
+
+  const shiftMonth = (delta: number) => {
+    const base = new Date(Number(yearStr), Number(monthStr) - 1 + delta, 1);
+    setMonth(`${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-slate-900 border border-slate-750 rounded-3xl p-5 w-full max-w-md space-y-3" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-100">投稿カレンダー</h3>
+          <button type="button" onClick={onClose} className="text-slate-500 hover:text-slate-200 text-xs cursor-pointer">✕</button>
+        </div>
+        <div className="flex items-center justify-between">
+          <button type="button" onClick={() => shiftMonth(-1)} className="px-2.5 py-1 rounded-lg text-xs bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 cursor-pointer">← 前の月</button>
+          <span className="text-xs font-mono text-slate-300">{month}</span>
+          <button type="button" onClick={() => shiftMonth(1)} className="px-2.5 py-1 rounded-lg text-xs bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700 cursor-pointer">次の月 →</button>
+        </div>
+        {isLoading ? (
+          <p className="text-xs text-slate-500">読み込み中...</p>
+        ) : (
+          <div className="grid grid-cols-7 gap-1">
+            {['日', '月', '火', '水', '木', '金', '土'].map((label) => (
+              <span key={label} className="text-[10px] text-slate-500 text-center">{label}</span>
+            ))}
+            {cells.map((day, index) => (
+              <span
+                key={day || `blank-${index}`}
+                className={`aspect-square rounded-lg flex flex-col items-center justify-center text-[10px] ${
+                  day && days[day]
+                    ? 'bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 font-bold'
+                    : 'bg-slate-950/60 border border-slate-800 text-slate-500'
+                }`}
+              >
+                {day ? Number(day.slice(-2)) : ''}
+                {day && days[day] ? <span className="text-[9px] opacity-80">{days[day]}</span> : null}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-slate-500">自分の投稿の件数です（数字はその日の投稿数）。</p>
+      </div>
+    </div>
   );
 }
 
@@ -379,6 +501,12 @@ export default function SettingsView(props: SettingsViewProps) {
 
   // 🗄️ サーバー保存の設定（表示と動作）。変更は updatePrefs がそのまま保存する
   const prefs = usePrefs();
+  // 自分の記録（リアクション履歴・カレンダー）のモーダル
+  const [showReactionHistory, setShowReactionHistory] = useState(false);
+  const [showPostCalendar, setShowPostCalendar] = useState(false);
+  // PWA のインストール導線
+  const installAvailable = useInstallAvailable();
+  const [installMessage, setInstallMessage] = useState<string | null>(null);
 
   const [isRegisteringPasskey, setIsRegisteringPasskey] = useState<boolean>(false);
 
@@ -1803,6 +1931,63 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
 
                     <div className="border-t border-slate-800 pt-3 space-y-3">
+                      <PrefToggle
+                        label="キーボードショートカット"
+                        hint="j / k で投稿を移動、n で投稿欄、/ で検索、? で一覧（入力中は効きません）"
+                        checked={prefs.keyboardShortcuts}
+                        onChange={(checked) => updatePrefs({ keyboardShortcuts: checked })}
+                      />
+                      <div className="flex items-center justify-between gap-3">
+                        <span>
+                          <span className="text-xs font-bold text-slate-200 block">アプリとしてインストール</span>
+                          <span className="text-[11px] text-slate-500 block mt-0.5">
+                            {isStandalone()
+                              ? 'すでにアプリとして開いています。'
+                              : installAvailable
+                                ? 'ホーム画面に追加すると、通知やバッジが使えます。'
+                                : 'お使いのブラウザのメニューから「アプリをインストール」を選べます。'}
+                          </span>
+                          {installMessage && <span className="text-[11px] text-emerald-400 block mt-0.5">{installMessage}</span>}
+                        </span>
+                        {installAvailable && !isStandalone() && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const accepted = await promptInstall();
+                              setInstallMessage(accepted ? 'インストールしました。' : 'キャンセルしました。');
+                            }}
+                            className="shrink-0 px-3.5 py-2 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition cursor-pointer"
+                          >
+                            インストール
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3 space-y-3">
+                      <div>
+                        <span className="text-xs font-bold text-slate-200 block">自分の記録</span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">自分が付けたリアクションと、投稿の件数を振り返ります。</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setShowReactionHistory(true)}
+                          className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
+                        >
+                          リアクション履歴
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowPostCalendar(true)}
+                          className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
+                        >
+                          投稿カレンダー
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-slate-800 pt-3 space-y-3">
                       <h5 className="text-xs font-bold text-slate-200">投稿の既定</h5>
                       <PrefToggle
                         label="センシティブを既定で ON"
@@ -2881,6 +3066,10 @@ export default function SettingsView(props: SettingsViewProps) {
 
                   {/* 🖥️ ログイン中の端末（セッション）一覧 */}
                   <SessionsPanel api={api} authToken={authToken} />
+
+                  {/* 🗂️ 自分の記録 */}
+                  {showReactionHistory && <ReactionHistoryModal api={api} onClose={() => setShowReactionHistory(false)} />}
+                  {showPostCalendar && <PostCalendarModal api={api} onClose={() => setShowPostCalendar(false)} />}
                 </div>
               )}
             </div>

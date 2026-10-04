@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
-import { db, UserRow } from './db.js';
+import { db, UserRow, createNotification } from './db.js';
+import { config } from './config.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -86,6 +87,24 @@ export async function createSession(userId: string, userAgent?: string | null): 
     INSERT INTO sessions (token, user_id, created_at, expires_at, user_agent)
     VALUES (?, ?, ?, ?, ?)
   `).run(token, userId, now.toISOString(), expiresAt, (userAgent || '').slice(0, 300));
+
+  // 既に端末がある人のログインなら「新しい端末からログインしました」を通知する
+  // （初回登録では出さない＝自分で作った直後に驚かせない）
+  const existing = (await db.prepare('SELECT count(*) AS c FROM sessions WHERE user_id = ? AND token != ?').get(userId, token)) as
+    | { c: number }
+    | undefined;
+  if ((existing?.c ?? 0) > 0) {
+    void createNotification({
+      userId,
+      type: 'login',
+      actorId: 'spica',
+      actorName: 'Spica',
+      actorHandle: `@spica@${config.domain}`,
+      content: (userAgent || '不明な端末').slice(0, 200),
+    }).catch(() => {
+      // 通知が作れなくてもログインは成功させる
+    });
+  }
 
   return { token, expiresAt };
 }

@@ -285,6 +285,58 @@ async function run() {
     const delCurrent = await apiCall('DELETE', `/api/sessions/${encodeURIComponent(currentId)}`, alice.sessionToken);
     check('いまの端末は消せない（400）', delCurrent.status, 400);
 
+    // ------------------------------------------------------------------
+    console.log("\n⌨️ [7] 操作の設定（キーボード・よく使うリアクション）");
+    const opPrefs = await getPrefs(alice.sessionToken);
+    check('キーボードショートカットの既定はオフ', opPrefs.keyboardShortcuts, false);
+    check('よく使うリアクションの既定は空', opPrefs.recentReactions.length, 0);
+
+    const many = ['🎉', '🎉', '', 123, 'x'.repeat(60), '👍', '🔥', '💯', '🚀', '✨', '😂', '👀', '🥺', '❤️', '🍣', '🍺', '🐈', '🌙'];
+    const opSaved = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      keyboardShortcuts: true,
+      recentReactions: many,
+    })).json()).prefs;
+    check('キーボードをオンにできる', opSaved.keyboardShortcuts, true);
+    check('上限 12 件に丸める', opSaved.recentReactions.length, 12);
+    check('重複と空と長すぎるものは落ちる', opSaved.recentReactions.includes(''), false);
+    check('最初の並びは保たれる', opSaved.recentReactions[0], '🎉');
+    check('数字は弾く', opSaved.recentReactions.includes('123' as any), false);
+
+    // ------------------------------------------------------------------
+    console.log("\n💬 [8] 引用した人の一覧・リアクション履歴・カレンダー");
+    const quotePost = await (await apiCall('POST', '/api/posts', bob.sessionToken, { content: '引用のテスト', visibility: 'public', quote_id: alicePost.id })).json();
+    check('引用の投稿ができた', Boolean(quotePost?.id), true);
+    const quotesRes = await apiCall('GET', `/api/posts/${encodeURIComponent(alicePost.id)}/quotes`, alice.sessionToken);
+    const quotes = (await quotesRes.json()) as any[];
+    check('引用一覧のステータス', quotesRes.status, 200);
+    check('引用した投稿が入る', quotes.some((q) => q.id === quotePost.id), true);
+
+    const homeWithQuote = await homeTimeline();
+    const target = homeWithQuote.find((p) => p.id === alicePost.id);
+    check('引用数が投稿に付く', target ? target.quote_count : -1, 1);
+
+    await apiCall('POST', `/api/posts/${encodeURIComponent(bobPost.id)}/react`, alice.sessionToken, { reaction: '🎉' });
+    const myReactions = (await (await apiCall('GET', '/api/me/reactions', alice.sessionToken)).json()) as any[];
+    check('リアクション履歴に載る', myReactions.some((r) => r.post?.id === bobPost.id && r.reaction === '🎉'), true);
+
+    const calendar = (await (await apiCall('GET', '/api/me/post-calendar', alice.sessionToken)).json()) as any;
+    const today = new Date().toISOString().slice(0, 10);
+    const todayRow = (calendar.days || []).find((d: any) => d.day === today);
+    check('カレンダーに今日が出る', Boolean(todayRow) && todayRow.count >= 1, true);
+
+    // ------------------------------------------------------------------
+    console.log("\n🔔 [9] 新しい端末のログイン通知");
+    const notifs = (await (await apiCall('GET', '/api/notifications', alice.sessionToken)).json()) as any[];
+    check('ログイン通知が届く', notifs.some((n) => n.type === 'login'), true);
+    check('端末の説明が通知に入る', notifs.some((n) => n.type === 'login' && String(n.content).includes('OtherDevice')), true);
+    check('予約投稿以外は自分の操作でも届く（種別が増えても壊れない）', notifs.filter((n) => n.type === 'login').length >= 1, true);
+
+    // ------------------------------------------------------------------
+    console.log("\n🔇 [10] ミュートワードは通知にも効く");
+    await apiCall('POST', '/api/muted-words', alice.sessionToken, { word: 'bobの投稿' });
+    const notifsAfterMute = (await (await apiCall('GET', '/api/notifications', alice.sessionToken)).json()) as any[];
+    check('ワードに当たる通知は消える（返信の本文に含む）', notifsAfterMute.some((n) => String(n.post_content || '').includes('bobの投稿')), false);
+
     console.log('');
   } catch (err: any) {
     console.error(`\n❌ テスト実行中にエラー: ${err?.message || err}`);

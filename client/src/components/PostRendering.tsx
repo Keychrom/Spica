@@ -11,6 +11,139 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Ban, BarChart2, Bookmark, Check, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageCircle, MessageSquare, MoreHorizontal, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
 import type { MediaAttachment, PollData, Post } from '../App';
 import { getPrefs } from '../prefs';
+import { api } from '../api/client';
+
+/**
+ * 「この投稿を引用した人」ボタン＋ポップオーバー。
+ * カードは overflow-hidden なので、パネルは portal で body に出す（メニューと同じやり方）。
+ * 開いたときに初めて取りに行く（タイムラインの取得には含めない）。
+ */
+export function QuoteListButton({ postId, count, onOpenThread }: {
+  postId: string;
+  count: number;
+  onOpenThread: (post: any) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [items, setItems] = useState<any[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      setPosition(null);
+      return;
+    }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.min(420, window.innerWidth - 16);
+    const height = panelRef.current?.offsetHeight || 260;
+    let top = rect.bottom + 6;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 6);
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    setPosition({ top, left });
+  }, [isOpen, items]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    // スクロールや画面幅の変化でボタンとずれるので、その時は閉じる
+    const close = () => setIsOpen(false);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsOpen(false);
+    };
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (panelRef.current?.contains(target) || buttonRef.current?.contains(target)) return;
+      setIsOpen(false);
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || items !== null) return;
+    setIsLoading(true);
+    api
+      .get(`/api/posts/${encodeURIComponent(postId)}/quotes`)
+      .then(async (res) => {
+        setItems(res.ok ? await res.json() : []);
+      })
+      .catch(() => setItems([]))
+      .finally(() => setIsLoading(false));
+  }, [isOpen, items, postId]);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setIsOpen((open) => !open);
+        }}
+        className="flex items-center space-x-1 hover:text-indigo-400 py-1 px-2 rounded-lg hover:bg-slate-800/50 transition cursor-pointer"
+        title="この投稿を引用した人"
+      >
+        <Quote className="w-4 h-4" />
+        {count > 0 && <span className="text-[11px] font-mono opacity-80">{count}</span>}
+      </button>
+      {isOpen && position &&
+        createPortal(
+          <div
+            ref={panelRef}
+            onClick={(e) => e.stopPropagation()}
+            style={{ position: 'fixed', top: position.top, left: position.left, width: Math.min(420, window.innerWidth - 16) }}
+            className="z-[80] bg-slate-900 border border-slate-750 rounded-2xl shadow-2xl p-3 space-y-2 max-h-[60vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-200">引用した投稿{count > 0 ? ` (${count})` : ''}</span>
+              <button type="button" onClick={() => setIsOpen(false)} className="text-slate-500 hover:text-slate-200 text-xs cursor-pointer">✕</button>
+            </div>
+            {isLoading ? (
+              <p className="text-[11px] text-slate-500">読み込み中...</p>
+            ) : items && items.length > 0 ? (
+              <ul className="space-y-1.5">
+                {items.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsOpen(false);
+                        onOpenThread(item);
+                      }}
+                      className="w-full text-left bg-slate-950/60 hover:bg-slate-800/60 border border-slate-800 rounded-xl px-3 py-2 transition cursor-pointer"
+                    >
+                      <span className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="truncate">
+                          {item.author_name} <span className="font-mono opacity-70">{item.author_handle}</span>
+                        </span>
+                        <span className="shrink-0 ml-2">{new Date(item.published_at).toLocaleDateString('ja-JP')}</span>
+                      </span>
+                      <span className="block text-xs text-slate-300 mt-1">
+                        {String(item.content || '').replace(/<[^>]*>/g, ' ').slice(0, 200)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[11px] text-slate-500">まだ引用はありません。</p>
+            )}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
 
 /**
  * 相対時刻（設定 → 表示 → 時刻の表し方）。
@@ -1366,6 +1499,9 @@ export function createRenderPostCard(deps: PostRendererDeps) {
             </div>
           )}
         </div>
+
+        {/* この投稿を引用した人（引用数があれば数字も出る） */}
+        <QuoteListButton postId={post.id} count={post.quote_count || 0} onOpenThread={handleOpenThread} />
 
         {/* リアクション追加ボタン */}
         <div className="relative">

@@ -193,6 +193,46 @@ export default function TimelineView(props: TimelineViewProps) {
     }
   }, [newPostsQueue, prefValues.newPostsBehavior, setNewPostsQueue]);
 
+  // 📌 前回の続きから: 見ていた位置（いちばん上の投稿）を端末に覚えておく。
+  // 端末ごとに読み位置は違うので、サーバーではなく localStorage に置く
+  const lastSeenKey = `spica_last_seen_${timelineMode}${activeHashtag ? `_${activeHashtag}` : ''}`;
+  useEffect(() => {
+    const list = timeline as any[];
+    if (!list || list.length === 0) return;
+    const onScroll = () => {
+      const threshold = 90;
+      const cards = Array.from(document.querySelectorAll('.post-card')) as HTMLElement[];
+      const topCard = cards.find((card) => card.getBoundingClientRect().bottom > threshold + 8);
+      const index = topCard ? Number(topCard.getAttribute('data-post-index')) : NaN;
+      const post = Number.isFinite(index) ? list[index] : undefined;
+      if (post?.id) {
+        try { localStorage.setItem(lastSeenKey, String(post.id)); } catch {}
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [timeline, lastSeenKey]);
+
+  // 読み込み直後に一度だけ、覚えていた投稿が見えていればそこまで戻す（先頭付近なら何もしない）
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    const list = timeline as any[];
+    if (!list || list.length < 3) return;
+    let savedId: string | null = null;
+    try { savedId = localStorage.getItem(lastSeenKey); } catch {}
+    if (!savedId) { restoredRef.current = true; return; }
+    const index = list.findIndex((p: any) => p.id === savedId);
+    if (index <= 0) { restoredRef.current = true; return; }
+    restoredRef.current = true;
+    const timer = window.setTimeout(() => {
+      const cards = Array.from(document.querySelectorAll('.post-card')) as HTMLElement[];
+      const target = cards.find((card) => card.getAttribute('data-post-index') === String(index));
+      if (target) target.scrollIntoView({ block: 'start' });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [timeline, lastSeenKey]);
+
   const [searchTab, setSearchTab] = useState<'all' | 'users' | 'posts'>('all');
 
   const [followHandle, setFollowHandle] = useState<string>('');
@@ -1474,6 +1514,7 @@ export default function TimelineView(props: TimelineViewProps) {
                       <div className="relative">
                         <textarea
                           id="main-post-textarea"
+                          data-keyboard-target="composer"
                           rows={3}
                           value={postContent}
                           onChange={(e) => {
@@ -1888,7 +1929,11 @@ export default function TimelineView(props: TimelineViewProps) {
                       data={timeline}
                       firstItemIndex={firstItemIndex}
                       computeItemKey={(_i, post: any) => post.id}
-                      itemContent={(_index, post: any) => <div className="timeline-item pb-3">{renderPostCard(post)}</div>}
+                      itemContent={(index, post: any) => (
+                        <div className="timeline-item pb-3" data-post-index={index}>
+                          {renderPostCard(post)}
+                        </div>
+                      )}
                       components={{
                         Footer: () =>
                           timelineCursor ? (

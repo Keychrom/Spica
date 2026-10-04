@@ -39,6 +39,12 @@ export interface UserPrefs {
   autoCompressImages: boolean;
   defaultReaction: string;
 
+  // 🎛️ 操作
+  /** キーボードショートカット（j/k 移動、n 投稿、/ 検索、? ヘルプ）。既定はオフ */
+  keyboardShortcuts: boolean;
+  /** よく使うリアクション（新しい順・最大 12 件。ピッカーの先頭に出す） */
+  recentReactions: string[];
+
   // 🔔 通知
   notificationGrouping: 'group' | 'individual';
 }
@@ -67,9 +73,11 @@ export const DEFAULT_PREFS: UserPrefs = {
   autoCompressImages: true,
   defaultReaction: '👍',
 
+  keyboardShortcuts: false,
+  recentReactions: [],
+
   notificationGrouping: 'group',
 };
-
 /** 旧（端末ごと）設定のキー → 新しい設定のキー */
 const LEGACY_KEYS: [string, keyof UserPrefs][] = [
   ['spica_theme_mode', 'themeMode'],

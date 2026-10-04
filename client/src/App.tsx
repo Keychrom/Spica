@@ -33,6 +33,7 @@ import {
 import { compressImage } from './utils/imageCompressor';
 import { api, setApiToken } from './api/client';
 import { usePrefs, loadPrefs, updatePrefs, resetPrefsToLocalCache, getPrefs } from './prefs';
+import { setAppBadge } from './pwa';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppHeader from './components/AppHeader';
 
@@ -172,6 +173,7 @@ export interface Post {
   announce_count?: number;
   my_announced?: boolean;
   reply_count?: number;
+  quote_count?: number;
   bookmarked?: boolean;
   cw?: string | null;
   quote_id?: string | null;
@@ -574,6 +576,112 @@ export default function App() {
     }
   }, [authToken]);
 
+  // 📱 未読数をアプリのアイコンバッジに出す（対応端末のみ）
+  useEffect(() => {
+    setAppBadge(unreadNotificationsCount || 0);
+  }, [unreadNotificationsCount]);
+
+  // ⌨️ キーボードショートカット（設定 → 表示と動作 で有効にした人だけ。既定はオフ）
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const pendingGRef = useRef(false);
+
+  const focusKeyboardTarget = (name: string) => {
+    const el = document.querySelector(`[data-keyboard-target="${name}"]`) as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    window.setTimeout(() => el.focus(), 150);
+  };
+
+  const scrollToAdjacentPost = (direction: 1 | -1) => {
+    const cards = Array.from(document.querySelectorAll('.post-card')) as HTMLElement[];
+    if (cards.length === 0) return;
+    const threshold = 90; // 固定ヘッダーのぶん
+    if (direction === 1) {
+      const next = cards.find((card) => card.getBoundingClientRect().top > threshold + 4);
+      (next || cards[cards.length - 1]).scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
+      const prev = [...cards].reverse().find((card) => card.getBoundingClientRect().top < threshold - 4);
+      (prev || cards[0]).scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    if (!prefs.keyboardShortcuts) return;
+    const isTyping = (target: EventTarget | null) => {
+      const node = target as HTMLElement | null;
+      if (!node) return false;
+      const tag = node.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTyping(event.target)) return;
+      if (event.key === '?') {
+        event.preventDefault();
+        setShowShortcutHelp((open) => !open);
+        return;
+      }
+      if (event.key === 'n') {
+        event.preventDefault();
+        focusKeyboardTarget('composer');
+        return;
+      }
+      if (event.key === '/') {
+        event.preventDefault();
+        focusKeyboardTarget('search');
+        return;
+      }
+      if (event.key === 'g') {
+        pendingGRef.current = true;
+        window.setTimeout(() => { pendingGRef.current = false; }, 800);
+        return;
+      }
+      if (pendingGRef.current && (event.key === 'h' || event.key === 'l' || event.key === 'f')) {
+        pendingGRef.current = false;
+        handleSwitchTimelineMode(event.key === 'h' ? 'home' : event.key === 'l' ? 'local' : 'all');
+        return;
+      }
+      if (event.key === 'j' || event.key === 'k') {
+        scrollToAdjacentPost(event.key === 'j' ? 1 : -1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.keyboardShortcuts]);
+
+  // 📤 共有シートから起動されたとき（Web Share Target）: 本文を投稿欄へ入れる
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    // manifest のショートカット（長押しメニュー）からの起動
+    if (params.get('compose') === '1') {
+      window.setTimeout(() => focusKeyboardTarget('composer'), 200);
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+      return;
+    }
+    if (params.get('focus') === 'search') {
+      window.setTimeout(() => focusKeyboardTarget('search'), 200);
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+      return;
+    }
+    const sharedText = params.get('text') || '';
+    const sharedUrl = params.get('url') || '';
+    const sharedTitle = params.get('title') || '';
+    if (!sharedText && !sharedUrl && !sharedTitle) return;
+    const composed = [sharedTitle, sharedText, sharedText.includes(sharedUrl) ? '' : sharedUrl]
+      .map((part) => (part || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    if (composed) {
+      setPostContent((prev) => (prev.trim() ? prev : composed));
+      if (window.matchMedia('(max-width: 767px)').matches) setShowMobilePostModal(true);
+    }
+    // URL からは消す（再読み込みで二重に入らないように）
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 認証ポータル (Misskey風ウェルカム・ログイン・登録画面: 未ログイン時は初期起動で自動表示)
   const [showAuthPortal, setShowAuthPortal] = useState<boolean>(!Boolean(localStorage.getItem('spica_token') || localStorage.getItem('astrabit_token')));
   const [authPortalTab, setAuthPortalTab] = useState<'welcome' | 'rules_agreement' | 'login' | 'register'>('welcome');
@@ -812,13 +920,19 @@ export default function App() {
   // 絵文字リアクションステート
   const [activeReactionPostId, setActiveReactionPostId] = useState<string | null>(null);
   const [customReactionInput, setCustomReactionInput] = useState<string>('');
-  // 既定のリアクション（設定 → 投稿の既定）を先頭に出す
+  // ピッカーの並び: よく使うリアクション（最近付けた順）→ 既定 → 標準
   const quickEmojis = useMemo(() => {
     const base = ['👍', '❤️', '🚀', '🎉', '✨', '🔥', '🥺', '😂', '👀', '💯'];
-    const preferred = prefs.defaultReaction;
-    if (!preferred) return base;
-    return [preferred, ...base.filter((emoji) => emoji !== preferred)];
-  }, [prefs.defaultReaction]);
+    const ordered: string[] = [];
+    for (const emoji of prefs.recentReactions) {
+      if (emoji && !ordered.includes(emoji)) ordered.push(emoji);
+    }
+    if (prefs.defaultReaction && !ordered.includes(prefs.defaultReaction)) ordered.push(prefs.defaultReaction);
+    for (const emoji of base) {
+      if (!ordered.includes(emoji)) ordered.push(emoji);
+    }
+    return ordered;
+  }, [prefs.defaultReaction, prefs.recentReactions]);
 
   // 🎨 カスタム絵文字 & リッチピッカーステート
   const [customEmojis, setCustomEmojis] = useState<CustomEmoji[]>([]);
@@ -3351,6 +3465,13 @@ export default function App() {
       const res = await api.post(`/api/posts/${encodeURIComponent(postId)}/react`, { reaction });
       if (res.ok) {
         const data = await res.json();
+        // よく使うリアクション（設定に保存）: 付けたものだけを先頭へ。外したものは残す
+        if (data?.added) {
+          const current = getPrefs().recentReactions;
+          if (current[0] !== reaction) {
+            updatePrefs({ recentReactions: [reaction, ...current.filter((r) => r !== reaction)].slice(0, 12) });
+          }
+        }
         setTimeline((prev) =>
           prev.map((p) => (p.id === postId ? { ...p, reactions: data.reactions } : p))
         );
@@ -3617,6 +3738,41 @@ export default function App() {
  <ModalsView {...{ModalsView, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText, setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCustomReactionInput, sharePost, toggleCw  } }} />
       </Suspense>
       </ErrorBoundary>
+
+      {/* ⌨️ キーボードショートカットのヘルプ（? で開閉） */}
+      {showShortcutHelp && (
+        <div
+          className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowShortcutHelp(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-750 rounded-3xl p-5 w-full max-w-md space-y-3 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-100">キーボードショートカット</h3>
+              <button
+                type="button"
+                onClick={() => setShowShortcutHelp(false)}
+                className="text-slate-500 hover:text-slate-200 text-xs cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              設定 → 投稿・表示設定 の「キーボードショートカット」をオンにすると使えます（入力中は効きません）。
+            </p>
+            <ul className="text-xs text-slate-300 space-y-1.5">
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">j</span>次の投稿へ</li>
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">k</span>前の投稿へ</li>
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">n</span>投稿欄へ</li>
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">/</span>検索へ</li>
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">g h</span>ホーム / <span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mx-1">g l</span>ローカル / <span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mx-1">g f</span>連合</li>
+              <li><span className="font-mono px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 mr-2">?</span>このヘルプ</li>
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

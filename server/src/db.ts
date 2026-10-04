@@ -1666,7 +1666,7 @@ export async function purgeDomainData(domain: string): Promise<{ posts: number; 
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -1685,7 +1685,7 @@ export interface NotificationRow {
  * 未設定・不正な JSON は「すべて有効」として扱う。
  * scheduled_published（予約投稿の公開）は自分の操作に対する控えなので常に有効。
  */
-export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move', 'report'] as const;
+export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move', 'report', 'login'] as const;
 export type NotificationPrefType = (typeof NOTIFICATION_TYPES)[number];
 
 /** UI 表示用のラベル（クライアントと揃える） */
@@ -1698,6 +1698,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   antenna: 'アンテナ',
   move: '引っ越し（Move）',
   report: '通報（運営向け）',
+  login: '新しい端末のログイン',
 };
 
 /**
@@ -1781,7 +1782,7 @@ export async function getDisabledNotificationTypes(userId: string): Promise<stri
  */
 export async function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login';
   actorId: string;
   actorName: string;
   actorHandle: string;

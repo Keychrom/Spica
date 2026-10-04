@@ -606,7 +606,12 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
         FROM posts
         WHERE in_reply_to IN (${placeholders})
         GROUP BY in_reply_to
-      `).all(viewer, ...postIds, viewer, ...postIds, ...postIds) as Promise<
+        UNION ALL
+        SELECT quote_id AS post_id, 'quote' AS kind, '' AS reaction, count(*) AS count, 0 AS me
+        FROM posts
+        WHERE quote_id IN (${placeholders}) AND quote_id IS NOT NULL
+        GROUP BY quote_id
+      `).all(viewer, ...postIds, viewer, ...postIds, ...postIds, ...postIds) as Promise<
         { post_id: string; kind: string; reaction: string; count: number; me: number }[]
       >,
     [],
@@ -637,6 +642,7 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
   const allReactions = counterRows.filter((r) => r.kind === 'reaction');
   const allAnnounces = counterRows.filter((r) => r.kind === 'announce');
   const allReplies = counterRows.filter((r) => r.kind === 'reply');
+  const allQuoteCounts = counterRows.filter((r) => r.kind === 'quote');
 
   // 📊 アンケート情報の取得（選択肢と投票はアンケート本体に依存するので、ここだけ直列）
   const pollsMap = new Map<string, any>();
@@ -733,6 +739,11 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
   const repliesMap = new Map<string, number>();
   for (const rp of allReplies) {
     repliesMap.set(rp.post_id, rp.count);
+  }
+
+  const quotesCountMap = new Map<string, number>();
+  for (const qc of allQuoteCounts) {
+    quotesCountMap.set(qc.post_id, qc.count);
   }
 
   // 💬 引用ノート (Quote) 情報の一括取得
@@ -852,6 +863,7 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
       announce_count: announcesMap.get(pid)?.count || 0,
       my_announced: announcesMap.get(pid)?.me || false,
       reply_count: repliesMap.get(pid) || 0,
+      quote_count: quotesCountMap.get(pid) || 0,
       bookmarked: bookmarkedSet.has(pid),
       channel_id: cid,
       channel: cid ? (channelsMap.get(cid) || null) : null,
@@ -2813,6 +2825,100 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
   res.json(enriched);
 }));
 
+// この投稿を引用した人の一覧（Misskey の「引用」に相当）
+apiRouter.get('/posts/:id/quotes', asyncHandler(async (req: Request, res: Response) => {
+  const postId = decodeURIComponent(String(req.params.id));
+  const page = parsePageQuery(req, 40);
+  if (page.error) return res.status(400).json({ error: page.error });
+  const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  try {
+    const rows = await db.prepare(`
+      SELECT
+        p.*,
+        p.id AS post_id,
+        p.published_at AS timeline_at,
+        COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+      FROM posts p
+      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+      WHERE p.quote_id = ?
+      ORDER BY p.published_at DESC, p.id DESC
+      LIMIT ?
+    `).all(postId, page.limit + 1);
+    const pageRows = applyPageHeaders(res, rows, page.limit, 'published_at', 'id');
+    res.json(await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id));
+  } catch (err: any) {
+    console.error('[API Quotes Error]:', err);
+    res.status(500).json({ error: '引用の取得に失敗しました。' });
+  }
+}));
+
+// 自分が付けたリアクションの履歴（設定 → 自分の記録）
+apiRouter.get('/me/reactions', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const page = parsePageQuery(req, 50);
+  if (page.error) return res.status(400).json({ error: page.error });
+  const actorUrl = `${config.origin}/users/${user.id}`;
+  try {
+    const rows = await db.prepare(`
+      SELECT
+        r.id, r.reaction, r.created_at,
+        p.id AS post_id, p.content, p.cw, p.is_local, p.published_at,
+        p.author_name, p.author_handle, p.author_url, p.user_id AS post_author_id
+      FROM reactions r
+      JOIN posts p ON p.id = r.post_id
+      WHERE r.user_id = ?
+      ORDER BY r.created_at DESC
+      LIMIT ?
+    `).all(actorUrl, page.limit + 1);
+    const pageRows = applyPageHeaders(res, rows, page.limit, 'created_at', 'id');
+    res.json(pageRows.map((r: any) => ({
+      id: r.id,
+      reaction: r.reaction,
+      created_at: r.created_at,
+      post: {
+        id: r.post_id,
+        content: r.content,
+        cw: r.cw,
+        is_local: r.is_local,
+        published_at: r.published_at,
+        author_name: r.author_name,
+        author_handle: r.author_handle,
+        author_url: r.author_url,
+        user_id: r.post_author_id,
+      },
+    })));
+  } catch (err: any) {
+    console.error('[API My Reactions Error]:', err);
+    res.status(500).json({ error: 'リアクション履歴の取得に失敗しました。' });
+  }
+}));
+
+// 自分の投稿カレンダー（日付ごとの件数）
+apiRouter.get('/me/post-calendar', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const monthParam = String(req.query.month || '');
+  const month = /^[0-9]{4}-[0-9]{2}$/.test(monthParam) ? monthParam : new Date().toISOString().slice(0, 7);
+  const [yearStr, monthStr] = month.split('-');
+  const start = `${month}-01`;
+  const nextYear = Number(monthStr) === 12 ? Number(yearStr) + 1 : Number(yearStr);
+  const nextMonth = Number(monthStr) === 12 ? '01' : String(Number(monthStr) + 1).padStart(2, '0');
+  const end = `${nextYear}-${nextMonth}-01`;
+  try {
+    const rows = await db.prepare(`
+      SELECT substr(published_at, 1, 10) AS day, count(*) AS count
+      FROM posts
+      WHERE user_id = ? AND published_at >= ? AND published_at < ?
+      GROUP BY day
+      ORDER BY day
+    `).all(user.id, start, end);
+    res.json({ month, days: rows });
+  } catch (err: any) {
+    console.error('[API Post Calendar Error]:', err);
+    res.status(500).json({ error: 'カレンダーの取得に失敗しました。' });
+  }
+}));
+
 // フォロー中リスト
 apiRouter.get('/following', asyncHandler(async (req: Request, res: Response) => {
   const userId = (req.query.userId as string) || req.user?.id;
@@ -2991,6 +3097,8 @@ apiRouter.get('/notifications', requireAuth, asyncHandler(async (req: Request, r
     for (const r of mutedRows) if (r.target_user_id) excludeIds.add(r.target_user_id.toLowerCase());
     const blockedDomainRules = await loadBlockedDomainRules();
 
+    // ミュートワードは通知の本文にも効かせる（タイムラインと同じ判定を使う）
+    const notifMutedWords = await getMutedWords(user.id);
     const filtered = pageRows.filter((n) => {
       if (n.actor_id && excludeIds.has(n.actor_id.toLowerCase())) return false;
       if (n.actor_handle && excludeIds.has(n.actor_handle.toLowerCase())) return false;
@@ -2998,6 +3106,10 @@ apiRouter.get('/notifications', requireAuth, asyncHandler(async (req: Request, r
       if (matchesBlockedDomainRule(blockedDomainRules, n.actor_id)) return false;
       if (matchesBlockedDomainRule(blockedDomainRules, n.actor_handle)) return false;
       if (matchesBlockedDomainRule(blockedDomainRules, (n as any).origin_url)) return false;
+      if (notifMutedWords.length > 0) {
+        const text = `${n.post_content || ''} ${n.content || ''}`;
+        if (postMatchesMutedWords({ content: text, cw: '' } as any, notifMutedWords)) return false;
+      }
       return true;
     });
 

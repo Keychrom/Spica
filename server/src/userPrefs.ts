@@ -46,6 +46,12 @@ export interface UserPrefs {
   /** リアクションのピッカーで最初に選ばれている絵文字 */
   defaultReaction: string;
 
+  // 🎛️ 操作
+  /** キーボードショートカット（j/k 移動、n 投稿、/ 検索、? ヘルプ）。既定はオフ */
+  keyboardShortcuts: boolean;
+  /** よく使うリアクション（新しい順・最大 12 件。ピッカーの先頭に出す） */
+  recentReactions: string[];
+
   // 🔔 通知
   notificationGrouping: 'group' | 'individual';
 }
@@ -74,6 +80,10 @@ export const USER_PREFS_DEFAULTS: UserPrefs = {
   autoCompressImages: true,
   defaultReaction: '👍',
 
+  // 🎛️ 操作
+  keyboardShortcuts: false,
+  recentReactions: [],
+
   notificationGrouping: 'group',
 };
 
@@ -83,6 +93,34 @@ const MAX_MUTED_DOMAINS = 200;
 const MAX_CW_TEXT = 200;
 /** 既定リアクションの上限（絵文字は数文字で足りる） */
 const MAX_REACTION_TEXT = 48;
+/** よく使うリアクションの保持数 */
+const MAX_RECENT_REACTIONS = 12;
+
+/**
+ * リアクションの文字列を検証する（`:custom:` も許す）。
+ * 制御文字は表示を壊すので弾く（コードポイントで判定する＝ソースに生の制御文字を書かない）。
+ */
+export function normalizeReaction(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_REACTION_TEXT) return null;
+  for (const ch of trimmed) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return trimmed;
+}
+
+function pickRecentReactions(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const out: string[] = [];
+  for (const item of value) {
+    const reaction = normalizeReaction(item);
+    if (reaction && !out.includes(reaction)) out.push(reaction);
+    if (out.length >= MAX_RECENT_REACTIONS) break;
+  }
+  return out;
+}
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
   return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -153,6 +191,9 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
     afterPost: pickEnum(source.afterPost, ['timeline', 'stay'] as const, d.afterPost),
     autoCompressImages: pickBool(source.autoCompressImages, d.autoCompressImages),
     defaultReaction: pickText(source.defaultReaction, d.defaultReaction, MAX_REACTION_TEXT) || d.defaultReaction,
+
+    keyboardShortcuts: pickBool(source.keyboardShortcuts, d.keyboardShortcuts),
+    recentReactions: pickRecentReactions(source.recentReactions, d.recentReactions),
 
     notificationGrouping: pickEnum(source.notificationGrouping, ['group', 'individual'] as const, d.notificationGrouping),
   };

@@ -87,6 +87,7 @@ export default function AppHeader(props: AppHeaderProps) {
             <Search className="absolute left-3 w-4 h-4 text-slate-500 pointer-events-none" />
             <input
               type="text"
+              data-keyboard-target="search"
               placeholder="キーワード、@user@misskey.io、#タグ、from:user / has:media / before:2026-09-01..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
