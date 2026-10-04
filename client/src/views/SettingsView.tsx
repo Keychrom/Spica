@@ -3066,15 +3066,15 @@ export default function SettingsView(props: SettingsViewProps) {
 
                   {/* 🖥️ ログイン中の端末（セッション）一覧 */}
                   <SessionsPanel api={api} authToken={authToken} />
-
-                  {/* 🗂️ 自分の記録 */}
-                  {showReactionHistory && <ReactionHistoryModal api={api} onClose={() => setShowReactionHistory(false)} />}
-                  {showPostCalendar && <PostCalendarModal api={api} onClose={() => setShowPostCalendar(false)} />}
                 </div>
               )}
             </div>
           </div>
         </main>
+
+        {/* 🗂️ 自分の記録（タブに関係なく開けるよう、画面の最後に描く） */}
+        {showReactionHistory && <ReactionHistoryModal api={api} onClose={() => setShowReactionHistory(false)} />}
+        {showPostCalendar && <PostCalendarModal api={api} onClose={() => setShowPostCalendar(false)} />}
     </>
   );
 }
