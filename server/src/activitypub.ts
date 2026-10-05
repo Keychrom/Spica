@@ -422,18 +422,27 @@ export async function fetchActorAliases(actorUrl: string): Promise<string[]> {
       console.log(`[Move] 🚫 alsoKnownAs の取得をスキップ（安全でない URL）: ${actorUrl}`);
       return [];
     }
-    const res = await safeFetch(actorUrl, {
+    let res = await safeFetch(actorUrl, {
       headers: {
         Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
         'User-Agent': `Spica/1.0.0 (+${config.origin})`,
         ...signedFetchHeaders(actorUrl),
       },
     });
+    // 署名を必須にしているサーバー向けに、401/403 のときだけ署名つきで取り直す
+    if ((res.status === 401 || res.status === 403) && !config.authorizedFetch) {
+      res = await safeFetch(actorUrl, {
+        headers: {
+          Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
+          'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+          ...signedFetchHeaders(actorUrl, true),
+        },
+      });
+    }
     if (!res.ok) {
       console.log(`[Move] ⚠️ alsoKnownAs の取得に失敗: ${actorUrl} (HTTP ${res.status})`);
       return [];
-    }
-    const doc: any = await res.json();
+    }    const doc: any = await res.json();
     const raw = doc?.alsoKnownAs;
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
     return list
@@ -628,14 +637,21 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
   }
 
   console.log(`[Actor] Fetching remote actor: ${actorUrl}`);
-  const res = await safeFetch(actorUrl, {
-    headers: {
-      Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
-      'User-Agent': `Spica/1.0.0 (+${config.origin})`,
-      // Authorized Fetch 運用のサーバーからも取得できるよう、有効時は署名を付ける
-      ...signedFetchHeaders(actorUrl),
-    },
+  const actorHeaders = (forceSign: boolean) => ({
+    Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
+    'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+    // Authorized Fetch 運用のサーバーからも取得できるよう、有効時は署名を付ける
+    ...signedFetchHeaders(actorUrl, forceSign),
   });
+  let res = await safeFetch(actorUrl, { headers: actorHeaders(false) });
+
+  // 署名を必須にしているサーバー（iceshrimp.NET など）は、未署名の取得に 401/403 を返す。
+  // 「相手が署名を要求している」と分かったときだけ、署名を付けて 1 回だけ取り直す
+  // （こちらの AUTHORIZED_FETCH 設定に関係なく、この経路は常に有効）。
+  if ((res.status === 401 || res.status === 403) && !config.authorizedFetch) {
+    console.log(`[Actor] 🔏 署名を要求されているため署名つきで再取得します (HTTP ${res.status}): ${actorUrl}`);
+    res = await safeFetch(actorUrl, { headers: actorHeaders(true) });
+  }
 
   if (!res.ok) {
     throw new Error(`Actor取得失敗 (HTTP ${res.status}): ${actorUrl}`);
@@ -724,10 +740,11 @@ export interface DeliveryAttemptResult {
 
 /**
  * Authorized Fetch 対応: 取得（GET）にインスタンスアクターの署名ヘッダーを付ける
- *  - AUTHORIZED_FETCH=true のときのみ付与する（無効時は従来どおり未署名で取得）
+ *  - AUTHORIZED_FETCH=true のときは常に付与する
+ *  - `force=true` のときも付与する（未署名だと 401/403 を返すサーバーへ、失敗後に取り直す用）
  */
-export function signedFetchHeaders(url: string): Record<string, string> {
-  if (!config.authorizedFetch) {
+export function signedFetchHeaders(url: string, force = false): Record<string, string> {
+  if (!config.authorizedFetch && !force) {
     return {};
   }
   try {
