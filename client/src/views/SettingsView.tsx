@@ -1127,15 +1127,63 @@ export default function SettingsView(props: SettingsViewProps) {
               </button>
 
               <button
-                onClick={() => { setSettingsTab('preferences'); setSettingsMessage(null); }}
+                onClick={() => { setSettingsTab('appearance'); setSettingsMessage(null); }}
                 className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
-                  settingsTab === 'preferences'
+                  settingsTab === 'appearance'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Palette className="w-4 h-4" />
+                <span>表示</span>
+              </button>
+
+              <button
+                onClick={() => { setSettingsTab('timeline'); setSettingsMessage(null); }}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
+                  settingsTab === 'timeline'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
                 <Sliders className="w-4 h-4" />
-                <span>投稿・表示設定</span>
+                <span>タイムライン</span>
+              </button>
+
+              <button
+                onClick={() => { setSettingsTab('posting'); setSettingsMessage(null); }}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
+                  settingsTab === 'posting'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Send className="w-4 h-4" />
+                <span>投稿</span>
+              </button>
+
+              <button
+                onClick={() => { setSettingsTab('notifications'); setSettingsMessage(null); }}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
+                  settingsTab === 'notifications'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <Bell className="w-4 h-4" />
+                <span>通知</span>
+              </button>
+
+              <button
+                onClick={() => { setSettingsTab('records'); setSettingsMessage(null); }}
+                className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
+                  settingsTab === 'records'
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <FolderArchive className="w-4 h-4" />
+                <span>自分の記録</span>
               </button>
 
               <button
@@ -1446,16 +1494,17 @@ export default function SettingsView(props: SettingsViewProps) {
                     </button>
                   </div>
                 </form>
-              ) : settingsTab === 'preferences' ? (
-                /* ⚙️ 投稿・表示設定 */
+              ) : settingsTab === 'appearance' ? (
+                /* 🎨 表示（テーマ・文字サイズ・動画の扱いなど） */
                 <form onSubmit={handleSavePreferences} className="space-y-6">
                   <div className="border-b border-slate-800 pb-3">
                     <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
-                      <Sliders className="w-4 h-4 text-indigo-400" />
-                      <span>投稿・表示の環境設定</span>
+                      <Palette className="w-4 h-4 text-indigo-400" />
+                      <span>表示と動作</span>
+                      <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold">どの端末でも同じ</span>
                     </h3>
                     <p className="text-xs text-slate-400 mt-1">
-                      投稿作成時のデフォルト公開範囲や、タイムラインの初期表示を設定します（この端末に保存されます）。
+                      テーマや文字サイズ、動画の扱いなど、画面の見た目と操作感を設定します。ここで変えたものはアカウントに保存され、別の端末でログインしても同じ見た目になります。
                     </p>
                   </div>
 
@@ -1538,6 +1587,223 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
                   </div>
 
+                  {/* ⚙️ 文字サイズ・行間・時刻の表し方（表示と動作） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
+                    <PrefChoice
+                      label="文字サイズ"
+                      hint="画面全体の大きさが変わります（余白も少し変わります）"
+                      value={prefs.fontSize}
+                      options={[
+                        { value: 'small', label: '小' },
+                        { value: 'normal', label: '標準' },
+                        { value: 'large', label: '大' },
+                      ]}
+                      onChange={(value) => updatePrefs({ fontSize: value })}
+                    />
+
+                    <PrefChoice
+                      label="行間・余白"
+                      value={prefs.density}
+                      options={[
+                        { value: 'comfortable', label: 'ゆったり' },
+                        { value: 'compact', label: 'コンパクト' },
+                      ]}
+                      onChange={(value) => updatePrefs({ density: value })}
+                    />
+
+                    <PrefChoice
+                      label="時刻の表し方"
+                      value={prefs.timeFormat}
+                      options={[
+                        { value: 'absolute', label: '日時' },
+                        { value: 'relative', label: '相対（3分前）' },
+                      ]}
+                      onChange={(value) => updatePrefs({ timeFormat: value })}
+                    />
+                  </div>
+
+                  {/* カスタム絵文字表示 */}
+                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300">
+                          カスタム絵文字の画像置換表示
+                        </label>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Misskey / Mastodon から送られてくるカスタム絵文字（例: :ohayo:）を画像として表示します。
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowCustomEmojis(!showCustomEmojis)}
+                        className={`w-12 h-6 rounded-full transition p-1 flex items-center shrink-0 cursor-pointer ${
+                          showCustomEmojis ? 'bg-indigo-600 justify-end' : 'bg-slate-800 justify-start'
+                        }`}
+                      >
+                        <div className="w-4 h-4 rounded-full bg-white shadow-md" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ▶️ 動画・センシティブの扱い（表示と動作） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <PrefToggle
+                      label="動画を自動再生する"
+                      hint="タイムラインの動画が、表示された時点で再生されます"
+                      checked={prefs.autoPlayMedia}
+                      onChange={(checked) => updatePrefs({ autoPlayMedia: checked })}
+                    />
+                    <PrefToggle
+                      label="自動再生はミュートで始める"
+                      checked={prefs.muteMediaByDefault}
+                      onChange={(checked) => updatePrefs({ muteMediaByDefault: checked })}
+                    />
+                    <PrefToggle
+                      label="センシティブを常に隠す"
+                      hint="オフにすると、センシティブでもクリックなしで表示します（初期値は隠す）"
+                      checked={prefs.alwaysHideSensitive}
+                      onChange={(checked) => updatePrefs({ alwaysHideSensitive: checked })}
+                    />
+                  </div>
+
+                  {/* ⌨️ キーボードショートカット & インストール（表示と動作） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <PrefToggle
+                      label="キーボードショートカット"
+                      hint="j / k で投稿を移動、n で投稿欄、/ で検索、? で一覧（入力中は効きません）"
+                      checked={prefs.keyboardShortcuts}
+                      onChange={(checked) => updatePrefs({ keyboardShortcuts: checked })}
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <span>
+                        <span className="text-xs font-bold text-slate-200 block">アプリとしてインストール</span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">
+                          {isStandalone()
+                            ? 'すでにアプリとして開いています。'
+                            : installAvailable
+                              ? 'ホーム画面に追加すると、通知やバッジが使えます。'
+                              : 'お使いのブラウザのメニューから「アプリをインストール」を選べます。'}
+                        </span>
+                        {installMessage && <span className="text-[11px] text-emerald-400 block mt-0.5">{installMessage}</span>}
+                      </span>
+                      {installAvailable && !isStandalone() && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const accepted = await promptInstall();
+                            setInstallMessage(accepted ? 'インストールしました。' : 'キャンセルしました。');
+                          }}
+                          className="shrink-0 px-3.5 py-2 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition cursor-pointer"
+                        >
+                          インストール
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 保存ボタン */}
+                  <div className="pt-3 flex justify-end">
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition flex items-center space-x-1.5"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>環境設定を保存</span>
+                    </button>
+                  </div>
+                </form>
+              ) : settingsTab === 'timeline' ? (
+                /* 🕒 タイムライン（初期表示・新しい投稿の扱い） */
+                <form onSubmit={handleSavePreferences} className="space-y-6">
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                      <Sliders className="w-4 h-4 text-indigo-400" />
+                      <span>タイムライン</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      タイムラインの初期表示タブと、新しい投稿が届いたときの扱い（ブースト・返信の表示）を設定します。
+                    </p>
+                  </div>
+
+                  {/* デフォルトタイムライン */}
+                  <div className="space-y-2.5">
+                    <label className="block text-xs font-bold text-slate-300">
+                      タイムラインの初期表示タブ
+                    </label>
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {[
+                        { id: 'local', label: '🏠 ローカル', desc: '自サーバーのみ' },
+                        { id: 'home', label: '👥 ホーム', desc: 'フォロー中のみ' },
+                        { id: 'all', label: '🌐 連合', desc: 'リレー含む全件' },
+                      ].map((tl) => (
+                        <button
+                          key={tl.id}
+                          type="button"
+                          onClick={() => setDefaultTimeline(tl.id as any)}
+                          className={`p-3 rounded-xl border text-center transition ${
+                            defaultTimeline === tl.id
+                              ? 'bg-indigo-600/20 border-indigo-500 text-white font-bold'
+                              : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:bg-slate-800/40'
+                          }`}
+                        >
+                          <span className="text-xs block">{tl.label}</span>
+                          <span className="text-[10px] text-slate-500 block mt-0.5">{tl.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ⚡ 新しい投稿とホームの表示（表示と動作） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
+                    <PrefChoice
+                      label="新しい投稿が届いたとき"
+                      value={prefs.newPostsBehavior}
+                      options={[
+                        { value: 'badge', label: '件数バッジ' },
+                        { value: 'auto', label: 'そのまま反映' },
+                        { value: 'manual', label: '手動で読み込む' },
+                      ]}
+                      onChange={(value) => updatePrefs({ newPostsBehavior: value })}
+                    />
+
+                    <PrefToggle
+                      label="ホームでブーストを隠す"
+                      hint="ホームタイムラインに他人のブーストを出しません（次に読み込んだときから）"
+                      checked={prefs.hideBoostsInHome}
+                      onChange={(checked) => updatePrefs({ hideBoostsInHome: checked })}
+                    />
+                    <PrefToggle
+                      label="ホームで返信を隠す"
+                      hint="自分が書いた返信は残します（次に読み込んだときから）"
+                      checked={prefs.hideRepliesInHome}
+                      onChange={(checked) => updatePrefs({ hideRepliesInHome: checked })}
+                    />
+                  </div>
+
+                  {/* 保存ボタン */}
+                  <div className="pt-3 flex justify-end">
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition flex items-center space-x-1.5"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>環境設定を保存</span>
+                    </button>
+                  </div>
+                </form>
+              ) : settingsTab === 'posting' ? (
+                /* 📝 投稿（公開範囲・画像圧縮・投稿の既定） */
+                <form onSubmit={handleSavePreferences} className="space-y-6">
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                      <Send className="w-4 h-4 text-indigo-400" />
+                      <span>投稿</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      投稿作成時のデフォルト公開範囲や、投稿の既定（センシティブ・CW・リアクション）を設定します。
+                    </p>
+                  </div>
+
                   {/* デフォルト投稿公開範囲 */}
                   <div className="space-y-2.5">
                     <label className="block text-xs font-bold text-slate-300">
@@ -1600,59 +1866,8 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
                   </div>
 
-                  {/* デフォルトタイムライン */}
-                  <div className="space-y-2.5">
-                    <label className="block text-xs font-bold text-slate-300">
-                      タイムラインの初期表示タブ
-                    </label>
-                    <div className="grid grid-cols-3 gap-2.5">
-                      {[
-                        { id: 'local', label: '🏠 ローカル', desc: '自サーバーのみ' },
-                        { id: 'home', label: '👥 ホーム', desc: 'フォロー中のみ' },
-                        { id: 'all', label: '🌐 連合', desc: 'リレー含む全件' },
-                      ].map((tl) => (
-                        <button
-                          key={tl.id}
-                          type="button"
-                          onClick={() => setDefaultTimeline(tl.id as any)}
-                          className={`p-3 rounded-xl border text-center transition ${
-                            defaultTimeline === tl.id
-                              ? 'bg-indigo-600/20 border-indigo-500 text-white font-bold'
-                              : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:bg-slate-800/40'
-                          }`}
-                        >
-                          <span className="text-xs block">{tl.label}</span>
-                          <span className="text-[10px] text-slate-500 block mt-0.5">{tl.desc}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* カスタム絵文字表示 */}
-                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-300">
-                          カスタム絵文字の画像置換表示
-                        </label>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          Misskey / Mastodon から送られてくるカスタム絵文字（例: :ohayo:）を画像として表示します。
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setShowCustomEmojis(!showCustomEmojis)}
-                        className={`w-12 h-6 rounded-full transition p-1 flex items-center shrink-0 cursor-pointer ${
-                          showCustomEmojis ? 'bg-indigo-600 justify-end' : 'bg-slate-800 justify-start'
-                        }`}
-                      >
-                        <div className="w-4 h-4 rounded-full bg-white shadow-md" />
-                      </button>
-                    </div>
-                  </div>
-
                   {/* ⚡ 画像の自動圧縮 (Misskey互換) */}
-                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
+                  <div className="space-y-2.5">
                     <div className="flex items-center justify-between">
                       <div>
                         <label className="block text-xs font-bold text-slate-300 flex items-center space-x-1.5">
@@ -1679,8 +1894,79 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
                   </div>
 
+                  {/* 📝 投稿の既定（表示と動作） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <h5 className="text-xs font-bold text-slate-200">投稿の既定</h5>
+                    <PrefToggle
+                      label="センシティブを既定で ON"
+                      checked={prefs.defaultSensitive}
+                      onChange={(checked) => updatePrefs({ defaultSensitive: checked })}
+                    />
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <span className="text-xs font-bold text-slate-200 block">CW（内容の注意書き）の既定文言</span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">入れておくと、投稿欄の CW が最初から開いてこの文言が入ります</span>
+                      </div>
+                      <input
+                        type="text"
+                        defaultValue={prefs.defaultCwText}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                        onBlur={(e) => updatePrefs({ defaultCwText: e.target.value })}
+                        placeholder="例: ネタバレ注意"
+                        className="w-full sm:w-56 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <PrefChoice
+                      label="投稿したあと"
+                      value={prefs.afterPost}
+                      options={[
+                        { value: 'timeline', label: 'タイムラインへ戻る' },
+                        { value: 'stay', label: 'そのまま留まる' },
+                      ]}
+                      onChange={(value) => updatePrefs({ afterPost: value })}
+                    />
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <span className="text-xs font-bold text-slate-200 block">既定のリアクション</span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">リアクションの候補の先頭に出ます</span>
+                      </div>
+                      <input
+                        type="text"
+                        defaultValue={prefs.defaultReaction}
+                        onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                        onBlur={(e) => { const value = e.target.value.trim(); if (value) updatePrefs({ defaultReaction: value }); }}
+                        placeholder="👍"
+                        className="w-full sm:w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 text-center focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 保存ボタン */}
+                  <div className="pt-3 flex justify-end">
+                    <button
+                      type="submit"
+                      className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition flex items-center space-x-1.5"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>環境設定を保存</span>
+                    </button>
+                  </div>
+                </form>
+              ) : settingsTab === 'notifications' ? (
+                /* 🔔 通知（Web Push・種類・メール） */
+                <form onSubmit={handleSavePreferences} className="space-y-6">
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                      <Bell className="w-4 h-4 text-indigo-400" />
+                      <span>通知</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Web Push 通知やメール通知、受け取る通知の種類とまとめ方を設定します。
+                    </p>
+                  </div>
+
                   {/* 🔔 Web Push 通知 (PWA / スマホ通知) */}
-                  <div className="space-y-3 pt-4 border-t border-slate-800">
+                  <div className="space-y-3">
                     <div className="flex items-start justify-between">
                       <div>
                         <label className="block text-xs font-bold text-slate-200 flex items-center space-x-1.5">
@@ -1826,216 +2112,18 @@ export default function SettingsView(props: SettingsViewProps) {
                     </div>
                   )}
 
-                  {/* 🧭 表示と動作（サーバー保存・端末をまたいで同じ） */}
+                  {/* 🔔 通知のまとめ方（表示と動作） */}
                   <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
-                    <div>
-                      <h4 className="font-bold text-sm text-slate-100 flex items-center space-x-2">
-                        <Palette className="w-4 h-4 text-indigo-400" />
-                        <span>表示と動作</span>
-                        <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold">どの端末でも同じ</span>
-                      </h4>
-                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                        ここで変えたものはアカウントに保存され、別の端末でログインしても同じ見た目になります。
-                      </p>
-                    </div>
-
                     <PrefChoice
-                      label="文字サイズ"
-                      hint="画面全体の大きさが変わります（余白も少し変わります）"
-                      value={prefs.fontSize}
+                      label="通知のまとめ方"
+                      hint="「1件ずつ」にすると、同じ投稿への複数リアクションなどもまとめずに並べます"
+                      value={prefs.notificationGrouping}
                       options={[
-                        { value: 'small', label: '小' },
-                        { value: 'normal', label: '標準' },
-                        { value: 'large', label: '大' },
+                        { value: 'group', label: 'まとめる' },
+                        { value: 'individual', label: '1件ずつ' },
                       ]}
-                      onChange={(value) => updatePrefs({ fontSize: value })}
+                      onChange={(value) => updatePrefs({ notificationGrouping: value })}
                     />
-
-                    <PrefChoice
-                      label="行間・余白"
-                      value={prefs.density}
-                      options={[
-                        { value: 'comfortable', label: 'ゆったり' },
-                        { value: 'compact', label: 'コンパクト' },
-                      ]}
-                      onChange={(value) => updatePrefs({ density: value })}
-                    />
-
-                    <PrefChoice
-                      label="時刻の表し方"
-                      value={prefs.timeFormat}
-                      options={[
-                        { value: 'absolute', label: '日時' },
-                        { value: 'relative', label: '相対（3分前）' },
-                      ]}
-                      onChange={(value) => updatePrefs({ timeFormat: value })}
-                    />
-
-                    <PrefChoice
-                      label="新しい投稿が届いたとき"
-                      value={prefs.newPostsBehavior}
-                      options={[
-                        { value: 'badge', label: '件数バッジ' },
-                        { value: 'auto', label: 'そのまま反映' },
-                        { value: 'manual', label: '手動で読み込む' },
-                      ]}
-                      onChange={(value) => updatePrefs({ newPostsBehavior: value })}
-                    />
-
-                    <div className="border-t border-slate-800 pt-3 space-y-3">
-                      <PrefToggle
-                        label="ホームでブーストを隠す"
-                        hint="ホームタイムラインに他人のブーストを出しません（次に読み込んだときから）"
-                        checked={prefs.hideBoostsInHome}
-                        onChange={(checked) => updatePrefs({ hideBoostsInHome: checked })}
-                      />
-                      <PrefToggle
-                        label="ホームで返信を隠す"
-                        hint="自分が書いた返信は残します（次に読み込んだときから）"
-                        checked={prefs.hideRepliesInHome}
-                        onChange={(checked) => updatePrefs({ hideRepliesInHome: checked })}
-                      />
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3 space-y-3">
-                      <PrefToggle
-                        label="動画を自動再生する"
-                        hint="タイムラインの動画が、表示された時点で再生されます"
-                        checked={prefs.autoPlayMedia}
-                        onChange={(checked) => updatePrefs({ autoPlayMedia: checked })}
-                      />
-                      <PrefToggle
-                        label="自動再生はミュートで始める"
-                        checked={prefs.muteMediaByDefault}
-                        onChange={(checked) => updatePrefs({ muteMediaByDefault: checked })}
-                      />
-                      <PrefToggle
-                        label="センシティブを常に隠す"
-                        hint="オフにすると、センシティブでもクリックなしで表示します（初期値は隠す）"
-                        checked={prefs.alwaysHideSensitive}
-                        onChange={(checked) => updatePrefs({ alwaysHideSensitive: checked })}
-                      />
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3">
-                      <PrefChoice
-                        label="通知のまとめ方"
-                        hint="「1件ずつ」にすると、同じ投稿への複数リアクションなどもまとめずに並べます"
-                        value={prefs.notificationGrouping}
-                        options={[
-                          { value: 'group', label: 'まとめる' },
-                          { value: 'individual', label: '1件ずつ' },
-                        ]}
-                        onChange={(value) => updatePrefs({ notificationGrouping: value })}
-                      />
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3 space-y-3">
-                      <PrefToggle
-                        label="キーボードショートカット"
-                        hint="j / k で投稿を移動、n で投稿欄、/ で検索、? で一覧（入力中は効きません）"
-                        checked={prefs.keyboardShortcuts}
-                        onChange={(checked) => updatePrefs({ keyboardShortcuts: checked })}
-                      />
-                      <div className="flex items-center justify-between gap-3">
-                        <span>
-                          <span className="text-xs font-bold text-slate-200 block">アプリとしてインストール</span>
-                          <span className="text-[11px] text-slate-500 block mt-0.5">
-                            {isStandalone()
-                              ? 'すでにアプリとして開いています。'
-                              : installAvailable
-                                ? 'ホーム画面に追加すると、通知やバッジが使えます。'
-                                : 'お使いのブラウザのメニューから「アプリをインストール」を選べます。'}
-                          </span>
-                          {installMessage && <span className="text-[11px] text-emerald-400 block mt-0.5">{installMessage}</span>}
-                        </span>
-                        {installAvailable && !isStandalone() && (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const accepted = await promptInstall();
-                              setInstallMessage(accepted ? 'インストールしました。' : 'キャンセルしました。');
-                            }}
-                            className="shrink-0 px-3.5 py-2 rounded-xl text-[11px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition cursor-pointer"
-                          >
-                            インストール
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3 space-y-3">
-                      <div>
-                        <span className="text-xs font-bold text-slate-200 block">自分の記録</span>
-                        <span className="text-[11px] text-slate-500 block mt-0.5">自分が付けたリアクションと、投稿の件数を振り返ります。</span>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setShowReactionHistory(true)}
-                          className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
-                        >
-                          リアクション履歴
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowPostCalendar(true)}
-                          className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
-                        >
-                          投稿カレンダー
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3 space-y-3">
-                      <h5 className="text-xs font-bold text-slate-200">投稿の既定</h5>
-                      <PrefToggle
-                        label="センシティブを既定で ON"
-                        checked={prefs.defaultSensitive}
-                        onChange={(checked) => updatePrefs({ defaultSensitive: checked })}
-                      />
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                        <div>
-                          <span className="text-xs font-bold text-slate-200 block">CW（内容の注意書き）の既定文言</span>
-                          <span className="text-[11px] text-slate-500 block mt-0.5">入れておくと、投稿欄の CW が最初から開いてこの文言が入ります</span>
-                        </div>
-                        <input
-                          type="text"
-                          defaultValue={prefs.defaultCwText}
-                          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
-                          onBlur={(e) => updatePrefs({ defaultCwText: e.target.value })}
-                          placeholder="例: ネタバレ注意"
-                          className="w-full sm:w-56 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                      <PrefChoice
-                        label="投稿したあと"
-                        value={prefs.afterPost}
-                        options={[
-                          { value: 'timeline', label: 'タイムラインへ戻る' },
-                          { value: 'stay', label: 'そのまま留まる' },
-                        ]}
-                        onChange={(value) => updatePrefs({ afterPost: value })}
-                      />
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                        <div>
-                          <span className="text-xs font-bold text-slate-200 block">既定のリアクション</span>
-                          <span className="text-[11px] text-slate-500 block mt-0.5">リアクションの候補の先頭に出ます</span>
-                        </div>
-                        <input
-                          type="text"
-                          defaultValue={prefs.defaultReaction}
-                          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
-                          onBlur={(e) => { const value = e.target.value.trim(); if (value) updatePrefs({ defaultReaction: value }); }}
-                          placeholder="👍"
-                          className="w-full sm:w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 text-center focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="border-t border-slate-800 pt-3">
-                      <MutedDomainsEditor />
-                    </div>
                   </div>
 
                   {/* 保存ボタン */}
@@ -2049,6 +2137,38 @@ export default function SettingsView(props: SettingsViewProps) {
                     </button>
                   </div>
                 </form>
+              ) : settingsTab === 'records' ? (
+                /* 🗂️ 自分の記録（リアクション履歴・投稿カレンダー） */
+                <div className="space-y-6">
+                  <div className="border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+                      <FolderArchive className="w-4 h-4 text-indigo-400" />
+                      <span>自分の記録</span>
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      自分が付けたリアクションと、投稿の件数を振り返ります。
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowReactionHistory(true)}
+                        className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
+                      >
+                        リアクション履歴
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowPostCalendar(true)}
+                        className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer"
+                      >
+                        投稿カレンダー
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : settingsTab === 'account' ? (
                 /* 🌐 アカウント・連合情報 */
                 <div className="space-y-6">
@@ -2949,6 +3069,11 @@ export default function SettingsView(props: SettingsViewProps) {
                       </div>
                     </div>
                   )}
+
+                  {/* 🌐 自分用のミュートするドメイン */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4">
+                    <MutedDomainsEditor />
+                  </div>
 
                   {/* 🚩 自分が出した通報の履歴（送れるのに結果が見えなかった） */}
                   <div className="border-b border-slate-800 pb-3">
