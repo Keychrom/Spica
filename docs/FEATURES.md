@@ -99,6 +99,7 @@
 | **Authorized Fetch（任意）** | 有効にすると、こちらの取得（Actor 文書・フォロワー一覧・ノート）にも署名を付け、取得側にも署名を必須にします。フォロワー限定投稿の保護が実効化されます（`AUTHORIZED_FETCH`）。 |
 | **通報の連合** | 他サーバーのユーザーを通報すると `Flag` として転送され、他サーバーから届いた通報も取り込みます。 |
 | **ピン留め（featured）** | プロフィールのピン留め投稿を `featured` コレクション（`/users/<id>/collections/featured`）として公開し、Actor 文書から参照します。Mastodon / Misskey 側でも「固定投稿」として見えます（公開投稿のみ掲載）。 |
+| **アイコンと名前の反映** | 管理画面でサーバー名・説明文・アイコンを変えると、**favicon / apple-touch-icon / PWA の manifest（アプリ名・説明・アイコン）/ 共有カードの画像（og:image）** にそのまま反映されます（`/favicon.ico` も設定したアイコンへ転送）。 |
 | **発見性** | RSS（`/feed.xml`、`/users/<id>/feed.xml`、`/tags/<tag>/feed.xml`）、投稿・プロフィール・タグページへの OGP / Twitter Card 動的注入、oEmbed エンドポイント（`/api/oembed`）、`robots.txt` と `sitemap.xml`、`/.well-known/security.txt`（`contact_url` 設定時のみ）。すべての HTML に `canonical`・`meta description` と RSS / oEmbed の自動発見リンクを出します。 |
 | **投稿のパーマリンク** | ローカル投稿は `/users/<id>/posts/<postId>` が正規 URL で、**同じ URL がブラウザには OGP 付きの画面、ActivityPub のクライアントには JSON** を返します（Mastodon と同じ挙動）。リモート投稿は `/?post=<正規 ID>` で共有でき、どちらも `canonical` で一本化されます。古い `/posts/<正規 ID>` 形式のリンクは 301 で転送します。 |
 | **共有** | 投稿の「共有」は、共有シートが使える端末では OS の共有（`navigator.share`）を開き、無ければ URL をクリップボードへコピーします。ハッシュタグは `/tags/<tag>` へのリンクで、タグページは共有も購読もできます。 |

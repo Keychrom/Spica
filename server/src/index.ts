@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules } from './db.js';
+import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules, getInstanceInfo } from './db.js';
 import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
 import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
 import { inboxGate } from './inboxGate.js';
@@ -412,9 +412,49 @@ if (finalDistPath) {
     next();
   });
 
+  // manifest は**インスタンス設定を反映して動的に返す**（管理者がロゴや名前を変えたら、
+  // インストール済みアプリのアイコン・アプリ名もそれに追随する）。
+  // 共有シートや長押しショートカットなど、静的な manifest の中身はそのまま活かす。
   app.get(['/manifest.webmanifest', '/manifest.json'], (req: Request, res: Response, next: NextFunction) => {
-    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
-    next();
+    try {
+      const staticManifestPath = path.join(finalDistPath, 'manifest.json');
+      const base = fs.existsSync(staticManifestPath)
+        ? JSON.parse(fs.readFileSync(staticManifestPath, 'utf8'))
+        : {};
+      const instance = getInstanceInfo();
+      const iconUrl = new URL(instance.icon_url || '/logo.jpg', config.origin).toString();
+      const manifest = {
+        ...base,
+        name: instance.name,
+        short_name: instance.name.length > 12 ? instance.name.slice(0, 12) : instance.name,
+        description: instance.description,
+        // 管理者のアイコンを先頭に置き、PWA の必須サイズ（192/512）は既定のものを残す
+        icons: [
+          { src: iconUrl, sizes: 'any', purpose: 'any' },
+          ...(Array.isArray(base.icons) ? base.icons : []),
+        ],
+      };
+      // 設定を変えたらすぐ反映されるように、キャッシュさせない
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      return res.json(manifest);
+    } catch (err) {
+      console.warn('[Manifest] 動的生成に失敗したため静的ファイルを返します:', (err as Error).message);
+      res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+      return next();
+    }
+  });
+
+  // ブラウザが直接取りに来る /favicon.ico も、管理者が設定したアイコンへ寄せる
+  app.get('/favicon.ico', (req: Request, res: Response) => {
+    try {
+      const instance = getInstanceInfo();
+      const icon = instance.icon_url || '/logo.jpg';
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.redirect(302, new URL(icon, config.origin).toString());
+    } catch {
+      return res.status(404).end();
+    }
   });
 
   // 🔗 OGP メタの動的注入（SNS でシェアしたときにカードが表示されるようにする）
@@ -445,6 +485,23 @@ if (finalDistPath) {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
+  /**
+   * 通常のブラウザにも「管理者が設定したアイコン」を返す。
+   * クローラ向けの injectMeta は他のメタも一緒に入れるが、こちらは favicon と
+   * apple-touch-icon だけを差し替える（SPA フォールバックの HTML に使う）。
+   */
+  const injectInstanceIcons = (html: string): string => {
+    const instance = getInstanceInfo();
+    const icon = new URL(instance.icon_url || '/logo.jpg', config.origin).toString();
+    return html
+      .replace(/<link\s+rel="icon"[^>]*>\s*/gi, '')
+      .replace(/<link\s+rel="apple-touch-icon"[^>]*>\s*/gi, '')
+      .replace(
+        /<\/head>/i,
+        `    <link rel="icon" href="${escapeHtml(icon)}" />\n    <link rel="apple-touch-icon" href="${escapeHtml(icon)}" />\n  </head>`,
+      );
+  };
+
   const injectMeta = (
     html: string,
     meta: {
@@ -464,23 +521,30 @@ if (finalDistPath) {
       noindex?: boolean;
     },
   ): string => {
+    // サイト名とアイコンは**管理画面で設定した値**を使う（未設定なら既定のロゴ）。
+    // 管理者がロゴを差し替えたら、favicon / apple-touch-icon / 共有カードの画像も一緒に変わる。
+    const instance = getInstanceInfo();
+    const instanceIcon = new URL(instance.icon_url || '/logo.jpg', config.origin).toString();
+    const shareImage = meta.image || instanceIcon;
     const feedPath = meta.feed === undefined ? '/feed.xml' : meta.feed;
     const tags = [
       `<meta name="description" content="${escapeHtml(meta.description)}" />`,
       meta.noindex ? `<meta name="robots" content="noindex, nofollow" />` : '',
       `<meta property="og:type" content="${escapeHtml(meta.type || 'website')}" />`,
-      `<meta property="og:site_name" content="${escapeHtml(config.instanceName)}" />`,
+      `<meta property="og:site_name" content="${escapeHtml(instance.name)}" />`,
       `<meta property="og:title" content="${escapeHtml(meta.title)}" />`,
       `<meta property="og:description" content="${escapeHtml(meta.description)}" />`,
       `<meta property="og:url" content="${escapeHtml(meta.url)}" />`,
-      meta.image ? `<meta property="og:image" content="${escapeHtml(meta.image)}" />` : '',
+      `<meta property="og:image" content="${escapeHtml(shareImage)}" />`,
       `<meta name="twitter:card" content="${meta.image ? 'summary_large_image' : 'summary'}" />`,
       `<meta name="twitter:title" content="${escapeHtml(meta.title)}" />`,
       `<meta name="twitter:description" content="${escapeHtml(meta.description)}" />`,
-      meta.image ? `<meta name="twitter:image" content="${escapeHtml(meta.image)}" />` : '',
+      `<meta name="twitter:image" content="${escapeHtml(shareImage)}" />`,
+      `<link rel="icon" href="${escapeHtml(instanceIcon)}" />`,
+      `<link rel="apple-touch-icon" href="${escapeHtml(instanceIcon)}" />`,
       `<link rel="canonical" href="${escapeHtml(meta.canonical || meta.url)}" />`,
       feedPath
-        ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(config.instanceName)}" href="${escapeHtml(`${config.origin}${feedPath}`)}" />`
+        ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(instance.name)}" href="${escapeHtml(`${config.origin}${feedPath}`)}" />`
         : '',
       meta.oembed ? `<link rel="alternate" type="application/json+oembed" href="${escapeHtml(meta.oembed)}" />` : '',
       `<title>${escapeHtml(meta.title)}</title>`,
@@ -495,6 +559,9 @@ if (finalDistPath) {
       .replace(/<meta\s+name="description"[^>]*>\s*/gi, '')
       .replace(/<link\s+rel="alternate"[^>]*application\/rss\+xml[^>]*>\s*/gi, '')
       .replace(/<link\s+rel="alternate"[^>]*application\/json\+oembed[^>]*>\s*/gi, '')
+      // 静的なアイコン指定は外して、上で入れた「管理者が設定したアイコン」だけにする
+      .replace(/<link\s+rel="icon"[^>]*>\s*/gi, '')
+      .replace(/<link\s+rel="apple-touch-icon"[^>]*>\s*/gi, '')
       .replace(/<\/head>/i, `    ${tags}\n  </head>`);
   };
 
@@ -653,10 +720,10 @@ if (finalDistPath) {
 
       // 3. それ以外はサイト既定のメタ情報
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      const siteInfo = getInstanceInfo();
       return res.send(injectMeta(html, {
-        title: `${config.instanceName} - 分散型ソーシャルネットワーク`,
-        description: config.instanceDescription,
-        image: `${config.origin}/logo.jpg`,
+        title: `${siteInfo.name} - 分散型ソーシャルネットワーク`,
+        description: siteInfo.description,
         url: config.origin,
       }));
     } catch (err) {
@@ -693,13 +760,23 @@ if (finalDistPath) {
 
   // SPA用のフォールバックルーティング (HTMLリクエストは常にindex.htmlへ)
   app.get('*', (req: Request, res: Response, next: NextFunction) => {
+    // 管理者が設定したアイコン（favicon / apple-touch-icon）を、通常のブラウザにも返す
+    const sendIndexHtml = (): void => {
+      const html = readIndexHtml();
+      if (html === null) {
+        res.sendFile(path.join(finalDistPath, 'index.html'));
+        return;
+      }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(injectInstanceIcons(html));
+    };
     if (req.headers.accept && req.headers.accept.includes('text/html')) {
-      return res.sendFile(path.join(finalDistPath, 'index.html'));
+      return sendIndexHtml();
     }
     if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/.well-known') || req.originalUrl.startsWith('/users')) {
       return next();
     }
-    res.sendFile(path.join(finalDistPath, 'index.html'));
+    sendIndexHtml();
   });
 } else {
   // 開発時用ルート
