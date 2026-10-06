@@ -1,7 +1,23 @@
+import fs from 'node:fs';
 import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { db, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
+
+/**
+ * サーバーのバージョン。**server/package.json から読む**。
+ * ここをハードコードすると、上げるたびに書き換え忘れて FediDB などの表示が古いままになる。
+ */
+function readServerVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const SERVER_VERSION = readServerVersion();
 
 export const nodeinfoRouter = Router();
 
@@ -25,9 +41,12 @@ nodeinfoRouter.get('/nodeinfo/2.1', asyncHandler(async (req: Request, res: Respo
   res.json({
     version: '2.1',
     software: {
-      name: 'Spica',
-      version: '1.0.0',
-      homepage: config.origin,
+      // NodeInfo の仕様では software.name は**小文字の識別子**（^[a-z0-9-]+$）。
+      // 表示用の名前は metadata.nodeName に入れる（FediDB などはそちらを見る）
+      name: 'spica',
+      version: SERVER_VERSION,
+      // ソフトウェアの配布ページ（インスタンスの URL ではない）
+      homepage: info.repository_url || 'https://github.com/Keychrom/Spica',
     },
     protocols: ['activitypub'],
     services: {
