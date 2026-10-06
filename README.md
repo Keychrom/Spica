@@ -81,6 +81,10 @@ Spicaの思想・アーキテクチャ、本番運用やサーバー設置に関
   - 自立分散型ソーシャルネットワーク（Fediverse / ActivityPub）の仕組み
   - 巨大テックの中央集権からの解放とデータ主権の理念
   - 超軽量・自己完結型アーキテクチャ、暗号署名、パスキー生体認証、PWA
+- 🪐 **[他の Fediverse ソフトとの違い (docs/FEDIVERSE-COMPARISON.md)](docs/FEDIVERSE-COMPARISON.md)**
+  - Misskey / Mastodon / Akkoma / Iceshrimp.NET との**仕様の差**（リアクション・引用・検索・DM・文字数など）を一覧で比較
+  - それぞれが何を大事にしているか（哲学）と、Spica の立ち位置
+  - 連合していると実際に起きるズレ（👍 が ☆ に見える、Undo の形が違う、など）
 - 🛠️ **[サーバー設置・導入ガイド (docs/SETUP.md)](docs/SETUP.md)** — 2 つの構成から選べます
   - 🌱 **[通常構成 (docs/SETUP_Normal.md)](docs/SETUP_Normal.md)** — SQLite・1 プロセス（〜数十人。**迷ったらこちら**）
   - 🐘 **[PostgreSQL + Redis 構成 (docs/SETUP_PostgreSQL_Redis.md)](docs/SETUP_PostgreSQL_Redis.md)** — 複数プロセス（数百人〜）
