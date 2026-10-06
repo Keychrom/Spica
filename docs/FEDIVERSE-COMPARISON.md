@@ -14,7 +14,7 @@ Spica を Misskey / Mastodon / Akkoma / Iceshrimp.NET と並べて、
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | 実装 | TypeScript（Node + React SPA） | TypeScript（Node + Vue） | Ruby on Rails | Elixir / Phoenix | C# / .NET |
 | ライセンス | AGPL-3.0 | AGPL-3.0 | AGPL-3.0 | AGPL-3.0 | AGPL-3.0 |
-| データベース | **SQLite 既定** / PostgreSQL 任意 | PostgreSQL / Redis | PostgreSQL / Redis | PostgreSQL | PostgreSQL / Redis |
+| データベース | **SQLite 既定** / PostgreSQL 任意 | PostgreSQL / Redis | PostgreSQL / Redis | PostgreSQL | PostgreSQL（**Redis 等は不要**） |
 | 生まれ | 2026・日本・1人開発 | 2014・日本 | 2016・ドイツ | Pleroma の派生（2022〜） | Iceshrimp の .NET 書き直し |
 | 想定規模 | 小〜中（1人運用） | 中〜大 | 大 | 小〜中 | 中 |
 | 公式クライアント | **PWA のみ**（自前 SPA） | 自前 Web + 多数のサードパーティ | 公式 Web / アプリ | 自前 FE + Mastodon 系 | 自前 FE + API 互換 |
@@ -70,6 +70,7 @@ Spica を Misskey / Mastodon / Akkoma / Iceshrimp.NET と並べて、
 
 ### Iceshrimp.NET — 「モダンな土台で、両方の文化に橋をかける」
 - Iceshrimp（Misskey 系）を **C#/.NET で書き直した**もの。性能と保守性の作り直しが目的。
+- 構成は **PostgreSQL だけで足りる**（Redis などの追加ミドルウェアを要求しない）。
 - **Misskey 系と Mastodon 系の両方の API を話せる**ので、どちらのクライアントからも使える。
 - レガシーを引きずらない設計（新しいサーバーほど「実装の素直さ」を優先）。
 
