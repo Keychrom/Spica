@@ -35,6 +35,12 @@ export interface CreatePostParams {
 export async function executeCreatePost(params: CreatePostParams): Promise<{ post: any; federatedTo: number }> {
   const { user, in_reply_to, attachments, cw, poll, quote_id, is_sensitive } = params;
   const visibility: PostVisibility = normalizeVisibility(params.visibility);
+
+  // DM（visibility = 'direct'）は通常の投稿作成では作らせない。
+  // 宛先の検証・許可リスト・スパム対策は DM の送信 API（/api/dm/messages）が担う（docs/DM.md）
+  if (visibility === 'direct') {
+    throw new Error('DM はメッセージの画面（/api/dm/messages）から送ってください。');
+  }
   const parsedAttachments = (Array.isArray(attachments) ? attachments : [])
     .filter((att: any) => att && typeof att.url === 'string' && att.url.length > 0)
     .slice(0, 4)

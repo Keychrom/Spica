@@ -1141,6 +1141,19 @@ async function initDatabaseSchema(): Promise<void> {
       used INTEGER NOT NULL DEFAULT 0
     );`,
     "CREATE INDEX IF NOT EXISTS idx_stream_tickets_expires ON stream_tickets(expires_at);",
+    // DM（1対1メッセージ）: 宛先の actor URL を JSON 配列で持つ（visibility = 'direct' のときだけ使う）。
+    // 専用テーブルは作らず、既存の posts の仕組み（連合・スレッド・メディア・通知・削除）に乗る
+    "ALTER TABLE posts ADD COLUMN recipients TEXT DEFAULT '[]';",
+    // DM 一覧（visibility = 'direct' を新しい順に引く）用
+    "CREATE INDEX IF NOT EXISTS idx_posts_visibility_published ON posts(visibility, published_at DESC);",
+    // DM の既読状態。メッセージ本体ではなく「誰がどのメッセージを読んだか」だけを持つ補助表
+    `CREATE TABLE IF NOT EXISTS dm_reads (
+      user_id TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      read_at TEXT NOT NULL,
+      PRIMARY KEY(user_id, post_id)
+    );`,
+    "CREATE INDEX IF NOT EXISTS idx_dm_reads_post ON dm_reads(post_id);",
   ];
 
   // マイグレーションの適用。
@@ -1281,7 +1294,8 @@ export interface PostRow {
   author_icon?: string;
   content: string;
   is_local: number;
-  visibility: 'public' | 'local' | 'followers';
+  /** 'direct' は DM（1対1のメッセージ）。宛先は `recipients`（JSON 配列）に持つ（docs/DM.md） */
+  visibility: 'public' | 'local' | 'followers' | 'direct';
   emojis?: string;
   cw?: string | null;
   in_reply_to: string | null;
@@ -1666,7 +1680,7 @@ export async function purgeDomainData(domain: string): Promise<{ posts: number; 
 export interface NotificationRow {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login' | 'dm';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -1685,7 +1699,7 @@ export interface NotificationRow {
  * 未設定・不正な JSON は「すべて有効」として扱う。
  * scheduled_published（予約投稿の公開）は自分の操作に対する控えなので常に有効。
  */
-export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move', 'report', 'login'] as const;
+export const NOTIFICATION_TYPES = ['follow', 'reply', 'mention', 'reaction', 'renote', 'antenna', 'move', 'report', 'login', 'dm'] as const;
 export type NotificationPrefType = (typeof NOTIFICATION_TYPES)[number];
 
 /** UI 表示用のラベル（クライアントと揃える） */
@@ -1699,6 +1713,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   move: '引っ越し（Move）',
   report: '通報（運営向け）',
   login: '新しい端末のログイン',
+  dm: 'メッセージ',
 };
 
 /**
@@ -1782,7 +1797,7 @@ export async function getDisabledNotificationTypes(userId: string): Promise<stri
  */
 export async function createNotification(params: {
   userId: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login' | 'dm';
   actorId: string;
   actorName: string;
   actorHandle: string;
@@ -1884,6 +1899,10 @@ export async function createNotification(params: {
       } else if (params.type === 'reaction') {
         pushTitle = `リアクション: ${contentSnippet || '❤️'}`;
         pushBody = `${params.actorName || params.actorHandle} さんがリアクションしました`;
+      } else if (params.type === 'dm') {
+        // 本文は通知に載せない（「○○さんからメッセージ」まで。本文はアプリを開いて読む）
+        pushTitle = 'メッセージ';
+        pushBody = `${params.actorName || params.actorHandle} さんからメッセージが届きました`;
       }
 
       import('./pushService.js')
@@ -1900,19 +1919,22 @@ export async function createNotification(params: {
     } catch {}
 
     // ✉️ メール通知（SMTP 設定 + ユーザーがオプトインしている場合のみ）
-    import('./emailNotifier.js')
-      .then(({ queueNotificationEmail }) =>
-        queueNotificationEmail({
-          userId: params.userId,
-          type: params.type,
-          actorName: params.actorName,
-          actorHandle: params.actorHandle,
-          postId: params.postId || null,
-          postContent: postSnippet,
-          content: contentSnippet,
-        }),
-      )
-      .catch(() => {});
+    //    **DM はメールに載せない**（本文が外部のメール事業者を通らないようにする。docs/DM.md）
+    if (params.type !== 'dm') {
+      import('./emailNotifier.js')
+        .then(({ queueNotificationEmail }) =>
+          queueNotificationEmail({
+            userId: params.userId,
+            type: params.type,
+            actorName: params.actorName,
+            actorHandle: params.actorHandle,
+            postId: params.postId || null,
+            postContent: postSnippet,
+            content: contentSnippet,
+          }),
+        )
+        .catch(() => {});
+    }
 
     return true;
   } catch (err) {

@@ -11,6 +11,7 @@ import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
+import { isDmEnabled, setDmEnabled } from '../dm.js';
 import { getMaintenanceStats, runScheduledMaintenance, setAutoMaintenanceEnabled } from '../maintenanceService.js';
 import { formatBytes } from '../dbMaintenance.js';
 import { auditMiddleware, listAdminActions, pruneAdminActions, listActionKinds, recordAdminAction } from '../auditLog.js';
@@ -737,6 +738,8 @@ adminRouter.get('/server-settings', asyncHandler(async (req: Request, res: Respo
     // リモートコンテンツの保存・索引ポリシー
     fts_index_scope: await getFtsIndexScope(),
     remote_announce_policy: await getRemoteAnnouncePolicy(),
+    // DM（1対1のメッセージ）。既定 off。off のときは「物理的に無い」扱いになる（docs/DM.md）
+    dm_enabled: isDmEnabled(),
   });
 }));
 
@@ -774,13 +777,22 @@ adminRouter.post('/server-settings', asyncHandler(async (req: Request, res: Resp
     require_rules_agreement,
   });
 
+  // DM の ON/OFF（切り替えは設定の変更だけで完結する。再起動もマイグレーションも要らない）
+  if (typeof req.body?.dm_enabled === 'boolean') {
+    await setDmEnabled(req.body.dm_enabled);
+    console.log(`[Admin] ✉️ DM（1対1のメッセージ）を ${req.body.dm_enabled ? 'ON' : 'OFF'} にしました`);
+  }
+
   const updated = getInstanceInfo();
   console.log(`[Admin] ⚙️ Instance settings updated by @${(req.rawUser || req.user)?.id}: name="${updated.name}"`);
 
   res.json({
     success: true,
     message: 'サーバー設定を保存しました。',
-    settings: updated,
+    settings: {
+      ...updated,
+      dm_enabled: isDmEnabled(),
+    },
   });
 }));
 

@@ -185,12 +185,13 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   const handle = `@${user.id}@${config.domain}`;
 
   // 1. 投稿一覧
+  //    **DM（visibility = 'direct'）はエクスポートに出さない**（1対1のやり取りを書き出さない。docs/DM.md）
   const postRows = await db.prepare(`
     SELECT p.*,
       (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) as reactions_count,
       (SELECT COUNT(*) FROM announces a WHERE a.post_id = p.id) as renote_count
     FROM posts p
-    WHERE p.user_id = ?
+    WHERE p.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'
     ORDER BY p.published_at DESC
   `).all(userId) as any[];
 

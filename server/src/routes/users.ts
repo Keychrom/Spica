@@ -168,6 +168,10 @@ usersRouter.get('/:username/posts/:postId', asyncHandler(async (req: Request, re
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
+  // DM（visibility = 'direct'）は ActivityPub で解決させない（存在も本文も見せない。docs/DM.md）
+  if (post.visibility === 'direct') {
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
   // ローカル限定の投稿は外部 ActivityPub 解決を拒絶
   if (post.visibility === 'local') {
     return res.status(403).json({ error: 'この投稿はローカル限定のため外部には公開されていません。' });
@@ -202,6 +206,10 @@ usersRouter.get('/:username/posts/:postId/activity', asyncHandler(async (req: Re
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
+  // DM（visibility = 'direct'）は ActivityPub の Create としても出さない
+  if (post.visibility === 'direct') {
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
   if (post.visibility === 'local') {
     return res.status(403).json({ error: 'この投稿はローカル限定です。' });
   }

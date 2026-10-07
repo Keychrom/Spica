@@ -120,6 +120,12 @@ export function buildNote(params: {
   tags?: any[];
   /** 公開範囲。'followers' の場合は Public コレクションへ送らず、フォロワー限定として宛先を組む */
   visibility?: string;
+  /**
+   * DM（visibility = 'direct'）の宛先 actor URL。
+   * `to` に宛先だけを入れ（Public もフォロワーコレクションも入れない）、
+   * Misskey 側で「ダイレクト（specified）」として解釈されるようにする。
+   */
+  directRecipients?: string[];
 }) {
   const attachmentList = (params.attachments || []).map((att) => ({
     type: 'Document',
@@ -134,6 +140,8 @@ export function buildNote(params: {
   // フォロワー限定は Public コレクションへ送らない（受け取ったサーバーが公開扱いしないよう、
   // to をフォロワーコレクションのみにする）
   const isFollowersOnly = params.visibility === 'followers';
+  // DM は to = 宛先のみ（Public もフォロワーコレクションも含めない）
+  const directRecipients = (params.directRecipients || []).filter((recipient) => typeof recipient === 'string' && recipient.length > 0);
 
   // アンケート（ActivityPub Question 仕様: oneOf / anyOf / endTime）
   const isQuestion = Boolean(params.poll && params.poll.choices && params.poll.choices.length > 0);
@@ -174,8 +182,12 @@ export function buildNote(params: {
     content: params.content,
     url: params.id,
     published: params.publishedAt,
-    to: isFollowersOnly ? [`${params.authorUrl}/followers`] : ['https://www.w3.org/ns/activitystreams#Public'],
-    cc: isFollowersOnly ? [] : [`${params.authorUrl}/followers`],
+    to: directRecipients.length > 0
+      ? directRecipients
+      : (isFollowersOnly ? [`${params.authorUrl}/followers`] : ['https://www.w3.org/ns/activitystreams#Public']),
+    cc: directRecipients.length > 0
+      ? []
+      : (isFollowersOnly ? [] : [`${params.authorUrl}/followers`]),
     inReplyTo: params.inReplyTo || null,
     sensitive: isSensitive,
     _misskey_quote: params.quoteUrl || undefined,

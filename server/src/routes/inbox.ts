@@ -17,6 +17,7 @@ import { asyncHandler } from '../asyncHandler.js';
 import { inboxGate } from '../inboxGate.js';
 import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolicy.js';
 import { isPublicPost } from '../postVisibility.js';
+import { isDmEnabled, localRecipientUserIds, localUserIdFromActorUrl, isDmReceptionAllowed } from '../dm.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
@@ -485,28 +486,61 @@ export async function processActivity(
         const noteIsPublic = !hasAddressing || addressing.includes('https://www.w3.org/ns/activitystreams#Public');
         const noteVisibility = noteIsPublic ? 'public' : 'followers';
 
-        // 🚫 DM（1対1のメッセージ）は方針として扱わない。
-        //    Public もフォロワーコレクションも含まず、特定の相手だけが宛先の
-        //    ノートは DM とみなして保存しない（フォロワー限定として保存すると、
-        //    送信者が意図していない相手にも見えてしまうため）。
-        //    詳細は README「DM（1対1のメッセージ機能）を実装しない方針」を参照。
+        // ✉️ DM（1対1のメッセージ）の判定と受け入れ（docs/DM.md）
+        //
+        //   Public もフォロワーコレクションも含まず、特定の相手だけが宛先のノートは DM とみなす。
+        //   受け入れるのは「宛先に自分（ローカルユーザー）が入っていて、かつ送信者が自分の
+        //   許可リスト（userPrefs の dmPolicy / dmAllow）に載っている」ときだけ。
+        //   それ以外は保存せず 202（受理だけする）。ブロック・ミュートが許可リストより優先する。
         const isDirectMessage =
           hasAddressing &&
           !noteIsPublic &&
           !addressing.some((target: any) => typeof target === 'string' && /\/followers\/?$/.test(target));
+        let dmRecipientIds: string[] = [];
+
         if (isDirectMessage) {
-          console.log(`[Inbox] 🚫 DM（1対1メッセージ）のため保存しません: ${noteId} from ${actorUrl}`);
-          return res.status(202).json({ status: 'ignored', reason: 'direct messages are not supported by this instance' });
+          if (!isDmEnabled()) {
+            // 機能が off のときは「物理的に無い」扱い（現在の DM 拒否と同じ挙動）
+            console.log(`[Inbox] 🚫 DM（機能が off）のため保存しません: ${noteId} from ${actorUrl}`);
+            return res.status(202).json({ status: 'ignored', reason: 'direct messages are disabled on this instance' });
+          }
+
+          const localRecipients = localRecipientUserIds(addressing);
+          if (localRecipients.length === 0) {
+            // 宛先がローカルに居ないものは保存しない（他人宛の DM を保存しない）
+            console.log(`[Inbox] 🚫 DM（宛先がローカルに居ない）のため保存しません: ${noteId} from ${actorUrl}`);
+            return res.status(202).json({ status: 'ignored', reason: 'direct message is not addressed to a local user' });
+          }
+
+          const senderLocalId = localUserIdFromActorUrl(actorUrl);
+          for (const recipientId of localRecipients) {
+            if (await isDmReceptionAllowed(recipientId, actorUrl, senderLocalId)) {
+              dmRecipientIds.push(recipientId);
+            }
+          }
+          if (dmRecipientIds.length === 0) {
+            // 許可リストに無い相手（またはブロック・ミュート中）からの DM は保存しない
+            console.log(`[Inbox] 🚫 DM（受信を許可していない相手）のため保存しません: ${noteId} from ${actorUrl}`);
+            return res.status(202).json({ status: 'ignored', reason: 'sender is not allowed to send direct messages to this user' });
+          }
+          console.log(`[Inbox] ✉️ DM を受理しました: ${noteId} from ${actorUrl} → ${dmRecipientIds.join(', ')}`);
         }
 
-        // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）
-        const noteFtsIndexed = await shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
+        // DM は 'direct' として保存する（宛先以外には本文も存在も見せない）
+        const storedVisibility = isDirectMessage ? 'direct' : noteVisibility;
+        const storedRecipients = isDirectMessage ? JSON.stringify(addressing.filter((t: any) => typeof t === 'string')) : '[]';
+
+        // 検索索引に入れるかは方針で決める（既定はローカル投稿のみ＝Mastodon / Misskey 相当）。
+        // **DM は索引に入れない**（索引経由で本文が漏れないようにする）
+        const noteFtsIndexed = isDirectMessage
+          ? 0
+          : (await shouldIndexRemotePost({ authorUrl: actorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0);
         mark('索引方針の判定');
 
         const insertStartedAt = Date.now();
         await db.prepare(`
-          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed, recipients)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             content = excluded.content,
             author_icon = CASE WHEN excluded.author_icon != '' THEN excluded.author_icon ELSE posts.author_icon END,
@@ -516,6 +550,7 @@ export async function processActivity(
             quote_id = excluded.quote_id,
             is_sensitive = excluded.is_sensitive,
             media_attachments = excluded.media_attachments,
+            recipients = excluded.recipients,
             published_at = excluded.published_at
         `).run(
           noteId,
@@ -525,7 +560,7 @@ export async function processActivity(
           authorHandle,
           authorIcon,
           content,
-          noteVisibility,
+          storedVisibility,
           emojisJson,
           cw,
           inReplyTo,
@@ -533,7 +568,8 @@ export async function processActivity(
           isSensitive,
           attachmentsJson,
           publishedAt,
-          noteFtsIndexed
+          noteFtsIndexed,
+          storedRecipients
         );
         if (config.inboxProfile) {
           console.log(`[Inbox Profile]   INSERT INTO posts だけ: ${Date.now() - insertStartedAt}ms`);
@@ -600,8 +636,30 @@ export async function processActivity(
           }
         }
 
+        // ✉️ DM の場合: 宛先（ローカルユーザー）へ通知する。
+        //    **通知本文にはメッセージ本文を入れない**（「メッセージが届きました」まで。docs/DM.md）
+        if (isDirectMessage && dmRecipientIds.length > 0) {
+          for (const recipientId of dmRecipientIds) {
+            try {
+              await createNotification({
+                userId: recipientId,
+                type: 'dm',
+                actorId: actorUrl,
+                actorName: remoteActor.name || remoteActor.username,
+                actorHandle: authorHandle,
+                actorIcon: authorIcon,
+                postId: noteId,
+                content: 'メッセージが届きました',
+              });
+            } catch (e) {
+              console.error('[Notification Error] Inbox dm notification failed:', e);
+            }
+          }
+        }
+
         // 返信の場合、親投稿の作成者（ローカルユーザー）へ通知を送信
-        if (inReplyTo) {
+        // （DM は上の dm 通知だけにする。返信通知に本文を載せないため）
+        if (inReplyTo && !isDirectMessage) {
           try {
             const parentPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(inReplyTo) as any;
             if (parentPost && parentPost.is_local === 1) {
@@ -1128,6 +1186,8 @@ export async function processActivity(
           await db.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
           await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
           await db.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
+          // DM の既読記録も一緒に消す（孤児を残さない）
+          await db.prepare('DELETE FROM dm_reads WHERE post_id = ?').run(targetId).catch(() => undefined);
           // 墓標を立てる。連合では Delete の後に同じ投稿が再送されてくることがあり、
           // 記録が無いと**消したはずの投稿が復活する**（非同期で処理するときは特に）
           await addDeletedRemotePost(targetId);

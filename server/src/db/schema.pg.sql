@@ -138,6 +138,12 @@ CREATE TABLE IF NOT EXISTS deleted_remote_posts  (
   id TEXT PRIMARY KEY,
   deleted_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dm_reads  (
+  user_id TEXT NOT NULL,
+  post_id TEXT NOT NULL,
+  read_at TEXT NOT NULL,
+  PRIMARY KEY(user_id, post_id)
+);
 CREATE TABLE IF NOT EXISTS drafts  (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -309,7 +315,8 @@ CREATE TABLE IF NOT EXISTS posts  (
   media_attachments TEXT DEFAULT '[]',
   published_at TEXT NOT NULL,
   channel_id TEXT DEFAULT NULL,
-  fts_indexed BIGINT NOT NULL DEFAULT 1
+  fts_indexed BIGINT NOT NULL DEFAULT 1,
+  recipients TEXT DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS pinned_posts  (
   user_id TEXT NOT NULL,
@@ -540,6 +547,7 @@ CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_channels_user ON channels(user_id);
 CREATE INDEX IF NOT EXISTS idx_custom_emojis_name ON custom_emojis(name);
 CREATE INDEX IF NOT EXISTS idx_deleted_remote_posts_at ON deleted_remote_posts(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_dm_reads_post ON dm_reads(post_id);
 CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id);
 CREATE INDEX IF NOT EXISTS idx_email_verifications_user ON email_verifications(user_id, purpose);
 CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_url);
@@ -574,6 +582,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_local_published ON posts(is_local, publishe
 CREATE INDEX IF NOT EXISTS idx_posts_published_at ON posts(published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);
 CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id);
+CREATE INDEX IF NOT EXISTS idx_posts_visibility_published ON posts(visibility, published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_proxy_cache_last_used ON proxy_cache(last_used_at);
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id);
 CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);

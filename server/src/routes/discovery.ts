@@ -293,7 +293,8 @@ ${entries.join('\n')}
 async function listTrendingTags(limit = 100): Promise<string[]> {
   try {
     const recent = (await db.prepare(
-      "SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 200",
+      // フォロワー限定と DM（visibility = 'direct'）は公開のタグ集計に出さない
+      "SELECT content FROM posts WHERE COALESCE(visibility, 'public') NOT IN ('followers', 'direct') ORDER BY published_at DESC LIMIT 200",
     ).all()) as { content: string }[];
     const counts = new Map<string, number>();
     const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;

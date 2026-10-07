@@ -169,12 +169,14 @@ export function htmlToPlainText(html: string): string {
 export function toMisskeyVisibility(visibility: string | null | undefined): string {
   if (visibility === 'followers') return 'followers';
   if (visibility === 'local') return 'home';
+  // DM（1対1のメッセージ）は Misskey の「ダイレクト」。公開として見せない
+  if (visibility === 'direct') return 'specified';
   return 'public';
 }
 
 /**
  * Misskey の公開範囲 → Spica の公開範囲。
- * `specified`（DM）は方針として実装しないので受け付けない（呼び出し側で 400 にする）。
+ * `specified`（DM）は送信の経路では受け付けない（DM は `/api/dm/messages` から送る。docs/DM.md）。
  */
 export function fromMisskeyVisibility(
   visibility: string | null | undefined,

@@ -202,7 +202,7 @@ misskeyRouter.post('/i', asyncHandler(async (req: Request, res: Response) => {
 
   const counts = (await db.prepare(`
     SELECT
-      (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1) AS notes,
+      (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1 AND COALESCE(visibility, 'public') != 'direct') AS notes,
       (SELECT COUNT(*) FROM follows WHERE following_url = ? AND status = 'accepted') AS followers,
       (SELECT COUNT(*) FROM follows WHERE follower_url = ?) AS following
   `).get(user.id, `${config.origin}/users/${user.id}`, `${config.origin}/users/${user.id}`)) as any;
@@ -248,6 +248,10 @@ async function fetchTimelineRows(params: {
   let postFollowJoin = '';
   let announceFollowJoin = '';
   let followParam: string | null = null;
+
+  // DM（visibility = 'direct'）はどのタイムラインにも出さない（docs/DM.md）
+  postConds.push("COALESCE(p.visibility, 'public') != 'direct'");
+  announceConds.push("COALESCE(p.visibility, 'public') != 'direct'");
 
   if (mode === 'home' && viewerId) {
     const myActorUrl = `${config.origin}/users/${viewerId}`;
@@ -503,7 +507,7 @@ misskeyRouter.post('/notes/conversation', asyncHandler(async (req: Request, res:
     ? ((await db.prepare('SELECT * FROM posts WHERE id = ?').get(post.in_reply_to)) as any)
     : null;
   const replyRows = (await db.prepare(
-    'SELECT * FROM posts WHERE in_reply_to = ? ORDER BY published_at ASC LIMIT ?',
+    "SELECT * FROM posts WHERE in_reply_to = ? AND COALESCE(visibility, 'public') != 'direct' ORDER BY published_at ASC LIMIT ?",
   ).all(target.id, limit)) as any[];
 
   const actorUrl = viewer ? `${config.origin}/users/${viewer.id}` : null;
@@ -829,7 +833,7 @@ async function respondUser(identifier: string, res: Response): Promise<void> {
   if (found.user) {
     const counts = (await db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1) AS notes,
+        (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1 AND COALESCE(visibility, 'public') != 'direct') AS notes,
         (SELECT COUNT(*) FROM follows WHERE following_url = ? AND status = 'accepted') AS followers,
         (SELECT COUNT(*) FROM follows WHERE follower_url = ?) AS following
     `).get(found.user.id, `${config.origin}/users/${found.user.id}`, `${config.origin}/users/${found.user.id}`)) as any;
@@ -879,7 +883,8 @@ misskeyRouter.post('/users/notes', asyncHandler(async (req: Request, res: Respon
   const authorUrl = found.user ? `${config.origin}/users/${found.user.id}` : found.remote.id;
   const limit = readLimit(req.body?.limit);
   const rows = (await db.prepare(`
-    SELECT * FROM posts WHERE author_url = ? ORDER BY published_at DESC LIMIT ?
+    SELECT * FROM posts WHERE author_url = ? AND COALESCE(visibility, 'public') != 'direct'
+    ORDER BY published_at DESC LIMIT ?
   `).all(authorUrl, limit + 1)) as any[];
   const actorUrl = viewer ? `${config.origin}/users/${viewer.id}` : null;
   const enriched = await enrichAndFilterPosts(rows.slice(0, limit), actorUrl, viewer?.id || null);
@@ -1057,7 +1062,8 @@ misskeyRouter.post('/notes/search', asyncHandler(async (req: Request, res: Respo
 
 misskeyRouter.post('/hashtags/trend', asyncHandler(async (_req: Request, res: Response) => {
   const rows = (await db.prepare(
-    "SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 200",
+    // フォロワー限定と DM（visibility = 'direct'）は公開のタグ集計に出さない
+    "SELECT content FROM posts WHERE COALESCE(visibility, 'public') NOT IN ('followers', 'direct') ORDER BY published_at DESC LIMIT 200",
   ).all()) as { content: string }[];
   const counts = new Map<string, number>();
   const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;

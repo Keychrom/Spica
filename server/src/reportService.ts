@@ -227,11 +227,12 @@ export async function ingestRemoteFlag(params: {
 
   if (postUrl) {
     const post = await db.prepare('SELECT * FROM posts WHERE id = ?').get(postUrl) as
-      | { id: string; user_id: string; author_url: string; content: string }
+      | { id: string; user_id: string; author_url: string; content: string; visibility?: string | null }
       | undefined;
     if (post) {
       targetPostId = post.id;
-      targetPostContent = post.content;
+      // DM（visibility = 'direct'）は通報に本文を写さない（管理画面にも出さない。docs/DM.md）
+      targetPostContent = post.visibility === 'direct' ? null : post.content;
       targetActorUrl = post.author_url;
       targetUserId = post.user_id;
     } else {

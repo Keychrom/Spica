@@ -54,6 +54,12 @@ export interface UserPrefs {
 
   // 🔔 通知
   notificationGrouping: 'group' | 'individual';
+
+  // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` が on のときだけ使う）
+  /** 誰から受け取るか（既定は誰からも受け取らない） */
+  dmPolicy: 'noone' | 'allowlist';
+  /** 受け取る相手の actor URL（上限 200。`dmPolicy = 'allowlist'` のときだけ使う） */
+  dmAllow: string[];
 }
 
 export const USER_PREFS_DEFAULTS: UserPrefs = {
@@ -85,6 +91,10 @@ export const USER_PREFS_DEFAULTS: UserPrefs = {
   recentReactions: [],
 
   notificationGrouping: 'group',
+
+  // 既定は「誰からも受け取らない」。相手が許可リストに入っているときだけ受け取る（docs/DM.md）
+  dmPolicy: 'noone',
+  dmAllow: [],
 };
 
 /** 自分用ドメインミュートの上限（暴走して settings が巨大になるのを防ぐ） */
@@ -95,6 +105,10 @@ const MAX_CW_TEXT = 200;
 const MAX_REACTION_TEXT = 48;
 /** よく使うリアクションの保持数 */
 const MAX_RECENT_REACTIONS = 12;
+/** DM を受け取る相手（actor URL）の保持数 */
+const MAX_DM_ALLOW = 200;
+/** actor URL の現実的な上限（暴走して settings が巨大になるのを防ぐ） */
+const MAX_ACTOR_URL = 2048;
 
 /**
  * リアクションの文字列を検証する（`:custom:` も許す）。
@@ -162,6 +176,43 @@ function pickMutedDomains(value: unknown, fallback: string[]): string[] {
 }
 
 /**
+ * DM の相手（actor URL）を正規化する。
+ * - http(s) の URL だけを受け付ける（ハンドルや相対パスは保存しない）
+ * - 制御文字は表示を壊すので弾く（コードポイントで判定する＝ソースに生の制御文字を書かない）
+ * - 末尾のスラッシュは落として揃える（比較がぶれないように）
+ */
+export function normalizeDmActorUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_ACTOR_URL) return null;
+  for (const ch of trimmed) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (!url.hostname) return null;
+  // 末尾のスラッシュだけ落とす（クエリや断片はそのまま）
+  return trimmed.replace(/\/+$/, '');
+}
+
+function pickDmAllow(value: unknown, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const out: string[] = [];
+  for (const item of value) {
+    const actorUrl = normalizeDmActorUrl(item);
+    if (actorUrl && !out.includes(actorUrl)) out.push(actorUrl);
+    if (out.length >= MAX_DM_ALLOW) break;
+  }
+  return out;
+}
+
+/**
  * 保存された生の JSON を検証して、既定値に重ねた完全な設定を返す。
  * 壊れた値・知らないキーは既定値で埋める（例外は投げない）。
  */
@@ -196,6 +247,9 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
     recentReactions: pickRecentReactions(source.recentReactions, d.recentReactions),
 
     notificationGrouping: pickEnum(source.notificationGrouping, ['group', 'individual'] as const, d.notificationGrouping),
+
+    dmPolicy: pickEnum(source.dmPolicy, ['noone', 'allowlist'] as const, d.dmPolicy),
+    dmAllow: pickDmAllow(source.dmAllow, d.dmAllow),
   };
 }
 

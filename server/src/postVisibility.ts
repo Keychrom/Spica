@@ -5,17 +5,20 @@ import { db } from './db.js';
  *   public    : 連合を含めて公開
  *   local     : 自ノード内のみ（連合配信しない）
  *   followers : フォロワー限定（承認済みフォロワーのみ閲覧・配信）
+ *   direct    : DM（1対1のメッセージ）。`posts.recipients` の宛先と送信者だけが閲覧できる
  *
- * ※ ダイレクトメッセージ（DM / specified）は方針として実装しない。
- *    1対1のメッセージ機能を提供すると、ノード運営が「他人の通信を媒介する事業」と
- *    評価されうるため、運営者に電気通信事業法上の義務（届出・通信の秘密の保持・
- *    秘密の漏洩防止）が及ぶおそれがある。
- *    'followers' はフォロワー全員が対象で、DM の代用にはならない。
+ * ※ DM はサーバー管理者の設定 `dm_enabled` が on のときだけ使う（docs/DM.md）。
+ *    専用テーブルは作らず、`visibility = 'direct'` の投稿として保存する。
+ *    タイムライン・検索・RSS・sitemap・OGP・エクスポートには**絶対に出さない**
+ *    （各所の除外条件に `visibility != 'direct'` を足してある）。
  */
-export type PostVisibility = 'public' | 'local' | 'followers';
+export type PostVisibility = 'public' | 'local' | 'followers' | 'direct';
 
 export function normalizeVisibility(raw: unknown): PostVisibility {
   const value = String(raw ?? '').trim().toLowerCase();
+  if (value === 'direct' || value === 'specified') {
+    return 'direct';
+  }
   if (value === 'followers' || value === 'private') {
     return 'followers';
   }
@@ -25,9 +28,44 @@ export function normalizeVisibility(raw: unknown): PostVisibility {
   return 'public';
 }
 
+/**
+ * `posts.recipients`（JSON 配列）を安全に読む。
+ * 壊れた JSON・配列でない値は空配列として扱う（例外は投げない）。
+ */
+export function parseRecipients(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  }
+  if (typeof raw !== 'string' || !raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** 比較用に actor URL の末尾スラッシュを落とす */
+function trimActorUrl(value: string | null | undefined): string {
+  return String(value ?? '').trim().replace(/\/+$/, '');
+}
+
+/**
+ * viewer が「direct 投稿」の当事者（送信者 or 宛先）か。
+ * 宛先でない第三者には本文も存在も見せない。
+ */
+export function isViewerAddressedByDirectPost(post: PostVisibilityFields, viewerActorUrl: string | null): boolean {
+  const viewer = trimActorUrl(viewerActorUrl);
+  if (!viewer) return false;
+  if (trimActorUrl(post.author_url) === viewer) return true;
+  return parseRecipients((post as PostVisibilityFields).recipients).some((recipient) => trimActorUrl(recipient) === viewer);
+}
+
 interface PostVisibilityFields {
   visibility?: string | null;
   author_url?: string | null;
+  recipients?: string | null;
 }
 
 /**
@@ -55,10 +93,15 @@ export async function isViewerAuthorizedForAuthor(authorActorUrl: string | null,
 
 /**
  * 単一の投稿を viewer が閲覧できるか。
- * 'followers' のみ制限し、'public' / 'local' は従来どおり許可する。
+ * 'followers' は承認済みフォロワーのみ、'direct' は送信者と宛先だけに許可する。
+ * 'public' / 'local' は従来どおり許可する。
  */
 export async function canViewPost(post: PostVisibilityFields, viewerActorUrl: string | null): Promise<boolean> {
-  if (normalizeVisibility(post.visibility) !== 'followers') {
+  const visibility = normalizeVisibility(post.visibility);
+  if (visibility === 'direct') {
+    return isViewerAddressedByDirectPost(post, viewerActorUrl);
+  }
+  if (visibility !== 'followers') {
     return true;
   }
   return await isViewerAuthorizedForAuthor(post.author_url ?? null, viewerActorUrl);
@@ -68,20 +111,29 @@ export async function canViewPost(post: PostVisibilityFields, viewerActorUrl: st
  * 一覧から閲覧できない投稿を除外する。
  * フォロー関係は「対象となる投稿の著者」をまとめて1クエリで解決するため、
  * 行数が多くてもクエリは1回で済む。
+ *
+ * 'direct' はフォロー関係では決まらないので、ここで宛先（recipients）を見て落とす。
  */
 export async function filterVisiblePosts<T extends PostVisibilityFields>(rows: T[], viewerActorUrl: string | null): Promise<T[]> {
   const restrictedAuthors = new Set<string>();
+  const directRows = new Set<T>();
   for (const row of rows) {
-    if (normalizeVisibility(row.visibility) === 'followers' && row.author_url) {
+    const visibility = normalizeVisibility(row.visibility);
+    if (visibility === 'direct') {
+      // 宛先でなければ本文も存在も見せない
+      if (!isViewerAddressedByDirectPost(row, viewerActorUrl)) directRows.add(row);
+      continue;
+    }
+    if (visibility === 'followers' && row.author_url) {
       restrictedAuthors.add(row.author_url);
     }
   }
-  if (restrictedAuthors.size === 0) {
+  if (restrictedAuthors.size === 0 && directRows.size === 0) {
     return rows;
   }
 
   const allowedAuthors = new Set<string>();
-  if (viewerActorUrl) {
+  if (viewerActorUrl && restrictedAuthors.size > 0) {
     const authors = [...restrictedAuthors];
     const placeholders = authors.map(() => '?').join(',');
     try {
@@ -100,6 +152,9 @@ export async function filterVisiblePosts<T extends PostVisibilityFields>(rows: T
   }
 
   return rows.filter((row) => {
+    if (directRows.has(row)) {
+      return false;
+    }
     if (normalizeVisibility(row.visibility) !== 'followers') {
       return true;
     }

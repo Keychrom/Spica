@@ -48,6 +48,15 @@ import {
 } from '../auth.js';
 import { deleteUserAccount, beginUserDeletion } from '../accountService.js';
 import { getUserPrefs, saveUserPrefs, isDomainMutedByPrefs } from '../userPrefs.js';
+import {
+  isDmEnabled,
+  dmFeatureFlags,
+  listDmConversations,
+  getDmConversationMessages,
+  markDmConversationRead,
+  sendDmMessage,
+  canViewDmMessage,
+} from '../dm.js';
 import { exportUserData, streamUserExportZip, buildUserExportFile } from '../exportService.js';
 import { enqueueJob, getJob } from '../jobs.js';
 import {
@@ -453,7 +462,8 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ?').get(myActorUrl) as any).c;
   const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ?').get(myActorUrl) as any).c;
-  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+  // 自分の投稿数に DM は数えない（DM はタイムラインに出ない投稿なので別扱い）
+  const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND COALESCE(visibility, 'public') != 'direct'").get(user.id) as any).c;
 
   res.json({
     ...user,
@@ -922,6 +932,10 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   const params: any[] = [];
   const announceParams: any[] = [];
 
+  // DM（visibility = 'direct'）はどのタイムラインにも出さない（存在自体を見せない。docs/DM.md）
+  postConds.push("COALESCE(p.visibility, 'public') != 'direct'");
+  announceConds.push("COALESCE(p.visibility, 'public') != 'direct'");
+
   // ホームの「フォロー中」判定は follows を JOIN して行う。
   // `author_url IN (SELECT following_url FROM follows ...)` と書くと、PostgreSQL は
   // published_at の索引で「21 件そろった時点で止まる」ことができず、候補（数千〜10 万件）を
@@ -1135,8 +1149,8 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
 // 人気・トレンドハッシュタグ一覧
 apiRouter.get('/tags/popular', asyncHandler(async (_req: Request, res: Response) => {
   try {
-    // フォロワー限定投稿のタグは公開のトレンドに出さない
-    const recentPosts = await db.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 200").all() as { content: string }[];
+    // フォロワー限定投稿のタグは公開のトレンドに出さない（DM も同じく出さない）
+    const recentPosts = await db.prepare("SELECT content FROM posts WHERE COALESCE(visibility, 'public') NOT IN ('followers', 'direct') ORDER BY published_at DESC LIMIT 200").all() as { content: string }[];
     const tagCountMap = new Map<string, number>();
 
     const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
@@ -1205,6 +1219,8 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
   // 演算子を SQL 条件に変換する（FTS / LIKE の両方に適用）
   const extraConds: string[] = [];
   const extraParams: any[] = [];
+  // DM（visibility = 'direct'）は検索に絶対に出さない（本文も存在も見せない。docs/DM.md）
+  extraConds.push("COALESCE(p.visibility, 'public') != 'direct'");
   if (parsedQuery.from) {
     extraConds.push('(p.user_id = ? OR p.author_handle LIKE ? OR p.author_url LIKE ?)');
     const pattern = parsedQuery.from.startsWith('http') ? parsedQuery.from : `%${parsedQuery.from}%`;
@@ -1627,6 +1643,8 @@ export const handleDeletePost = asyncHandler(async (req: Request, res: Response)
   await db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
   await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
   await db.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
+  // DM の既読記録も一緒に消す（孤児を残さない）
+  await db.prepare('DELETE FROM dm_reads WHERE post_id = ?').run(postId).catch(() => undefined);
   // 読み取りキャッシュにも消えたことを反映させる
   await invalidateTimelineCache();
   try {
@@ -1928,6 +1946,11 @@ export const handleAnnouncePost = asyncHandler(async (req: Request, res: Respons
     return res.status(403).json({ error: 'この投稿はリノートできません。' });
   }
 
+  // DM はリノートできない（宛先の外へ存在が漏れるため）
+  if (normalizeVisibility(post.visibility) === 'direct') {
+    return res.status(403).json({ error: 'この投稿はリノートできません。' });
+  }
+
   const existing = await db.prepare(`
     SELECT * FROM announces WHERE post_id = ? AND user_id = ?
   `).get(postId, actorUrl) as AnnounceRow | undefined;
@@ -2066,7 +2089,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   const post = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-      p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
       COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
     FROM posts p
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -2078,13 +2101,23 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
     return res.status(404).json({ error: '投稿が見つかりません。' });
   }
 
+  // DM は当事者以外に存在も見せない（宛先でなければ 404）。
+  // 宛先でも、受信を許可していない相手からのメッセージは見せない（docs/DM.md）
+  if (normalizeVisibility(post.visibility) === 'direct') {
+    if (!(await canViewDmMessage(post, currentActorUrl))) {
+      return res.status(404).json({ error: '投稿が見つかりません。' });
+    }
+  } else if (!(await canViewPost(post, currentActorUrl))) {
+    return res.status(404).json({ error: '投稿が見つかりません。' });
+  }
+
   // 親投稿（in_reply_to がある場合）
   let parent = null;
   if (post.in_reply_to) {
     parent = await db.prepare(`
       SELECT 
         p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+        p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
         COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -2097,7 +2130,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   const replies = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-      p.is_local, p.visibility, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
       COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
     FROM posts p
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -2111,7 +2144,9 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   if (parent) allRows.push(parent);
   allRows.push(...replies);
 
-  const enrichedList = await enrichAndFilterPosts(allRows, currentActorUrl, req.user?.id);
+  // DM（visibility = 'direct'）の行は当事者以外に落とす（宛先でない人には返信一覧にも見せない）
+  const visibleRows = await filterVisiblePosts(allRows, currentActorUrl);
+  const enrichedList = await enrichAndFilterPosts(visibleRows, currentActorUrl, req.user?.id);
   const enrichedMap = new Map<string, any>(enrichedList.map((p) => [p.id, p]));
 
   res.json({
@@ -2356,7 +2391,8 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
   const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
-  const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(user.id) as any).c;
+  // 自分の投稿数に DM は数えない（DM はタイムラインに出ない投稿なので別扱い）
+  const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND COALESCE(visibility, 'public') != 'direct'").get(user.id) as any).c;
 
   res.json({
     ...updatedUser,
@@ -2647,7 +2683,7 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
     const actorUrl = `${config.origin}/users/${localUser.id}`;
     const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
     const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
-    const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ?').get(localUser.id) as any).c;
+    const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND COALESCE(visibility, 'public') != 'direct'").get(localUser.id) as any).c;
 
     let isFollowing = false;
     let isBlocked = false;
@@ -2730,7 +2766,7 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
       remoteActor = await fetchRemoteActor(targetActorUrl, true);
     }
 
-    const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?)').get(targetActorUrl, targetActorUrl) as any).c;
+    const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?) AND COALESCE(visibility, 'public') != 'direct'").get(targetActorUrl, targetActorUrl) as any).c;
 
     let isFollowing = false;
     let isBlocked = false;
@@ -2807,14 +2843,15 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
   if (localUser) {
     posts = await db.prepare(`
       ${baseSelect}
-      WHERE p.user_id = ?${cursorCond}
+      WHERE p.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
       ORDER BY p.published_at DESC, p.id DESC
       LIMIT ?
     `).all(cleanId, ...cursorParams, page.limit + 1);
   } else {
     posts = await db.prepare(`
       ${baseSelect}
-      WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)${cursorCond}
+      WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)
+        AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
       ORDER BY p.published_at DESC, p.id DESC
       LIMIT ?
     `).all(rawIdentifier, rawIdentifier, rawIdentifier.startsWith('@') ? rawIdentifier : `@${rawIdentifier}`, ...cursorParams, page.limit + 1);
@@ -2842,7 +2879,7 @@ apiRouter.get('/posts/:id/quotes', asyncHandler(async (req: Request, res: Respon
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
       LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE p.quote_id = ?
+      WHERE p.quote_id = ? AND COALESCE(p.visibility, 'public') != 'direct'
       ORDER BY p.published_at DESC, p.id DESC
       LIMIT ?
     `).all(postId, page.limit + 1);
@@ -2910,6 +2947,7 @@ apiRouter.get('/me/post-calendar', requireAuth, asyncHandler(async (req: Request
       SELECT substr(published_at, 1, 10) AS day, count(*) AS count
       FROM posts
       WHERE user_id = ? AND published_at >= ? AND published_at < ?
+        AND COALESCE(visibility, 'public') != 'direct'
       GROUP BY day
       ORDER BY day
     `).all(user.id, start, end);
@@ -3018,6 +3056,8 @@ apiRouter.get('/server-info', asyncHandler(async (req: Request, res: Response) =
     origin: config.origin,
     domain: config.domain,
     port: config.port,
+    // 機能フラグ（クライアントは起動時に見て導線の出し分けを決める。既存の形は壊さず追加だけする）
+    features: dmFeatureFlags(),
     stats: {
       users: counts.users,
       totalPosts: counts.localPosts,
@@ -3351,7 +3391,7 @@ apiRouter.get('/bookmarks', requireAuth, asyncHandler(async (req: Request, res: 
       JOIN posts p ON b.post_id = p.id
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
       LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE b.user_id = ?${cursorCond}
+      WHERE b.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
       ORDER BY b.created_at DESC, p.id DESC
       LIMIT ?
     `;
@@ -3827,7 +3867,8 @@ apiRouter.get('/autocomplete/tags', asyncHandler(async (req: Request, res: Respo
 
   try {
     // フォロワー限定投稿のタグは候補に出さない
-    const recentPosts = await db.prepare("SELECT content FROM posts WHERE visibility IS NULL OR visibility != 'followers' ORDER BY published_at DESC LIMIT 300").all() as { content: string }[];
+    // DM（visibility = 'direct'）はタグ候補に出さない
+    const recentPosts = await db.prepare("SELECT content FROM posts WHERE COALESCE(visibility, 'public') NOT IN ('followers', 'direct') ORDER BY published_at DESC LIMIT 300").all() as { content: string }[];
     const tagCountMap = new Map<string, number>();
 
     const tagRegex = /#([a-zA-Z0-9_\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+)/gu;
@@ -4239,6 +4280,8 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
     params.push(member, member, member, `%${member.replace(/^@/, '')}%`);
   }
   const conditions: string[] = [`(${memberConds.join(' OR ')})`];
+  // DM（visibility = 'direct'）はリストにも出さない
+  conditions.push("COALESCE(p.visibility, 'public') != 'direct'");
   if (page.cursor) {
     conditions.push(cursorPredicate('p.published_at', 'p.id'));
     params.push(page.cursor.at, page.cursor.at, page.cursor.id);
@@ -4668,9 +4711,13 @@ apiRouter.post('/reports', requireAuth, asyncHandler(async (req: Request, res: R
 
     // 投稿への通報: 投稿から投稿者を解決する
     if (targetPostId) {
-      const post = await db.prepare('SELECT id, user_id, author_url, author_handle, content, is_local FROM posts WHERE id = ?').get(String(targetPostId)) as any;
+      const post = await db.prepare('SELECT id, user_id, author_url, author_handle, content, is_local, visibility FROM posts WHERE id = ?').get(String(targetPostId)) as any;
       if (!post) {
         return res.status(404).json({ error: '通報対象の投稿が見つかりません。' });
+      }
+      // DM は通報の対象にしない（管理画面にも本文を出さない。docs/DM.md）
+      if (normalizeVisibility(post.visibility) === 'direct') {
+        return res.status(400).json({ error: 'この投稿は通報できません。' });
       }
       targetActorUrl = post.author_url;
       targetHandle = post.author_handle || '';
@@ -5024,6 +5071,9 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     conditions.push(cursorPredicate('p.published_at', 'p.id'));
     params.push(page.cursor.at, page.cursor.at, page.cursor.id);
   }
+
+  // DM（visibility = 'direct'）はアンテナのタイムラインにも出さない
+  conditions.push("COALESCE(p.visibility, 'public') != 'direct'");
 
   // 走査の上限（タグ・検索と同じ）。アンテナはキーワードやユーザー名の LIKE で絞るので、
   // 条件が緩いと全件走査になる。**直近 N 件**に限れば DB が育ってもコストが一定
@@ -5584,7 +5634,7 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
     FROM posts p
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
     LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-    WHERE p.channel_id = ?${cursorCond}
+    WHERE p.channel_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
     ORDER BY p.published_at DESC, p.id DESC
     LIMIT ?
   `;
@@ -5603,3 +5653,84 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
   });
 }));
 
+
+// ==========================================
+// ✉️ DM（1対1のメッセージ）エンドポイント
+//
+//   - サーバー管理者の設定 `dm_enabled` が off のときは 404（「物理的に無い」扱い。docs/DM.md）
+//   - 認可は既存の投稿と同じく requireAuth。本文・添付の扱いも既存の投稿作成に倣う
+//   - 会話は専用テーブルを持たず、`in_reply_to` の連鎖で表現する（最初の 1 通が会話の頭）
+// ==========================================
+const dmRouter = Router();
+
+// off のときは「物理的に無い」。403 だと「機能はあるが禁止」と分かってしまうため 404 にする
+dmRouter.use((_req: Request, res: Response, next: NextFunction) => {
+  if (!isDmEnabled()) {
+    return res.status(404).json({ error: 'Not Found' });
+  }
+  next();
+});
+
+// 会話一覧（相手・最終メッセージ・未読数）
+dmRouter.get('/conversations', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  res.json(await listDmConversations(user.id));
+}));
+
+// 会話の本文（時系列）。`cursor` を付けると、その位置より古い方を返す
+dmRouter.get('/conversations/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const page = parsePageQuery(req, 50);
+  if (page.error) {
+    return res.status(400).json({ error: page.error });
+  }
+  const result = await getDmConversationMessages(user.id, String(req.params.id), page);
+  if (!result) {
+    return res.status(404).json({ error: '会話が見つかりません。' });
+  }
+  // 続きの読み込みは既存の一覧と同じく X-Next-Cursor でも返す（本文の next_cursor と同値）
+  if (result.nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', result.nextCursor);
+  }
+  res.json({
+    conversation: result.conversation,
+    messages: result.messages,
+    next_cursor: result.nextCursor,
+  });
+}));
+
+// 既読にする
+dmRouter.post('/conversations/:id/read', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const result = await markDmConversationRead(user.id, String(req.params.id));
+  if (!result) {
+    return res.status(404).json({ error: '会話が見つかりません。' });
+  }
+  res.json({ success: true, updated: result.updated });
+}));
+
+// 送信（`to` はハンドル。`media` はアップロード済みメディアの配列）
+dmRouter.post('/messages', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const result = await sendDmMessage({
+    user,
+    to: body.to,
+    content: body.content,
+    cw: body.cw,
+    attachments: body.media !== undefined ? body.media : body.attachments,
+    in_reply_to: body.in_reply_to,
+  });
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  res.status(result.status).json({
+    message: result.message,
+    delivered: result.delivered,
+    ...(result.reason ? { reason: result.reason } : {}),
+    federatedTo: result.federatedTo,
+  });
+}));
+
+apiRouter.use('/dm', dmRouter);

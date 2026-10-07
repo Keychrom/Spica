@@ -135,6 +135,9 @@ export async function deleteUserAccount(userId: string): Promise<DeleteUserAccou
     // フォロー・フォロワー
     await db.prepare('DELETE FROM follows WHERE follower_url = ? OR following_url = ?').run(actorUrl, actorUrl);
 
+    // DM の既読記録（本人の分と、消える投稿に紐づく分）
+    await db.prepare('DELETE FROM dm_reads WHERE user_id = ? OR post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId, cleanId);
+
     // 通知
     await db.prepare('DELETE FROM notifications WHERE user_id = ? OR actor_id = ?').run(cleanId, actorUrl);
 
