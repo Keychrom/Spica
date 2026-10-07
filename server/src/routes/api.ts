@@ -16,7 +16,8 @@ import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } fr
 import { createReport, logNewReport } from '../reportService.js';
 import { getMutedWords, postMatchesMutedWords, invalidateMutedWords } from '../wordFilter.js';
 import { extractFirstUrl, getCachedPreviews } from '../linkPreview.js';
-import { parseArchive, importNotes } from '../importService.js';
+import { parseArchive, importNotes, buildSpicaBundle, buildSpicaBundleFromZip, importSpicaArchive, buildImportMessage } from '../importService.js';
+import { isZipBuffer, readZipEntries } from '../zipReader.js';
 import { parseProfileFields } from '../activitypub.js';
 import { isMailConfigured, sendMail, generateVerificationCode, issueVerificationCode, verifyCode, getMailConfig, saveMailConfig, verifyMailConnection } from '../mailService.js';
 
@@ -4268,37 +4269,112 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
   res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
 }));
 
-// 📥 アカウント移行インポート（Mastodon の outbox.json / Misskey の notes.json）
+// 📥 アカウント移行インポート
+//    - Spica 自身のエクスポート（ZIP / JSON）: 投稿に加えてメディア・フォロー・フォロワー・
+//      ブックマーク・リアクションまで取り込む（メディアは ZIP に同梱された実ファイルを使う）
+//    - Mastodon の outbox.json / Misskey の notes.json: 本文（CW・公開範囲・投稿日時つき）
+const MAX_IMPORT_ARCHIVE_BYTES = 50 * 1024 * 1024;
+
 const archiveUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: MAX_IMPORT_ARCHIVE_BYTES },
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype.includes('json') || file.originalname.toLowerCase().endsWith('.json')) {
+    const name = file.originalname.toLowerCase();
+    if (file.mimetype.includes('json') || file.mimetype.includes('zip') || name.endsWith('.json') || name.endsWith('.zip')) {
       cb(null, true);
     } else {
-      cb(new Error('JSON ファイル（Mastodon の outbox.json / Misskey の notes.json）を選択してください。'));
+      cb(new Error('インポートするファイル（Spica のエクスポート ZIP / JSON、Mastodon の outbox.json、Misskey の notes.json）を選択してください。'));
     }
   },
 });
 
-apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), asyncHandler(async (req: Request, res: Response) => {
+/** multer のエラー（サイズ超過・形式違い）を 400 で返す */
+const archiveUploadMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  archiveUpload.single('archive')(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: `アーカイブのサイズが大きすぎます（上限 ${Math.floor(MAX_IMPORT_ARCHIVE_BYTES / (1024 * 1024))}MB）。`,
+        });
+      }
+      return res.status(400).json({ error: err.message || 'アーカイブの受け取りに失敗しました。' });
+    }
+    next();
+  });
+};
+
+apiRouter.post('/import/archive', requireAuth, archiveUploadMiddleware, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const file = (req as Request & { file?: { buffer: Buffer } }).file;
   if (!file) {
-    return res.status(400).json({ error: 'アーカイブファイル（JSON）が必要です。' });
+    return res.status(400).json({ error: 'アーカイブファイル（ZIP / JSON）が必要です。' });
   }
 
+  // 1. ZIP（Spica のエクスポート）: 中の JSON とメディアの実ファイルを読む
+  //    パス検証（zip-slip 対策）と件数・サイズの上限はリーダー側で掛ける
+  if (isZipBuffer(file.buffer)) {
+    let entries: Map<string, Buffer>;
+    try {
+      const zip = readZipEntries(file.buffer);
+      entries = zip.entries;
+      if (zip.skipped.length > 0) {
+        console.warn(
+          `[Import] ⚠️ @${user.id} の ZIP で読み飛ばしたファイル: ${zip.skipped.slice(0, 5).join(', ')}` +
+          (zip.skipped.length > 5 ? ` ほか ${zip.skipped.length - 5} 件` : ''),
+        );
+      }
+    } catch (err: any) {
+      return res.status(400).json({ error: `ZIP を読み込めませんでした: ${err?.message || err}` });
+    }
+
+    try {
+      const bundle = buildSpicaBundleFromZip(entries);
+      if (bundle.posts.length === 0 && bundle.media.length === 0) {
+        return res.status(400).json({ error: '取り込めるデータが見つかりませんでした（Spica のエクスポート ZIP を選択してください）。' });
+      }
+
+      const result = await importSpicaArchive(user, bundle);
+      console.log(
+        `[Import] 📥 @${user.id} が Spica のエクスポート（ZIP）を取り込み: 投稿=${result.imported} メディア=${result.media.imported} ` +
+        `フォロー=${result.following.imported} フォロワー=${result.followers.imported} ブックマーク=${result.bookmarks.imported} リアクション=${result.reactions.imported}`,
+      );
+
+      return res.json({ success: true, ...result, message: buildImportMessage(result) });
+    } catch (err: any) {
+      console.error('[Import Error]:', err);
+      return res.status(500).json({ error: err.message || 'インポートに失敗しました。' });
+    }
+  }
+
+  // 2. JSON（Spica のエクスポート / Mastodon / Misskey）: 形式を判定して取り込む
   let data: any;
   try {
     data = JSON.parse(file.buffer.toString('utf8'));
   } catch {
     return res.status(400).json({
-      error: 'JSON の解析に失敗しました。Mastodon の outbox.json か Misskey の notes.json を選択してください。',
+      error: 'JSON の解析に失敗しました。Spica のエクスポート、Mastodon の outbox.json、Misskey の notes.json のいずれかを選択してください。',
     });
   }
 
   try {
     const { format, notes } = parseArchive(data);
+
+    // Spica 自身のエクスポート（JSON 単体。メディアの実ファイルは無いのでスキップされる）
+    if (format === 'spica') {
+      const bundle = buildSpicaBundle(data);
+      if (bundle.posts.length === 0) {
+        return res.status(400).json({ error: '取り込める投稿が見つかりませんでした（ファイル形式をご確認ください）。', format });
+      }
+
+      const result = await importSpicaArchive(user, bundle);
+      console.log(
+        `[Import] 📥 @${user.id} が Spica のエクスポート（JSON）を取り込み: 投稿=${result.imported} メディア=${result.media.imported} ` +
+        `フォロー=${result.following.imported} フォロワー=${result.followers.imported} ブックマーク=${result.bookmarks.imported} リアクション=${result.reactions.imported}`,
+      );
+
+      return res.json({ success: true, ...result, message: buildImportMessage(result) });
+    }
+
     if (notes.length === 0) {
       return res.status(400).json({ error: '取り込める投稿が見つかりませんでした（ファイル形式をご確認ください）。', format });
     }
@@ -4312,7 +4388,7 @@ apiRouter.post('/import/archive', requireAuth, archiveUpload.single('archive'), 
       success: true,
       format,
       ...result,
-      message: `${result.imported} 件の投稿を取り込みました（重複スキップ ${result.skipped} 件）。`,
+      message: buildImportMessage(result),
     });
   } catch (err: any) {
     console.error('[Import Error]:', err);

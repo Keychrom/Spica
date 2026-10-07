@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 import { db, initDatabase, loadServerSettings, invalidateBlockedDomainRules, getInstanceInfo } from './db.js';
 import { initRedis, subscribeEvent, getRedisStatus } from './redis.js';
-import { handleRemoteStreamEvent, getStreamClientCount } from './streaming.js';
+import { handleRemoteStreamEvent, getStreamClientCount, getMisskeyStreamClientCount, attachMisskeyStreaming } from './streaming.js';
 import { inboxGate } from './inboxGate.js';
 import { startSoakLog, getSoakStats } from './soakLog.js';
 import { authenticate } from './auth.js';
@@ -226,6 +226,8 @@ const healthHandler = async (req: Request, res: Response) => {
     // Redis は任意。configured が true で ready が false のときは「設定されているが繋がっていない」
     redis: getRedisStatus(),
     sseClients: getStreamClientCount(),
+    // Misskey 互換クライアントの WebSocket 接続数（/streaming）
+    misskeyStreamClients: getMisskeyStreamClientCount(),
     timelineCache: getTimelineCacheStats(),
     // 受信の混み具合（溢れが出ているなら burst が来ている）
     inbox: inboxGate.stats(),
@@ -836,6 +838,13 @@ if (!runsHttp) {
 =====================================================
   `);
   logAutomationSettings();
+}
+
+// Misskey 互換クライアント向けの WebSocket ストリーミング（`wss://<host>/streaming?i=<トークン>`）。
+// HTTP サーバーの upgrade を `/streaming` だけ引き受ける（他のパスは切る）。
+// HTTP を開かない役割（PROCESS_ROLE=worker）では、そもそも upgrade が来ないので何もしない。
+if (server) {
+  attachMisskeyStreaming(server);
 }
 
 export default app;

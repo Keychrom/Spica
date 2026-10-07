@@ -136,7 +136,7 @@ async function run() {
     check('meta が返る', meta.status, 200);
     check('インスタンス名', meta.body.name, 'Misskey API Test');
     check('本文の長さ上限を返す', typeof meta.body.maxNoteTextLength, 'number');
-    check('ストリーミング未対応を明示する', meta.body.features.streaming, false);
+    check('ストリーミング対応を明示する', meta.body.features.streaming, true);
 
     const me = await mk('/i', {}, alice.token);
     check('i が返る', me.status, 200);

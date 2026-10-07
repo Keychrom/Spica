@@ -21,8 +21,34 @@ export interface ExportDataManifest {
     followers: number;
     bookmarks: number;
     reactions: number;
+    /** ドライブのメディア（台帳の件数。ZIP では実ファイルも同梱する） */
+    media: number;
   };
 }
+
+/** エクスポートに含めるメディア 1 件（`archive_path` は ZIP 内の位置。読めなかったものには付かない） */
+export interface ExportMediaItem {
+  id: string;
+  url: string;
+  key: string;
+  media_type: string;
+  size: number;
+  name: string;
+  thumbnail_url: string;
+  thumbnail_key: string;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+  post_id: string | null;
+  created_at: string;
+  archive_path?: string;
+}
+
+/** ZIP に同梱するメディアの上限（取り込み側の受け入れ上限に収まる範囲にする） */
+const MAX_EXPORT_MEDIA_FILES = 200;
+const MAX_EXPORT_MEDIA_BYTES = 32 * 1024 * 1024;
+/** リモート保存（S3/R2）のメディアを取得するときの打ち切り時間 */
+const MEDIA_FETCH_TIMEOUT_MS = 10000;
 
 export interface UserExportData {
   manifest: ExportDataManifest;
@@ -72,6 +98,74 @@ export interface UserExportData {
     post_content: string;
     created_at: string;
   }>;
+  media: ExportMediaItem[];
+}
+
+/**
+ * メディアの実ファイルを読む（ローカル保存ならディスク、S3/R2 なら公開 URL から）。
+ * 読めなかった場合は null を返す（同梱せず、台帳の記録だけ残す）。
+ */
+async function readMediaFileBuffer(key: string, url: string): Promise<Buffer | null> {
+  // ローカル保存: key = `media/<userId>/<file>` → `data/uploads/<userId>/<file>`（storage.ts と同じ場所）
+  const relative = key.replace(/^media\//, '');
+  if (relative && !relative.includes('..') && !relative.includes('\\')) {
+    try {
+      const filePath = path.resolve(process.cwd(), 'data', 'uploads', relative);
+      if (fs.existsSync(filePath)) return fs.readFileSync(filePath);
+    } catch {
+      // ローカルに無ければ URL からの取得を試す
+    }
+  }
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS) });
+    if (!res.ok) return null;
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return buffer.length > 0 ? buffer : null;
+  } catch {
+    return null; // 取得できないメディアは同梱しない（取り込み側ではスキップとして数える）
+  }
+}
+
+/** ZIP 内の位置（相対パス）に使える形へ直す（`..` や区切り記号は落とす） */
+function toArchivePath(key: string): string {
+  const parts = key
+    .split('/')
+    .map((part) => part.replace(/[^A-Za-z0-9._-]/g, '_'))
+    .filter((part) => part && part !== '.' && part !== '..');
+  return parts.length > 0 ? parts.join('/') : '';
+}
+
+/**
+ * ドライブのメディアを ZIP に同梱できる形で集める。
+ * 実ファイルが読めたものだけ `archive_path` を付け、件数・合計サイズの上限で打ち切る。
+ */
+async function collectExportMediaFiles(rows: any[]): Promise<{ files: { path: string; buffer: Buffer }[]; rows: ExportMediaItem[] }> {
+  const files: { path: string; buffer: Buffer }[] = [];
+  const usedPaths = new Set<string>();
+  let totalBytes = 0;
+  const out: ExportMediaItem[] = [];
+
+  for (const row of rows) {
+    const item: ExportMediaItem = { ...row };
+    const path0 = toArchivePath(typeof row.key === 'string' ? row.key : '');
+    const withinLimits = files.length < MAX_EXPORT_MEDIA_FILES && totalBytes < MAX_EXPORT_MEDIA_BYTES;
+    if (path0 && !usedPaths.has(path0) && withinLimits) {
+      const buffer = await readMediaFileBuffer(typeof row.key === 'string' ? row.key : '', typeof row.url === 'string' ? row.url : '');
+      if (buffer && buffer.length > 0 && totalBytes + buffer.length <= MAX_EXPORT_MEDIA_BYTES) {
+        usedPaths.add(path0);
+        files.push({ path: path0, buffer });
+        totalBytes += buffer.length;
+        item.archive_path = path0;
+      }
+    }
+    out.push(item);
+  }
+
+  if (rows.length > files.length) {
+    console.log(`[Export] 📎 メディア ${rows.length} 件のうち ${files.length} 件の実ファイルを ZIP に同梱しました`);
+  }
+  return { files, rows: out };
 }
 
 /**
@@ -165,19 +259,45 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   }));
 
   // 5. リアクション履歴
+  //    `reactions.user_id` は API から付けた分は Actor URL、直接投入した分はユーザーID のことがある。
+  //    どちらでも拾えるように両方で照合する（片方だけだと、実際に付けたリアクションが空になる）。
   const reactionRows = await db.prepare(`
     SELECT r.reaction, r.post_id, r.created_at, COALESCE(p.content, '') as post_content
     FROM reactions r
     LEFT JOIN posts p ON r.post_id = p.id
-    WHERE r.user_id = ?
+    WHERE r.user_id = ? OR r.user_id = ?
     ORDER BY r.created_at DESC
-  `).all(userId) as any[];
+  `).all(actorUrl, userId) as any[];
 
   const reactions = reactionRows.map((r) => ({
     reaction: r.reaction,
     post_id: r.post_id,
     post_content: r.post_content.slice(0, 100),
     created_at: r.created_at,
+  }));
+
+  // 6. ドライブのメディア台帳（ZIP では実ファイルも同梱する。JSON は記録のみ）
+  const mediaRows = await db.prepare(`
+    SELECT id, url, key, media_type, size, name, thumbnail_url, thumbnail_key, width, height, duration, post_id, created_at
+    FROM media
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+  `).all(userId) as ExportMediaItem[];
+
+  const media: ExportMediaItem[] = mediaRows.map((m) => ({
+    id: m.id,
+    url: m.url,
+    key: m.key,
+    media_type: m.media_type,
+    size: Number(m.size || 0),
+    name: m.name || '',
+    thumbnail_url: m.thumbnail_url || '',
+    thumbnail_key: m.thumbnail_key || '',
+    width: m.width ?? null,
+    height: m.height ?? null,
+    duration: m.duration ?? null,
+    post_id: m.post_id ?? null,
+    created_at: m.created_at,
   }));
 
   const manifest: ExportDataManifest = {
@@ -192,6 +312,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
       followers: followers.length,
       bookmarks: bookmarks.length,
       reactions: reactions.length,
+      media: media.length,
     },
   };
 
@@ -214,6 +335,7 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
     followers,
     bookmarks,
     reactions,
+    media,
   };
 }
 
@@ -238,6 +360,10 @@ export async function streamUserExportZip(userId: string, outputStream: NodeJS.W
     try {
       const data = await exportUserData(userId);
 
+      // ドライブのメディアは実ファイルごと同梱する（読めなかったものは台帳の記録だけ残す）
+      const mediaFiles = await collectExportMediaFiles(data.media);
+      data.media = mediaFiles.rows;
+
       // manifest.json
       archive.append(JSON.stringify(data.manifest, null, 2), { name: 'manifest.json' });
 
@@ -259,6 +385,14 @@ export async function streamUserExportZip(userId: string, outputStream: NodeJS.W
       // reactions.json
       archive.append(JSON.stringify(data.reactions, null, 2), { name: 'reactions.json' });
 
+      // media.json（ドライブの台帳。実ファイルは archive_path の位置に格納する）
+      archive.append(JSON.stringify(data.media, null, 2), { name: 'media.json' });
+
+      // メディアの実ファイル（画像・動画など）。取り込み時にドライブへ戻す
+      for (const file of mediaFiles.files) {
+        archive.append(file.buffer, { name: file.path });
+      }
+
       // full-backup.json (統合JSON)
       archive.append(JSON.stringify(data, null, 2), { name: 'spica-full-backup.json' });
 
@@ -279,9 +413,12 @@ export async function streamUserExportZip(userId: string, outputStream: NodeJS.W
         `  - followers.json: フォロワー一覧（${data.followers.length}件）`,
         `  - bookmarks.json: 保存したブックマーク投稿（${data.bookmarks.length}件）`,
         `  - reactions.json: 付与したリアクション履歴（${data.reactions.length}件）`,
+        `  - media.json: ドライブのメディア台帳（${data.media.length}件。実ファイルは media/ の下に ${mediaFiles.files.length}件を同梱）`,
         `  - spica-full-backup.json: 上記全データを1つにまとめた完全バックアップ`,
         ``,
         `※ 「自分のデータは自分のもの（データ主権）」の理念に基づき出力されています。`,
+        `※ このアーカイブは Spica の「他のサーバーからの移行（インポート）」でそのまま取り込めます。`,
+        `   （メディアの実ファイルは取り込み時にドライブへ戻され、投稿に紐づきます）`,
         `=============================================================`,
       ].join('\n');
       archive.append(readme, { name: 'README.txt' });

@@ -787,12 +787,32 @@ export default function SettingsView(props: SettingsViewProps) {
       const data = await res.json();
 
       if (res.ok) {
+        // 付随データ（メディア・フォロー・ブックマーク・リアクション）は取り込みがあったものだけ出す
+        const extraCounts = [
+          ['メディア', data.media],
+          ['フォロー', data.following],
+          ['フォロワー', data.followers],
+          ['ブックマーク', data.bookmarks],
+          ['リアクション', data.reactions],
+        ]
+          .map(([label, count]: any) =>
+            count && (count.imported > 0 || count.skipped > 0)
+              ? `${label}: ${count.imported}${count.skipped > 0 ? `（スキップ ${count.skipped}）` : ''}`
+              : '',
+          )
+          .filter(Boolean)
+          .join(' / ');
+
         setImportResult({
           type: 'success',
-          text: data.message || `${data.imported} 件の投稿を取り込みました。`,
-          detail: `形式: ${data.format} / 取り込み: ${data.imported} / 重複スキップ: ${data.skipped} / 失敗: ${data.failed}${data.total ? ` / 対象: ${data.total}` : ''}${
-            Array.isArray(data.errors) && data.errors.length > 0 ? `\n${data.errors.join('\n')}` : ''
-          }`,
+          text: data.message || `投稿 ${data.imported} 件を取り込みました。`,
+          detail: [
+            `形式: ${data.format} / 取り込み: ${data.imported} / 重複スキップ: ${data.skipped} / 失敗: ${data.failed}${data.total ? ` / 対象: ${data.total}` : ''}`,
+            extraCounts ? `付随データ → ${extraCounts}` : '',
+            ...(Array.isArray(data.errors) && data.errors.length > 0 ? data.errors : []),
+          ]
+            .filter(Boolean)
+            .join('\n'),
         });
         setImportFile(null);
         await fetchTimeline();
@@ -2382,16 +2402,20 @@ export default function SettingsView(props: SettingsViewProps) {
                         <span>他のサーバーからの移行（インポート）</span>
                       </h4>
                       <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                        Mastodon の <code className="text-slate-300">outbox.json</code>、または Misskey の{' '}
-                        <code className="text-slate-300">notes.json</code> を取り込むと、過去の投稿（本文・CW・公開範囲・投稿日時）を復元できます。
+                        Spica のエクスポート（<code className="text-slate-300">ZIP</code> /{' '}
+                        <code className="text-slate-300">JSON</code>）を取り込むと、過去の投稿（本文・CW・公開範囲・投稿日時）に加えて、
+                        メディア（画像・動画）、フォロー / フォロワー、ブックマーク、リアクションを復元できます。
                         元の投稿日時が保持されるため、時系列が崩れません。同じファイルを再度取り込んでも重複しません。
-                        <br />※ メディア（画像・動画）とフォロー/ブックマークの取り込みは現在未対応です。
+                        <br />Mastodon の <code className="text-slate-300">outbox.json</code>、Misskey の{' '}
+                        <code className="text-slate-300">notes.json</code> も取り込めます（本文・CW・公開範囲のみ）。
+                        <br />※ メディアは ZIP に同梱された実ファイルのみ取り込みます。フォロー / フォロワーのうちリモートの相手は
+                        行を復元するだけで配送は行わないため、相手側では未承認のままのことがあります。
                       </p>
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="file"
-                        accept=".json,application/json"
+                        accept=".json,.zip,application/json,application/zip"
                         onChange={(e) => setImportFile(e.target.files?.[0] ?? null)}
                         className="flex-1 text-xs text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:bg-slate-800 file:text-slate-200 file:text-xs file:font-bold hover:file:bg-slate-700 cursor-pointer"
                       />
@@ -2670,7 +2694,7 @@ export default function SettingsView(props: SettingsViewProps) {
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-500">
-                        ※ ZIPアーカイブには各カテゴリ別のJSONファイルと解説用READMEが格納されます。
+                        ※ ZIPアーカイブには各カテゴリ別のJSONファイル・ドライブのメディア（実ファイル）・解説用READMEが格納されます。
                       </p>
                     </div>
 

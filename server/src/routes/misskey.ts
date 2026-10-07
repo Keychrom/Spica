@@ -38,8 +38,12 @@ import {
  * 既存のハンドラ（api.ts から export しているもの）をそのまま呼ぶ。二重実装すると
  * 片方だけ直る事故が起きるため。
  *
+ * **ストリーミング（WebSocket）**: `GET /streaming?i=<トークン>` で受ける（実装は streaming.ts の
+ * Misskey 互換セクション）。`meta.features.streaming` は true を返す。
+ * 対応チャンネルは homeTimeline / localTimeline / hybridTimeline / globalTimeline / main（自分の通知）で、
+ * Spica 自身の SSE と同じイベント源（Redis Pub/Sub 含む）から配る。
+ *
  * 実装しないもの（docs/FEATURES.md に明記）:
- *   - ストリーミング（WebSocket）: クライアントはポーリング／再読み込みで動く
  *   - `visibility: specified`（DM）: 方針として受け付けない（400 を返す）
  *   - 権限の細分化: MiAuth で要求された権限は承認画面に表示するが、発行するトークンは
  *     通常のセッションと同じ（アプリごとの権限分離はしない）
@@ -181,8 +185,8 @@ misskeyRouter.post('/meta', asyncHandler(async (_req: Request, res: Response) =>
     maintenanceMode: false,
     emojis: Object.fromEntries(emojis.map((e) => [e.name, e.url])),
     features: {
-      // ストリーミングは未実装（クライアントはポーリングに切り替える）
-      streaming: false,
+      // ストリーミング（WebSocket、`/streaming`）に対応。クライアントはチャンネルを購読して受け取る
+      streaming: true,
       registration: info.registration_mode !== 'closed',
       localTimeline: true,
       globalTimeline: true,

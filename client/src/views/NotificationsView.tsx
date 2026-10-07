@@ -7,7 +7,7 @@
  */
 import { useState, useMemo } from 'react';
 import type { AppNotification } from '../App';
-import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
+import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, KeyRound, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
 import { usePrefs } from '../prefs';
 
 export interface NotificationsViewProps {
@@ -361,6 +361,11 @@ export default function NotificationsView(props: NotificationsViewProps) {
                   typeIcon = <ShieldAlert className="w-4 h-4 text-rose-400" />;
                   typeBadgeBg = 'bg-rose-500/15 text-rose-300 border-rose-500/30';
                   typeLabel = '通報';
+                } else if (notif.type === 'login') {
+                  // 新しい端末からのログイン（content にユーザーエージェントが入る）
+                  typeIcon = <KeyRound className="w-4 h-4 text-amber-400" />;
+                  typeBadgeBg = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+                  typeLabel = 'ログイン';
                 }
 
                 return (
@@ -454,6 +459,11 @@ export default function NotificationsView(props: NotificationsViewProps) {
                           )}
                           {notif.type === 'report' && (
                             <span className="text-rose-300">新しい通報が届きました: {notif.content}</span>
+                          )}
+                          {notif.type === 'login' && (
+                            <span className="text-amber-300">
+                              新しい端末からログインしました{notif.content ? `（${notif.content}）` : ''}
+                            </span>
                           )}
                         </div>
 

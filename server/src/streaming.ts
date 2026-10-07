@@ -1,16 +1,24 @@
 import { Response } from 'express';
 import crypto from 'node:crypto';
+import type { Server as HttpServer } from 'node:http';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { config } from './config.js';
 import { isRedisReady, publishEvent } from './redis.js';
+import { getUserFromToken } from './auth.js';
 import {
   buildNoteRouting,
   shouldDeliverNote,
   type NoteRouting,
   type RoutableNote,
 } from './streamRouting.js';
+import {
+  buildMisskeyNote,
+  buildMisskeyNotification,
+  collectReferenceTimes,
+} from './misskeyFormat.js';
 
 /**
- * リアルタイム更新（SSE）
+ * リアルタイム更新（SSE + Misskey 互換の WebSocket）
  *
  * `REDIS_URL` が設定されているときは、イベントを Redis の Pub/Sub に流して**全プロセス**に届ける
  * （どのプロセスに接続した利用者にも同じ更新が見える）。未設定なら今までどおり自分のプロセス内の
@@ -19,6 +27,10 @@ import {
  * **新着投稿（note）は必要な人にだけ配る。** クライアントは接続時に見たいストリームを申告し
  * （`?streams=local,home,tag:foo`）、`streamRouting.ts` の判定に通ったクライアントにだけ送る。
  * 申告が無い（古いクライアント）ときは今までどおり全部に配る。
+ *
+ * Misskey 互換の WebSocket（`/streaming?i=<トークン>`）は、この SSE と**同じイベント源**
+ * （`deliverLocalEvent` / `deliverLocalUserNotification`）から配る。Redis 経由で他プロセスに
+ * 届いたイベントも同じ関数を通るので、どのプロセスに繋いだクライアントにも流れる。
  *
  * 取りこぼしについて: Pub/Sub は「その瞬間に繋がっている相手」にしか届かない（履歴を持たない）。
  * リアルタイム更新は接続中のクライアントに届けばよく、クライアントは再接続時に取り直す前提なので、
@@ -143,9 +155,14 @@ export function removeStreamClient(clientId: string): void {
 /**
  * 自プロセスの全クライアントへ配る。
  * `eventName` が `note` で `routing` があるときは、必要なクライアントにだけ配る。
+ *
+ * Misskey 互換の WebSocket クライアントにも同じイベントを配る（`note` のみ）。
+ * Redis 経由で他プロセスから届いたイベントも `handleRemoteStreamEvent` からここを通るので、
+ * WS にも同じように流れる。
  */
 function deliverLocalEvent(eventName: string, data: any, routing?: NoteRouting): void {
-  if (clients.size === 0) return;
+  // note は Misskey 互換の WS クライアントにも配るので、そちらの接続も数える
+  if (clients.size === 0 && misskeyClients.size === 0) return;
   const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
   const note = eventName === 'note' && routing ? (data as RoutableNote) : null;
 
@@ -154,6 +171,10 @@ function deliverLocalEvent(eventName: string, data: any, routing?: NoteRouting):
       continue;
     }
     writeToClient(id, client, payload);
+  }
+
+  if (eventName === 'note') {
+    deliverNoteToMisskeyClients(data, routing);
   }
 }
 
@@ -262,7 +283,7 @@ export function broadcastDeletePost(postId: string): void {
   broadcastEvent('delete_post', { postId });
 }
 
-/** 自プロセスの該当ユーザーへ配る */
+/** 自プロセスの該当ユーザーへ配る（Misskey 互換の WS の main チャンネルにも配る） */
 function deliverLocalUserNotification(cleanTarget: string, notification: any): void {
   const payload = `event: notification\ndata: ${JSON.stringify(notification)}\n\n`;
 
@@ -271,6 +292,8 @@ function deliverLocalUserNotification(cleanTarget: string, notification: any): v
       writeToClient(id, client, payload);
     }
   }
+
+  deliverNotificationToMisskeyClients(cleanTarget, notification);
 }
 
 /**
@@ -301,5 +324,376 @@ export function closeAllStreams(): number {
     clients.delete(id);
   }
   if (count > 0) console.log(`[Streaming] 🔌 終了に伴い ${count} 件の SSE 接続を閉じました`);
+
+  // Misskey 互換の WebSocket 接続も閉じる
+  if (misskeyClients.size > 0) {
+    const wsCount = misskeyClients.size;
+    for (const client of misskeyClients) {
+      try {
+        client.ws.close(1001, 'server shutdown');
+      } catch {
+        // 既に切断済みなら無視
+      }
+    }
+    misskeyClients.clear();
+    console.log(`[Streaming] 🔌 終了に伴い ${wsCount} 件の Misskey 接続を閉じました`);
+  }
   return count;
+}
+
+// ===========================================================================
+// Misskey 互換の WebSocket ストリーミング（`/streaming?i=<トークン>`）
+//
+// Misskey のサードパーティ製クライアントは WebSocket に繋ぎ、チャンネルを購読して
+// ノート・通知をリアルタイムに受け取る。配信は Spica 自身の SSE と同じイベント源
+// （`deliverLocalEvent` / `deliverLocalUserNotification`）から行うので、Redis 経由で
+// 他プロセスに届いたイベントもそのまま WS に流れる。
+//
+//   受信: { type: 'connect',    body: { channel: '<名前>', id: '<任意の id>' } }
+//   送信: { type: 'connected',  body: { id: '<id>' } }
+//   受信: { type: 'channel',    body: { id: '<id>', params: {...} } }   … 購読中チャンネルのパラメータ変更
+//   受信: { type: 'disconnect', body: { id: '<id>' } }
+//   送信: { type: 'channel', body: { id: '<id>', type: 'note',         body: { note: {...} } } }
+//   送信: { type: 'channel', body: { id: '<id>', type: 'notification', body: { notification: {...} } } }
+//   送信: { type: 'ping' } / 受信: { type: 'pong' } （逆方向の ping にも pong を返す）
+//
+// 対応チャンネル: homeTimeline / localTimeline / hybridTimeline / globalTimeline / main（自分の通知）。
+// 匿名接続（`i` 無し）は localTimeline と globalTimeline だけ購読でき、homeTimeline と main は
+// `CREDENTIAL_REQUIRED` のエラーで断る（Misskey と同じ扱い）。
+// ===========================================================================
+
+/** Misskey のチャンネル名（これ以外は知らないチャンネルとして断る） */
+const MISSKEY_CHANNEL_SET = new Set<string>([
+  'homeTimeline',
+  'localTimeline',
+  'hybridTimeline',
+  'globalTimeline',
+  'main',
+]);
+
+/** 匿名では購読できないチャンネル（Misskey は資格情報が必要とする） */
+const MISSKEY_AUTH_CHANNELS = new Set<string>(['homeTimeline', 'hybridTimeline', 'main']);
+
+/**
+ * 無通信の切断を検知するための ping の間隔（既定 30 秒）。
+ * 検査（scripts/test-misskey-streaming.ts）で短くできるよう、環境変数で上書きできる。
+ * ping を送った次の間隔までに何も受信できなければ閉じる（1 回ぶんは待つ）。
+ */
+const MISSKEY_PING_INTERVAL_MS = Math.max(100, Number(process.env.MISSKEY_PING_INTERVAL_MS) || 30_000);
+
+/** 1 接続ぶんの状態 */
+interface MisskeyWsClient {
+  ws: WebSocket;
+  /** 認証中のユーザー ID（小文字にそろえる。匿名は null） */
+  userId: string | null;
+  /** 購読中のチャンネル（`connect` の id → チャンネル名） */
+  channels: Map<string, string>;
+  /** ping を送ってから、何か受信するのを待っているか */
+  awaitingPong: boolean;
+  /** 送信の順序を守るための直列キュー（Misskey 形式への整形が非同期のため） */
+  queue: Promise<void>;
+}
+
+/** プロセス内で接続中の Misskey 互換 WS クライアント */
+const misskeyClients = new Set<MisskeyWsClient>();
+
+/** 受信データを文字列にする（ws は Buffer / Buffer の配列で渡してくる） */
+function rawDataToString(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
+  if (Buffer.isBuffer(data)) return data.toString('utf8');
+  return Buffer.from(data as ArrayBuffer).toString('utf8');
+}
+
+/** Misskey 互換クライアントへ 1 通送る（詰まっている接続は切る） */
+function sendToMisskeyClient(client: MisskeyWsClient, payload: unknown): void {
+  if (client.ws.readyState !== WebSocket.OPEN) return;
+  if (client.ws.bufferedAmount > MAX_BUFFER_BYTES) {
+    console.warn(
+      `[Streaming] ⚠️ Misskey クライアントの送信が追いつかないため切断します (buffer ${client.ws.bufferedAmount} bytes)`,
+    );
+    try {
+      client.ws.close(1013, 'buffer limit');
+    } catch {
+      // すでに切れている
+    }
+    return;
+  }
+  try {
+    client.ws.send(JSON.stringify(payload));
+  } catch {
+    // すでに切れている
+  }
+}
+
+/** チャンネルのイベントを送る（ノート・通知の共通形） */
+function sendMisskeyChannelEvent(client: MisskeyWsClient, id: string, type: string, body: unknown): void {
+  sendToMisskeyClient(client, { type: 'channel', body: { id, type, body } });
+}
+
+/**
+ * このチャンネルへこのノートを配るか。
+ * `routing` が無い（判定に失敗した）ときは、SSE と同じく「取りこぼさない側」に倒す。
+ */
+function channelWantsNote(
+  channel: string,
+  userId: string | null,
+  note: RoutableNote,
+  routing?: NoteRouting,
+): boolean {
+  // 連合タイムラインはすべてのノートが出る
+  if (channel === 'globalTimeline') return true;
+
+  const isLocalNote = routing ? routing.local : note.is_local === true || Number(note.is_local) === 1;
+  // ローカルタイムラインはローカルのノートだけ
+  if (channel === 'localTimeline') return isLocalNote;
+
+  if (channel === 'homeTimeline' || channel === 'hybridTimeline') {
+    if (!userId) return false; // 匿名は connect の時点で断っている（保険）
+    if (!routing) return true; // 判定材料が無いときは全員へ（取りこぼすよりは良い）
+    // hybrid は「ローカル + ホーム」。Spica のホームにはローカルが含まれるので同じ判定でよい
+    return shouldDeliverNote({ userId, streams: new Set(['home']) }, note, routing);
+  }
+
+  // main は通知専用（ノートは流さない）
+  return false;
+}
+
+/** 配信ペイロードの型ゆれ（JSON 文字列で来た添付・リアクション）を配列に整える */
+function normalizeStreamNote(note: any): any {
+  const parseArray = (value: unknown): any[] => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string' && value) {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  };
+  return {
+    ...note,
+    media_attachments: parseArray(note?.media_attachments),
+    reactions: parseArray(note?.reactions),
+  };
+}
+
+/** 配信用に 1 件のノートを Misskey 形式へ整形する（整形できなければ null） */
+async function buildStreamMisskeyNote(note: any): Promise<any | null> {
+  const normalized = normalizeStreamNote(note);
+  try {
+    const referenceTimes = await collectReferenceTimes([normalized.in_reply_to, normalized.quote_id]);
+    return buildMisskeyNote(normalized, false, referenceTimes);
+  } catch {
+    // 参照先の解決に失敗しても、ノート自体は送る（replyId などが欠けるだけ）
+    try {
+      return buildMisskeyNote(normalized, false);
+    } catch (err: any) {
+      console.warn('[Streaming] Misskey 形式への整形に失敗しました:', err?.message || err);
+      return null;
+    }
+  }
+}
+
+/** note イベントを購読中の Misskey 互換クライアントへ配る */
+function deliverNoteToMisskeyClients(note: any, routing?: NoteRouting): void {
+  if (misskeyClients.size === 0 || !note) return;
+
+  for (const client of misskeyClients) {
+    const ids = [...client.channels.entries()]
+      .filter(([, channel]) => channelWantsNote(channel, client.userId, note, routing))
+      .map(([id]) => id);
+    if (ids.length === 0) continue;
+
+    // 整形は非同期（参照先の時刻を DB から引く）。接続ごとに直列化して配信順を守る
+    client.queue = client.queue
+      .then(async () => {
+        const misskeyNote = await buildStreamMisskeyNote(note);
+        if (!misskeyNote) return;
+        for (const id of ids) {
+          if (!client.channels.has(id)) continue; // 整形中に disconnect された
+          sendMisskeyChannelEvent(client, id, 'note', { note: misskeyNote });
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+/** 通知を main を購読している本人の Misskey 互換クライアントへ配る */
+function deliverNotificationToMisskeyClients(userId: string, notification: any): void {
+  if (misskeyClients.size === 0 || !notification) return;
+
+  let misskeyNotification: any;
+  try {
+    misskeyNotification = buildMisskeyNotification(notification);
+  } catch (err: any) {
+    console.warn('[Streaming] 通知の Misskey 形式への変換に失敗しました:', err?.message || err);
+    return;
+  }
+
+  for (const client of misskeyClients) {
+    if (client.userId !== userId) continue;
+    for (const [id, channel] of client.channels) {
+      if (channel !== 'main') continue;
+      sendMisskeyChannelEvent(client, id, 'notification', { notification: misskeyNotification });
+    }
+  }
+}
+
+/** クライアントからの 1 通を処理する（Misskey のプロトコル） */
+function handleMisskeyClientMessage(client: MisskeyWsClient, raw: string): void {
+  let message: any;
+  try {
+    message = JSON.parse(raw);
+  } catch {
+    return; // 壊れたメッセージは無視する
+  }
+  if (!message || typeof message !== 'object') return;
+  const body = message.body && typeof message.body === 'object' ? message.body : {};
+
+  switch (message.type) {
+    case 'ping':
+      // クライアントからの ping には pong を返す（Misskey はどちらの向きにも ping を出す）
+      sendToMisskeyClient(client, { type: 'pong' });
+      return;
+    case 'pong':
+      return;
+    case 'connect': {
+      const id = String(body.id ?? '');
+      const channel = String(body.channel ?? '');
+      if (!MISSKEY_CHANNEL_SET.has(channel)) {
+        sendToMisskeyClient(client, { type: 'error', body: { id, code: 'NO_SUCH_CHANNEL' } });
+        return;
+      }
+      if (!client.userId && MISSKEY_AUTH_CHANNELS.has(channel)) {
+        // Misskey と同じく、資格情報が要るチャンネルは匿名では購読できない
+        sendToMisskeyClient(client, { type: 'error', body: { id, code: 'CREDENTIAL_REQUIRED' } });
+        return;
+      }
+      client.channels.set(id, channel);
+      sendToMisskeyClient(client, { type: 'connected', body: { id } });
+      return;
+    }
+    case 'disconnect':
+      client.channels.delete(String(body.id ?? ''));
+      return;
+    case 'channel': {
+      // 購読中チャンネルのパラメータ変更。Spica が対応するチャンネルはパラメータを使わないので、
+      // 購読の有無だけ確かめて受け入れる（知らない id はチャンネル不明として断る）
+      const id = String(body.id ?? '');
+      if (!client.channels.has(id)) {
+        sendToMisskeyClient(client, { type: 'error', body: { id, code: 'NO_SUCH_CHANNEL' } });
+      }
+      return;
+    }
+    default:
+      return; // 知らないメッセージは無視する
+  }
+}
+
+/** 認証を通った WebSocket を Misskey 互換クライアントとして登録する */
+function registerMisskeyClient(ws: WebSocket, userId: string | null): void {
+  const client: MisskeyWsClient = {
+    ws,
+    userId,
+    channels: new Map(),
+    awaitingPong: false,
+    queue: Promise.resolve(),
+  };
+  misskeyClients.add(client);
+  console.log(
+    `[Streaming] 📡 Misskey client connected (user: ${userId || 'guest'}). Total: ${misskeyClients.size}`,
+  );
+
+  ws.on('message', (data: RawData, isBinary: boolean) => {
+    if (isBinary) return; // プロトコルは JSON のテキストのみ
+    // 何か受信したら生存しているとみなす（ping への pong もここで拾える）
+    client.awaitingPong = false;
+    handleMisskeyClientMessage(client, rawDataToString(data));
+  });
+  ws.on('error', () => {
+    // 切断は close でも来る。未処理エラーにしないための受け皿
+  });
+  ws.on('close', () => {
+    misskeyClients.delete(client);
+    console.log(
+      `[Streaming] 🔌 Misskey client disconnected (user: ${userId || 'guest'}). Remaining: ${misskeyClients.size}`,
+    );
+  });
+}
+
+/**
+ * `/streaming` への HTTP upgrade を Misskey 互換の WebSocket として扱う（index.ts から呼ぶ）。
+ *
+ * `i` クエリのトークンを `getUserFromToken` で検証し、無効ならハンドシェイクせず 401 で閉じる。
+ * `i` が無い接続は匿名として受け入れ、購読できるチャンネルを絞る（connect のとき判定）。
+ */
+export function attachMisskeyStreaming(server: HttpServer): void {
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+
+  server.on('upgrade', (req, socket, head) => {
+    let url: URL;
+    try {
+      url = new URL(req.url || '/', 'http://localhost');
+    } catch {
+      socket.destroy();
+      return;
+    }
+    if (url.pathname !== '/streaming') {
+      // 他の WebSocket は提供していない。心当たりのない upgrade は切る
+      socket.destroy();
+      return;
+    }
+
+    const token = url.searchParams.get('i') || '';
+    void (async () => {
+      let userId: string | null = null;
+      if (token) {
+        const user = await getUserFromToken(token);
+        if (!user) {
+          // トークンが無効なときは 101 に切り替えず 401 を返して閉じる
+          try {
+            socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          } catch {
+            // 書けなくても閉じるだけ
+          }
+          socket.destroy();
+          return;
+        }
+        userId = user.id.toLowerCase();
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => registerMisskeyClient(ws, userId));
+    })().catch(() => {
+      socket.destroy();
+    });
+  });
+}
+
+/**
+ * 無通信の切断検知（Misskey は ping/pong を使う）:
+ * 30 秒ごとに `{"type":"ping"}` を送り、次の間隔までに何も受信できなければ閉じる。
+ * 黙って死んだ接続を残すと、プロセスがメモリとファイルディスクリプタを抱え続ける。
+ */
+setInterval(() => {
+  if (misskeyClients.size === 0) return;
+  for (const client of misskeyClients) {
+    if (client.awaitingPong) {
+      console.warn('[Streaming] ⚠️ Misskey クライアントが ping に応答しないため切断します');
+      try {
+        client.ws.close(1000, 'ping timeout');
+      } catch {
+        // すでに切れている
+      }
+      misskeyClients.delete(client);
+      continue;
+    }
+    client.awaitingPong = true;
+    sendToMisskeyClient(client, { type: 'ping' });
+  }
+}, MISSKEY_PING_INTERVAL_MS);
+
+/** 接続中の Misskey 互換 WS クライアント数（検査・ログ用） */
+export function getMisskeyStreamClientCount(): number {
+  return misskeyClients.size;
 }
