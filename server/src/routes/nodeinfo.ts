@@ -37,6 +37,17 @@ nodeinfoRouter.get('/nodeinfo/2.1', asyncHandler(async (req: Request, res: Respo
   const postCount = (await db.prepare('SELECT COUNT(*) as count FROM posts WHERE is_local = 1').get() as { count: number }).count;
   const info = getInstanceInfo();
 
+  // 月間アクティブ（MAU）。Spica は「最後に見た時刻」を持っていないので、
+  // **30 日以内にログインした人 or 投稿した人**で数える（全ユーザーを active と偽らない）。
+  const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const activeMonth = (await db.prepare(`
+    SELECT COUNT(*) as count FROM users WHERE id IN (
+      SELECT user_id FROM sessions WHERE created_at >= ?
+      UNION
+      SELECT user_id FROM posts WHERE is_local = 1 AND published_at >= ?
+    )
+  `).get(since30d, since30d) as { count: number }).count;
+
   res.setHeader('Content-Type', 'application/json; profile="http://nodeinfo.diaspora.software/ns/schema/2.1#"');
   res.json({
     version: '2.1',
@@ -58,8 +69,9 @@ nodeinfoRouter.get('/nodeinfo/2.1', asyncHandler(async (req: Request, res: Respo
     usage: {
       users: {
         total: userCount,
-        activeHalfyear: userCount,
-        activeMonth: userCount,
+        // 半年は「作られてから 180 日以内のセッションがある人」までは追わない（月と同じ定義で代用）
+        activeHalfyear: activeMonth,
+        activeMonth,
       },
       localPosts: postCount,
     },
