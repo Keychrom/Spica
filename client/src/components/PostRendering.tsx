@@ -8,7 +8,7 @@
 import DOMPurify from 'dompurify';
 import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Ban, BarChart2, Bookmark, Check, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageCircle, MessageSquare, MoreHorizontal, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
+import { Ban, BarChart2, Bookmark, Check, CornerUpLeft, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageSquare, MoreHorizontal, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
 import type { MediaAttachment, PollData, Post } from '../App';
 import { getPrefs } from '../prefs';
 import { api } from '../api/client';
@@ -177,6 +177,8 @@ export interface PostRendererDeps {
   handleMuteUser: any;
   handleOpenReply: any;
   handleOpenThread: any;
+  /** 返信先（親投稿）を ID で開く（アプリ内でスレッドを出す） */
+  openThreadById?: any;
   handleSelectHashtag: any;
   handleStartQuote: any;
   handleToggleAnnounce: any;
@@ -1049,8 +1051,33 @@ export function PollInputEditor({
   );
 }
 
+/**
+ * 返信先の投稿 URL から、画面に出す短い説明を作る。
+ *
+ * 返信の `in_reply_to` は相手の投稿 URL そのものなので、そのまま出すと
+ * `https://…/users/foo/posts/1234…` のように切れて読めない。URL の形から相手を推測して
+ * ハンドル（分からない相手はドメインだけ）に置き換える。
+ *   - `/users/<user>/posts/<id>` / `/users/<user>/statuses/<id>` → `@user@domain`
+ *   - `/notes/<id>` などユーザー名を含まない形（Misskey など）→ `domain`
+ */
+function describeReplyTarget(url: string): { label: string; href: string; isLocal: boolean } {
+  const fallback = { label: `返信先: ${url}`, href: url, isLocal: false };
+  try {
+    const parsed = new URL(url);
+    const isLocal = parsed.origin === window.location.origin;
+    const handleMatch = parsed.pathname.match(/^\/users\/([^/]+)\/(?:posts|statuses)\/([^/]+)/);
+    if (handleMatch) {
+      const user = decodeURIComponent(handleMatch[1]);
+      return { label: `@${user}@${parsed.host} への返信`, href: url, isLocal };
+    }
+    return { label: `${parsed.host} の投稿への返信`, href: url, isLocal };
+  } catch {
+    return fallback;
+  }
+}
+
 export function createRenderPostCard(deps: PostRendererDeps) {
-  const { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } = deps;
+  const { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, openThreadById, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } = deps;
 
   const renderReactionBadgeContent = (reaction: string) => {
     if (reaction.startsWith(':') && reaction.endsWith(':')) {
@@ -1285,13 +1312,30 @@ export function createRenderPostCard(deps: PostRendererDeps) {
           </div>
         </div>
 
-        {/* 返信先インジケーター */}
-        {post.in_reply_to && (
-          <div className="mb-2 flex items-center space-x-1.5 text-xs text-indigo-400/90 bg-indigo-950/40 border border-indigo-900/40 px-2.5 py-1 rounded-lg w-fit">
-            <MessageCircle className="w-3 h-3 text-indigo-400" />
-            <span className="truncate max-w-[260px] sm:max-w-md">返信先: {post.in_reply_to}</span>
-          </div>
-        )}
+        {/* 返信先インジケーター（相手が分かる表示にして、押すと親投稿を開く） */}
+        {post.in_reply_to && (() => {
+          const target = describeReplyTarget(post.in_reply_to);
+          return (
+            <a
+              href={target.href}
+              title={post.in_reply_to}
+              target={target.isLocal ? undefined : '_blank'}
+              rel={target.isLocal ? undefined : 'noopener noreferrer'}
+              onClick={target.isLocal
+                ? (event) => {
+                    // 同じサーバーの投稿はアプリ内でスレッドを開く（ページを読み直さない）
+                    if (!openThreadById) return;
+                    event.preventDefault();
+                    openThreadById(post.in_reply_to);
+                  }
+                : undefined}
+              className="mb-2 inline-flex items-center space-x-1.5 text-xs text-indigo-300 hover:text-indigo-100 bg-indigo-950/40 hover:bg-indigo-950/70 border border-indigo-900/40 px-2.5 py-1 rounded-lg max-w-full transition"
+            >
+              <CornerUpLeft className="w-3 h-3 text-indigo-400 shrink-0" />
+              <span className="truncate">{target.label}</span>
+            </a>
+          );
+        })()}
 
         {/* 🤫 CW (閲覧注意) 注記バー */}
         {post.cw && (
