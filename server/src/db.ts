@@ -774,6 +774,11 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE users ADD COLUMN approval_reason TEXT DEFAULT '';",
     "ALTER TABLE users ADD COLUMN approval_reviewed_at TEXT DEFAULT NULL;",
     "CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);",
+    // 初期設定ウィザード。既存ユーザーは完了済み（1）にして、新規登録だけ 0 で作る
+    "ALTER TABLE users ADD COLUMN onboarding_completed INTEGER NOT NULL DEFAULT 1;",
+    // プライバシー（初期設定と設定画面から変更できる。プロフィール HTML の robots に反映する）
+    "ALTER TABLE users ADD COLUMN noindex INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE users ADD COLUMN no_ai_training INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE remote_actors ADD COLUMN icon_url TEXT DEFAULT '';",
     "ALTER TABLE remote_actors ADD COLUMN banner_url TEXT DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);",
@@ -1291,6 +1296,12 @@ export interface UserRow {
   approval_reason?: string;
   /** 審査が確定した時刻（ISO。未審査なら NULL） */
   approval_reviewed_at?: string | null;
+  /** 初期設定ウィザードを完了したか（新規登録は 0 で作られ、完了か「あとで」で 1 になる） */
+  onboarding_completed?: number;
+  /** 検索エンジンによるインデックスを拒否する（プロフィール HTML の robots に noindex を出す） */
+  noindex?: number;
+  /** 生成AIによる学習を拒否する（プロフィール HTML の robots に noai を出す） */
+  no_ai_training?: number;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;

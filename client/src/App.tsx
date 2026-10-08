@@ -57,6 +57,9 @@ const SettingsView = React.lazy(() => import('./views/SettingsView'));
 // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` のときだけ導線を出す）
 const DmView = React.lazy(() => import('./views/DmView'));
 
+// 🧭 初期設定ウィザード（アカウント作成直後のオンボーディング）
+const OnboardingView = React.lazy(() => import('./views/OnboardingView'));
+
 // 画面ごとのコード分割（初回に読み込まない）
 
 // 画面ごとのコード分割（初回に読み込まない）
@@ -97,6 +100,14 @@ interface AuthUser {
   email?: string;
   email_verified?: number;
   hasPassword?: boolean;
+  /** 初期設定ウィザードの状態（0 = 未完了。0 のときだけウィザードを出す） */
+  onboarding_completed?: number;
+  /** 検索エンジンによるインデックスの拒否（0/1） */
+  noindex?: number | boolean;
+  /** 生成AIによる学習の拒否（0/1） */
+  no_ai_training?: number | boolean;
+  is_locked?: number | boolean;
+  discoverable?: number | boolean;
 }
 
 export interface PostReaction {
@@ -750,6 +761,9 @@ export default function App() {
   const [hasConfirmedSaved, setHasConfirmedSaved] = useState<boolean>(false);
   // 承認制で発行したマスターキーか（true のときモーダルは「承認後にログインするために必要」の文言で表示する）
   const [masterKeyModalPending, setMasterKeyModalPending] = useState<boolean>(false);
+
+  // 🧭 初期設定ウィザード（onboarding_completed が 0 のアカウントにだけ出す）
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
 
   // 登録・ログインフォーム
   // ログイン画面で表示する方式 (auth_mode = password のときはパスワード方式を既定にする)
@@ -1538,6 +1552,8 @@ export default function App() {
       setEditBannerUrl(authUser.banner_url || '');
       setProfileIsLocked(Boolean((authUser as any).is_locked));
       setProfileDiscoverable((authUser as any).discoverable !== false);
+      setProfileNoindex(Number((authUser as any).noindex) === 1);
+      setProfileNoAiTraining(Number((authUser as any).no_ai_training) === 1);
       try {
         const parsed = JSON.parse((authUser as any).fields || '[]');
         setEditFields(Array.isArray(parsed) ? parsed.map((f: any) => ({ name: String(f.name || ''), value: String(f.value || '') })) : []);
@@ -1557,7 +1573,7 @@ export default function App() {
     setIsSavingProfile(true);
     setSettingsMessage(null);
     try {
-      const res = await api.put('/api/user/profile', { name: editName, summary: editBio, icon_url: editIconUrl, banner_url: editBannerUrl, is_locked: profileIsLocked, discoverable: profileDiscoverable, fields: editFields.filter((f) => f.name.trim() && f.value.trim()), });
+      const res = await api.put('/api/user/profile', { name: editName, summary: editBio, icon_url: editIconUrl, banner_url: editBannerUrl, is_locked: profileIsLocked, discoverable: profileDiscoverable, noindex: profileNoindex, no_ai_training: profileNoAiTraining, fields: editFields.filter((f) => f.name.trim() && f.value.trim()), });
 
       if (res.ok) {
         const updated = await res.json();
@@ -1588,6 +1604,50 @@ export default function App() {
       setIsSavingProfile(false);
     }
   };
+
+  // 🧭 初期設定ウィザードの自動表示。未完了（0）のアカウントにだけ出し、
+  // 登録直後はマスターキーの保存が先なので、モーダルが閉じるまで待つ
+  useEffect(() => {
+    // ログアウトした / 完了済みのアカウントに切り替わったときは閉じる（別の利用者に出さない）
+    if (!authUser || Number(authUser.onboarding_completed) !== 0) {
+      setShowOnboarding(false);
+      return;
+    }
+    if (showMasterKeyModal) return;
+    setShowOnboarding(true);
+  }, [authUser, showMasterKeyModal]);
+
+  // ウィザードを閉じる（✕ / あとで / はじめる）。完了 API は冪等なので、設定画面からの再実行でもそのまま送る。
+  // 先に手元のフラグを 1 にして、閉じたあとに二度出ないようにする
+  const handleCompleteOnboarding = async () => {
+    setShowOnboarding(false);
+    setAuthUser((prev) => (prev ? { ...prev, onboarding_completed: 1 } : prev));
+    try {
+      const res = await api.post('/api/me/onboarding/complete');
+      if (!res.ok) {
+        console.error('初期設定の完了に失敗しました:', res.status);
+      }
+    } catch (err) {
+      console.error('初期設定の完了に失敗しました:', err);
+    }
+  };
+
+  // ウィザード内のプロフィール保存の応答を authUser に反映する。
+  // 保存と完了 API は並行に走るため、保存応答に古い 0 が入っていても完了フラグは巻き戻さない
+  const applyOnboardingUserUpdate = (updated: any) => {
+    setAuthUser((prev) => {
+      if (!prev) return prev;
+      const merged = { ...prev, ...updated };
+      merged.onboarding_completed = Math.max(
+        Number(prev.onboarding_completed ?? 1),
+        Number(updated?.onboarding_completed ?? 1),
+      );
+      return merged;
+    });
+  };
+
+  // 設定画面から初期設定ウィザードを開き直す（サーバーのフラグは変えず、表示だけ）
+  const openOnboardingWizard = () => setShowOnboarding(true);
 
   // アバター（アイコン）画像の直接アップロード
   const handleUploadAvatar = async (files: FileList | null) => {
@@ -2432,6 +2492,9 @@ export default function App() {
   // 👥 プロフィール項目 / バッジ / ユーザーディレクトリ
   const [editFields, setEditFields] = useState<{ name: string; value: string }[]>([]);
   const [profileDiscoverable, setProfileDiscoverable] = useState<boolean>(true);
+  // プライバシー（プロフィール HTML の robots に反映される）
+  const [profileNoindex, setProfileNoindex] = useState<boolean>(false);
+  const [profileNoAiTraining, setProfileNoAiTraining] = useState<boolean>(false);
   const [showDirectoryModal, setShowDirectoryModal] = useState<boolean>(false);
   const [directoryUsers, setDirectoryUsers] = useState<any[]>([]);
   const [isLoadingDirectory, setIsLoadingDirectory] = useState<boolean>(false);
@@ -3796,7 +3859,7 @@ export default function App() {
             </div>
           }
         >
- <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor: setAccentColorPersist, setAutoCompressImages: setAutoCompressImagesPersist, setDefaultTimeline: setDefaultTimelinePersist, setDefaultVisibility: setDefaultVisibilityPersist, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis: setShowCustomEmojisPersist, setShowSelfDeleteModal, setThemeMode: setThemeModePersist, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed }} />
+ <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, profileNoAiTraining, profileNoindex, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor: setAccentColorPersist, setAutoCompressImages: setAutoCompressImagesPersist, setDefaultTimeline: setDefaultTimelinePersist, setDefaultVisibility: setDefaultVisibilityPersist, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setProfileNoAiTraining, setProfileNoindex, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis: setShowCustomEmojisPersist, setShowSelfDeleteModal, setThemeMode: setThemeModePersist, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed, onRestartOnboarding: openOnboardingWizard }} />
         </Suspense>
         </ErrorBoundary>
       ) : currentView === 'notifications' ? (
@@ -3832,7 +3895,7 @@ export default function App() {
             </div>
           }
         >
-          <ProfileView {...{setEditName, setEditBio, setEditIconUrl, setEditBannerUrl, setShowEditProfileModal, pushModalState, authToken, api, setProfileData, fetchMyFollowingUrls, setFollowList, setFollowListRows, setFollowListError, setIsLoadingFollowList, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
+          <ProfileView {...{setEditName, setEditBio, setEditIconUrl, setEditBannerUrl, setProfileNoindex, setProfileNoAiTraining, setProfileIsLocked, setProfileDiscoverable, setShowEditProfileModal, pushModalState, authToken, api, setProfileData, fetchMyFollowingUrls, setFollowList, setFollowListRows, setFollowListError, setIsLoadingFollowList, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
         </Suspense>
         </ErrorBoundary>
       ) : (
@@ -3854,6 +3917,25 @@ export default function App() {
         <ErrorBoundary key="portal" label="ポータル">
         <Suspense fallback={null}>
           <AuthPortalView {...{AuthPortalView, agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, inviteCodeInput, isPasswordAuthMode, recoveryStatus, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setHasAgreedToRules, setInviteCodeInput, setLoginMethod, setRecoveryMsg, setRecoveryStep, setShowAuthPortal, setShowRecoveryModal, showAuthPortal, loginMethod, isValidEmailFormat, api, hasAgreedToRules, setIssuedMasterKey, setAuthToken, setAuthUser, fetchMyFollowingUrls, setShowRegisterModal, setShowMasterKeyModal, setMasterKeyModalPending, setHasConfirmedSaved, setIsCopied, fetchServerStats, setShowLoginModal, fetchTimeline }} />
+        </Suspense>
+        </ErrorBoundary>
+      )}
+
+      {/* 🧭 初期設定ウィザード（onboarding_completed が 0 のアカウントだけに出す全画面オーバーレイ） */}
+      {showOnboarding && authUser && (
+        <ErrorBoundary key="onboarding" label="初期設定">
+        <Suspense fallback={null}>
+          <OnboardingView
+            api={api}
+            authToken={authToken}
+            authUser={authUser}
+            serverName={serverStats?.name}
+            serverDomain={serverStats?.domain || window.location.host}
+            urlBase64ToUint8Array={urlBase64ToUint8Array}
+            onPushStatusRefresh={checkPushSubscriptionStatus}
+            onUserUpdated={applyOnboardingUserUpdate}
+            onComplete={handleCompleteOnboarding}
+          />
         </Suspense>
         </ErrorBoundary>
       )}

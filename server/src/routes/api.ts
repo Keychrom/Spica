@@ -297,10 +297,10 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
   const keyPair = generateKeyPair();
   const now = new Date().toISOString();
 
-  // 3. DB にユーザー保存
+  // 3. DB にユーザー保存（初期設定ウィザードは未完了 = 0 で作る）
   await db.prepare(`
-    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified, approval_status, approval_note)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified, approval_status, approval_note, onboarding_completed)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0)
   `).run(
     cleanId,
     name.trim(),
@@ -353,6 +353,12 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
       email_verified: registerEmailVerified,
       hasPassword: Boolean(passwordHash),
       permissions: Array.from(await getUserPermissions({ id: cleanId, role })),
+      // 初期設定ウィザード（新規登録は未完了で作られる）＋プライバシーの初期値
+      onboarding_completed: 0,
+      noindex: 0,
+      no_ai_training: 0,
+      is_locked: 0,
+      discoverable: 1,
     },
     masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
     // 承認制の申請中は「申請を受け付けた」ことを伝える（sessionToken は返らない）
@@ -440,6 +446,12 @@ apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) =
       email_verified: Number((user as any).email_verified) || 0,
       hasPassword: Boolean((user as any).password_hash),
       permissions: Array.from(await getUserPermissions({ id: user.id, role: user.role })),
+      // 初期設定ウィザードの状態とプライバシー（未完了ならクライアントがウィザードを出す）
+      onboarding_completed: Number((user as any).onboarding_completed ?? 1),
+      noindex: Number((user as any).noindex ?? 0),
+      no_ai_training: Number((user as any).no_ai_training ?? 0),
+      is_locked: Number((user as any).is_locked ?? 0),
+      discoverable: Number((user as any).discoverable ?? 1),
     },
     sessionToken: session.token,
     sessionExpiresAt: session.expiresAt,
@@ -515,9 +527,22 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
     email: raw?.email || '',
     email_verified: Number(raw?.email_verified) || 0,
     hasPassword: Boolean(raw?.password_hash),
+    // 初期設定ウィザードの状態（0 = 未完了。クライアントはこれを見てウィザードを出す）
+    onboarding_completed: Number(raw?.onboarding_completed ?? 1),
+    // プライバシー設定（プロフィール HTML の robots に反映される）
+    noindex: Number(raw?.noindex ?? 0),
+    no_ai_training: Number(raw?.no_ai_training ?? 0),
+    is_locked: Number(raw?.is_locked ?? 0),
+    discoverable: Number(raw?.discoverable ?? 1),
     // 権限の一覧（'admin' / 'moderate' など）。画面の出し分けはこの配列で判断する
     permissions: Array.from(await getUserPermissions(user)),
   });
+}));
+
+// 初期設定ウィザードの完了（「あとで」で閉じた場合も完了扱い。冪等）
+apiRouter.post('/me/onboarding/complete', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  await db.prepare('UPDATE users SET onboarding_completed = 1 WHERE id = ?').run(req.user!.id);
+  res.json({ success: true, onboarding_completed: 1 });
 }));
 
 // ==========================================
@@ -2389,7 +2414,7 @@ apiRouter.post('/unfollow', requireAuth, handleUnfollow);
 
 // 自プロフィール更新 (名前, bio, アイコンURL, ヘッダーURL, 鍵アカウント設定)
 apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, res: Response) => {
-  const { name, summary, icon_url, banner_url, is_locked, fields, discoverable } = req.body;
+  const { name, summary, icon_url, banner_url, is_locked, fields, discoverable, noindex, no_ai_training } = req.body;
   const user = req.rawUser!;
 
   const newName = typeof name === 'string' && name.trim() ? name.trim() : user.name;
@@ -2400,6 +2425,9 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
   const newIsLocked = typeof is_locked === 'boolean' ? (is_locked ? 1 : 0) : (user.is_locked ?? 0);
   // ディレクトリ掲載の可否
   const newDiscoverable = typeof discoverable === 'boolean' ? (discoverable ? 1 : 0) : ((user as any).discoverable ?? 1);
+  // 検索エンジンによるインデックスの拒否 / 生成AIによる学習の拒否（プロフィール HTML の robots に出る）
+  const newNoindex = typeof noindex === 'boolean' ? (noindex ? 1 : 0) : ((user as any).noindex ?? 0);
+  const newNoAiTraining = typeof no_ai_training === 'boolean' ? (no_ai_training ? 1 : 0) : ((user as any).no_ai_training ?? 0);
   // プロフィール項目（最大4件・各40/200文字まで）
   const newFields = Array.isArray(fields)
     ? fields
@@ -2419,14 +2447,16 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
       banner_url = ?,
       is_locked = ?,
       fields = ?,
-      discoverable = ?
+      discoverable = ?,
+      noindex = ?,
+      no_ai_training = ?
     WHERE id = ?
-  `).run(newName, newSummary, newIconUrl, newBannerUrl, newIsLocked, JSON.stringify(newFields), newDiscoverable, user.id);
+  `).run(newName, newSummary, newIconUrl, newBannerUrl, newIsLocked, JSON.stringify(newFields), newDiscoverable, newNoindex, newNoAiTraining, user.id);
 
   // 自身の過去投稿の author_name / author_icon も更新
   await db.prepare(`UPDATE posts SET author_name = ?, author_icon = ? WHERE is_local = 1 AND user_id = ?`).run(newName, newIconUrl, user.id);
 
-  const updatedUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(user.id) as any;
+  const updatedUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, noindex, no_ai_training, onboarding_completed, created_at FROM users WHERE id = ?').get(user.id) as any;
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;
   const followingCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = ?').get(myActorUrl, 'accepted') as any).c;

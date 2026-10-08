@@ -13,7 +13,7 @@ DEFAULT_SUITES=(
   secret-scan silence-featured image-proxy email-notify admin-audit metrics backup-restore
   antennas-and-scheduler account-deletion export-and-rules fts-push profile-lists misskey misskey-streaming
   theme-channels-webauthn db-maintenance pg-translate db-async redis stream-scope job-queue multiprocess
-  process-roles hardening inbox-async stream-ticket inbox-reactions user-prefs registration-approval
+  process-roles hardening inbox-async stream-ticket inbox-reactions user-prefs registration-approval onboarding
 )
 
 SUITES=("$@")

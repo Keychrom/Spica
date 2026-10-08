@@ -66,7 +66,7 @@ async function run() {
     const regAdminRes = await fetch('http://localhost:3000/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'admin', name: 'Astra Administrator', summary: 'Server Administrator' }),
+      body: JSON.stringify({ id: 'admin', name: 'Astra Administrator', summary: 'Server Administrator', agreedToRules: true }),
     });
     const adminData = await regAdminRes.json();
     console.log(`✅ 管理者作成完了: ${adminData.user.handle}`);
@@ -74,7 +74,7 @@ async function run() {
     console.log(`   - 発行マスターキー: ${adminData.masterKey}`);
     console.log(`   - セッショントークン: ${adminData.sessionToken.slice(0, 20)}...`);
 
-    if (adminData.user.role !== 'admin' || !adminData.masterKey.startsWith('astrabit_sk_')) {
+    if (adminData.user.role !== 'admin' || !adminData.masterKey.startsWith('spica_sk_')) {
       throw new Error('管理者アカウントの生成またはマスターキー形式が不正です。');
     }
 
@@ -83,7 +83,7 @@ async function run() {
     const regAliceRes = await fetch('http://localhost:3000/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'alice', name: 'Alice Wonderland', summary: 'Hello AstraBit!' }),
+      body: JSON.stringify({ id: 'alice', name: 'Alice Wonderland', summary: 'Hello AstraBit!', agreedToRules: true }),
     });
     const aliceData = await regAliceRes.json();
     console.log(`✅ 一般ユーザー作成完了: ${aliceData.user.handle}`);

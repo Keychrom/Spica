@@ -522,6 +522,8 @@ if (finalDistPath) {
       oembed?: string | null;
       /** 検索エンジンに載せたくないページ（非公開投稿など） */
       noindex?: boolean;
+      /** クローラ向けの追加指定（生成AIの学習拒否など。noindex と併記できる） */
+      robotsExtra?: string;
     },
   ): string => {
     // サイト名とアイコンは**管理画面で設定した値**を使う（未設定なら既定のロゴ）。
@@ -532,7 +534,8 @@ if (finalDistPath) {
     const feedPath = meta.feed === undefined ? '/feed.xml' : meta.feed;
     const tags = [
       `<meta name="description" content="${escapeHtml(meta.description)}" />`,
-      meta.noindex ? `<meta name="robots" content="noindex, nofollow" />` : '',
+      meta.noindex ? `<meta name="robots" content="noindex, nofollow${meta.robotsExtra ? `, ${meta.robotsExtra}` : ''}" />` : '',
+      !meta.noindex && meta.robotsExtra ? `<meta name="robots" content="${escapeHtml(meta.robotsExtra)}" />` : '',
       `<meta property="og:type" content="${escapeHtml(meta.type || 'website')}" />`,
       `<meta property="og:site_name" content="${escapeHtml(instance.name)}" />`,
       `<meta property="og:title" content="${escapeHtml(meta.title)}" />`,
@@ -677,12 +680,16 @@ if (finalDistPath) {
         // 3. ユーザープロフィール
         if (usernameParam) {
           const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
-            | { id: string; name: string; summary: string; icon_url: string; approval_status?: string }
+            | { id: string; name: string; summary: string; icon_url: string; approval_status?: string; noindex?: number; no_ai_training?: number }
             | undefined;
           // 承認待ち・却下の申請は OGP も出さない（プロフィールとして存在しない扱い）
           if (!user || !isApprovedUser(user)) {
             return next();
           }
+          // 本人が設定したプライバシー（検索エンジンへの掲載拒否・生成AIの学習拒否）を robots に反映する
+          const robotsExtra = [
+            Number(user.no_ai_training) === 1 ? 'noai, noimageai' : '',
+          ].filter(Boolean).join(', ');
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           return res.send(injectMeta(html, {
             title: `${user.name} (@${user.id}@${config.domain})`,
@@ -691,6 +698,8 @@ if (finalDistPath) {
             url: `${config.origin}/users/${user.id}`,
             type: 'profile',
             feed: `/users/${user.id}/feed.xml`,
+            noindex: Number(user.noindex) === 1,
+            robotsExtra,
           }));
         }
 

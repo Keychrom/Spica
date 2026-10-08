@@ -14,6 +14,11 @@ export interface ProfileViewProps {
   setEditBio: any;
   setEditIconUrl: any;
   setEditBannerUrl: any;
+  /** プロフィール編集モーダルは privacy 系のトグルを持たないので、開くときに現在値へ揃えておく（保存で巻き戻さないため） */
+  setProfileNoindex: any;
+  setProfileNoAiTraining: any;
+  setProfileIsLocked: any;
+  setProfileDiscoverable: any;
   setShowEditProfileModal: any;
   pushModalState: any;
   authToken: any;
@@ -47,7 +52,7 @@ export interface ProfileViewProps {
 }
 
 export default function ProfileView(props: ProfileViewProps) {
-  const { setIsLoadingFollowList, setFollowListError, setFollowListRows, setFollowList, fetchMyFollowingUrls, setProfileData, api, authToken, pushModalState, setShowEditProfileModal, setEditBannerUrl, setEditIconUrl, setEditBio, setEditName, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm } = props;
+  const { setIsLoadingFollowList, setFollowListError, setFollowListRows, setFollowList, fetchMyFollowingUrls, setProfileData, api, authToken, pushModalState, setShowEditProfileModal, setEditBannerUrl, setEditIconUrl, setEditBio, setEditName, setProfileNoindex, setProfileNoAiTraining, setProfileIsLocked, setProfileDiscoverable, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [isTogglingFollow, setIsTogglingFollow] = useState<boolean>(false);
@@ -58,6 +63,12 @@ export default function ProfileView(props: ProfileViewProps) {
     setEditBio(authUser.summary || '');
     setEditIconUrl(authUser.icon_url || '');
     setEditBannerUrl(authUser.banner_url || '');
+    // 編集モーダルにトグルの無いプライバシー項目は、保存時に古い値で上書きしないよう今の値へ揃える
+    setProfileNoindex(Number(authUser.noindex) === 1);
+    setProfileNoAiTraining(Number(authUser.no_ai_training) === 1);
+    // 鍵アカウントとディレクトリ掲載も同じ理由で揃える（揃えないと、ここからの保存で解除されてしまう）
+    setProfileIsLocked(Number(authUser.is_locked) === 1);
+    setProfileDiscoverable(Number(authUser.discoverable ?? 1) === 1);
     setShowEditProfileModal(true);
     pushModalState('edit_profile');
   };

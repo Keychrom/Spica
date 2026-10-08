@@ -573,6 +573,10 @@ export interface SettingsViewProps {
   passkeys: any;
   profileDiscoverable: any;
   profileIsLocked: any;
+  /** 検索エンジンによるインデックスの拒否（プロフィール HTML の robots に出る） */
+  profileNoindex: any;
+  /** 生成AIによる学習の拒否（プロフィール HTML の robots に出る） */
+  profileNoAiTraining: any;
   pushPermission: any;
   recoveryStatus: any;
   serverStats: any;
@@ -591,6 +595,10 @@ export interface SettingsViewProps {
   setMigrationAliasInput: any;
   setProfileDiscoverable: any;
   setProfileIsLocked: any;
+  setProfileNoindex: any;
+  setProfileNoAiTraining: any;
+  /** 初期設定ウィザードを開き直す（サーバーのフラグは変えずに表示だけ） */
+  onRestartOnboarding: any;
   setSelfDeleteConfirmId: any;
   setSelfDeleteError: any;
   setSelfDeleteMasterKey: any;
@@ -744,7 +752,7 @@ function SessionsPanel({ api, authToken }: { api: any; authToken: any }) {
 }
 
 export default function SettingsView(props: SettingsViewProps) {
-  const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
+  const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, profileNoindex, profileNoAiTraining, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode, setProfileNoindex, setProfileNoAiTraining, onRestartOnboarding } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
 
@@ -1760,6 +1768,58 @@ export default function SettingsView(props: SettingsViewProps) {
                         </span>
                       </div>
                     </label>
+                  </div>
+
+                  {/* 🕵️ クローラー向けのプライバシー設定（プロフィール HTML の robots メタ） */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
+                    <label className="flex items-start space-x-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={profileNoindex}
+                        onChange={(e) => setProfileNoindex(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-sky-500 cursor-pointer"
+                      />
+                      <div>
+                        <span className="font-bold text-xs text-slate-100 block">🔍 検索エンジンによるインデックスを拒否</span>
+                        <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                          オンにすると、あなたのプロフィールに検索エンジン向けの noindex を出します。
+                        </span>
+                      </div>
+                    </label>
+                    <label className="flex items-start space-x-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={profileNoAiTraining}
+                        onChange={(e) => setProfileNoAiTraining(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 accent-purple-500 cursor-pointer"
+                      />
+                      <div>
+                        <span className="font-bold text-xs text-slate-100 block">🤖 生成AIによる学習を拒否</span>
+                        <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                          オンにすると、生成AIの学習に使わないよう robots メタで意思表示します。
+                        </span>
+                      </div>
+                    </label>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      設定はプロフィールの HTML に robots メタとして出ます（クローラの遵守を強制するものではありません）。
+                    </p>
+                  </div>
+
+                  {/* 🧭 初期設定ウィザードの再実行 */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div>
+                      <span className="font-bold text-xs text-slate-100 block">🧭 初期設定をもう一度行う</span>
+                      <span className="text-[11px] text-slate-400 leading-relaxed block mt-0.5">
+                        プロフィール・プライバシー・フォロー・プッシュ通知の設定を、ウィザード形式でもう一度確認できます。
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onRestartOnboarding}
+                      className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-xs font-bold transition shrink-0 cursor-pointer"
+                    >
+                      はじめから見る
+                    </button>
                   </div>
 
                   {/* 保存ボタン */}

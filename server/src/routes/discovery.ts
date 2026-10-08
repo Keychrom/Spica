@@ -254,7 +254,7 @@ discoveryRouter.get('/robots.txt', (_req: Request, res: Response) => {
  */
 discoveryRouter.get('/sitemap.xml', asyncHandler(async (_req: Request, res: Response) => {
   const [users, posts, channels, tags] = await Promise.all([
-    db.prepare("SELECT id FROM users WHERE is_frozen = 0 AND approval_status = 'approved' ORDER BY created_at DESC LIMIT 5000").all() as Promise<{ id: string }[]>,
+    db.prepare("SELECT id FROM users WHERE is_frozen = 0 AND approval_status = 'approved' AND COALESCE(noindex, 0) = 0 ORDER BY created_at DESC LIMIT 5000").all() as Promise<{ id: string }[]>,
     db.prepare(`
       SELECT id, published_at FROM posts
       WHERE is_local = 1 AND (visibility = 'public' OR visibility IS NULL)
