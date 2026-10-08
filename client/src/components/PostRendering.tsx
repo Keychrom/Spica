@@ -1711,8 +1711,9 @@ export function createRenderPostCard(deps: PostRendererDeps) {
     if (!hasThreadRail) return card;
 
     // 会話のつながり: カード間の隙間を埋める線と、カード内の左レールで示す。
-    // 「親が上・返信が下」に並んでいるので、親には下へ伸びる線（アバターの下から）、
-    // 子には上とつながる線（カードを貫く）を描く
+    // 「親が上・返信が下」に並んでいるので、親には下へ伸びる線（アバターの下からカード下端まで）、
+    // 子には上とつながる線（カード上端からアバターまで）を描く。子側をカード下端まで伸ばすと
+    // 線が長すぎて何の線か分からなくなるため、アバターの位置で止める
     return (
       <div className="relative">
         {railTop && (
@@ -1723,9 +1724,10 @@ export function createRenderPostCard(deps: PostRendererDeps) {
           />
         )}
         {railTop && (
+          // 子側: カードの上端からアバターの位置まで（アイコンは w-10 = 40px。余白 p-4/p-5 の半分 + 20px）
           <span
             aria-hidden
-            className="pointer-events-none absolute left-2 top-0 bottom-0 w-0.5 rounded-full"
+            className="pointer-events-none absolute left-2 top-0 h-9 sm:h-10 w-0.5 rounded-full"
             style={{ background: 'var(--accent-border)' }}
           />
         )}
