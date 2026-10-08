@@ -1963,8 +1963,12 @@ export default function TimelineView(props: TimelineViewProps) {
                       computeItemKey={(_i, post: any) => post.id}
                       itemContent={(index, post: any) => {
                         // 直前の投稿が返信先なら「会話の続き」として縦線でつなぐ
+                        // 返信が親より上に来る並びなので、上下の両方を見て線でつなぐ
                         const prev = index > 0 ? timeline[index - 1] : null;
-                        const withThread = prev?.id && post.in_reply_to === prev.id ? { ...post, thread_continuation: true } : post;
+                        const next = index < timeline.length - 1 ? timeline[index + 1] : null;
+                        const railTop = Boolean(prev?.id && post.in_reply_to === prev.id);
+                        const railBottom = Boolean(next?.in_reply_to && next.in_reply_to === post.id);
+                        const withThread = railTop || railBottom ? { ...post, thread_rail_top: railTop, thread_rail_bottom: railBottom } : post;
                         return (
                           <div className="timeline-item pb-3" data-post-index={index}>
                             {renderPostCard(withThread)}

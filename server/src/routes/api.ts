@@ -2736,6 +2736,29 @@ apiRouter.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request,
   });
 }));
 
+/**
+ * プロフィールの識別子から、リモートアクターの URL を決める。
+ *
+ * - URL はそのまま使う
+ * - **裸のユーザー名**（例: "suiren"）は WebFinger では解決できないので、
+ *   キャッシュ済みのリモートアクターから引く（フォロー一覧などが名前だけを渡してくるため）。
+ *   同名のアクターが複数いるときは、誤った相手を開くより 404 の方が安全なので解決しない
+ * - それ以外（`@user@domain` など）は WebFinger
+ */
+async function resolveRemoteActorUrl(identifier: string): Promise<string> {
+  if (identifier.startsWith('http://') || identifier.startsWith('https://')) return identifier;
+
+  const bare = identifier.replace(/^@/, '');
+  if (!bare.includes('@') && /^[A-Za-z0-9_.-]+$/.test(bare)) {
+    const rows = (await db.prepare('SELECT id FROM remote_actors WHERE username = ? LIMIT 2').all(bare)) as {
+      id: string;
+    }[];
+    if (rows.length === 1) return rows[0].id;
+  }
+
+  return resolveWebFinger(identifier);
+}
+
 // ユーザー詳細プロフィール取得（ローカルまたはリモート）
 apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Response) => {
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
@@ -2825,10 +2848,7 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
 
   // 2. リモートユーザーの照合
   try {
-    let targetActorUrl = rawIdentifier;
-    if (!targetActorUrl.startsWith('http://') && !targetActorUrl.startsWith('https://')) {
-      targetActorUrl = await resolveWebFinger(rawIdentifier);
-    }
+    const targetActorUrl = await resolveRemoteActorUrl(rawIdentifier);
 
     // キャッシュを検索、未取得または画像未取得なら最新化
     let remoteActor: RemoteActorRow;
@@ -2840,6 +2860,11 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
     }
 
     const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE is_local = 0 AND (author_url = ? OR user_id = ?) AND COALESCE(visibility, 'public') != 'direct'").get(targetActorUrl, targetActorUrl) as any).c;
+
+    // フォロー/フォロワーの数は、こちらが把握している関係（follows テーブル）から数える。
+    // リモートの相手でも、自分や自分のノードの利用者との関係はここに入っている
+    const followerCount = (await db.prepare("SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = 'accepted'").get(targetActorUrl) as any).c;
+    const followingCount = (await db.prepare("SELECT COUNT(*) as c FROM follows WHERE follower_url = ? AND status = 'accepted'").get(targetActorUrl) as any).c;
 
     let isFollowing = false;
     let isBlocked = false;
@@ -2864,8 +2889,8 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
       domain: remoteActor.domain,
       is_local: false,
       created_at: remoteActor.updated_at,
-      follower_count: 0,
-      following_count: 0,
+      follower_count: followerCount,
+      following_count: followingCount,
       post_count: postCount,
       is_following: isFollowing,
       is_blocked: isBlocked,
@@ -2921,13 +2946,24 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
       LIMIT ?
     `).all(cleanId, ...cursorParams, page.limit + 1);
   } else {
+    // リモートは actor URL に正規化してから引く（裸のユーザー名でも投稿を出せるように）
+    const targetActorUrl = await resolveRemoteActorUrl(rawIdentifier).catch(() => rawIdentifier);
+    const handleFromActorUrl = (url: string): string => {
+      try {
+        const parsed = new URL(url);
+        const match = parsed.pathname.match(/^\/users\/([^/]+)/);
+        return match ? `@${decodeURIComponent(match[1])}@${parsed.host}` : '';
+      } catch {
+        return '';
+      }
+    };
     posts = await db.prepare(`
       ${baseSelect}
       WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)
         AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
       ORDER BY p.published_at DESC, p.id DESC
       LIMIT ?
-    `).all(rawIdentifier, rawIdentifier, rawIdentifier.startsWith('@') ? rawIdentifier : `@${rawIdentifier}`, ...cursorParams, page.limit + 1);
+    `).all(targetActorUrl, targetActorUrl, handleFromActorUrl(targetActorUrl), ...cursorParams, page.limit + 1);
   }
 
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
@@ -3038,7 +3074,8 @@ apiRouter.get('/following', asyncHandler(async (req: Request, res: Response) => 
     return res.status(400).json({ error: 'userId が必要です。' });
   }
 
-  const myActorUrl = `${config.origin}/users/${userId}`;
+  // userId はローカルの ID のほか、リモートのプロフィールから渡される actor URL も受け付ける
+  const myActorUrl = userId.startsWith('http') ? userId : `${config.origin}/users/${userId}`;
   // ローカルの相手は users 側にしか名前・アイコンが無いので、両方を引いて埋める
   // （リモートは remote_actors、ローカルは users。`? || u.id` で actor URL を組み立てる）
   // どちら側かは follows.is_local（ローカル=1 / リモート=0）をそのまま使う。
@@ -3065,7 +3102,8 @@ apiRouter.get('/followers', asyncHandler(async (req: Request, res: Response) => 
     return res.status(400).json({ error: 'userId が必要です。' });
   }
 
-  const myActorUrl = `${config.origin}/users/${userId}`;
+  // userId はローカルの ID のほか、リモートのプロフィールから渡される actor URL も受け付ける
+  const myActorUrl = userId.startsWith('http') ? userId : `${config.origin}/users/${userId}`;
   // 承認済みのフォロワーのみ（鍵アカウントの承認待ちは含めない）。表示用に相手の名前とアイコンも埋める
   const followers = await db.prepare(`
     SELECT f.*,

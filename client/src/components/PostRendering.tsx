@@ -1077,18 +1077,25 @@ function describeReplyTarget(url: string): { label: string; href: string; isLoca
 }
 
 /**
- * 直前の投稿が返信先になっている投稿に印を付ける（タイムラインの縦線つなぎ用）。
+ * 一覧の中で「会話がつながっている」投稿に印を付ける（タイムラインの縦線つなぎ用）。
  *
- * 一覧の並び順をそのまま使って「会話の続き」を判定する。返信先が離れた位置にある場合
- * （間に別の投稿が挟まっている場合）は、線でつながない方が読みやすいので印を付けない。
+ * タイムラインは新しい順なので、**返信が親より上**に並ぶ。つまり
+ *   - 自分が直前の投稿への返信なら、上とつながる（thread_rail_top）
+ *   - 直後の投稿が自分への返信なら、下とつながる（thread_rail_bottom）
+ * の両方を見る。片方だけだと「返信が上にある」並びで線が引けない。
  */
 export function markThreadContinuations<T extends { id?: string; in_reply_to?: string | null }>(
   posts: T[],
 ): T[] {
   return posts.map((post, index) => {
     const prev = index > 0 ? posts[index - 1] : null;
-    const isContinuation = Boolean(prev?.id && post.in_reply_to && post.in_reply_to === prev.id);
-    return isContinuation ? ({ ...post, thread_continuation: true } as T) : post;
+    const next = index < posts.length - 1 ? posts[index + 1] : null;
+    const connectsUp = Boolean(prev?.id && post.in_reply_to && post.in_reply_to === prev.id);
+    const connectsDown = Boolean(
+      next && (next as { in_reply_to?: string | null }).in_reply_to && (next as { in_reply_to?: string | null }).in_reply_to === post.id,
+    );
+    if (!connectsUp && !connectsDown) return post;
+    return { ...post, thread_rail_top: connectsUp, thread_rail_bottom: connectsDown } as T;
   });
 }
 
@@ -1116,9 +1123,11 @@ export function createRenderPostCard(deps: PostRendererDeps) {
 
   const renderPostCard = (post: Post) => {
     const isCwOpen = openedCwPostIds.has(post.id);
-    // 直前の投稿が返信先のとき（= 会話の続き）は、親とつながる縦線を描く。
+    // 直前/直後の投稿と会話でつながっているときは、カードの左に縦線を描く。
     // 色は固定せず、テーマのアクセント（--accent-border）に追従させる
-    const isThreadContinuation = Boolean((post as any).thread_continuation);
+    const railTop = Boolean((post as any).thread_rail_top);
+    const railBottom = Boolean((post as any).thread_rail_bottom);
+    const hasThreadRail = railTop || railBottom;
 
     const card = (
       <div
@@ -1685,16 +1694,25 @@ export function createRenderPostCard(deps: PostRendererDeps) {
     </div>
     );
 
-    if (!isThreadContinuation) return card;
+    if (!hasThreadRail) return card;
 
-    // 会話の続き: 親カードとの隙間を埋める線と、カード内の左レールで「つながり」を示す
+    // 会話のつながり: カード間の隙間を埋める線と、カード内を通る左レールで示す
     return (
       <div className="relative">
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-2 -top-3 h-3 w-0.5 rounded-full"
-          style={{ background: 'var(--accent-border)' }}
-        />
+        {railTop && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-2 -top-3 h-3 w-0.5 rounded-full"
+            style={{ background: 'var(--accent-border)' }}
+          />
+        )}
+        {railBottom && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-2 -bottom-3 h-3 w-0.5 rounded-full"
+            style={{ background: 'var(--accent-border)' }}
+          />
+        )}
         <span
           aria-hidden
           className="pointer-events-none absolute left-2 top-0 bottom-0 w-0.5 rounded-full"
