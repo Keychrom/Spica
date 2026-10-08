@@ -4,7 +4,7 @@
  * 表示条件（showXxx）は App 側の state のままで、ここは props で受け取る。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない（開いたときに読み込む）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, BarChart2, Bell, Bookmark, Check, CheckCircle2, Clock, Copy, Edit3, ExternalLink, EyeOff, FileText, FileVideo, FolderArchive, FolderOpen, GitBranch, Globe, HardDrive, Hash, Home, ImageIcon, Key, KeyRound, ListIcon, Lock, LogOut, Menu, MessageCircle, MessageSquare, Plus, Quote, Radio, RefreshCw, Repeat, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, Trash2, User, UserPlus, Users, X, Zap } from 'lucide-react';
 import { api } from '../api/client';
 import { AutocompleteDropdown, FormattedPostContent, PollCard, PollInputEditor, PostMediaGrid, QuoteCard, createRenderPostCard } from '../components/PostRendering';
@@ -1909,6 +1909,12 @@ export default function ModalsView(props: ModalsViewProps) {
     }
   };
   const { renderPostCard, renderReactionBadgeContent } = createRenderPostCard(postDeps);
+
+  // スレッド内で別のノートへ移動したら、先頭から読ませる
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (threadModalPost) threadScrollRef.current?.scrollTo({ top: 0 });
+  }, [threadModalPost?.id]);
   return (
     <>
       {/* マスターキー発行・保存確認モーダル */}
@@ -2280,7 +2286,7 @@ export default function ModalsView(props: ModalsViewProps) {
             </div>
 
             {/* スレッド本文・タイムラインリスト */}
-            <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
+            <div ref={threadScrollRef} className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-4">
               {isLoadingThread ? (
                 <div className="text-center py-12 text-slate-400 space-y-2">
                   <RefreshCw className="w-6 h-6 animate-spin mx-auto text-indigo-400" />
@@ -2291,8 +2297,16 @@ export default function ModalsView(props: ModalsViewProps) {
                   {/* 親投稿（ある場合） */}
                   {threadData.parent && (
                     <div className="relative pl-6 border-l-2 border-indigo-500/40 pb-4">
-                      <span className="text-[10px] font-bold text-indigo-400 mb-1 block">⬆ 親投稿</span>
-                      <div className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4">
+                      <span className="text-[10px] font-bold text-indigo-400 mb-1 block">⬆ 親投稿（押すとこのノートのスレッドを開きます）</span>
+                      <div
+                        onClick={(event) => {
+                          // 中のボタン（作者・アンケート・引用など）を押したときは移動しない
+                          if ((event.target as HTMLElement).closest('button, a, input, textarea, select, [data-no-thread-nav]')) return;
+                          handleOpenThread(threadData.parent);
+                        }}
+                        title="押すとこのノートのスレッドを開きます"
+                        className="bg-slate-950/70 border border-slate-800/80 hover:border-indigo-500/40 rounded-2xl p-4 cursor-pointer transition"
+                      >
                         <div className="flex items-center space-x-2 mb-2 min-w-0">
                           <button onClick={() => openUserProfile(threadData.parent?.author_url || threadData.parent?.user_id || threadData.parent?.author_handle || '')} className="font-bold text-xs text-slate-200 hover:underline truncate text-left shrink-1 min-w-0">
                             {threadData.parent.author_name}
@@ -2435,7 +2449,16 @@ export default function ModalsView(props: ModalsViewProps) {
                       <p className="text-xs text-slate-500 py-4">まだ返信はありません。</p>
                     ) : (
                       threadData.replies.map((reply: any) => (
-                        <div key={reply.id} className="bg-slate-950/70 border border-slate-800/80 rounded-2xl p-4 space-y-2">
+                        <div
+                          key={reply.id}
+                          onClick={(event) => {
+                            // 中のボタン（作者・返信など）を押したときは移動しない
+                            if ((event.target as HTMLElement).closest('button, a, input, textarea, select, [data-no-thread-nav]')) return;
+                            handleOpenThread(reply);
+                          }}
+                          title="押すとこのノートのスレッドを開きます"
+                          className="bg-slate-950/70 border border-slate-800/80 hover:border-indigo-500/40 rounded-2xl p-4 space-y-2 cursor-pointer transition"
+                        >
                           <div className="flex items-center space-x-2 min-w-0">
                             <button onClick={() => openUserProfile(reply.author_url || reply.user_id || reply.author_handle)} className="font-bold text-xs text-slate-200 hover:underline truncate text-left shrink-1 min-w-0">
                               {reply.author_name}
