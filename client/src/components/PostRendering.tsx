@@ -1076,6 +1076,22 @@ function describeReplyTarget(url: string): { label: string; href: string; isLoca
   }
 }
 
+/**
+ * 直前の投稿が返信先になっている投稿に印を付ける（タイムラインの縦線つなぎ用）。
+ *
+ * 一覧の並び順をそのまま使って「会話の続き」を判定する。返信先が離れた位置にある場合
+ * （間に別の投稿が挟まっている場合）は、線でつながない方が読みやすいので印を付けない。
+ */
+export function markThreadContinuations<T extends { id?: string; in_reply_to?: string | null }>(
+  posts: T[],
+): T[] {
+  return posts.map((post, index) => {
+    const prev = index > 0 ? posts[index - 1] : null;
+    const isContinuation = Boolean(prev?.id && post.in_reply_to && post.in_reply_to === prev.id);
+    return isContinuation ? ({ ...post, thread_continuation: true } as T) : post;
+  });
+}
+
 export function createRenderPostCard(deps: PostRendererDeps) {
   const { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, openThreadById, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } = deps;
 
@@ -1100,8 +1116,11 @@ export function createRenderPostCard(deps: PostRendererDeps) {
 
   const renderPostCard = (post: Post) => {
     const isCwOpen = openedCwPostIds.has(post.id);
+    // 直前の投稿が返信先のとき（= 会話の続き）は、親とつながる縦線を描く。
+    // 色は固定せず、テーマのアクセント（--accent-border）に追従させる
+    const isThreadContinuation = Boolean((post as any).thread_continuation);
 
-    return (
+    const card = (
       <div
         key={post.feed_id || post.id}
         className="post-card bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-4 sm:p-5 shadow-lg transition overflow-hidden"
@@ -1664,7 +1683,26 @@ export function createRenderPostCard(deps: PostRendererDeps) {
         )}
       </div>
     </div>
-  );
+    );
+
+    if (!isThreadContinuation) return card;
+
+    // 会話の続き: 親カードとの隙間を埋める線と、カード内の左レールで「つながり」を示す
+    return (
+      <div className="relative">
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-2 -top-3 h-3 w-0.5 rounded-full"
+          style={{ background: 'var(--accent-border)' }}
+        />
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-2 top-0 bottom-0 w-0.5 rounded-full"
+          style={{ background: 'var(--accent-border)' }}
+        />
+        {card}
+      </div>
+    );
 };
 
   return { renderPostCard, renderReactionBadgeContent };

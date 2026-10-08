@@ -7,7 +7,7 @@
  */
 import { useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Calendar, Edit3, ExternalLink, Globe, Mail, MessageSquare, Pin, RefreshCw, Server, Settings, ShieldAlert, UserCheck, UserPlus, Volume2, VolumeX } from 'lucide-react';
-import { FormattedPostContent, createRenderPostCard } from '../components/PostRendering';
+import { FormattedPostContent, createRenderPostCard, markThreadContinuations } from '../components/PostRendering';
 
 export interface ProfileViewProps {
   setEditName: any;
@@ -471,7 +471,7 @@ export default function ProfileView(props: ProfileViewProps) {
                     まだ投稿がありません。
                   </div>
                 ) : (
-                  profilePosts.map((post: any) => renderPostCard(post))
+                  markThreadContinuations(profilePosts).map((post: any) => renderPostCard(post))
                 )}
               </div>
             </div>

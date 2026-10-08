@@ -7,7 +7,7 @@
 import DOMPurify from 'dompurify';
 import type { Post } from '../App';
 import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, EyeOff, Globe, HardDrive, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, User, UserPlus, Users } from 'lucide-react';
-import { AutocompleteDropdown, PollInputEditor, createRenderPostCard } from '../components/PostRendering';
+import { AutocompleteDropdown, PollInputEditor, createRenderPostCard, markThreadContinuations } from '../components/PostRendering';
 import { Virtuoso } from 'react-virtuoso';
 import { usePrefs } from '../prefs';
 import { useEffect, useRef, useState } from 'react';
@@ -930,7 +930,7 @@ export default function TimelineView(props: TimelineViewProps) {
                       <MessageSquare className="w-4 h-4 mr-1.5 text-emerald-400" />
                       投稿 ({searchResults.posts.length})
                     </h3>
-                    {searchResults.posts.map((post: Post) => renderPostCard(post))}
+                    {markThreadContinuations<Post>(searchResults.posts).map((post: Post) => renderPostCard(post))}
                   </div>
                 )}
 
@@ -1015,7 +1015,7 @@ export default function TimelineView(props: TimelineViewProps) {
                       </p>
                     </div>
                   ) : (
-                    bookmarks.map((post: any) => renderPostCard(post))
+                    markThreadContinuations(bookmarks).map((post: any) => renderPostCard(post))
                   )}
                 </div>
               </div>
@@ -1153,7 +1153,7 @@ export default function TimelineView(props: TimelineViewProps) {
                           )}
                         </div>
                       ) : (
-                        channelTimelinePosts.map((post: any) => renderPostCard(post))
+                        markThreadContinuations(channelTimelinePosts).map((post: any) => renderPostCard(post))
                       )}
                     </div>
                   </div>
@@ -1961,11 +1961,16 @@ export default function TimelineView(props: TimelineViewProps) {
                       data={timeline}
                       firstItemIndex={firstItemIndex}
                       computeItemKey={(_i, post: any) => post.id}
-                      itemContent={(index, post: any) => (
-                        <div className="timeline-item pb-3" data-post-index={index}>
-                          {renderPostCard(post)}
-                        </div>
-                      )}
+                      itemContent={(index, post: any) => {
+                        // 直前の投稿が返信先なら「会話の続き」として縦線でつなぐ
+                        const prev = index > 0 ? timeline[index - 1] : null;
+                        const withThread = prev?.id && post.in_reply_to === prev.id ? { ...post, thread_continuation: true } : post;
+                        return (
+                          <div className="timeline-item pb-3" data-post-index={index}>
+                            {renderPostCard(withThread)}
+                          </div>
+                        );
+                      }}
                       components={{
                         Footer: () =>
                           timelineCursor ? (
