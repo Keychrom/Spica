@@ -148,10 +148,16 @@ export interface TimelineViewProps {
   timelineMode: any;
   unreadNotificationsCount: any;
   uploadStatusText: any;
+  /** ✉️ DM の導線を出すか（サーバー設定 `dm_enabled`） */
+  featuresDm: any;
+  /** DM の未読の合計（左ナビのバッジ） */
+  dmUnreadCount: any;
+  /** DM 画面を開く（`/dm`） */
+  openDm: any;
 }
 
 export default function TimelineView(props: TimelineViewProps) {
-  const { checkAuth, setChannels, fetchMyFollowingUrls, setSearchResults, authToken, setTimelineCursor, activeHashtagRef, timelineModeRef, api, pushModalState, setShowCreateChannelModal, setNewPostsQueue, followingUrls, isPostMatchingTimeline, setTimeline, ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, postDeps, scheduledPosts, searchQuery, searchResults, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText } = props;
+  const { checkAuth, setChannels, fetchMyFollowingUrls, setSearchResults, authToken, setTimelineCursor, activeHashtagRef, timelineModeRef, api, pushModalState, setShowCreateChannelModal, setNewPostsQueue, followingUrls, isPostMatchingTimeline, setTimeline, ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, featuresDm, dmUnreadCount, openDm, activeAntenna, activeHashtag, antennas, applyAutocomplete, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, postDeps, scheduledPosts, searchQuery, searchResults, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [isLoadingOlderPosts, setIsLoadingOlderPosts] = useState<boolean>(false);
@@ -486,6 +492,32 @@ export default function TimelineView(props: TimelineViewProps) {
                   <Search className="w-5 h-5" />
                   <span>見つける・検索</span>
                 </button>
+
+                {/* ✉️ メッセージ（サーバー設定 dm_enabled のときだけ出す） */}
+                {featuresDm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (authUser) openDm();
+                      else setShowLoginModal(true);
+                    }}
+                    className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-sm font-bold transition cursor-pointer ${
+                      (currentView as string) === 'dm'
+                        ? 'bg-slate-900 text-emerald-400 border border-emerald-500/30 shadow-md'
+                        : 'text-slate-400 hover:text-slate-100 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <MessageSquare className="w-5 h-5 text-indigo-400" />
+                      <span>メッセージ</span>
+                    </div>
+                    {dmUnreadCount > 0 && (
+                      <span className="px-2 py-0.5 text-xs font-black rounded-full bg-rose-500 text-white shadow">
+                        {dmUnreadCount > 99 ? '99+' : dmUnreadCount}
+                      </span>
+                    )}
+                  </button>
+                )}
 
                 {/* 🔖 ブックマーク */}
                 <button

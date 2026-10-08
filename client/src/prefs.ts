@@ -47,6 +47,12 @@ export interface UserPrefs {
 
   // 🔔 通知
   notificationGrouping: 'group' | 'individual';
+
+  // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` が on のときだけ使う）
+  /** 受け取る相手: `noone`（受け取らない・既定）/ `allowlist`（許可した相手だけ） */
+  dmPolicy: 'noone' | 'allowlist';
+  /** 受け取る相手の actor URL（上限 200。`dmPolicy = 'allowlist'` のときだけ使う） */
+  dmAllow: string[];
 }
 
 export const DEFAULT_PREFS: UserPrefs = {
@@ -77,6 +83,9 @@ export const DEFAULT_PREFS: UserPrefs = {
   recentReactions: [],
 
   notificationGrouping: 'group',
+
+  dmPolicy: 'noone',
+  dmAllow: [],
 };
 /** 旧（端末ごと）設定のキー → 新しい設定のキー */
 const LEGACY_KEYS: [string, keyof UserPrefs][] = [

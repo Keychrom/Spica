@@ -44,7 +44,8 @@ import {
  * Spica 自身の SSE と同じイベント源（Redis Pub/Sub 含む）から配る。
  *
  * 実装しないもの（docs/FEATURES.md に明記）:
- *   - `visibility: specified`（DM）: 方針として受け付けない（400 を返す）
+ *   - `visibility: specified`（DM）: この API では作成しない（400 を返す）。DM は Spica の
+ *     設定 `dm_enabled` が on のときだけ `/api/dm/messages` で扱う（docs/DM.md）
  *   - 権限の細分化: MiAuth で要求された権限は承認画面に表示するが、発行するトークンは
  *     通常のセッションと同じ（アプリごとの権限分離はしない）
  */

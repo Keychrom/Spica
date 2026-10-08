@@ -35,10 +35,18 @@ export interface AppHeaderProps {
   fetchTimeline: any;
   isLoadingTimeline: any;
   RefreshCw: any;
+  /** ✉️ DM の導線を出すか（サーバー設定 `dm_enabled`） */
+  featuresDm: any;
+  /** DM の未読の合計（バッジ） */
+  dmUnreadCount: any;
+  /** DM 画面を開く（`/dm`） */
+  openDm: any;
+  /** メッセージのアイコン（App から渡す） */
+  MessageSquare: any;
 }
 
 export default function AppHeader(props: AppHeaderProps) {
-  const { authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw } = props;
+  const { authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw, featuresDm, dmUnreadCount, openDm, MessageSquare } = props;
   const {} = props;
   return (
     <>
@@ -122,6 +130,26 @@ export default function AppHeader(props: AppHeaderProps) {
                   >
                     <ShieldCheck className="w-3.5 h-3.5" />
                     <span>{currentView === 'admin' ? 'タイムラインへ' : '管理パネル'}</span>
+                  </button>
+                )}
+
+                {/* ✉️ メッセージ（サーバー設定 dm_enabled のときだけ） */}
+                {featuresDm && (
+                  <button
+                    onClick={() => openDm()}
+                    className={`relative p-2 rounded-xl transition ${
+                      currentView === 'dm'
+                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                        : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-700/60'
+                    }`}
+                    title="メッセージ"
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    {dmUnreadCount > 0 && (
+                      <span className="absolute -top-1 -right-1 inline-flex items-center justify-center px-1.5 py-0.2 text-[9px] font-black rounded-full bg-rose-500 text-white shadow min-w-[16px]">
+                        {dmUnreadCount > 99 ? '99+' : dmUnreadCount}
+                      </span>
+                    )}
                   </button>
                 )}
 
@@ -284,6 +312,23 @@ export default function AppHeader(props: AppHeaderProps) {
           >
             <RefreshCw className={`w-4 h-4 ${isLoadingTimeline ? 'animate-spin' : ''}`} />
           </button>
+          {authUser && featuresDm && (
+            // モバイルでもメッセージへ行けるようにする（PC 側と同じ未読バッジ）
+            <button
+              onClick={() => openDm()}
+              className={`relative p-1.5 rounded-xl transition ${
+                currentView === 'dm' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="メッセージ"
+            >
+              <MessageSquare className="w-4 h-4" />
+              {dmUnreadCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center px-1 text-[9px] font-black rounded-full bg-rose-500 text-white shadow min-w-[15px]">
+                  {dmUnreadCount > 99 ? '99+' : dmUnreadCount}
+                </span>
+              )}
+            </button>
+          )}
           {authUser && (
             // モバイルでも通知センターへ行けるようにする（PC 側と同じ未読バッジ）
             <button

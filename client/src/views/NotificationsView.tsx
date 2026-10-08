@@ -7,7 +7,7 @@
  */
 import { useState, useMemo } from 'react';
 import type { AppNotification } from '../App';
-import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, KeyRound, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
+import { ArrowLeft, AtSign, Bell, Check, CheckCheck, Clock, Heart, KeyRound, Mail, MessageCircle, Radio, RefreshCw, Repeat, Send, ShieldAlert, UserCheck } from 'lucide-react';
 import { usePrefs } from '../prefs';
 
 export interface NotificationsViewProps {
@@ -366,6 +366,11 @@ export default function NotificationsView(props: NotificationsViewProps) {
                   typeIcon = <KeyRound className="w-4 h-4 text-amber-400" />;
                   typeBadgeBg = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
                   typeLabel = 'ログイン';
+                } else if (notif.type === 'dm') {
+                  // ✉️ DM（1対1のメッセージ）。通知には本文が入らない（docs/DM.md）
+                  typeIcon = <Mail className="w-4 h-4 text-indigo-400" />;
+                  typeBadgeBg = 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30';
+                  typeLabel = 'メッセージ';
                 }
 
                 return (
@@ -463,6 +468,12 @@ export default function NotificationsView(props: NotificationsViewProps) {
                           {notif.type === 'login' && (
                             <span className="text-amber-300">
                               新しい端末からログインしました{notif.content ? `（${notif.content}）` : ''}
+                            </span>
+                          )}
+                          {notif.type === 'dm' && (
+                            // 通知に本文は入らないので、ここでは「届いた」ことだけ伝える
+                            <span className="text-indigo-300">
+                              メッセージが届きました<span className="text-slate-500">（タップで開いて読む）</span>
                             </span>
                           )}
                         </div>

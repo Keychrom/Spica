@@ -82,10 +82,13 @@ export interface AdminDashboardProps {
   adminPrivacyPolicyUrl: any;
   adminOperatorUrl: any;
   adminContactUrl: any;
+  /** ✉️ DM（1対1のメッセージ）の有効・無効（サーバー設定 `dm_enabled`。既定 off） */
+  adminDmEnabled: any;
+  setAdminDmEnabled: any;
 }
 
 export default function AdminDashboard(props: AdminDashboardProps) {
-  const { authToken, api, setContentPolicy, setMaintenanceStats, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, setAdminAnnouncements, fetchAnnouncements, setAdminStorageConfig, fetchTimeline, executeBlockDomain, setBlockMessage, adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl } = props;
+  const { authToken, api, setContentPolicy, setMaintenanceStats, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, setAdminAnnouncements, fetchAnnouncements, setAdminStorageConfig, fetchTimeline, executeBlockDomain, setBlockMessage, adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, adminDmEnabled, setAdminDmEnabled } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [adminUserSearch, setAdminUserSearch] = useState<string>('');
@@ -143,6 +146,9 @@ export default function AdminDashboard(props: AdminDashboardProps) {
   const [isSavingServerSettings, setIsSavingServerSettings] = useState<boolean>(false);
 
   const [serverSettingsMessage, setServerSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  /** ✉️ DM（1対1のメッセージ）の切り替え中フラグ */
+  const [isSavingDm, setIsSavingDm] = useState<boolean>(false);
 
   const [relayInputUrl, setRelayInputUrl] = useState<string>('');
 
@@ -363,6 +369,35 @@ export default function AdminDashboard(props: AdminDashboardProps) {
       setServerSettingsMessage({ type: 'error', text: err.message || '保存に失敗しました。' });
     } finally {
       setIsSavingServerSettings(false);
+    }
+  };
+
+  /**
+   * ✉️ DM（1対1のメッセージ）の ON/OFF。
+   * 切り替えは設定の変更だけで完結する（再起動もマイグレーションも要らない）。
+   * off に戻すと DM の API は 404 になり、以降の受信も保存されない（既存のメッセージは残る）。
+   */
+  const handleToggleDm = async (enabled: boolean) => {
+    if (!authToken || isSavingDm) return;
+    setAdminDmEnabled(enabled);
+    setServerSettingsMessage(null);
+    setIsSavingDm(true);
+    try {
+      const res = await api.post('/api/admin/server-settings', { dm_enabled: enabled });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'DM の設定変更に失敗しました。');
+      setServerStats((prev: any) => prev ? { ...prev, features: { ...(prev.features || {}), dm: enabled } } : prev);
+      setServerSettingsMessage({
+        type: 'success',
+        text: enabled
+          ? 'DM（1対1のメッセージ）を有効にしました。'
+          : 'DM（1対1のメッセージ）を無効にしました。DM の API は 404 になり、受信も保存されません（既存のメッセージは残ります）。',
+      });
+    } catch (err: any) {
+      setAdminDmEnabled(!enabled);
+      setServerSettingsMessage({ type: 'error', text: err.message || 'DM の設定変更に失敗しました。' });
+    } finally {
+      setIsSavingDm(false);
     }
   };
 
@@ -2516,6 +2551,29 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                           </span>
                           <span className="text-[11px] text-slate-400 block leading-relaxed">
                             有効にすると、ユーザーがアカウントを作成する前にMisskeyスタイルのルール・規約同意モーダルが表示され、全項目への同意を要求します。
+                          </span>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* ✉️ DM（1対1のメッセージ）の ON/OFF */}
+                    <div className="pt-4 border-t border-slate-800/80">
+                      <label className="flex items-start space-x-3 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(adminDmEnabled)}
+                          disabled={isSavingDm}
+                          onChange={(e) => handleToggleDm(e.target.checked)}
+                          className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                        />
+                        <div className="space-y-0.5">
+                          <span className="text-xs font-bold text-slate-200 block">
+                            ✉️ DM（1対1のメッセージ）を有効にする{isSavingDm ? '（保存中...）' : ''}
+                          </span>
+                          <span className="text-[11px] text-slate-400 block leading-relaxed">
+                            連合する 1対1 のメッセージを有効にします。<b>既定はオフ</b>で、オフのときは DM の API が存在しない扱い（404）になり、受信したメッセージも保存されません。
+                            有効にすると、各利用者が「設定 → メッセージ」で許可した相手とだけやり取りできます（既定では誰からも受け取りません）。
+                            メッセージはサーバーに保存され、管理者はデータベースから読める立場にあります（端末間の暗号化ではありません）。通知はアプリ内のみで、本文はメール通知に載りません。
                           </span>
                         </div>
                       </label>

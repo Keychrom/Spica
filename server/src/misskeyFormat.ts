@@ -191,7 +191,7 @@ export function fromMisskeyVisibility(
     case 'followers':
     case 'specified':
       if (visibility === 'specified') {
-        return { ok: false, error: 'Spica は DM（1対1のメッセージ）を実装していません。' };
+        return { ok: false, error: 'この API では DM（1対1のメッセージ）を作成できません。DM が有効なサーバーでは /api/dm/messages をお使いください。' };
       }
       return { ok: true, visibility: 'followers' };
     default:

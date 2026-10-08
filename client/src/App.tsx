@@ -54,6 +54,9 @@ const ProfileView = React.lazy(() => import('./views/ProfileView'));
 const NotificationsView = React.lazy(() => import('./views/NotificationsView'));
 const SettingsView = React.lazy(() => import('./views/SettingsView'));
 
+// ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` のときだけ導線を出す）
+const DmView = React.lazy(() => import('./views/DmView'));
+
 // 画面ごとのコード分割（初回に読み込まない）
 
 // 画面ごとのコード分割（初回に読み込まない）
@@ -274,7 +277,7 @@ export interface WebAuthnCredential {
 export interface AppNotification {
   id: string;
   user_id: string;
-  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report';
+  type: 'reply' | 'follow' | 'renote' | 'announce' | 'reaction' | 'antenna' | 'scheduled_published' | 'mention' | 'move' | 'report' | 'login' | 'dm';
   actor_id: string;
   actor_name: string;
   actor_handle: string;
@@ -384,6 +387,11 @@ interface ServerStats {
   require_rules_agreement?: boolean;
   domain: string;
   origin: string;
+  /** 機能フラグ（サーバーが管理者設定から配る。既存の形は壊さず追加だけされる） */
+  features?: {
+    /** ✉️ DM（1対1のメッセージ）。false のときは `/api/dm/*` が 404 になる */
+    dm?: boolean;
+  };
   stats: {
     users: number;
     totalPosts: number;
@@ -420,8 +428,8 @@ interface ServerStats {
 // ⏰ 予約投稿モーダル
 
 export default function App() {
-  // 現在のページビュー: 'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels'
-  const [currentView, setCurrentView] = useState<'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels'>('timeline');
+  // 現在のページビュー: 'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels' | 'dm'
+  const [currentView, setCurrentView] = useState<'timeline' | 'admin' | 'profile' | 'settings' | 'notifications' | 'search' | 'bookmarks' | 'channels' | 'dm'>('timeline');
 
   // 🎨 テーマ & アクセントカラー設定 (localStorage 永続化)
   const [themeMode, setThemeMode] = useState<'dark' | 'pure_black' | 'light'>(() => {
@@ -1089,6 +1097,16 @@ export default function App() {
   // サーバー情報
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
 
+  // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` のときだけ導線を出す）
+  //    機能が無効（`features.dm === false`）のときは `/api/dm/*` が 404 を返すので、UI からも出さない
+  const featuresDm = serverStats?.features?.dm === true;
+  /** ナビのバッジに出す未読の合計（会話一覧の unread_count の合計） */
+  const [dmUnreadCount, setDmUnreadCount] = useState<number>(0);
+  /** DM 画面を開くときに指定する相手（`/dm?to=<handle>`） */
+  const [dmInitialTo, setDmInitialTo] = useState<string | null>(null);
+  /** DM 画面を開くときに指定する会話（`/dm?c=<id>`。通知の post_id でもよい） */
+  const [dmInitialConversationId, setDmInitialConversationId] = useState<string | null>(null);
+
   // 管理者画面ナビゲーションステート (Misskey風サイドバー)
   const [adminTab, setAdminTab] = useState<'dashboard' | 'users' | 'federation' | 'blocks' | 'storage' | 'settings' | 'emojis' | 'invites' | 'reports' | 'announcements' | 'roles' | 'mail' | 'delivery' | 'audit'>('dashboard');
 
@@ -1131,6 +1149,9 @@ export default function App() {
   const [maintenanceStats, setMaintenanceStats] = useState<any | null>(null);
   // 🧾 監査ログ（管理操作の履歴）
   const [adminRequireRulesAgreement, setAdminRequireRulesAgreement] = useState<boolean>(true);
+
+  // ✉️ DM（1対1のメッセージ）の有効・無効（サーバー設定 `dm_enabled`。既定 off）
+  const [adminDmEnabled, setAdminDmEnabled] = useState<boolean>(false);
 
   // 管理者画面データ
   const [adminStats, setAdminStats] = useState<any>(null);
@@ -1370,6 +1391,7 @@ export default function App() {
       else if (view === 'search') targetPath = '/search';
       else if (view === 'settings') targetPath = '/settings';
       else if (view === 'admin') targetPath = '/admin';
+      else if (view === 'dm') targetPath = '/dm';
       else if (view === 'timeline') {
         targetPath = timelineMode === 'local' ? '/?mode=local' : timelineMode === 'home' ? '/?mode=home' : '/?mode=all';
       }
@@ -1418,6 +1440,59 @@ export default function App() {
     } finally {
       if (!ac.signal.aborted) setIsLoadingProfile(false);
     }
+  };
+
+  // ==========================================
+  // ✉️ DM（1対1のメッセージ）
+  //    サーバー設定 `dm_enabled` が off のときは `/api/dm/*` が 404（存在しない扱い）。
+  //    そのときは導線（ナビ・設定タブ・プロフィールのメニュー）を一切出さない。
+  // ==========================================
+
+  /** 会話一覧の未読数を合計してバッジ用に持つ（SSE の dm 通知でも呼ぶ） */
+  const refreshDmUnread = async (): Promise<void> => {
+    if (!authToken) {
+      setDmUnreadCount(0);
+      return;
+    }
+    try {
+      const res = await api.get('/api/dm/conversations');
+      if (!res.ok) return;
+      const list = await res.json();
+      if (!Array.isArray(list)) return;
+      setDmUnreadCount(list.reduce((sum: number, conv: any) => sum + (Number(conv?.unread_count) || 0), 0));
+    } catch {
+      // 通信できないときは今の値を保つ
+    }
+  };
+
+  /** DmView から会話を選んだときに URL を差し替える（自前ルーターの流儀に合わせる） */
+  const pushDmUrl = (path: string) => {
+    try {
+      window.history.pushState({ spica_guard: 'active', view: 'dm' }, '', path);
+    } catch {}
+  };
+
+  /** DM 画面を開く（相手 or 会話を指定できる。通知・プロフィールの導線から呼ぶ） */
+  const openDm = (options: { to?: string | null; conversationId?: string | null } = {}) => {
+    if (!authToken) {
+      setShowLoginModal(true);
+      return;
+    }
+    // 無効のときは何もしない（導線を出していないので普段はここへ来ない）
+    if (!featuresDm) return;
+    const to = options.to || null;
+    const conversationId = options.conversationId || null;
+    setDmInitialTo(to);
+    setDmInitialConversationId(conversationId);
+    closeAllModals();
+    setCurrentView('dm');
+    setSelectedChannel(null);
+    const path = conversationId
+      ? `/dm?c=${encodeURIComponent(conversationId)}`
+      : to
+        ? `/dm?to=${encodeURIComponent(to)}`
+        : '/dm';
+    pushDmUrl(path);
   };
 
   // 自分のプロフィール編集モーダルを開く
@@ -1949,6 +2024,7 @@ export default function App() {
         const rulesArr = Array.isArray(setData.server_rules) ? setData.server_rules : [];
         setAdminServerRulesText(rulesArr.join('\n'));
         setAdminRequireRulesAgreement(setData.require_rules_agreement !== false);
+        setAdminDmEnabled(setData.dm_enabled === true);
         setContentPolicy({
           ftsIndexScope: setData.fts_index_scope || 'local',
           remoteAnnouncePolicy: setData.remote_announce_policy || 'follows',
@@ -2092,6 +2168,10 @@ export default function App() {
     }
     if (notif.type === 'follow') {
       openUserProfile(notif.actor_id);
+    } else if (notif.type === 'dm') {
+      // ✉️ DM の通知には本文が入っていない（docs/DM.md）。タップでその会話を開く
+      //    `post_id` は受信したメッセージの id（会話のどの 1 通でも会話ごと開ける）
+      openDm({ conversationId: notif.post_id, to: notif.actor_handle });
     } else if (notif.post_id) {
       handleOpenThreadById(notif.post_id);
     }
@@ -2723,6 +2803,14 @@ export default function App() {
         return;
       }
 
+      // ✉️ DM（`/dm?to=<handle>` で相手を指定、`/dm?c=<id>` で会話を指定）
+      if (pathname === '/dm') {
+        setDmInitialTo(searchParams.get('to'));
+        setDmInitialConversationId(searchParams.get('c'));
+        setCurrentView('dm');
+        return;
+      }
+
       if (pathname === '/admin') {
         setCurrentView('admin');
         return;
@@ -2847,6 +2935,26 @@ export default function App() {
       fetchNotificationSettings();
     }
   }, [currentView, notificationFilter, settingsTab]);
+
+  // ✉️ DM の未読バッジ（会話一覧の合計）。
+  //    ログイン時と機能フラグの確定時に取り直す。無効のときはバッジを消すだけ
+  useEffect(() => {
+    if (!featuresDm || !authToken) {
+      setDmUnreadCount(0);
+      return;
+    }
+    void refreshDmUnread();
+  }, [featuresDm, authToken]);
+
+  // ✉️ 管理者が DM を off にしたら、開いていた DM 画面からはタイムラインへ戻す
+  //    （`/api/dm/*` が 404 になるため。導線も同時に消える）
+  useEffect(() => {
+    if (currentView === 'dm' && serverStats?.features && serverStats.features.dm === false) {
+      setDmInitialTo(null);
+      setDmInitialConversationId(null);
+      navigateToView('timeline', false);
+    }
+  }, [currentView, serverStats]);
 
   // 📡 SSE で受け取りたいストリームの申告
   //    サーバーはこれを見て配信先を絞る（リモート投稿の洪水を全員に流さないため）。
@@ -3078,6 +3186,9 @@ export default function App() {
             setUnreadNotificationsCount((prev) => prev + 1);
             setNotifications((prev) => [notif, ...prev]);
             setNotificationToast(notif);
+
+            // ✉️ DM の未読バッジは会話一覧の合計を使う（通知本文には本文も件数も無い）
+            if (notif.type === 'dm') void refreshDmUnread();
           } catch (err) {
             console.error('[SSE] Error parsing notification:', err);
           }
@@ -3659,7 +3770,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
-      <AppHeader {...{authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode: setThemeModePersist, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw }} />
+      <AppHeader {...{authUser, openWelcomePortal, navigateToView, handleSwitchTimelineMode, serverStats, handleSearchSubmit, Search, searchQuery, setSearchQuery, setSearchResults, X, canModerate, currentView, ShieldCheck, Bell, unreadNotificationsCount, openUserProfile, setShowLoginModal, LogIn, setShowRegisterModal, Key, setThemeMode: setThemeModePersist, themeMode, Moon, Sun, Palette, timelineMode, activeHashtag, fetchTimeline, isLoadingTimeline, RefreshCw, featuresDm, dmUnreadCount, openDm, MessageSquare }} />
 
       {/* メインビュー */}
       {currentView === 'admin' ? (
@@ -3671,7 +3782,7 @@ export default function App() {
             </div>
           }
         >
- <AdminDashboard {...{adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, authToken, api, setContentPolicy, setMaintenanceStats, setAdminAnnouncements, setAdminBlockedDomains, setAdminEmojis, setAdminFederation, setAdminInvitations, setAdminRelays, setAdminReportCounts, setAdminReports, setAdminRoles, setAdminStats, setAdminStorageConfig, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, fetchAnnouncements, fetchTimeline, executeBlockDomain, setBlockMessage }} />
+ <AdminDashboard {...{adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, adminDmEnabled, setAdminDmEnabled, authToken, api, setContentPolicy, setMaintenanceStats, setAdminAnnouncements, setAdminBlockedDomains, setAdminEmojis, setAdminFederation, setAdminInvitations, setAdminRelays, setAdminReportCounts, setAdminReports, setAdminRoles, setAdminStats, setAdminStorageConfig, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, fetchAnnouncements, fetchTimeline, executeBlockDomain, setBlockMessage }} />
         </Suspense>
         </ErrorBoundary>
       ) : currentView === 'settings' ? (
@@ -3683,7 +3794,7 @@ export default function App() {
             </div>
           }
         >
- <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor: setAccentColorPersist, setAutoCompressImages: setAutoCompressImagesPersist, setDefaultTimeline: setDefaultTimelinePersist, setDefaultVisibility: setDefaultVisibilityPersist, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis: setShowCustomEmojisPersist, setShowSelfDeleteModal, setThemeMode: setThemeModePersist, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed }} />
+ <SettingsView {...{accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor: setAccentColorPersist, setAutoCompressImages: setAutoCompressImagesPersist, setDefaultTimeline: setDefaultTimelinePersist, setDefaultVisibility: setDefaultVisibilityPersist, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis: setShowCustomEmojisPersist, setShowSelfDeleteModal, setThemeMode: setThemeModePersist, settingsMessage, settingsTab, showCustomEmojis, themeMode, setPostVisibility, api, setEmailNotification, fetchMutedWords, fetchTimeline, fetchFollowRequests, setNotificationPrefs, setMyEmail, setMyEmailVerified, setAuthUser, fetchMigrationInfo, fetchPasskeys, setPasskeys, setPushPermission, urlBase64ToUint8Array, setIsPushSubscribed }} />
         </Suspense>
         </ErrorBoundary>
       ) : currentView === 'notifications' ? (
@@ -3698,6 +3809,18 @@ export default function App() {
           <NotificationsView {...{NotificationsView, fetchNotifications, handleMarkNotificationRead, handleNotificationClick, isLoadingNotifications, navigateToView, notificationFilter, notifications, openUserProfile, setNotificationFilter, unreadNotificationsCount, authToken, api, setNotifications, setUnreadNotificationsCount, notifGroups}} />
         </Suspense>
         </ErrorBoundary>
+      ) : currentView === 'dm' ? (
+        <ErrorBoundary key="dm" label="メッセージ">
+        <Suspense
+          fallback={
+            <div className="flex-1 flex items-center justify-center py-24">
+              <RefreshCw className="w-6 h-6 animate-spin text-indigo-400" />
+            </div>
+          }
+        >
+          <DmView {...{ api, authToken, authUser, featureDm: featuresDm, initialTo: dmInitialTo, initialConversationId: dmInitialConversationId, pushDmUrl, navigateToView, openUserProfile, setShowLoginModal, onUnreadChange: setDmUnreadCount }} />
+        </Suspense>
+        </ErrorBoundary>
       ) : currentView === 'profile' ? (
         <ErrorBoundary key="profile" label="プロフィール">
         <Suspense
@@ -3707,7 +3830,7 @@ export default function App() {
             </div>
           }
         >
-          <ProfileView {...{setEditName, setEditBio, setEditIconUrl, setEditBannerUrl, setShowEditProfileModal, pushModalState, authToken, api, setProfileData, fetchMyFollowingUrls, setFollowList, setFollowListRows, setFollowListError, setIsLoadingFollowList, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
+          <ProfileView {...{setEditName, setEditBio, setEditIconUrl, setEditBannerUrl, setShowEditProfileModal, pushModalState, authToken, api, setProfileData, fetchMyFollowingUrls, setFollowList, setFollowListRows, setFollowListError, setIsLoadingFollowList, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
         </Suspense>
         </ErrorBoundary>
       ) : (
@@ -3719,7 +3842,7 @@ export default function App() {
             </div>
           }
         >
-          <TimelineView {...{setTimeline, isPostMatchingTimeline, followingUrls, setNewPostsQueue, setShowCreateChannelModal, pushModalState, api, timelineModeRef, activeHashtagRef, setTimelineCursor, authToken, setSearchResults, fetchMyFollowingUrls, setChannels, checkAuth, ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, activeAntenna, activeHashtag, antennas, applyAutocomplete, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, scheduledPosts, searchQuery, searchResults, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
+          <TimelineView {...{setTimeline, isPostMatchingTimeline, followingUrls, setNewPostsQueue, setShowCreateChannelModal, pushModalState, api, timelineModeRef, activeHashtagRef, setTimelineCursor, authToken, setSearchResults, fetchMyFollowingUrls, setChannels, checkAuth, ArrowRight, BarChart2, Bell, Bookmark, ChevronDown, Clock, Edit3, FileText, Hash, Home, ImageIcon, Layers, ListIcon, LogOut, Menu, MessageSquare, Quote, UserCheck, X, Zap, featuresDm, dmUnreadCount, openDm, activeAntenna, activeHashtag, antennas, applyAutocomplete, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, bookmarks, channelCategoryFilter, channelTimelinePosts, channels, checkAutocomplete, currentView, cwContent, drafts, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, fetchPopularTags, fetchTimeline, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleRemoveAttachment, handleSearchSubmit, handleSelectHashtag, handleSelectMedia, handleSwitchTimelineMode, isLoadingBookmarks, isLoadingChannelTimeline, isLoadingChannels, isLoadingTimeline, isPosting, isSearching, isSensitivePost, isStreamingConnected, isUploadingMedia, lists, navigateToView, newPostsQueue, openAntennaManageModal, openChannelDetail, openDraftsModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, popularTags, postAttachments, postContent, postExtraMenuRef, postTargetChannelId, postVisibility, profileTarget, publicAnnouncements, quoteTargetPost, scheduledPosts, searchQuery, searchResults, selectedChannel, serverStats, setAutoCompressImages, setChannelCategoryFilter, setCwContent, setEditingChannel, setIsSensitivePost, setPollChoices, setPollExpiresIn, setPollMultiple, setPostAttachments, setPostContent, setPostTargetChannelId, setPostVisibility, setQuoteTargetPost, setSearchQuery, setSelectedChannel, setShowCwInput, setShowDirectoryModal, setShowDriveModal, setShowListsModal, setShowLoginModal, setShowPollInput, setShowPostExtraMenu, setShowRegisterModal, setShowRichEmojiPicker, showCwInput, showPollInput, showPostExtraMenu, timeline, timelineCursor, timelineMode, unreadNotificationsCount, uploadStatusText, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } }} />
         </Suspense>
         </ErrorBoundary>
       )}
@@ -3735,7 +3858,7 @@ export default function App() {
 
       <ErrorBoundary key="modals" label="モーダル">
       <Suspense fallback={null}>
- <ModalsView {...{ModalsView, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText, setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCustomReactionInput, sharePost, toggleCw  } }} />
+ <ModalsView {...{ModalsView, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, featuresDm, dmUnreadCount, openDm, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText, setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, postDeps: { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCustomReactionInput, sharePost, toggleCw  } }} />
       </Suspense>
       </ErrorBoundary>
 

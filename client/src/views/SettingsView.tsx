@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
-import { usePrefs, updatePrefs } from '../prefs';
+import { usePrefs, updatePrefs, loadPrefs } from '../prefs';
 import { useInstallAvailable, promptInstall, isStandalone } from '../pwa';
 
 /**
@@ -265,6 +265,253 @@ function PostCalendarModal({ api, onClose }: { api: any; onClose: () => void }) 
   );
 }
 
+/**
+ * ✉️ メッセージ（DM）の受け取り設定。
+ *
+ * - `dmPolicy`: `noone`（受け取らない・既定）/ `allowlist`（許可した相手だけ）
+ * - `dmAllow`: 受け取る相手の actor URL。UI ではハンドルで追加する
+ *   サーバーは actor URL だけを受け付けるので、入力されたハンドルは
+ *   既存のプロフィール API（`/api/users/:identifier`）で actor URL に直してから保存する
+ * - 保存後に `loadPrefs()` でサーバーの正規化済みの値に置き換える（表示がぶれないように）
+ */
+function DmReceiveSettings({ api, serverStats }: { api: any; serverStats: any }) {
+  const prefs = usePrefs();
+  const [input, setInput] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const savePolicy = async (policy: 'noone' | 'allowlist') => {
+    if (isSaving || prefs.dmPolicy === policy) return;
+    setIsSaving(true);
+    setMessage(null);
+    try {
+      const res = await api.put('/api/me/prefs', { dmPolicy: policy });
+      if (!res.ok) {
+        setMessage({ type: 'error', text: '保存できませんでした。' });
+        return;
+      }
+      await loadPrefs();
+      setMessage({ type: 'success', text: '受け取りの設定を保存しました。' });
+    } catch {
+      setMessage({ type: 'error', text: '保存できませんでした。' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const addHandle = async () => {
+    const raw = input.trim();
+    if (!raw || isSaving) return;
+    setIsSaving(true);
+    setMessage(null);
+    try {
+      // ハンドル（@user@host / user@host / @user / URL）を actor URL に直す
+      let actorUrl = '';
+      if (/^https?:\/\//i.test(raw)) {
+        actorUrl = raw;
+      } else {
+        const res = await api.get(`/api/users/${encodeURIComponent(raw.replace(/^@/, ''))}`);
+        if (!res.ok) {
+          setMessage({ type: 'error', text: '相手が見つかりませんでした。ハンドル（@user@host）を確認してください。' });
+          return;
+        }
+        const user = await res.json();
+        actorUrl = String(user?.actor_url || '');
+      }
+      if (!actorUrl) {
+        setMessage({ type: 'error', text: '相手が見つかりませんでした。' });
+        return;
+      }
+      const trimmedUrl = actorUrl.replace(/\/+$/, '');
+      if (prefs.dmAllow.some((entry) => String(entry).replace(/\/+$/, '') === trimmedUrl)) {
+        setInput('');
+        setMessage({ type: 'error', text: 'すでに許可リストに入っています。' });
+        return;
+      }
+      const res2 = await api.put('/api/me/prefs', { dmAllow: [...prefs.dmAllow, trimmedUrl] });
+      if (!res2.ok) {
+        setMessage({ type: 'error', text: '追加できませんでした。' });
+        return;
+      }
+      await loadPrefs();
+      setInput('');
+      setMessage({ type: 'success', text: '許可リストに追加しました。' });
+    } catch {
+      setMessage({ type: 'error', text: '追加できませんでした。' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const removeEntry = async (actorUrl: string) => {
+    if (isSaving) return;
+    setIsSaving(true);
+    setMessage(null);
+    try {
+      const res = await api.put('/api/me/prefs', { dmAllow: prefs.dmAllow.filter((entry) => entry !== actorUrl) });
+      if (!res.ok) {
+        setMessage({ type: 'error', text: '削除できませんでした。' });
+        return;
+      }
+      await loadPrefs();
+      setMessage({ type: 'success', text: '許可リストから外しました。' });
+    } catch {
+      setMessage({ type: 'error', text: '削除できませんでした。' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  /** ローカルの actor URL はハンドルにして見せる（それ以外は URL のまま） */
+  const displayEntry = (actorUrl: string): string => {
+    try {
+      const url = new URL(actorUrl);
+      const match = url.pathname.match(/^\/users\/([^/]+)\/?$/);
+      if (match && url.host.toLowerCase() === window.location.host.toLowerCase()) {
+        return `@${decodeURIComponent(match[1])}@${serverStats?.domain || url.host}`;
+      }
+    } catch {}
+    return actorUrl;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="border-b border-slate-800 pb-3">
+        <h3 className="text-base font-bold text-slate-100 flex items-center space-x-2">
+          <Send className="w-4 h-4 text-indigo-400" />
+          <span>メッセージ（DM）</span>
+        </h3>
+        <p className="text-xs text-slate-400 mt-1">
+          1対1のメッセージを受け取る相手を決めます。あなたが許可した相手からのメッセージだけが届きます。
+        </p>
+      </div>
+
+      {message && (
+        <div className={`p-3 rounded-2xl text-xs font-semibold flex items-center space-x-2 ${
+          message.type === 'success'
+            ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+        }`}>
+          {message.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+          <span>{message.text}</span>
+        </div>
+      )}
+
+      {/* 受け取る相手の方針 */}
+      <div className="space-y-2">
+        <span className="text-xs font-bold text-slate-200 block">受け取る相手</span>
+        <div className="space-y-2">
+          <label
+            className={`flex items-start justify-between gap-3 px-3.5 py-3 rounded-2xl border cursor-pointer transition ${
+              prefs.dmPolicy === 'noone' ? 'bg-slate-900/80 border-indigo-500/40' : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            <span className="min-w-0">
+              <span className="text-xs font-bold text-slate-200 block">受け取らない（既定）</span>
+              <span className="text-[11px] text-slate-500 block mt-0.5 leading-relaxed">
+                誰からのメッセージも通知しません。相手が送ってもあなたには届きません。
+              </span>
+            </span>
+            <input
+              type="radio"
+              name="dm-policy"
+              checked={prefs.dmPolicy === 'noone'}
+              onChange={() => void savePolicy('noone')}
+              disabled={isSaving}
+              className="mt-1 w-4 h-4 accent-indigo-500 cursor-pointer shrink-0"
+            />
+          </label>
+          <label
+            className={`flex items-start justify-between gap-3 px-3.5 py-3 rounded-2xl border cursor-pointer transition ${
+              prefs.dmPolicy === 'allowlist' ? 'bg-slate-900/80 border-indigo-500/40' : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+            }`}
+          >
+            <span className="min-w-0">
+              <span className="text-xs font-bold text-slate-200 block">許可した相手だけ受け取る</span>
+              <span className="text-[11px] text-slate-500 block mt-0.5 leading-relaxed">
+                下の許可リストに入っている相手からのメッセージだけを受け取ります。
+              </span>
+            </span>
+            <input
+              type="radio"
+              name="dm-policy"
+              checked={prefs.dmPolicy === 'allowlist'}
+              onChange={() => void savePolicy('allowlist')}
+              disabled={isSaving}
+              className="mt-1 w-4 h-4 accent-indigo-500 cursor-pointer shrink-0"
+            />
+          </label>
+        </div>
+      </div>
+
+      {/* 許可リストの編集 */}
+      <div className="space-y-2">
+        <div>
+          <span className="text-xs font-bold text-slate-200 block">受け取る相手を追加（許可リスト）</span>
+          <span className="text-[11px] text-slate-500 block mt-0.5 leading-relaxed">
+            ハンドル（例: @alice@example.com）で追加します。解除は一覧の ✕ から。
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void addHandle();
+              }
+            }}
+            placeholder="@alice@example.com"
+            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+          />
+          <button
+            type="button"
+            onClick={() => void addHandle()}
+            disabled={isSaving || !input.trim()}
+            className="px-3.5 py-2 rounded-xl text-[11px] font-bold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition cursor-pointer flex items-center space-x-1 disabled:opacity-50"
+          >
+            {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+            <span>追加</span>
+          </button>
+        </div>
+        {prefs.dmAllow.length > 0 ? (
+          <div className="space-y-1.5">
+            {prefs.dmAllow.map((actorUrl) => (
+              <div
+                key={actorUrl}
+                className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900 border border-slate-800"
+              >
+                <span className="text-[11px] font-mono text-slate-300 truncate" title={actorUrl}>
+                  {displayEntry(actorUrl)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void removeEntry(actorUrl)}
+                  disabled={isSaving}
+                  className="text-slate-500 hover:text-rose-400 transition cursor-pointer shrink-0 disabled:opacity-50"
+                  title="許可を取り消す"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-slate-600">まだ登録されていません。</p>
+        )}
+      </div>
+
+      <p className="text-[10px] text-slate-500 leading-relaxed">
+        ※ ブロック・ミュートしている相手からのメッセージは、許可リストに入っていても届きません（ブロックが優先されます）。
+        <br />
+        ※ メッセージはアプリ内の通知だけでお知らせします（メール通知には載りません）。
+      </p>
+    </div>
+  );
+}
+
 
 export interface SettingsViewProps {
   setPostVisibility: any;
@@ -329,6 +576,8 @@ export interface SettingsViewProps {
   pushPermission: any;
   recoveryStatus: any;
   serverStats: any;
+  /** ✉️ DM の「メッセージ」タブを出すか（サーバー設定 `dm_enabled`） */
+  featuresDm: any;
   setAccentColor: any;
   setAutoCompressImages: any;
   setDefaultTimeline: any;
@@ -495,7 +744,7 @@ function SessionsPanel({ api, authToken }: { api: any; authToken: any }) {
 }
 
 export default function SettingsView(props: SettingsViewProps) {
-  const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
+  const { setIsPushSubscribed, urlBase64ToUint8Array, setPushPermission, setPasskeys, fetchPasskeys, fetchMigrationInfo, setAuthUser, setMyEmailVerified, setMyEmail, setNotificationPrefs, fetchFollowRequests, fetchTimeline, fetchMutedWords, setEmailNotification, api, setPostVisibility, accentColor, authToken, authUser, autoCompressImages, blockedUsers, defaultTimeline, defaultVisibility, editBannerUrl, editBio, editFields, editIconUrl, editName, emailCode, emailNotification, fetchBlocksAndMutes, followRequests, handleLogout, handleSaveProfile, handleUnblockUser, handleUnmuteUser, handleUploadAvatar, handleUploadBanner, isLoadingBlocksMutes, isLoadingMyReports, isLoadingPasskeys, isPasswordAuthMode, isPushSubscribed, isSavingProfile, isUploadingBanner, isUploadingIcon, migrationAliasInput, migrationInfo, mutedUsers, mutedWords, myEmail, myEmailVerified, myReports, navigateToView, notificationPrefs, notificationTypes, passkeys, profileDiscoverable, profileIsLocked, pushPermission, recoveryStatus, serverStats, featuresDm, setAccentColor, setAutoCompressImages, setDefaultTimeline, setDefaultVisibility, setEditBannerUrl, setEditBio, setEditFields, setEditIconUrl, setEditName, setEmailCode, setMigrationAliasInput, setProfileDiscoverable, setProfileIsLocked, setSelfDeleteConfirmId, setSelfDeleteError, setSelfDeleteMasterKey, setSettingsMessage, setSettingsTab, setShowCustomEmojis, setShowSelfDeleteModal, setThemeMode, settingsMessage, settingsTab, showCustomEmojis, themeMode } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
 
@@ -1193,6 +1442,21 @@ export default function SettingsView(props: SettingsViewProps) {
                 <Bell className="w-4 h-4" />
                 <span>通知</span>
               </button>
+
+              {/* ✉️ メッセージ（サーバー設定 dm_enabled のときだけ出す） */}
+              {featuresDm && (
+                <button
+                  onClick={() => { setSettingsTab('dm'); setSettingsMessage(null); }}
+                  className={`w-full text-left px-3.5 py-2.5 rounded-xl text-xs font-bold transition flex items-center space-x-2.5 ${
+                    settingsTab === 'dm'
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <Send className="w-4 h-4" />
+                  <span>メッセージ</span>
+                </button>
+              )}
 
               <button
                 onClick={() => { setSettingsTab('records'); setSettingsMessage(null); }}
@@ -2157,6 +2421,9 @@ export default function SettingsView(props: SettingsViewProps) {
                     </button>
                   </div>
                 </form>
+              ) : settingsTab === 'dm' ? (
+                /* ✉️ メッセージ（DM）の受け取り設定 */
+                <DmReceiveSettings api={api} serverStats={serverStats} />
               ) : settingsTab === 'records' ? (
                 /* 🗂️ 自分の記録（リアクション履歴・投稿カレンダー） */
                 <div className="space-y-6">

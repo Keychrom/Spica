@@ -6,7 +6,7 @@
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
 import { useState } from 'react';
-import { AlertCircle, ArrowLeft, Ban, Calendar, Edit3, ExternalLink, Globe, MessageSquare, Pin, RefreshCw, Server, Settings, ShieldAlert, UserCheck, UserPlus, Volume2, VolumeX } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Ban, Calendar, Edit3, ExternalLink, Globe, Mail, MessageSquare, Pin, RefreshCw, Server, Settings, ShieldAlert, UserCheck, UserPlus, Volume2, VolumeX } from 'lucide-react';
 import { FormattedPostContent, createRenderPostCard } from '../components/PostRendering';
 
 export interface ProfileViewProps {
@@ -40,10 +40,14 @@ export interface ProfileViewProps {
   setReportComment: any;
   setReportTarget: any;
   setShowLoginModal: any;
+  /** ✉️ DM の導線を出すか（サーバー設定 `dm_enabled`） */
+  featuresDm: any;
+  /** DM 画面をその相手とのスレッドで開く（`/dm?to=<handle>`） */
+  openDm: any;
 }
 
 export default function ProfileView(props: ProfileViewProps) {
-  const { setIsLoadingFollowList, setFollowListError, setFollowListRows, setFollowList, fetchMyFollowingUrls, setProfileData, api, authToken, pushModalState, setShowEditProfileModal, setEditBannerUrl, setEditIconUrl, setEditBio, setEditName, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal } = props;
+  const { setIsLoadingFollowList, setFollowListError, setFollowListRows, setFollowList, fetchMyFollowingUrls, setProfileData, api, authToken, pushModalState, setShowEditProfileModal, setEditBannerUrl, setEditIconUrl, setEditBio, setEditName, authUser, handleBlockUser, handleMuteUser, handleUnblockUser, handleUnmuteUser, isLoadingProfile, navigateToView, openSettings, profileData, profilePosts, profileTarget, postDeps, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, featuresDm, openDm } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [isTogglingFollow, setIsTogglingFollow] = useState<boolean>(false);
@@ -260,6 +264,18 @@ export default function ProfileView(props: ProfileViewProps) {
                                   </>
                                 )}
                               </button>
+
+                              {/* ✉️ メッセージを送る（サーバー設定 dm_enabled のときだけ） */}
+                              {featuresDm && (
+                                <button
+                                  onClick={() => openDm({ to: profileData.handle || profileData.id })}
+                                  className="px-3.5 py-2 rounded-xl font-bold text-xs bg-slate-800/80 border border-slate-700 text-indigo-300 hover:bg-slate-800 hover:text-indigo-200 transition flex items-center space-x-1.5 cursor-pointer"
+                                  title="この相手にメッセージを送る"
+                                >
+                                  <Mail className="w-3.5 h-3.5 text-indigo-400" />
+                                  <span>メッセージ</span>
+                                </button>
+                              )}
 
                               {/* ミュートボタン */}
                               <button
