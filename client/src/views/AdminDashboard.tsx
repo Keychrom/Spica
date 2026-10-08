@@ -6,6 +6,7 @@
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { ApiResult } from '../api/client';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, ClipboardList, Cloud, Copy, Database, ExternalLink, EyeOff, Image as ImageIcon, Globe, HardDrive, LayoutDashboard, Lock, Mail, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, Tag, Ticket, Trash2, Upload, UserPlus, Users } from 'lucide-react';
 
@@ -149,6 +150,11 @@ export default function AdminDashboard(props: AdminDashboardProps) {
 
   /** ✉️ DM（1対1のメッセージ）の切り替え中フラグ */
   const [isSavingDm, setIsSavingDm] = useState<boolean>(false);
+
+  /** ✉️ DM を有効にする前の警告（電気通信事業法）を表示中か */
+  const [dmWarningOpen, setDmWarningOpen] = useState<boolean>(false);
+  /** 警告の内容を理解したという確認（チェックするまで有効化できない） */
+  const [dmWarningAcknowledged, setDmWarningAcknowledged] = useState<boolean>(false);
 
   const [relayInputUrl, setRelayInputUrl] = useState<string>('');
 
@@ -2563,7 +2569,15 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                           type="checkbox"
                           checked={Boolean(adminDmEnabled)}
                           disabled={isSavingDm}
-                          onChange={(e) => handleToggleDm(e.target.checked)}
+                          onChange={(e) => {
+                            // 有効にするときは、先に電気通信事業法の警告と確認をはさむ
+                            if (e.target.checked) {
+                              setDmWarningAcknowledged(false);
+                              setDmWarningOpen(true);
+                              return;
+                            }
+                            handleToggleDm(false);
+                          }}
                           className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
                         />
                         <div className="space-y-0.5">
@@ -2578,6 +2592,115 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                         </div>
                       </label>
                     </div>
+
+                    {/* ⚖️ DM を有効にする前の警告（電気通信事業法）。カードの overflow-hidden に切られないよう portal で出す */}
+                    {dmWarningOpen && createPortal(
+                      <div
+                        className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+                        onClick={() => setDmWarningOpen(false)}
+                      >
+                        <div
+                          className="bg-slate-900 border border-slate-750 rounded-3xl p-5 w-full max-w-xl space-y-4 max-h-[85vh] overflow-y-auto"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <div className="flex items-start space-x-3">
+                            <span className="text-2xl shrink-0">⚠️</span>
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-bold text-slate-100">
+                                DM（1対1のメッセージ）を有効にしますか？
+                              </h3>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                有効にする前に、次の内容を確認してください。
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-950/60 border border-amber-500/30 rounded-2xl p-4 space-y-3 text-xs text-slate-300 leading-relaxed">
+                            <h4 className="text-xs font-bold text-amber-300">
+                              ⚖️ 電気通信事業法について（日本）
+                            </h4>
+                            <p>
+                              DM を有効にすると、このサーバーは利用者どうしの私的な通信を媒介し、その内容を保管する場になります。
+                              日本では、これが電気通信事業法上の「電気通信事業」に当たると評価されるおそれがあり、
+                              <b>運営者（個人であっても）</b>に次の義務が及ぶ可能性があります。
+                            </p>
+                            <ul className="space-y-1.5 list-disc pl-5">
+                              <li>
+                                <b>電気通信事業の届出義務</b>（同法第16条）— 電気通信事業を営もうとするときは、
+                                あらかじめ総務大臣に届け出なければなりません。
+                              </li>
+                              <li>
+                                <b>通信の秘密の保持</b>（同法第4条）— 利用者の通信の内容や利用の状況を、
+                                本人の同意なく第三者に漏らしてはなりません。
+                              </li>
+                              <li>
+                                <b>秘密の漏洩防止の措置</b>（同法第27条）— 通信の秘密を適切に管理するための
+                                措置が求められます。
+                              </li>
+                              <li>
+                                <b>罰則</b> — 通信の秘密を侵害した場合は、刑事罰の対象になりえます。
+                              </li>
+                            </ul>
+                            <p>
+                              小規模な Fediverse サーバーが直ちに問題とされるものではありませんが、判断は規模・運営の形態・
+                              収益の有無といった個別の事情によります。<b>この表示は法的助言ではありません。</b>
+                              判断に迷うときは、専門家にご相談ください。
+                            </p>
+                          </div>
+
+                          <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2 text-xs text-slate-300 leading-relaxed">
+                            <h4 className="text-xs font-bold text-slate-200">🔧 技術的な前提</h4>
+                            <ul className="space-y-1.5 list-disc pl-5">
+                              <li>
+                                DM は<b>端末間の暗号化（E2E）ではありません</b>。運営者（管理者）はデータベースから本文を読めます。
+                              </li>
+                              <li>
+                                メッセージはサーバーに保存されます。<b>無効に戻しても、既存のメッセージは残ります</b>
+                                （新たな受信と保存が止まり、DM の API は 404 になります）。
+                              </li>
+                              <li>
+                                受け取りは利用者ごとの許可リスト制で、既定では誰からも受け取りません。通知はアプリ内のみで、
+                                本文はメール通知に載りません。
+                              </li>
+                            </ul>
+                          </div>
+
+                          <label className="flex items-start space-x-3 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={dmWarningAcknowledged}
+                              onChange={(e) => setDmWarningAcknowledged(e.target.checked)}
+                              className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span className="text-xs text-slate-200">
+                              上記の内容（電気通信事業法上のリスクを含む）を理解しました
+                            </span>
+                          </label>
+
+                          <div className="flex items-center justify-end space-x-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => setDmWarningOpen(false)}
+                              className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200"
+                            >
+                              キャンセル
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!dmWarningAcknowledged || isSavingDm}
+                              onClick={() => {
+                                setDmWarningOpen(false);
+                                handleToggleDm(true);
+                              }}
+                              className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {isSavingDm ? '有効化中...' : '理解して有効にする'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>,
+                      document.body,
+                    )}
 
                     {/* 利用規約・ポリシー・外部リンク設定 (Misskeyスタイル) */}
                     <div className="space-y-4 pt-4 border-t border-slate-800/80">
