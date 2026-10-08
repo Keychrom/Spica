@@ -72,7 +72,22 @@ cd /var/www/spica
 
 # リポジトリから最新の更新を取得
 git pull origin main
+
+# ⚠️ 取り込めたかを必ず確認する（pull は失敗しても静かに見える）
+git log --oneline -1     # いま入れたコミット。手元が古いままなら pull が止まっている
+git status --short       # ローカルの変更が残っているとマージが中断される
 ```
+
+> [!IMPORTANT]
+> **`git pull` が止まる典型例**: 手元のファイル（`package-lock.json` など）を編集していると
+> `error: Your local changes to the following files would be overwritten by merge` で**中断し、
+> コードは古いまま**です。そのまま `npm run build` と再起動をすると「更新したのに新機能が出ない」
+> 状態になります。止められたら、変更を退避してから取り込んでください（消さずに残せます）:
+>
+> ```bash
+> git stash push -m "before-update" -- package-lock.json
+> git pull --ff-only origin main
+> ```
 
 ### 2. 依存関係の更新と再ビルド
 新機能のライブラリ更新やフロントエンド・バックエンドの再ビルドを行います。
@@ -85,6 +100,16 @@ npm install
 npm run build
 ```
 
+> [!TIP]
+> **配信されているファイルが本当に新しいかは「中身」で確認してください。**
+> 存在しないアセットのパスは SPA のフォールバックで `index.html` が **200** で返るため、
+> HTTP ステータスだけでは判定できません。
+>
+> ```bash
+> curl -s http://127.0.0.1:3000/ | grep -o "index-[A-Za-z0-9_-]*\.js"   # ビルド直後の出力と一致するか
+> curl -s http://127.0.0.1:3000/assets/<新しいチャンク>.js | head -c 40  # "import" など JS が返るか（HTML なら未配信）
+> ```
+
 ### 3. プロセスの再起動
 
 #### PM2 を利用している場合:
@@ -95,6 +120,24 @@ pm2 reload spica
 # ログを監視して起動を確認
 pm2 logs spica --lines 30
 ```
+
+> [!WARNING]
+> **`sudo pm2 ...` は使わないでください。** sudo を付けると root 用の別の PM2 が起動し、
+> `Process or Namespace spica not found` になります（アプリは一般ユーザーの PM2 にあります）。
+>
+> **`pm2 list` で同じ名前が 2 つ出て、片方の `↺`（再起動回数）が増え続けていたら異常です。**
+> PM2 の cluster モードは `npm` 経由の起動（`script: /usr/bin/npm`, `args: run start`）だと
+> ポート共有が働かず、2 つ目が `EADDRINUSE` で即死 → 再起動を繰り返します（実測: 1 秒に 1 回、
+> 再起動回数 2,000 回超）。実際に動いているのは 1 つだけなので、次のどちらかで直してください:
+>
+> ```bash
+> pm2 scale spica 1 && pm2 save     # いちばん安全（1 インスタンスにする）
+> # もしくは script を npm ではなく node にする（Redis があるなら複数でも可）
+> pm2 delete spica && pm2 start /var/www/spica/server/dist/index.js --name spica --cwd /var/www/spica -i 2 && pm2 save
+> ```
+>
+> `.env` はアプリ自身（`config.ts`）が読み込むので、`--cwd` をアプリのルートに合わせておけば
+> 環境変数の指定は要りません。
 
 #### systemd を利用している場合:
 ```bash
