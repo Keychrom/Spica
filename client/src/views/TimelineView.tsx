@@ -10,7 +10,7 @@ import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, EyeOff, Globe, Hard
 import { AutocompleteDropdown, PollInputEditor, createRenderPostCard, markThreadContinuations } from '../components/PostRendering';
 import { Virtuoso } from 'react-virtuoso';
 import { usePrefs } from '../prefs';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 export interface TimelineViewProps {
   setTimeline: any;
@@ -400,6 +400,10 @@ export default function TimelineView(props: TimelineViewProps) {
     }
   };
   const { renderPostCard } = createRenderPostCard(postDeps);
+
+  // 🧵 会話の続きは「親が上・返信が下」に並べ替えて、線でつなぐ印を付ける。
+  // 並べ替えを反映するため、仮想化リストにもこの配列を渡す
+  const orderedTimeline = useMemo(() => markThreadContinuations(timeline), [timeline]);
 
   // 仮想化のための「先頭に何件挿したか」。SSE の新着を先頭に挿しても
   // スクロール位置が飛ばないように firstItemIndex をずらす
@@ -1958,20 +1962,14 @@ export default function TimelineView(props: TimelineViewProps) {
                        ページ全体がスクロールするので useWindowScroll を使う */
                     <Virtuoso
                       useWindowScroll
-                      data={timeline}
+                      data={orderedTimeline}
                       firstItemIndex={firstItemIndex}
                       computeItemKey={(_i, post: any) => post.id}
                       itemContent={(index, post: any) => {
-                        // 直前の投稿が返信先なら「会話の続き」として縦線でつなぐ
-                        // 返信が親より上に来る並びなので、上下の両方を見て線でつなぐ
-                        const prev = index > 0 ? timeline[index - 1] : null;
-                        const next = index < timeline.length - 1 ? timeline[index + 1] : null;
-                        const railTop = Boolean(prev?.id && post.in_reply_to === prev.id);
-                        const railBottom = Boolean(next?.in_reply_to && next.in_reply_to === post.id);
-                        const withThread = railTop || railBottom ? { ...post, thread_rail_top: railTop, thread_rail_bottom: railBottom } : post;
+                        // 並べ替えと線の印は orderedTimeline（markThreadContinuations）側で済んでいる
                         return (
                           <div className="timeline-item pb-3" data-post-index={index}>
-                            {renderPostCard(withThread)}
+                            {renderPostCard(post)}
                           </div>
                         );
                       }}

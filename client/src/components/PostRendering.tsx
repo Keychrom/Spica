@@ -1077,25 +1077,39 @@ function describeReplyTarget(url: string): { label: string; href: string; isLoca
 }
 
 /**
- * 一覧の中で「会話がつながっている」投稿に印を付ける（タイムラインの縦線つなぎ用）。
+ * 会話の続きをタイムライン上で分かるようにする。
  *
- * タイムラインは新しい順なので、**返信が親より上**に並ぶ。つまり
- *   - 自分が直前の投稿への返信なら、上とつながる（thread_rail_top）
- *   - 直後の投稿が自分への返信なら、下とつながる（thread_rail_bottom）
- * の両方を見る。片方だけだと「返信が上にある」並びで線が引けない。
+ * 1) **親が上・返信が下**になるように並べ替える（同じ会話の隣り合った組だけ）。
+ *    タイムラインは新しい順なので、放っておくと返信が親より上に来てどちらが親か分からない。
+ * 2) 親のすぐ下に来ている返信に印を付ける（線を描くため）。
+ *    - thread_rail_top   : 自分の1つ上が返信先（= 自分は子。上とつながる）
+ *    - thread_rail_bottom: 自分の1つ下が自分への返信（= 自分は親。下へつながる）
  */
 export function markThreadContinuations<T extends { id?: string; in_reply_to?: string | null }>(
   posts: T[],
 ): T[] {
-  return posts.map((post, index) => {
-    const prev = index > 0 ? posts[index - 1] : null;
-    const next = index < posts.length - 1 ? posts[index + 1] : null;
-    const connectsUp = Boolean(prev?.id && post.in_reply_to && post.in_reply_to === prev.id);
-    const connectsDown = Boolean(
+  const ordered: T[] = [];
+  for (let i = 0; i < posts.length; i++) {
+    const current = posts[i];
+    const next = posts[i + 1];
+    // 「返信が上・親が下」の並びだけを入れ替える（親を先に出す）
+    if (next && current.in_reply_to && current.in_reply_to === next.id) {
+      ordered.push(next, current);
+      i++;
+      continue;
+    }
+    ordered.push(current);
+  }
+
+  return ordered.map((post, index) => {
+    const prev = index > 0 ? ordered[index - 1] : null;
+    const next = index < ordered.length - 1 ? ordered[index + 1] : null;
+    const isChild = Boolean(prev?.id && post.in_reply_to && post.in_reply_to === prev.id);
+    const hasChildBelow = Boolean(
       next && (next as { in_reply_to?: string | null }).in_reply_to && (next as { in_reply_to?: string | null }).in_reply_to === post.id,
     );
-    if (!connectsUp && !connectsDown) return post;
-    return { ...post, thread_rail_top: connectsUp, thread_rail_bottom: connectsDown } as T;
+    if (!isChild && !hasChildBelow) return post;
+    return { ...post, thread_rail_top: isChild, thread_rail_bottom: hasChildBelow } as T;
   });
 }
 
@@ -1696,13 +1710,29 @@ export function createRenderPostCard(deps: PostRendererDeps) {
 
     if (!hasThreadRail) return card;
 
-    // 会話のつながり: カード間の隙間を埋める線と、カード内を通る左レールで示す
+    // 会話のつながり: カード間の隙間を埋める線と、カード内の左レールで示す。
+    // 「親が上・返信が下」に並んでいるので、親には下へ伸びる線（アバターの下から）、
+    // 子には上とつながる線（カードを貫く）を描く
     return (
       <div className="relative">
         {railTop && (
           <span
             aria-hidden
             className="pointer-events-none absolute left-2 -top-3 h-3 w-0.5 rounded-full"
+            style={{ background: 'var(--accent-border)' }}
+          />
+        )}
+        {railTop && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-2 top-0 bottom-0 w-0.5 rounded-full"
+            style={{ background: 'var(--accent-border)' }}
+          />
+        )}
+        {railBottom && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-2 top-14 bottom-0 w-0.5 rounded-full"
             style={{ background: 'var(--accent-border)' }}
           />
         )}
@@ -1713,11 +1743,6 @@ export function createRenderPostCard(deps: PostRendererDeps) {
             style={{ background: 'var(--accent-border)' }}
           />
         )}
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-2 top-0 bottom-0 w-0.5 rounded-full"
-          style={{ background: 'var(--accent-border)' }}
-        />
         {card}
       </div>
     );
