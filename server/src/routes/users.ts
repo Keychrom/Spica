@@ -3,6 +3,7 @@ import { asyncHandler } from '../asyncHandler.js';
 import { db, UserRow, FollowRow, PostRow } from '../db.js';
 import { config } from '../config.js';
 import { getVerifiedSigner, isAcceptedFollower } from '../inboxAuth.js';
+import { isApprovedUser } from '../registration.js';
 import {
   buildPerson,
   buildNote,
@@ -58,7 +59,8 @@ usersRouter.get('/:username', asyncHandler(async (req: Request, res: Response, n
   const username = req.params.username as string;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
-  if (!user) {
+  // 承認待ち・却下の申請は Actor 文書を返さない（連合先からは存在しない扱い）
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
@@ -72,7 +74,8 @@ usersRouter.get('/:username/followers', asyncHandler(async (req: Request, res: R
   const username = req.params.username as string;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
-  if (!user) {
+  // 承認待ち・却下の申請は公開のコレクションにも出さない
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
@@ -98,7 +101,8 @@ usersRouter.get('/:username/following', asyncHandler(async (req: Request, res: R
   const username = req.params.username as string;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
-  if (!user) {
+  // 承認待ち・却下の申請は公開のコレクションにも出さない
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
@@ -124,7 +128,8 @@ usersRouter.get('/:username/collections/featured', asyncHandler(async (req: Requ
   const username = req.params.username as string;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
 
-  if (!user) {
+  // 承認待ち・却下の申請は公開のコレクションにも出さない
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 

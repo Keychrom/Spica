@@ -24,6 +24,7 @@ import { isMailConfigured, sendMail, generateVerificationCode, issueVerification
 import { uploadMediaFile } from '../storage.js';
 import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
 import { executeCreatePost } from '../postService.js';
+import { isApprovedUser } from '../registration.js';
 import {
   createWebAuthnRegistrationOptions,
   verifyWebAuthnRegistration,
@@ -176,7 +177,7 @@ apiRouter.post('/auth/register/email-code', asyncHandler(async (req: Request, re
 
 // アカウント新規登録 (マスターキー発行)
 apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response) => {
-  const { id, name, summary, inviteCode, agreedToRules } = req.body;
+  const { id, name, summary, inviteCode, agreedToRules, requestMessage } = req.body;
   if (!id || !name) {
     return res.status(400).json({ error: 'ユーザーID (英数字) と表示名は必須です。' });
   }
@@ -191,12 +192,16 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     return res.status(409).json({ error: 'このユーザーIDは既に使用されています。' });
   }
 
-  // ユーザー数の確認 (最初のユーザーは自動的に管理者)
-  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  // ユーザー数の確認 (最初のユーザーは自動的に管理者)。
+  // ※ 承認制の申請中（pending）は数えない — 最初の「実在する利用者」が管理者になる。
+  const userCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE approval_status = 'approved'").get() as any).c;
   const role = userCount === 0 ? 'admin' : 'user';
 
   // 招待コード検証および利用規約・ルール同意検証（最初の管理者以外の登録時）
   let verifiedInviteCode: string | null = null;
+  // 承認制（approval）のときだけ pending になる。それ以外は今までどおり即時利用できる
+  let approvalStatus: 'approved' | 'pending' = 'approved';
+  let approvalNote = '';
   if (userCount > 0) {
     const instanceInfo = getInstanceInfo();
 
@@ -212,7 +217,13 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
       }
     }
 
-    // 3. 招待制モード、または招待コードが入力された場合
+    // 3. 承認制モード: この時点では利用できず、管理者の承認待ちになる（招待コードは使わない）
+    if (instanceInfo.registration_mode === 'approval') {
+      approvalStatus = 'pending';
+      approvalNote = typeof requestMessage === 'string' ? requestMessage.trim().slice(0, 500) : '';
+    }
+
+    // 4. 招待制モード、または招待コードが入力された場合
     const codeStr = typeof inviteCode === 'string' ? inviteCode.trim() : '';
     if (instanceInfo.registration_mode === 'invite') {
       if (!codeStr) {
@@ -288,8 +299,8 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
 
   // 3. DB にユーザー保存
   await db.prepare(`
-    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at, password_hash, email, email_verified, approval_status, approval_note)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     cleanId,
     name.trim(),
@@ -302,6 +313,8 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     passwordHash,
     registerEmail,
     registerEmailVerified,
+    approvalStatus,
+    approvalNote,
   );
 
   // 4. 招待コードの使用回数をインクリメント
@@ -313,13 +326,17 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
     }
   }
 
-  // 4. 初回セッションを発行
-  const session = await createSession(cleanId, req.headers["user-agent"]);
+  // 5. 初回セッションを発行（承認制で申請中のときは発行しない = アプリに入れない）
+  const session = approvalStatus === 'pending' ? null : await createSession(cleanId, req.headers["user-agent"]);
 
   const actorUrl = `${config.origin}/users/${cleanId}`;
   const handle = `@${cleanId}@${config.domain}`;
 
-  console.log(`[Spica Register] Account created successfully for ${handle}`);
+  if (approvalStatus === 'pending') {
+    console.log(`[Spica Register] 📝 承認制の申請を受け付けました: ${handle}`);
+  } else {
+    console.log(`[Spica Register] Account created successfully for ${handle}`);
+  }
 
   // マスターキーは平文で返却（ユーザーに保存してもらうため二度と取得できない）
   res.status(201).json({
@@ -338,8 +355,17 @@ apiRouter.post('/auth/register', asyncHandler(async (req: Request, res: Response
       permissions: Array.from(await getUserPermissions({ id: cleanId, role })),
     },
     masterKey, // ⚠️ ユーザーが安全に保存する秘密鍵
-    sessionToken: session.token,
-    sessionExpiresAt: session.expiresAt,
+    // 承認制の申請中は「申請を受け付けた」ことを伝える（sessionToken は返らない）
+    ...(approvalStatus === 'pending'
+      ? {
+          pending: true,
+          approval_status: 'pending',
+          message: 'アカウントの申請を受け付けました。管理者が承認するとログインできます。',
+        }
+      : {
+          sessionToken: session!.token,
+          sessionExpiresAt: session!.expiresAt,
+        }),
   });
 }));
 
@@ -369,6 +395,19 @@ apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) =
 
   if (user.is_frozen === 1) {
     return res.status(403).json({ error: 'このアカウントは凍結されています。管理者にお問い合わせください。' });
+  }
+
+  // 承認制の申請中・却下はログインさせない（申請者にだけ理由が分かるようにする）
+  if (user.approval_status === 'pending') {
+    return res.status(403).json({ error: 'このアカウントは管理者の承認待ちです。承認されるとログインできます。' });
+  }
+  if (user.approval_status === 'rejected') {
+    const reason = String((user as { approval_reason?: string }).approval_reason || '').trim();
+    return res.status(403).json({
+      error: reason
+        ? `このアカウントの申請は承認されませんでした。理由: ${reason}`
+        : 'このアカウントの申請は承認されませんでした。詳しくは管理者にお問い合わせください。',
+    });
   }
 
   // 認証: マスターキー（指定時）→ 一致しなければパスワード（設定時）
@@ -1286,7 +1325,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
   const localUsers = searchText ? await db.prepare(`
     SELECT id, name, summary, icon_url, 1 as is_local, NULL as domain, ('@' || id) as handle
     FROM users
-    WHERE id LIKE ? OR name LIKE ?
+    WHERE approval_status = 'approved' AND (id LIKE ? OR name LIKE ?)
     LIMIT 10
   `).all(searchPattern, searchPattern) as any[] : [];
 
@@ -2678,7 +2717,11 @@ apiRouter.get('/users/:identifier', asyncHandler(async (req: Request, res: Respo
     cleanId = cleanId.replace(`@${config.domain}`, '');
   }
 
-  const localUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at FROM users WHERE id = ?').get(cleanId) as any;
+  const localUser = await db.prepare('SELECT id, name, summary, icon_url, banner_url, role, is_frozen, is_locked, fields, discoverable, created_at, approval_status FROM users WHERE id = ?').get(cleanId) as any;
+  if (localUser && !isApprovedUser(localUser)) {
+    // 承認待ち・却下の申請はプロフィールとして存在しない扱い（本人にも見せない）
+    return res.status(404).json({ error: 'ユーザーが見つかりません。' });
+  }
   if (localUser) {
     const actorUrl = `${config.origin}/users/${localUser.id}`;
     const followerCount = (await db.prepare('SELECT COUNT(*) as c FROM follows WHERE following_url = ? AND status = ?').get(actorUrl, 'accepted') as any).c;
@@ -3028,7 +3071,7 @@ async function getServerInfoCounts(): Promise<{ users: number; localPosts: numbe
   }
   // 3 本は互いに独立なので並行に投げる（PostgreSQL ではプールから別々の接続で走る）
   const [users, localPosts, federatedPosts] = await Promise.all([
-    db.prepare('SELECT COUNT(*) as c FROM users').get() as Promise<{ c: number }>,
+    db.prepare("SELECT COUNT(*) as c FROM users WHERE approval_status = 'approved'").get() as Promise<{ c: number }>,
     db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as Promise<{ c: number }>,
     db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as Promise<{ c: number }>,
   ]);
@@ -3937,7 +3980,7 @@ apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => 
     const rows = await db.prepare(`
       SELECT id, name, summary, icon_url, banner_url, created_at, fields, discoverable
       FROM users
-      WHERE is_frozen = 0 AND COALESCE(discoverable, 1) = 1
+      WHERE is_frozen = 0 AND approval_status = 'approved' AND COALESCE(discoverable, 1) = 1
         AND (? = '' OR id LIKE ? OR name LIKE ?)
       ORDER BY created_at ASC
       LIMIT ?

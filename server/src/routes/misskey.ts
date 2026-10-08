@@ -3,6 +3,7 @@ import { asyncHandler } from '../asyncHandler.js';
 import { db, UserRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
 import { getUserFromToken, createSession } from '../auth.js';
+import { isApprovedUser } from '../registration.js';
 import {
   enrichAndFilterPosts,
   handleAnnouncePost,
@@ -798,17 +799,17 @@ async function findUser(identifier: string): Promise<{ user?: UserRow; remote?: 
   const value = String(identifier || '').trim().replace(/^@/, '');
   if (!value) return null;
 
-  // ローカル（ユーザー名 or actor URL）
+  // ローカル（ユーザー名 or actor URL）。承認待ち・却下の申請は存在しない扱いにする
   const localId = value.startsWith(config.origin) ? value.split('/').pop() || '' : value.split('@')[0];
   const local = (await db.prepare('SELECT * FROM users WHERE id = ?').get(localId)) as unknown as UserRow | undefined;
-  if (local) return { user: local };
+  if (local && isApprovedUser(local)) return { user: local };
 
   const actorUrl = value.includes('@') && !value.startsWith('http')
     ? `${config.origin}/users/${value.split('@')[0]}`
     : value;
   if (actorUrl.startsWith(config.origin)) {
     const again = (await db.prepare('SELECT * FROM users WHERE id = ?').get(actorUrl.split('/').pop() || '')) as unknown as UserRow | undefined;
-    if (again) return { user: again };
+    if (again && isApprovedUser(again)) return { user: again };
   }
 
   // リモート（actor URL そのもの、または user@domain）

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { db, UserRow, PostRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
+import { isApprovedUser } from '../registration.js';
 import { postPermalink } from '../postLinks.js';
 
 /**
@@ -110,7 +111,8 @@ function buildItemsFromPosts(posts: PostRow[], authorName: string): RssItem[] {
 discoveryRouter.get('/users/:username/feed.xml', asyncHandler(async (req: Request, res: Response) => {
   const username = req.params.username as string;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as unknown as UserRow | undefined;
-  if (!user) {
+  // 承認待ち・却下の申請は公開しない（存在しないものとして扱う）
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).send('Not Found');
   }
 
@@ -252,7 +254,7 @@ discoveryRouter.get('/robots.txt', (_req: Request, res: Response) => {
  */
 discoveryRouter.get('/sitemap.xml', asyncHandler(async (_req: Request, res: Response) => {
   const [users, posts, channels, tags] = await Promise.all([
-    db.prepare('SELECT id FROM users WHERE is_frozen = 0 ORDER BY created_at DESC LIMIT 5000').all() as Promise<{ id: string }[]>,
+    db.prepare("SELECT id FROM users WHERE is_frozen = 0 AND approval_status = 'approved' ORDER BY created_at DESC LIMIT 5000").all() as Promise<{ id: string }[]>,
     db.prepare(`
       SELECT id, published_at FROM posts
       WHERE is_local = 1 AND (visibility = 'public' OR visibility IS NULL)

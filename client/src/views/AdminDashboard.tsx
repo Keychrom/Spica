@@ -5,7 +5,7 @@
  * ここへは props で渡す（切り出しであって作り直しではない）。
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ApiResult } from '../api/client';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, ClipboardList, Cloud, Copy, Database, ExternalLink, EyeOff, Image as ImageIcon, Globe, HardDrive, LayoutDashboard, Lock, Mail, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, Tag, Ticket, Trash2, Upload, UserPlus, Users } from 'lucide-react';
@@ -88,6 +88,18 @@ export interface AdminDashboardProps {
   setAdminDmEnabled: any;
 }
 
+/** 承認制（registration_mode = 'approval'）の登録申請 1 件分（GET /api/admin/registration-requests） */
+interface RegistrationRequest {
+  id: string;
+  name: string;
+  summary: string;
+  /** パスワード方式のサーバーのみ入る */
+  email?: string;
+  /** 申請メッセージ（無ければ空文字） */
+  note: string;
+  created_at: string;
+}
+
 export default function AdminDashboard(props: AdminDashboardProps) {
   const { authToken, api, setContentPolicy, setMaintenanceStats, setServerStats, fetchCustomEmojis, fetchServerStats, fetchRecoveryStatus, setAdminAnnouncements, fetchAnnouncements, setAdminStorageConfig, fetchTimeline, executeBlockDomain, setBlockMessage, adminTab, maintenanceStats, setAdminTab, canAdmin, serverStats, adminUsers, adminRoles, adminRelays, storageForm, setStorageForm, adminStorageConfig, adminStats, adminReportCounts, reportStatusFilter, adminBlockedDomains, adminAnnouncements, blockMessage, adminFederation, adminEmojis, fetchReports, fetchAdminData, adminServerRulesText, adminServerBanner, adminInvitations, navigateToView, isLoadingAdmin, isBlockingDomain, contentPolicy, blockInputDomain, availablePermissions, adminServerIcon, adminReports, setReportStatusFilter, setBlockInputReason, setBlockInputDomain, setAdminTosUrl, setAdminServerRulesText, setAdminServerName, setAdminServerIcon, setAdminServerDesc, setAdminServerBanner, setAdminRequireRulesAgreement, setAdminRepositoryUrl, setAdminPrivacyPolicyUrl, setAdminOperatorUrl, setAdminDeleteTargetUser, setAdminContactUrl, fetchRoles, blockInputReason, authUser, adminTosUrl, adminServerName, adminServerDesc, adminRequireRulesAgreement, adminRepositoryUrl, adminPrivacyPolicyUrl, adminOperatorUrl, adminContactUrl, adminDmEnabled, setAdminDmEnabled } = props;
 
@@ -113,6 +125,16 @@ export default function AdminDashboard(props: AdminDashboardProps) {
   const [isCreatingInvite, setIsCreatingInvite] = useState<boolean>(false);
 
   const [isUpdatingRegMode, setIsUpdatingRegMode] = useState<boolean>(false);
+
+  /** 承認待ちの登録申請（承認制のときだけ中身が入る） */
+  const [registrationRequests, setRegistrationRequests] = useState<RegistrationRequest[]>([]);
+
+  const [isLoadingRegRequests, setIsLoadingRegRequests] = useState<boolean>(false);
+
+  /** 承認・拒否の処理中リクエスト ID */
+  const [isUpdatingRegRequest, setIsUpdatingRegRequest] = useState<string | null>(null);
+
+  const [regRequestsMsg, setRegRequestsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const [inviteActionMsg, setInviteActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -532,7 +554,7 @@ export default function AdminDashboard(props: AdminDashboardProps) {
     }
   };
 
-  const handleChangeRegistrationMode = async (mode: 'open' | 'invite' | 'closed') => {
+  const handleChangeRegistrationMode = async (mode: 'open' | 'invite' | 'closed' | 'approval') => {
     if (!authToken) return;
     setIsUpdatingRegMode(true);
     setInviteActionMsg(null);
@@ -547,6 +569,70 @@ export default function AdminDashboard(props: AdminDashboardProps) {
       setInviteActionMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
     } finally {
       setIsUpdatingRegMode(false);
+    }
+  };
+
+  /** 承認待ちの登録申請を取得する（承認・拒否の処理後にも呼び直す） */
+  const fetchRegistrationRequests = async () => {
+    if (!authToken || !canAdmin) return;
+    setIsLoadingRegRequests(true);
+    try {
+      const res = await api.get('/api/admin/registration-requests');
+      const data = await res.json();
+      if (!res.ok) {
+        setRegRequestsMsg({ type: 'error', text: data.error || '登録申請の取得に失敗しました。' });
+        return;
+      }
+      setRegistrationRequests(Array.isArray(data.requests) ? data.requests : []);
+    } catch (err: any) {
+      setRegRequestsMsg({ type: 'error', text: err.message });
+    } finally {
+      setIsLoadingRegRequests(false);
+    }
+  };
+
+  // ユーザー管理タブを開いたときに承認待ちの申請を読み込む
+  useEffect(() => {
+    if (adminTab === 'users') fetchRegistrationRequests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminTab, authToken, canAdmin]);
+
+  const handleApproveRegistrationRequest = async (id: string) => {
+    if (!authToken) return;
+    setIsUpdatingRegRequest(id);
+    setRegRequestsMsg(null);
+    try {
+      const res = await api.post(`/api/admin/registration-requests/${encodeURIComponent(id)}/approve`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '申請の承認に失敗しました。');
+      setRegRequestsMsg({ type: 'success', text: `@${id} の申請を承認しました。承認されたユーザーはログインできるようになります。` });
+      await fetchRegistrationRequests();
+      fetchAdminData();
+    } catch (err: any) {
+      setRegRequestsMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    } finally {
+      setIsUpdatingRegRequest(null);
+    }
+  };
+
+  const handleRejectRegistrationRequest = async (id: string) => {
+    if (!authToken) return;
+    // 理由は任意（申請者に表示される）。キャンセルなら何もしない
+    const reason = window.prompt('拒否の理由（任意。申請者に表示されます）', '');
+    if (reason === null) return;
+    setIsUpdatingRegRequest(id);
+    setRegRequestsMsg(null);
+    try {
+      const res = await api.post(`/api/admin/registration-requests/${encodeURIComponent(id)}/reject`, { reason });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '申請の拒否に失敗しました。');
+      setRegRequestsMsg({ type: 'success', text: `@${id} の申請を拒否しました。` });
+      await fetchRegistrationRequests();
+      fetchAdminData();
+    } catch (err: any) {
+      setRegRequestsMsg({ type: 'error', text: err.message || 'エラーが発生しました。' });
+    } finally {
+      setIsUpdatingRegRequest(null);
     }
   };
 
@@ -1141,12 +1227,23 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                     <Users className="w-4 h-4" />
                     <span>ユーザー</span>
                   </div>
-                  {adminUsers.length > 0 && (
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
-                      adminTab === 'users' ? 'bg-indigo-700 text-white' : 'bg-slate-800 text-slate-400'
-                    }`}>
-                      {adminUsers.length}
-                    </span>
+                  {(adminUsers.length > 0 || registrationRequests.length > 0) && (
+                    <div className="flex items-center space-x-1">
+                      {registrationRequests.length > 0 && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                          adminTab === 'users' ? 'bg-indigo-800 text-indigo-100' : 'bg-amber-500/20 text-amber-300'
+                        }`}>
+                          申請 {registrationRequests.length}
+                        </span>
+                      )}
+                      {adminUsers.length > 0 && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+                          adminTab === 'users' ? 'bg-indigo-700 text-white' : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          {adminUsers.length}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </button>
 
@@ -1291,9 +1388,9 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                     <span>招待コード</span>
                   </div>
                   <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                    serverStats?.registration_mode === 'invite' ? 'bg-amber-500/20 text-amber-300' : serverStats?.registration_mode === 'closed' ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-400'
+                    serverStats?.registration_mode === 'invite' ? 'bg-amber-500/20 text-amber-300' : serverStats?.registration_mode === 'closed' ? 'bg-rose-500/20 text-rose-300' : serverStats?.registration_mode === 'approval' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-emerald-500/20 text-emerald-400'
                   }`}>
-                    {serverStats?.registration_mode === 'invite' ? '招待制' : serverStats?.registration_mode === 'closed' ? '停止中' : '公開'}
+                    {serverStats?.registration_mode === 'invite' ? '招待制' : serverStats?.registration_mode === 'closed' ? '停止中' : serverStats?.registration_mode === 'approval' ? '承認制' : '公開'}
                   </span>
                 </button>
 
@@ -1710,6 +1807,92 @@ export default function AdminDashboard(props: AdminDashboardProps) {
               {/* 👥 2. ユーザー管理タブ */}
               {adminTab === 'users' && (
                 <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4 animate-in fade-in duration-150">
+                  {/* 承認制: 承認待ちのアカウント申請（申請が無くメッセージも無いときは何も出さない） */}
+                  {(registrationRequests.length > 0 || regRequestsMsg) && (
+                    <div className="bg-slate-950/60 border border-indigo-500/30 rounded-2xl p-4 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
+                          <UserPlus className="w-4 h-4 text-indigo-400" />
+                          <span>承認待ちのアカウント申請 ({registrationRequests.length})</span>
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={fetchRegistrationRequests}
+                          disabled={isLoadingRegRequests}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold rounded-xl border border-slate-700 transition flex items-center space-x-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isLoadingRegRequests ? 'animate-spin text-indigo-400' : ''}`} />
+                          <span>再読み込み</span>
+                        </button>
+                      </div>
+
+                      {regRequestsMsg && (
+                        <div
+                          className={`p-3 rounded-xl text-xs flex items-center space-x-2 ${
+                            regRequestsMsg.type === 'success'
+                              ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                              : 'bg-rose-500/15 border border-rose-500/30 text-rose-300'
+                          }`}
+                        >
+                          {regRequestsMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                          <span>{regRequestsMsg.text}</span>
+                        </div>
+                      )}
+
+                      {registrationRequests.length === 0 ? (
+                        <p className="text-xs text-slate-500">承認待ちの申請はありません。</p>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {registrationRequests.map((r) => (
+                            <div key={r.id} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3.5 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+                                  <span className="font-bold text-xs text-slate-100">{r.name}</span>
+                                  <span className="font-mono text-[11px] text-indigo-400">@{r.id}</span>
+                                  {r.email && (
+                                    <span className="text-[11px] text-slate-400 font-mono flex items-center space-x-1">
+                                      <Mail className="w-3 h-3 text-slate-500" />
+                                      <span>{r.email}</span>
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] text-slate-500 font-mono shrink-0">
+                                  {new Date(r.created_at).toLocaleString('ja-JP')}
+                                </span>
+                              </div>
+                              {r.summary && (
+                                <p className="text-[11px] text-slate-400 whitespace-pre-wrap break-words">自己紹介: {r.summary}</p>
+                              )}
+                              <p className="text-xs text-slate-300 whitespace-pre-wrap break-words bg-slate-900/60 rounded-xl p-2.5 border border-slate-800">
+                                {r.note ? r.note : <span className="text-slate-500">申請メッセージなし</span>}
+                              </p>
+                              <div className="flex items-center justify-end space-x-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveRegistrationRequest(r.id)}
+                                  disabled={isUpdatingRegRequest === r.id}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-md transition disabled:opacity-50 cursor-pointer flex items-center space-x-1"
+                                >
+                                  {isUpdatingRegRequest === r.id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                                  <span>承認</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRejectRegistrationRequest(r.id)}
+                                  disabled={isUpdatingRegRequest === r.id}
+                                  className="px-3 py-1.5 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-bold shadow-md transition disabled:opacity-50 cursor-pointer flex items-center space-x-1"
+                                >
+                                  <ShieldAlert className="w-3 h-3" />
+                                  <span>拒否</span>
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <h3 className="font-bold text-sm text-slate-200 flex items-center space-x-2">
@@ -1757,7 +1940,20 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                           .map((u: any) => (
                             <tr key={u.id} className="hover:bg-slate-800/30 transition">
                               <td className="py-3">
-                                <div className="font-bold text-slate-200">{u.name}</div>
+                                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                                  <span className="font-bold text-slate-200">{u.name}</span>
+                                  {/* 承認制の承認状態。approved（または未対応サーバー）では何も出さない */}
+                                  {u.approval_status === 'pending' && (
+                                    <span className="px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-bold text-[10px]">
+                                      承認待ち
+                                    </span>
+                                  )}
+                                  {u.approval_status === 'rejected' && (
+                                    <span className="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 font-bold text-[10px]">
+                                      拒否済み
+                                    </span>
+                                  )}
+                                </div>
                                 <div className="font-mono text-[11px] text-indigo-400">@{u.id}</div>
                               </td>
                               <td className="py-3">
@@ -4084,6 +4280,26 @@ export default function AdminDashboard(props: AdminDashboardProps) {
                         </div>
                         <p className="text-[11px] text-slate-400 leading-relaxed">
                           招待コードを含め、すべての新規アカウント登録を拒否します。メンテナンス時や閉鎖運用時に使用します。
+                        </p>
+                      </button>
+
+                      {/* 承認制 */}
+                      <button
+                        type="button"
+                        onClick={() => handleChangeRegistrationMode('approval')}
+                        disabled={isUpdatingRegMode}
+                        className={`p-4 rounded-2xl border text-left transition cursor-pointer ${
+                          serverStats?.registration_mode === 'approval'
+                            ? 'bg-indigo-500/15 border-indigo-500/60 shadow-lg shadow-indigo-500/10'
+                            : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-2 mb-1.5">
+                          <UserPlus className="w-3.5 h-3.5 text-indigo-400" />
+                          <span className="text-xs font-black text-slate-100">🟣 承認制</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          申請を受け付け、管理者が承認した人だけ参加できます（承認まではログイン不可）。
                         </p>
                       </button>
                     </div>

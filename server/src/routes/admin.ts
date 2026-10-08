@@ -12,6 +12,7 @@ import { listReports, resolveReport, countOpenReports } from '../reportService.j
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
 import { isDmEnabled, setDmEnabled } from '../dm.js';
+import { listPendingRegistrations, countPendingRegistrations, approveRegistration, rejectRegistration } from '../registration.js';
 import { getMaintenanceStats, runScheduledMaintenance, setAutoMaintenanceEnabled } from '../maintenanceService.js';
 import { formatBytes } from '../dbMaintenance.js';
 import { auditMiddleware, listAdminActions, pruneAdminActions, listActionKinds, recordAdminAction } from '../auditLog.js';
@@ -126,7 +127,9 @@ adminRouter.post('/audit/prune', async (req: Request, res: Response) => {
 
 // サーバー全体統計
 adminRouter.get('/stats', asyncHandler(async (req: Request, res: Response) => {
-  const userCount = (await db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c;
+  // 承認待ちの申請は「利用者」に数えない（別枠で返す）
+  const userCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE approval_status = 'approved'").get() as any).c;
+  const pendingRegistrationCount = await countPendingRegistrations();
   const adminCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
   const postCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 1').get() as any).c;
   const federatedPostCount = (await db.prepare('SELECT COUNT(*) as c FROM posts WHERE is_local = 0').get() as any).c;
@@ -149,6 +152,7 @@ adminRouter.get('/stats', asyncHandler(async (req: Request, res: Response) => {
     },
     stats: {
       users: userCount,
+      pendingRegistrations: pendingRegistrationCount,
       admins: adminCount,
       localPosts: postCount,
       federatedPosts: federatedPostCount,
@@ -169,6 +173,8 @@ adminRouter.get('/users', asyncHandler(async (req: Request, res: Response) => {
       u.summary,
       u.role,
       u.is_frozen,
+      u.approval_status,
+      u.approval_note,
       u.created_at,
       (SELECT COUNT(*) FROM posts WHERE user_id = u.id) as post_count,
       (SELECT COUNT(*) FROM follows WHERE following_url = '${config.origin}/users/' || u.id) as follower_count
@@ -1141,20 +1147,26 @@ adminRouter.delete('/invitations/:code', asyncHandler(async (req: Request, res: 
   }
 }));
 
-// サーバー登録モード変更 (open / invite / closed)
+// サーバー登録モード変更 (open / invite / closed / approval)
 adminRouter.post('/registration-mode', async (req: Request, res: Response) => {
   try {
     const { mode } = req.body;
-    if (mode !== 'open' && mode !== 'invite' && mode !== 'closed') {
-      return res.status(400).json({ error: '無効な登録モードです (open, invite, closed のいずれかを指定してください)。' });
+    if (mode !== 'open' && mode !== 'invite' && mode !== 'closed' && mode !== 'approval') {
+      return res.status(400).json({ error: '無効な登録モードです (open, invite, closed, approval のいずれかを指定してください)。' });
     }
 
     await saveInstanceInfo({ registration_mode: mode as RegistrationMode });
     console.log(`[Admin] 🔒 Registration mode changed to "${mode}" by @${(req.rawUser || req.user)?.id}`);
 
+    const modeLabel =
+      mode === 'open' ? '自由登録 (誰でも参加可能)'
+        : mode === 'invite' ? '招待制 (コード必須)'
+          : mode === 'approval' ? '承認制 (管理者が承認したら参加)'
+            : '新規登録一時停止';
+
     res.json({
       success: true,
-      message: `登録モードを「${mode === 'open' ? '自由登録 (誰でも参加可能)' : mode === 'invite' ? '招待制 (コード必須)' : '新規登録一時停止'}」に更新しました。`,
+      message: `登録モードを「${modeLabel}」に更新しました。`,
       registration_mode: mode,
     });
   } catch (err: any) {
@@ -1162,6 +1174,37 @@ adminRouter.post('/registration-mode', async (req: Request, res: Response) => {
     res.status(500).json({ error: '登録モードの変更に失敗しました。' });
   }
 });
+
+// ==========================================
+// 📝 承認制の登録申請（registration_mode = 'approval'）
+//
+//   - 管理者だけが扱える（モデレーターには開放しない。アカウント作成の判断は管理者の仕事）
+//   - 承認 = approval_status を 'approved' に、却下 = 'rejected' + 理由（申請者がログイン時に見る）
+//   - 監査ログは auditMiddleware が自動で記録する
+// ==========================================
+adminRouter.get('/registration-requests', asyncHandler(async (_req: Request, res: Response) => {
+  const [requests, pendingCount] = await Promise.all([listPendingRegistrations(), countPendingRegistrations()]);
+  res.json({ pending_count: pendingCount, requests });
+}));
+
+adminRouter.post('/registration-requests/:id/approve', asyncHandler(async (req: Request, res: Response) => {
+  const userId = String(req.params.id);
+  if (!(await approveRegistration(userId))) {
+    return res.status(404).json({ error: '申請が見つかりません。' });
+  }
+  console.log(`[Admin] ✅ 登録申請を承認しました: @${userId}（by @${(req.rawUser || req.user)?.id}）`);
+  res.json({ success: true, userId, approval_status: 'approved' });
+}));
+
+adminRouter.post('/registration-requests/:id/reject', asyncHandler(async (req: Request, res: Response) => {
+  const userId = String(req.params.id);
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
+  if (!(await rejectRegistration(userId, reason))) {
+    return res.status(404).json({ error: '申請が見つかりません。' });
+  }
+  console.log(`[Admin] 🚫 登録申請を却下しました: @${userId}（by @${(req.rawUser || req.user)?.id}）理由: ${reason || '(なし)'}`);
+  res.json({ success: true, userId, approval_status: 'rejected' });
+}));
 
 // ==========================================
 // 📢 お知らせ（サーバーからの一斉告知）

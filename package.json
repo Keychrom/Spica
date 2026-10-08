@@ -46,6 +46,7 @@
     "test:hardening": "npx tsx scripts/test-hardening.ts",
     "test:stream-ticket": "npx tsx scripts/test-stream-ticket.ts",
     "test:inbox-async": "npx tsx scripts/test-inbox-async.ts",
+    "test:registration-approval": "npx tsx scripts/test-registration-approval.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
     "check:await": "npx tsx scripts/check-await.ts",
     "check:routes": "npx tsx scripts/check-route-errors.ts",

@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS users  (
   public_key_pem TEXT NOT NULL,
   private_key_pem TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  approval_status TEXT NOT NULL DEFAULT 'approved',
+  approval_note TEXT DEFAULT '',
+  approval_reason TEXT DEFAULT '',
+  approval_reviewed_at TEXT DEFAULT NULL,
   is_locked BIGINT NOT NULL DEFAULT 0,
   fields TEXT DEFAULT '[]',
   discoverable BIGINT NOT NULL DEFAULT 1,
@@ -599,6 +603,7 @@ CREATE INDEX IF NOT EXISTS idx_stream_tickets_expires ON stream_tickets(expires_
 CREATE INDEX IF NOT EXISTS idx_user_blocks_user ON user_blocks(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_mutes_user ON user_mutes(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_webauthn_user ON webauthn_credentials(user_id);
 

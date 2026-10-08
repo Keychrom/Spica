@@ -104,6 +104,8 @@ export interface ModalsViewProps {
   /** DM 画面を開く（`/dm`） */
   openDm: any;
   issuedMasterKey: any;
+  /** 承認制で発行したキーか（マスターキーモーダルの文言を切り替える） */
+  masterKeyModalPending: any;
   lists: any;
   miAuthSession: any;
   navigateToView: any;
@@ -1362,7 +1364,7 @@ function ScheduleModal({
 }
 
 export default function ModalsView(props: ModalsViewProps) {
-  const { setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, featuresDm, dmUnreadCount, openDm, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, postDeps, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
+  const { setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, featuresDm, dmUnreadCount, openDm, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, masterKeyModalPending, postDeps, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [newChannelName, setNewChannelName] = useState<string>('');
@@ -1911,7 +1913,8 @@ export default function ModalsView(props: ModalsViewProps) {
     <>
       {/* マスターキー発行・保存確認モーダル */}
       {showMasterKeyModal && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        /* 承認制 (pending) では認証ポータル (z-[90]) の上に重ねる。閉じるとポータルの申請完了案内に戻る */
+        <div className={`fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 ${masterKeyModalPending ? 'z-[100]' : 'z-50'}`}>
           <div className="bg-slate-900 border border-purple-500/30 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 flex items-center justify-center text-white shadow-lg mx-auto">
               <Key className="w-6 h-6" />
@@ -1919,10 +1922,12 @@ export default function ModalsView(props: ModalsViewProps) {
 
             <div className="text-center">
               <h3 className="font-black text-lg text-slate-100">
-                アカウントが作成されました！
+                {masterKeyModalPending ? 'アカウントの申請を受け付けました！' : 'アカウントが作成されました！'}
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                {isPasswordAuthMode ? (
+                {masterKeyModalPending ? (
+                  <>管理者が承認すると、この<strong className="text-purple-300">マスターキー</strong>でログインできるようになります。</>
+                ) : isPasswordAuthMode ? (
                   <>緊急時用に、あなたのアカウントの<strong className="text-purple-300">マスターキー</strong>も発行されました。</>
                 ) : (
                   <>以下があなたのアカウントの唯一の<strong className="text-purple-300">マスターキー</strong>です。</>
@@ -1935,9 +1940,11 @@ export default function ModalsView(props: ModalsViewProps) {
               <ShieldAlert className="w-5 h-5 shrink-0 mt-0.5 text-amber-400" />
               <div className="leading-relaxed">
                 <strong>重要: このキーは二度と再表示・再発行できません。</strong><br />
-                {isPasswordAuthMode
-                  ? '通常はメールアドレスとパスワードでログインできます。このキーはパスワードを忘れたときの最終手段になるので、必ず安全なパスワードマネージャー等に保存してください。'
-                  : '紛失すると二度とログインできなくなります。必ず安全なパスワードマネージャー等に保存してください。'}
+                {masterKeyModalPending
+                  ? 'このキーは承認後にログインするために必要です。必ず保存してください。'
+                  : isPasswordAuthMode
+                    ? '通常はメールアドレスとパスワードでログインできます。このキーはパスワードを忘れたときの最終手段になるので、必ず安全なパスワードマネージャー等に保存してください。'
+                    : '紛失すると二度とログインできなくなります。必ず安全なパスワードマネージャー等に保存してください。'}
               </div>
             </div>
 
@@ -1982,7 +1989,7 @@ export default function ModalsView(props: ModalsViewProps) {
               disabled={!hasConfirmedSaved}
               className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl shadow-lg transition"
             >
-              Spica をはじめる
+              {masterKeyModalPending ? '閉じる (承認後にログインできます)' : 'Spica をはじめる'}
             </button>
           </div>
         </div>

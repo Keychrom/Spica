@@ -29,6 +29,7 @@ import { registerGracefulShutdown } from './shutdown.js';
 import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
 import { getDeliveryQueueStats } from './deliveryQueue.js';
 import { getJobStats } from './jobs.js';
+import { isApprovedUser } from './registration.js';
 import { getTimelineCacheStats } from './timelineCache.js';
 import { getInboxQueueStats } from './inboxQueue.js';
 import { recordRequest, formatPrometheus } from './metrics.js';
@@ -676,9 +677,10 @@ if (finalDistPath) {
         // 3. ユーザープロフィール
         if (usernameParam) {
           const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(usernameParam) as
-            | { id: string; name: string; summary: string; icon_url: string }
+            | { id: string; name: string; summary: string; icon_url: string; approval_status?: string }
             | undefined;
-          if (!user) {
+          // 承認待ち・却下の申請は OGP も出さない（プロフィールとして存在しない扱い）
+          if (!user || !isApprovedUser(user)) {
             return next();
           }
           res.setHeader('Content-Type', 'text/html; charset=utf-8');

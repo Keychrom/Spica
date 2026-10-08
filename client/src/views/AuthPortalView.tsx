@@ -18,6 +18,8 @@ export interface AuthPortalViewProps {
   fetchMyFollowingUrls: any;
   setShowRegisterModal: any;
   setShowMasterKeyModal: any;
+  /** 承認制で発行したキーか（マスターキーモーダルの文言を切り替える） */
+  setMasterKeyModalPending: any;
   setHasConfirmedSaved: any;
   setIsCopied: any;
   fetchServerStats: any;
@@ -48,7 +50,7 @@ export interface AuthPortalViewProps {
 }
 
 export default function AuthPortalView(props: AuthPortalViewProps) {
-  const { fetchTimeline, setShowLoginModal, fetchServerStats, setIsCopied, setHasConfirmedSaved, setShowMasterKeyModal, setShowRegisterModal, fetchMyFollowingUrls, setAuthUser, setAuthToken, setIssuedMasterKey, hasAgreedToRules, api, isValidEmailFormat, loginMethod, agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, inviteCodeInput, isPasswordAuthMode, recoveryStatus, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setHasAgreedToRules, setInviteCodeInput, setLoginMethod, setRecoveryMsg, setRecoveryStep, setShowAuthPortal, setShowRecoveryModal, showAuthPortal } = props;
+  const { fetchTimeline, setShowLoginModal, fetchServerStats, setIsCopied, setHasConfirmedSaved, setShowMasterKeyModal, setMasterKeyModalPending, setShowRegisterModal, fetchMyFollowingUrls, setAuthUser, setAuthToken, setIssuedMasterKey, hasAgreedToRules, api, isValidEmailFormat, loginMethod, agreeBasicNotes, agreeRules, agreeTosPrivacy, authError, authPortalTab, inviteCodeInput, isPasswordAuthMode, recoveryStatus, serverStats, setAgreeBasicNotes, setAgreeRules, setAgreeTosPrivacy, setAuthError, setAuthPortalTab, setHasAgreedToRules, setInviteCodeInput, setLoginMethod, setRecoveryMsg, setRecoveryStep, setShowAuthPortal, setShowRecoveryModal, showAuthPortal } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [isLoggingInWithPasskey, setIsLoggingInWithPasskey] = useState<boolean>(false);
@@ -84,6 +86,14 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
   const [isSendingRegCode, setIsSendingRegCode] = useState<boolean>(false);
 
   const [regCodeMsg, setRegCodeMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  /** 承認制の申請メッセージ（任意・最大 500 文字） */
+  const [regRequestMessage, setRegRequestMessage] = useState<string>('');
+
+  /** 承認制で申請を送信済みか（送信後はフォームの代わりに申請完了の案内を出す） */
+  const [regPendingSubmitted, setRegPendingSubmitted] = useState<boolean>(false);
+
+  const isApprovalMode = serverStats?.registration_mode === 'approval';
 
   const showPasswordLoginForm = isPasswordAuthMode && loginMethod === 'password';
 
@@ -137,7 +147,7 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
     }
 
     try {
-      const res = await api.post('/api/auth/register', { id: regId.trim(), name: regName.trim(), summary: regBio.trim(), inviteCode: inviteCodeInput.trim() || undefined, agreedToRules: hasAgreedToRules || true, ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}), });
+      const res = await api.post('/api/auth/register', { id: regId.trim(), name: regName.trim(), summary: regBio.trim(), inviteCode: inviteCodeInput.trim() || undefined, agreedToRules: hasAgreedToRules || true, ...(isPasswordAuthMode ? { email: regEmail.trim(), password: regPassword, emailCode: regEmailCode.trim() || undefined } : {}), ...(isApprovalMode ? { requestMessage: regRequestMessage.trim() || undefined } : {}) });
 
       const data = await res.json();
       if (!res.ok) {
@@ -145,7 +155,25 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
         return;
       }
 
+      // 承認制: sessionToken は返らない。承認まではログインできないので、アプリには入れずキーの保存だけ促す
+      if (data.pending === true) {
+        setIssuedMasterKey(data.masterKey);
+        setMasterKeyModalPending(true);
+        setShowMasterKeyModal(true);
+        setHasConfirmedSaved(false);
+        setIsCopied(false);
+        setRegPassword('');
+        setRegPasswordConfirm('');
+        setRegEmailCode('');
+        setRegCodeMsg(null);
+        setRegRequestMessage('');
+        setRegPendingSubmitted(true);
+        fetchServerStats();
+        return;
+      }
+
       // マスターキー表示用モーダルを起動
+      setMasterKeyModalPending(false);
       setIssuedMasterKey(data.masterKey);
       setAuthToken(data.sessionToken);
       localStorage.setItem('spica_token', data.sessionToken);
@@ -388,6 +416,14 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                       {isPasswordAuthMode ? 'メールアドレスとパスワードで今すぐ利用開始できます。' : '暗号学的マスターキーで今すぐ利用開始できます。'}
                     </div>
                   </div>
+                ) : serverStats?.registration_mode === 'approval' ? (
+                  <div className="mt-4 bg-indigo-950/40 border border-indigo-500/30 rounded-2xl p-3 text-left flex items-start space-x-2.5 shadow-sm">
+                    <UserPlus className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                    <div className="text-xs text-indigo-200/90 leading-relaxed">
+                      <strong className="text-indigo-300 font-bold block mb-0.5">承認制コミュニティ</strong>
+                      アカウントを申請すると、管理者が内容を確認して承認します。承認されるとログインできます。
+                    </div>
+                  </div>
                 ) : (
                   <div className="mt-4 bg-indigo-950/40 border border-indigo-500/20 rounded-2xl p-3 text-left flex items-start space-x-2.5 shadow-sm">
                     <Zap className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
@@ -439,7 +475,9 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                         <span>
                           {serverStats?.registration_mode === 'invite'
                             ? '招待コードで参加する'
-                            : 'Spicaに参加する (アカウント作成)'}
+                            : serverStats?.registration_mode === 'approval'
+                              ? 'アカウントを申請する'
+                              : 'Spicaに参加する (アカウント作成)'}
                         </span>
                       </button>
                     )}
@@ -807,7 +845,7 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                         <ArrowLeft className="w-3.5 h-3.5" />
                         <span>戻る</span>
                       </button>
-                      <span className="text-xs font-bold text-slate-300">アカウント新規登録</span>
+                      <span className="text-xs font-bold text-slate-300">{isApprovalMode ? 'アカウント申請' : 'アカウント新規登録'}</span>
                     </div>
 
                     {serverStats?.registration_mode === 'closed' ? (
@@ -835,9 +873,53 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                           </button>
                         </div>
                       </div>
+                    ) : isApprovalMode && regPendingSubmitted ? (
+                      /* 承認制: 申請送信後の完了案内（承認まではログインできない） */
+                      <div className="py-6 px-4 bg-slate-950/80 rounded-2xl border border-indigo-500/30 text-center space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 flex items-center justify-center mx-auto">
+                          <UserPlus className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-200">申請を受け付けました</h4>
+                          <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                            管理者の承認をお待ちください。承認されるとログインできるようになります。<br />
+                            承認されるまではログインできませんのでご了承ください。
+                          </p>
+                        </div>
+                        <p className="text-[11px] text-amber-300/90 leading-relaxed text-left bg-amber-950/40 border border-amber-500/30 rounded-xl p-2.5">
+                          登録時に発行されたマスターキーは、承認後にログインするために必要です。必ず安全な場所に保存してください。
+                        </p>
+                        <div className="pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAuthError(null);
+                              setAuthPortalTab('login');
+                            }}
+                            className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition cursor-pointer"
+                          >
+                            ログイン画面へ
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">
+                          承認前はログインできません。承認されたあと、{isPasswordAuthMode ? 'メールアドレスとパスワード' : '保存したマスターキー'}でログインしてください。
+                        </p>
+                      </div>
                     ) : (
                       <form onSubmit={handleRegister} className="space-y-3 text-left">
-                        {/* 招待コード入力欄 */}
+                        {/* 承認制: 申請フローの案内（招待コード欄と同じトーンの枠で出す） */}
+                        {isApprovalMode && (
+                          <div className="bg-amber-950/40 border border-amber-500/30 rounded-xl p-3 text-left flex items-start space-x-2.5 shadow-sm">
+                            <UserPlus className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                            <div className="text-xs text-amber-200/90 leading-relaxed">
+                              <strong className="text-amber-300 font-bold block mb-0.5">承認制コミュニティ</strong>
+                              申請後、管理者が承認するとログインできます。承認まではログインできません。
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 招待コード入力欄 (承認制では使わないので出さない) */}
+                        {!isApprovalMode && (
                         <div>
                           <div className="flex items-center justify-between mb-1">
                             <label className="block text-[11px] font-semibold text-slate-300">
@@ -879,6 +961,7 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                             </p>
                           )}
                         </div>
+                        )}
 
                         <div>
                           <label className="block text-[11px] font-semibold text-slate-300 mb-1">
@@ -1016,11 +1099,31 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                           />
                         </div>
 
+                        {/* 承認制: 管理者が承認の判断に使う申請メッセージ（任意） */}
+                        {isApprovalMode && (
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="block text-[11px] font-semibold text-slate-300">
+                                申請メッセージ <span className="text-slate-500 font-normal">(任意)</span>
+                              </label>
+                              <span className="text-[10px] text-slate-500 font-mono">{regRequestMessage.length}/500</span>
+                            </div>
+                            <textarea
+                              rows={3}
+                              maxLength={500}
+                              placeholder="参加したい理由や自己紹介など（任意）。管理者が承認の判断に使います"
+                              value={regRequestMessage}
+                              onChange={(e) => setRegRequestMessage(e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none"
+                            />
+                          </div>
+                        )}
+
                         <button
                           type="submit"
                           className="w-full py-2.5 bg-gradient-to-r from-cyan-500 via-indigo-600 to-purple-600 hover:from-cyan-400 hover:via-indigo-500 hover:to-purple-500 text-white text-xs font-bold rounded-xl shadow-md transition transform active:scale-98 cursor-pointer mt-2"
                         >
-                          {isPasswordAuthMode ? 'メールアドレスで登録する' : 'マスターキーを発行して登録'}
+                          {isApprovalMode ? 'アカウントを申請する' : isPasswordAuthMode ? 'メールアドレスで登録する' : 'マスターキーを発行して登録'}
                         </button>
 
                         <div className="text-center pt-1">

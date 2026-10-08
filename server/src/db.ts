@@ -768,6 +768,12 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE posts ADD COLUMN is_sensitive INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE users ADD COLUMN icon_url TEXT DEFAULT '';",
     "ALTER TABLE users ADD COLUMN banner_url TEXT DEFAULT '';",
+    // 承認制の登録モード。既存ユーザーは全て approved（既定値）
+    "ALTER TABLE users ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved';",
+    "ALTER TABLE users ADD COLUMN approval_note TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN approval_reason TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN approval_reviewed_at TEXT DEFAULT NULL;",
+    "CREATE INDEX IF NOT EXISTS idx_users_approval_status ON users(approval_status);",
     "ALTER TABLE remote_actors ADD COLUMN icon_url TEXT DEFAULT '';",
     "ALTER TABLE remote_actors ADD COLUMN banner_url TEXT DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);",
@@ -1273,6 +1279,18 @@ export interface UserRow {
   moved_to?: string;
   /** 引っ越し元アカウント（Actor URL）。連合先が Move を検証するために alsoKnownAs として公開する */
   also_known_as?: string;
+  /**
+   * アカウントの審査状態（登録モード `approval` のときだけ `pending` / `rejected` になる）。
+   * 既存ユーザーと通常登録は `approved`。**`approved` 以外はログインできず、
+   * 公開の場所（Actor 文書・WebFinger・ディレクトリ・件数）にも出さない。**
+   */
+  approval_status: 'approved' | 'pending' | 'rejected';
+  /** 承認制の申請メッセージ（申請者が管理者へ書いた任意の文章） */
+  approval_note?: string;
+  /** 拒否の理由（管理者が入力。申請者にはログイン時に表示する） */
+  approval_reason?: string;
+  /** 審査が確定した時刻（ISO。未審査なら NULL） */
+  approval_reviewed_at?: string | null;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;
@@ -2014,7 +2032,7 @@ export async function getAllServerSettings(): Promise<Record<string, string>> {
   }
 }
 
-export type RegistrationMode = 'open' | 'invite' | 'closed';
+export type RegistrationMode = 'open' | 'invite' | 'closed' | 'approval';
 
 export const DEFAULT_SERVER_RULES: string[] = [
   'お互いを尊重してください',

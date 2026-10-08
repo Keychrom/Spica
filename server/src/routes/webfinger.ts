@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { db, UserRow } from '../db.js';
 import { config } from '../config.js';
 import { asyncHandler } from '../asyncHandler.js';
+import { isApprovedUser } from '../registration.js';
 
 export const webfingerRouter = Router();
 
@@ -42,7 +43,8 @@ webfingerRouter.get('/webfinger', asyncHandler(async (req: Request, res: Respons
   }
 
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(username) as UserRow | undefined;
-  if (!user) {
+  // 承認待ち・却下の申請は存在しないものとして扱う（連合先から見つからない）
+  if (!user || !isApprovedUser(user)) {
     return res.status(404).json({ error: 'ユーザーが見つかりません。' });
   }
 
