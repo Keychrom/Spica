@@ -1649,6 +1649,23 @@ export default function App() {
   // 設定画面から初期設定ウィザードを開き直す（サーバーのフラグは変えず、表示だけ）
   const openOnboardingWizard = () => setShowOnboarding(true);
 
+  // ウィザードでメール確認が済んだとき、authUser 側にも反映する（設定画面の表示は authUser を見ている）
+  const handleOnboardingEmailVerified = (email: string) => {
+    setAuthUser((prev) => (prev ? { ...prev, email, email_verified: 1 } : prev));
+  };
+
+  // 初期設定の完了画面から「最初の投稿を書く」。投稿欄（composer）はタイムライン画面にしか無いので、
+  // 必要ならホームへ移動してから ?compose=1 と同じ 200ms の待ちでフォーカスする
+  const handleWriteFirstPost = () => {
+    if (currentViewRef.current !== 'timeline') {
+      navigateToView('timeline');
+    }
+    if (timelineModeRef.current !== 'home') {
+      handleSwitchTimelineMode('home');
+    }
+    window.setTimeout(() => focusKeyboardTarget('composer'), 200);
+  };
+
   // アバター（アイコン）画像の直接アップロード
   const handleUploadAvatar = async (files: FileList | null) => {
     if (!files || files.length === 0 || !authToken) return;
@@ -3931,9 +3948,14 @@ export default function App() {
             authUser={authUser}
             serverName={serverStats?.name}
             serverDomain={serverStats?.domain || window.location.host}
+            featuresDm={featuresDm}
+            recoveryStatus={recoveryStatus}
+            isPasswordAuthMode={isPasswordAuthMode}
             urlBase64ToUint8Array={urlBase64ToUint8Array}
             onPushStatusRefresh={checkPushSubscriptionStatus}
             onUserUpdated={applyOnboardingUserUpdate}
+            onEmailVerified={handleOnboardingEmailVerified}
+            onWriteFirstPost={handleWriteFirstPost}
             onComplete={handleCompleteOnboarding}
           />
         </Suspense>
