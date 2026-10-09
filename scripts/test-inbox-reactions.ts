@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // 受信した絵文字リアクション（Like / EmojiReact）と、その取り消し（Undo）の検査
@@ -75,6 +76,27 @@ async function waitForServer(url: string, maxRetries = 40): Promise<boolean> {
   }
   return false;
 }
+
+// PostgreSQL でも回せるように、DB は共通のドライバ工場で開く
+// （以前は node:sqlite を直に開いていたので PG では「no such table: remote_actors」で落ちていた）
+const USE_PG =
+  (process.env.DB_DRIVER || 'sqlite').toLowerCase() === 'postgres' && Boolean(process.env.TEST_DATABASE_URL);
+
+async function withDb<T>(fn: (conn: ReturnType<typeof createAsyncDatabase>) => Promise<T>): Promise<T> {
+  const conn = USE_PG
+    ? createAsyncDatabase({ driver: 'postgres', connectionString: process.env.TEST_DATABASE_URL as string })
+    : createAsyncDatabase({ driver: 'sqlite', dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB) });
+  try {
+    return await fn(conn);
+  } finally {
+    await conn.close().catch(() => {});
+  }
+}
+
+const exec = (sql: string, ...params: any[]): Promise<void> => withDb((c) => c.prepare(sql).run(...params).then(() => {}));
+const row = (sql: string, ...params: any[]): Promise<any> => withDb((c) => c.prepare(sql).get(...params));
+const rows = async (sql: string, ...params: any[]): Promise<any[]> =>
+  (await withDb((c) => c.prepare(sql).all(...params))) as any[];
 
 // --- 署名ヘルパー（サーバ実装に依存せず、仕様どおりに署名する）---
 
@@ -186,17 +208,13 @@ async function run() {
     console.log(`📝 対象の投稿: ${postId}\n`);
 
     // リモートの actor を鍵つきで登録（外向き fetch を起こさず署名検証を成立させる）
-    const dbPath = path.resolve(ROOT_DIR, 'server', TEST_DB);
-    const { DatabaseSync } = await import('node:sqlite');
-    const testDb = new DatabaseSync(dbPath);
     const seedActor = async (actorUrl: string, publicKeyPem: string, inboxUrl: string) => {
       for (let attempt = 0; attempt < 10; attempt++) {
         try {
-          testDb.prepare(`
-            INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
-            VALUES (?, ?, ?, ?, '', '', '', ?, NULL, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem
-          `).run(
+          await exec(
+            `INSERT INTO remote_actors (id, username, domain, name, summary, icon_url, banner_url, inbox_url, shared_inbox_url, public_key_id, public_key_pem, updated_at)
+             VALUES (?, ?, ?, ?, '', '', '', ?, NULL, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET public_key_pem = excluded.public_key_pem`,
             actorUrl,
             actorUrl.split('/').pop() || 'user',
             new URL(actorUrl).host,
@@ -222,13 +240,13 @@ async function run() {
       return postInbox(body, signInboxRequest({ body, keyId: `${actor}#main-key`, privateKeyPem: keys.privateKeyPem }));
     };
 
-    const reactionsOf = () =>
-      testDb.prepare('SELECT id, user_id, reaction, is_local FROM reactions WHERE post_id = ? ORDER BY reaction, user_id').all(postId) as any[];
-    const rowsFor = (actorUrl: string) => reactionsOf().filter((r) => r.user_id === actorUrl);
-    const notificationCount = (content?: string) =>
-      (content
-        ? testDb.prepare("SELECT count(*) AS c FROM notifications WHERE type = 'reaction' AND post_id = ? AND content = ?").get(postId, content)
-        : testDb.prepare("SELECT count(*) AS c FROM notifications WHERE type = 'reaction' AND post_id = ?").get(postId)) as any;
+    const reactionsOf = async (): Promise<any[]> =>
+      (await rows('SELECT id, user_id, reaction, is_local FROM reactions WHERE post_id = ? ORDER BY reaction, user_id', postId)) as any[];
+    const rowsFor = async (actorUrl: string) => (await reactionsOf()).filter((r) => r.user_id === actorUrl);
+    const notificationCount = async (content?: string): Promise<any> =>
+      content
+        ? await row("SELECT count(*) AS c FROM notifications WHERE type = 'reaction' AND post_id = ? AND content = ?", postId, content)
+        : await row("SELECT count(*) AS c FROM notifications WHERE type = 'reaction' AND post_id = ?", postId);
 
     // ------------------------------------------------------------------
     console.log('❤️ [1] Like（content なし）は ❤️ として保存されるか');
@@ -240,10 +258,10 @@ async function run() {
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
     check('Like のステータス', likeRes.status, 200);
-    check('保存された件数', reactionsOf().length, 1);
-    check('絵文字', reactionsOf()[0]?.reaction, '❤️');
-    check('リモートからのリアクション（is_local=0）', reactionsOf()[0]?.is_local, 0);
-    check('投稿者への通知', notificationCount('❤️').c, 1);
+    check('保存された件数', (await reactionsOf()).length, 1);
+    check('絵文字', (await reactionsOf())[0]?.reaction, '❤️');
+    check('リモートからのリアクション（is_local=0）', (await reactionsOf())[0]?.is_local, 0);
+    check('投稿者への通知', (await notificationCount('❤️')).c, 1);
 
     // ------------------------------------------------------------------
     console.log('\n💯 [2] EmojiReact は絵文字つきで保存され、API が両方を返すか');
@@ -256,7 +274,7 @@ async function run() {
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
     check('EmojiReact のステータス', emojiRes.status, 200);
-    check('保存された件数', reactionsOf().length, 2);
+    check('保存された件数', (await reactionsOf()).length, 2);
 
     const timelineRes = await fetch(`${ORIGIN}/api/users/admin/posts?limit=10`);
     const timeline = await timelineRes.json();
@@ -276,8 +294,8 @@ async function run() {
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
     check('Undo のステータス', akkomaUndoRes.status, 200);
-    check('残った件数（❤️ だけ残る）', rowsFor(A_ACTOR).length, 1);
-    check('残った絵文字', rowsFor(A_ACTOR)[0]?.reaction, '❤️');
+    check('残った件数（❤️ だけ残る）', (await rowsFor(A_ACTOR)).length, 1);
+    check('残った絵文字', (await rowsFor(A_ACTOR))[0]?.reaction, '❤️');
 
     // ------------------------------------------------------------------
     console.log('\n↩️ [4] Mastodon 形の Undo（object = 活動 id の文字列）も 1 件だけ消すか');
@@ -288,8 +306,8 @@ async function run() {
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
     check('Undo のステータス', mastodonUndoRes.status, 200);
-    check('残った件数', rowsFor(A_ACTOR).length, 0);
-    check('通知は残る（仕様）', notificationCount().c, 2);
+    check('残った件数', (await rowsFor(A_ACTOR)).length, 0);
+    check('通知は残る（仕様）', (await notificationCount()).c, 2);
 
     // ------------------------------------------------------------------
     console.log('\n🤝 [5] 他人の活動 id を指定した Undo は何も消さないか');
@@ -308,7 +326,7 @@ async function run() {
       content: '👍',
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
-    check('B の ❤️ と A の 👍 が保存されている', reactionsOf().length, 2);
+    check('B の ❤️ と A の 👍 が保存されている', (await reactionsOf()).length, 2);
 
     // A が B の活動 id を Undo しても、A の行は消えない（user スコープで守られる）
     await send(A_ACTOR, {
@@ -317,8 +335,8 @@ async function run() {
       object: bLikeId,
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
-    check('B のリアクションは無事', rowsFor(B_ACTOR).length, 1);
-    check('A のリアクションも無事', rowsFor(A_ACTOR).length, 1);
+    check('B のリアクションは無事', (await rowsFor(B_ACTOR)).length, 1);
+    check('A のリアクションも無事', (await rowsFor(A_ACTOR)).length, 1);
 
     // ------------------------------------------------------------------
     console.log('\n🔎 [6] 活動 id が未知でも content があれば絵文字で特定できるか');
@@ -335,7 +353,7 @@ async function run() {
       object: { id: `${A_ACTOR}/activities/unknown-1`, type: 'EmojiReact', object: postId, content: '🎉', actor: A_ACTOR },
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
-    check('A の残り（👍 だけ）', rowsFor(A_ACTOR).map((r) => r.reaction).join(','), '👍');
+    check('A の残り（👍 だけ）', (await rowsFor(A_ACTOR)).map((r) => r.reaction).join(','), '👍');
 
     // ------------------------------------------------------------------
     console.log('\n🔎 [7] object が投稿 URL の文字列（古い Misskey 形）は投稿単位で消すか');
@@ -345,8 +363,8 @@ async function run() {
       object: postId,
       to: ['https://www.w3.org/ns/activitystreams#Public'],
     }, aKeys);
-    check('A のリアクションが消えた', rowsFor(A_ACTOR).length, 0);
-    check('B のリアクションは残る', rowsFor(B_ACTOR).length, 1);
+    check('A のリアクションが消えた', (await rowsFor(A_ACTOR)).length, 0);
+    check('B のリアクションは残る', (await rowsFor(B_ACTOR)).length, 1);
 
     console.log('');
   } catch (err: any) {

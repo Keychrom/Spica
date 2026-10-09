@@ -69,6 +69,12 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
 
   const [loginPassword, setLoginPassword] = useState<string>('');
 
+  /** 2段階認証（TOTP）が有効なアカウント用: ログイン時に要求される6桁コード（またはリカバリーコード） */
+  const [totpCode, setTotpCode] = useState<string>('');
+
+  /** サーバーが totp_required を返したらコードの入力欄を出す（エラー表示だけで終わらせない） */
+  const [showTotpInput, setShowTotpInput] = useState<boolean>(false);
+
   const [regId, setRegId] = useState<string>('');
 
   const [regName, setRegName] = useState<string>('');
@@ -203,16 +209,36 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
         const err = await optRes.json();
         throw new Error(err.error || '認証オプションの取得に失敗しました。');
       }
-      const options = await optRes.json();
+      const rawOptions = await optRes.json();
+      const { totp_required, ...options } = rawOptions;
+      // 🔐 2段階認証が有効なアカウント: 生体認証の前にコードを入力してもらう
+      //    （先にコードを求めた方が、生体認証のやり直しが起きない）
+      if (totp_required && !totpCode.trim()) {
+        setShowTotpInput(true);
+        setAuthError('このアカウントは2段階認証が有効です。コードを入力してからもう一度お試しください。');
+        return;
+      }
 
       // SimpleWebAuthn ブラウザ側 生体認証 / パスキープロンプト起動
       const { startAuthentication } = await import('@simplewebauthn/browser');
       const authResponse = await startAuthentication({ optionsJSON: options });
 
-      const verifyRes = await api.post('/api/webauthn/authenticate/verify', { credential: authResponse, expectedChallenge: options.challenge, });
+      const verifyRes = await api.post('/api/webauthn/authenticate/verify', {
+        credential: authResponse,
+        expectedChallenge: options.challenge,
+        // 2段階認証が有効な人はコード（またはリカバリーコード）も一緒に送る
+        ...(totpCode.trim() ? { totpCode: totpCode.trim() } : {}),
+      });
 
       if (!verifyRes.ok) {
         const err = await verifyRes.json();
+        // サーバーがコードを要求してきたら、エラーで終わらせず入力欄を出す
+        if (verifyRes.status === 401 && err?.totp_required) {
+          setShowTotpInput(true);
+          setAuthError(totpCode.trim() ? 'コードが正しくありません。' : (err.error || '2段階認証コードを入力してください。'));
+          setTotpCode('');
+          return;
+        }
         throw new Error(err.error || 'パスキー認証に失敗しました。');
       }
 
@@ -223,6 +249,8 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
       setAuthUser(data.user);
       fetchMyFollowingUrls(data.token);
       setShowLoginModal(false);
+      setTotpCode('');
+      setShowTotpInput(false);
       fetchTimeline();
     } catch (e: any) {
       console.error('Passkey login error:', e);
@@ -251,12 +279,28 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
       }
     }
 
+    // 2段階認証のコード。再送信はフォームの値（id / email / masterKey / password）をそのまま使い、これだけ足す
+    const code = totpCode.trim();
+
     try {
-      const res = await api.post('/api/auth/login', usePassword // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
- ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) } : { id: identifier, masterKey: loginKey.trim() },);
+      const res = await api.post('/api/auth/login', {
+        // 入力がメールアドレス形式なら email、それ以外はユーザーIDとして送信する
+        ...(usePassword
+          ? { password: loginPassword, ...(isValidEmailFormat(identifier) ? { email: identifier } : { id: identifier }) }
+          : { id: identifier, masterKey: loginKey.trim() }),
+        // 2段階認証が有効な人はコード（またはリカバリーコード）も一緒に送る
+        ...(code ? { totpCode: code } : {}),
+      });
 
       const data = await res.json();
       if (!res.ok) {
+        // 2段階認証が有効: コードが未入力（または誤り）なので、エラーで終わらせず入力欄を出して再入力を促す
+        if (res.status === 401 && data?.totp_required) {
+          setShowTotpInput(true);
+          setAuthError(code ? 'コードが正しくありません。' : (data.error || '2段階認証コードを入力してください。'));
+          setTotpCode('');
+          return;
+        }
         setAuthError(data.error || 'ログインに失敗しました。');
         return;
       }
@@ -270,6 +314,8 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
       setLoginKey('');
       setLoginPassword('');
       setLoginId('');
+      setTotpCode('');
+      setShowTotpInput(false);
       fetchTimeline();
     } catch (err: any) {
       setAuthError(err.message);
@@ -1205,6 +1251,28 @@ export default function AuthPortalView(props: AuthPortalViewProps) {
                             onChange={(e) => setLoginKey(e.target.value)}
                             className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none"
                           />
+                        </div>
+                      )}
+
+                      {/* 🔐 2段階認証が有効なアカウント: サーバーが totp_required を返したら入力欄を出す */}
+                      {showTotpInput && (
+                        <div className="animate-in fade-in duration-200">
+                          <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                            2段階認証コード
+                          </label>
+                          <input
+                            type="text"
+                            autoFocus
+                            inputMode="numeric"
+                            autoComplete="one-time-code"
+                            placeholder="123456 または リカバリーコード"
+                            value={totpCode}
+                            onChange={(e) => setTotpCode(e.target.value)}
+                            className="w-full bg-slate-950 border border-indigo-500/40 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono tracking-widest focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                          />
+                          <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                            認証アプリに出ている6桁のコードを入力してください。端末をなくしたときは、リカバリーコード（XXXXX-XXXXX）をそのまま入力できます。
+                          </p>
                         </div>
                       )}
 

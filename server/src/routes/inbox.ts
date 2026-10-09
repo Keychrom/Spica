@@ -19,7 +19,7 @@ import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolic
 import { isPublicPost } from '../postVisibility.js';
 import { isDmEnabled, localRecipientUserIds, localUserIdFromActorUrl, isDmReceptionAllowed } from '../dm.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
-import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll } from '../streaming.js';
+import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll, broadcastEvent } from '../streaming.js';
 import { getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 import { invalidateTimelineCache } from '../timelineCache.js';
@@ -1048,6 +1048,67 @@ export async function processActivity(
         }
 
         return res.status(200).json({ status: 'Like processed' });
+      }
+
+      // ✏️ 編集の受信: 手元にある同じ ID の投稿を差し替える（無ければ何もしない）。
+      //    差し替えるのは本文・CW・センシティブだけ（票や添付は触らない）
+      case 'Update': {
+        const object = activity.object;
+        const objectId = typeof object === 'string' ? object : object?.id;
+        if (!objectId || typeof object === 'string') {
+          return res.status(200).json({ status: 'Update ignored' });
+        }
+        const existing = (await db.prepare('SELECT id, user_id, author_url FROM posts WHERE id = ?').get(objectId)) as
+          | { id: string; user_id: string; author_url: string }
+          | undefined;
+        if (!existing) {
+          // 手元に無い投稿の編集は追いかけない（Create が来たら素直に取り込む）
+          return res.status(200).json({ status: 'Update ignored (unknown object)' });
+        }
+        // 差し替えてよいのは、その投稿の作者本人からの Update だけ
+        const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
+        if (!actorUrl || actorUrl !== existing.author_url) {
+          console.warn(`[Inbox Update] ⚠️ 作者が一致しない Update を無視しました: ${objectId} (actor=${actorUrl})`);
+          return res.status(200).json({ status: 'Update rejected (actor mismatch)' });
+        }
+
+        const newContent = typeof object.content === 'string' ? object.content.trim() : null;
+        const hasCw = object.summary !== undefined;
+        const newCw = hasCw ? (object.summary === null ? null : String(object.summary).trim() || null) : null;
+        const newSensitive = typeof object.sensitive === 'boolean' ? (object.sensitive ? 1 : 0) : undefined;
+        const newEmojis = Array.isArray(object.tag)
+          ? JSON.stringify(
+              (object.tag as any[])
+                .filter((t) => t?.type === 'Emoji' && typeof t.name === 'string' && typeof t.icon?.url === 'string')
+                .map((t) => ({ name: String(t.name).replace(/^:|:$/g, ''), url: t.icon.url })),
+            )
+          : undefined;
+        const editedAt = typeof object.updated === 'string' ? object.updated : new Date().toISOString();
+
+        await db.prepare(`
+          UPDATE posts SET
+            content = COALESCE(?, content),
+            cw = CASE WHEN ? THEN ? ELSE cw END,
+            is_sensitive = COALESCE(?, is_sensitive),
+            emojis = COALESCE(?, emojis),
+            edited_at = ?
+          WHERE id = ?
+        `).run(newContent, hasCw ? 1 : 0, newCw, newSensitive ?? null, newEmojis ?? null, editedAt, objectId);
+        await invalidateTimelineCache();
+        console.log(`[Inbox Update] ✏️ @${existing.user_id} の投稿を更新しました: ${objectId}`);
+
+        // 同じ画面を開いている人にも差し替えを知らせる
+        // （publishEvent 直呼びは SSE に届かない。リアクション等と同じく broadcastEvent を通す）
+        broadcastEvent('post_updated', {
+          id: objectId,
+          content: newContent,
+          cw: hasCw ? newCw : undefined,
+          is_sensitive: newSensitive,
+          emojis: newEmojis,
+          edited_at: editedAt,
+        });
+
+        return res.status(200).json({ status: 'Update processed' });
       }
 
       case 'Undo': {

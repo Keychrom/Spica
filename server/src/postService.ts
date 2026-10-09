@@ -2,10 +2,11 @@ import crypto from 'node:crypto';
 import { db, UserRow, PostRow, createNotification, AntennaRow } from './db.js';
 import { withTransaction } from './db/asyncDriver.js';
 import { config } from './config.js';
-import { broadcastNote } from './streaming.js';
+import { broadcastNote, broadcastEvent } from './streaming.js';
 import {
   buildNote,
   buildCreateActivity,
+  buildUpdateNoteActivity,
   deliverActivity,
   fetchRemoteActor,
 } from './activitypub.js';
@@ -422,6 +423,174 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   }
 
   return { post: responsePostData, federatedTo: allTargetInboxes.length };
+}
+
+/**
+ * 配信先 Inbox を集める（作成と編集で同じ audience を使う）。
+ *
+ * - フォロワー（承認済みのみ・共有 Inbox にまとめる）
+ * - 承認済みリレー（公開投稿のみ）
+ * - 返信先の相手・引用した相手（リモートのときだけ）
+ */
+export async function collectAudienceInboxes(
+  actorUrl: string,
+  opts: { visibility: string; inReplyTo?: string | null; quoteId?: string | null },
+): Promise<string[]> {
+  const followerInboxes = (await db.prepare(`
+    SELECT DISTINCT COALESCE(ra.shared_inbox_url, f.inbox_url) AS inbox_url
+    FROM follows f
+    LEFT JOIN remote_actors ra ON ra.id = f.follower_url
+    WHERE f.following_url = ? AND f.status = 'accepted'
+      AND COALESCE(ra.shared_inbox_url, f.inbox_url) IS NOT NULL
+      AND COALESCE(ra.shared_inbox_url, f.inbox_url) != ''
+  `).all(actorUrl) as { inbox_url: string }[]).map((f) => f.inbox_url);
+
+  // リレーは不特定多数のサーバーへ再配信するため、フォロワー限定投稿では使用しない
+  const relayInboxes = opts.visibility === 'public'
+    ? (await db.prepare(`
+        SELECT DISTINCT inbox_url FROM relays WHERE status = 'accepted'
+      `).all() as { inbox_url: string }[]).map((r) => r.inbox_url)
+    : [];
+
+  const directInboxes: string[] = [];
+  if (opts.inReplyTo) {
+    const parentPost = await db.prepare('SELECT author_url FROM posts WHERE id = ?').get(opts.inReplyTo) as { author_url: string } | undefined;
+    if (parentPost && !parentPost.author_url.startsWith(config.origin)) {
+      try {
+        const remoteActor = await fetchRemoteActor(parentPost.author_url);
+        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
+      } catch {}
+    }
+  }
+  if (opts.quoteId) {
+    const quotedPost = await db.prepare('SELECT author_url FROM posts WHERE id = ?').get(opts.quoteId) as { author_url: string } | undefined;
+    if (quotedPost && !quotedPost.author_url.startsWith(config.origin)) {
+      try {
+        const remoteActor = await fetchRemoteActor(quotedPost.author_url);
+        if (remoteActor.inbox_url) directInboxes.push(remoteActor.inbox_url);
+      } catch {}
+    }
+  }
+
+  return Array.from(new Set([...followerInboxes, ...relayInboxes, ...directInboxes]));
+}
+
+/**
+ * 投稿を編集する（本文・CW・センシティブ）。
+ *
+ * 配信先は作成時と同じ audience（フォロワー＋リレー＋返信先/引用相手）に `Update` を送る。
+ * Misskey / Mastodon は Update を受信すると手元のコピーを差し替えるので、連合先でも編集が反映される。
+ * アンケートと添付メディアは編集しない（票や添付の整合が壊れるため）。
+ */
+export async function executeUpdatePost(params: {
+  user: UserRow;
+  postId: string;
+  content?: string;
+  cw?: string | null;
+  isSensitive?: boolean;
+}): Promise<{ ok: true; post: any; federatedTo: number } | { ok: false; status: number; error: string }> {
+  const { user, postId } = params;
+  const post = (await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId)) as PostRow | undefined;
+  if (!post || post.is_local !== 1) {
+    return { ok: false, status: 404, error: '投稿が見つかりません。' };
+  }
+  if (post.user_id !== user.id) {
+    return { ok: false, status: 403, error: '自分の投稿だけ編集できます。' };
+  }
+  if (post.visibility === 'direct') {
+    // DM は編集の連合が煩雑なので対象外（送り直しで対応してもらう）
+    return { ok: false, status: 400, error: 'メッセージ（DM）は編集できません。' };
+  }
+
+  const postText = params.content !== undefined ? String(params.content).trim() : post.content;
+  const cwText = params.cw !== undefined ? (params.cw === null ? null : String(params.cw).trim() || null) : (post.cw ?? null);
+  const isSensitive = params.isSensitive !== undefined ? (params.isSensitive ? 1 : 0) : (post.is_sensitive ? 1 : 0);
+
+  let attachments: any[] = [];
+  try { attachments = JSON.parse(post.media_attachments || '[]'); } catch { attachments = []; }
+  if (!postText && attachments.length === 0) {
+    return { ok: false, status: 400, error: '本文が空の投稿は編集できません。' };
+  }
+
+  const now = new Date().toISOString();
+  // 本文のカスタム絵文字を拾い直す（編集で増減するため）
+  const actorUrl = `${config.origin}/users/${user.id}`;
+  const emojiMatches = postText.match(/:[a-zA-Z0-9_+-]+:/g) || [];
+  let emojisJson = '[]';
+  const apEmojiTags: { name: string; url: string }[] = [];
+  if (emojiMatches.length > 0) {
+    const uniqueNames = Array.from(new Set(emojiMatches.map((m) => m.slice(1, -1).toLowerCase())));
+    const found = (await db
+      .prepare(`SELECT name, url FROM custom_emojis WHERE name IN (${uniqueNames.map(() => '?').join(',')})`)
+      .all(...uniqueNames)) as { name: string; url: string }[];
+    if (found.length > 0) {
+      emojisJson = JSON.stringify(found);
+      for (const emoji of found) apEmojiTags.push({ name: emoji.name, url: emoji.url });
+    }
+  }
+
+  await db
+    .prepare('UPDATE posts SET content = ?, cw = ?, is_sensitive = ?, emojis = ?, edited_at = ? WHERE id = ?')
+    .run(postText, cwText, isSensitive, emojisJson, now, postId);
+  await invalidateTimelineCache();
+
+  const updated = (await db.prepare('SELECT * FROM posts WHERE id = ?').get(postId)) as PostRow;
+
+  // 連合先にも反映する（Update は「同じ ID のオブジェクトを差し替える」合図）
+  let federatedTo = 0;
+  if (updated.visibility !== 'local') {
+    const note = buildNote({
+      id: updated.id,
+      authorUrl: actorUrl,
+      content: postText,
+      publishedAt: updated.published_at,
+      editedAt: now,
+      inReplyTo: updated.in_reply_to || undefined,
+      quoteUrl: updated.quote_id || undefined,
+      attachments,
+      summary: cwText || undefined,
+      sensitive: isSensitive === 1,
+      tags: apEmojiTags.length > 0 ? apEmojiTags : undefined,
+      visibility: updated.visibility,
+    });
+    const updateActivity = buildUpdateNoteActivity({ note, actorUrl });
+    const inboxes = await collectAudienceInboxes(actorUrl, {
+      visibility: updated.visibility,
+      inReplyTo: updated.in_reply_to,
+      quoteId: updated.quote_id,
+    });
+    federatedTo = inboxes.length;
+    if (inboxes.length > 0) {
+      void runWithConcurrency(inboxes, config.deliveryConcurrency, async (inboxUrl) => {
+        try {
+          return (await deliverActivity({ inboxUrl, activity: updateActivity, senderUser: user })) === true;
+        } catch {
+          return false;
+        }
+      }).then((results) => {
+        const succeeded = results.filter((ok) => ok === true).length;
+        console.log(`[Delivery] ✏️ Update sent: ${succeeded}/${inboxes.length} inboxes`);
+      });
+    }
+  }
+
+  // 画面を開いている人の表示も差し替える（本文と CW だけを送る）。
+  // ⚠️ publishEvent を直接呼ぶと SSE には届かない（配信側は 'stream' チャンネルだけを購読している）。
+  //    他のイベントと同じく broadcastEvent を通す（Redis が無くても自プロセスのクライアントへ届く）
+  broadcastEvent('post_updated', {
+    id: postId,
+    content: postText,
+    cw: cwText,
+    is_sensitive: isSensitive,
+    emojis: emojisJson,
+    edited_at: now,
+  });
+
+  return {
+    ok: true,
+    federatedTo,
+    post: { ...updated, media_attachments: attachments, emojis: emojisJson },
+  };
 }
 
 /**

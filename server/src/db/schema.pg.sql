@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS users  (
   onboarding_completed BIGINT NOT NULL DEFAULT 1,
   noindex BIGINT NOT NULL DEFAULT 0,
   no_ai_training BIGINT NOT NULL DEFAULT 0,
+  totp_secret TEXT DEFAULT '',
+  totp_enabled BIGINT NOT NULL DEFAULT 0,
+  totp_recovery_codes TEXT DEFAULT '[]',
   is_locked BIGINT NOT NULL DEFAULT 0,
   fields TEXT DEFAULT '[]',
   discoverable BIGINT NOT NULL DEFAULT 1,
@@ -321,6 +324,7 @@ CREATE TABLE IF NOT EXISTS posts  (
   is_sensitive BIGINT NOT NULL DEFAULT 0,
   media_attachments TEXT DEFAULT '[]',
   published_at TEXT NOT NULL,
+  edited_at TEXT DEFAULT NULL,
   channel_id TEXT DEFAULT NULL,
   fts_indexed BIGINT NOT NULL DEFAULT 1,
   recipients TEXT DEFAULT '[]'

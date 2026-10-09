@@ -23,8 +23,10 @@ import { isMailConfigured, sendMail, generateVerificationCode, issueVerification
 
 import { uploadMediaFile } from '../storage.js';
 import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
-import { executeCreatePost } from '../postService.js';
+import { executeCreatePost, executeUpdatePost } from '../postService.js';
 import { isApprovedUser } from '../registration.js';
+import { buildOtpauthUri, generateRecoveryCodes, generateTotpSecret, verifyTotpCode } from '../totp.js';
+import { consumeRecoveryCode, disableTotp, enableTotp, getTotpState, setPendingTotpSecret } from '../totpService.js';
 import {
   createWebAuthnRegistrationOptions,
   verifyWebAuthnRegistration,
@@ -429,6 +431,29 @@ apiRouter.post('/auth/login', asyncHandler(async (req: Request, res: Response) =
     return res.status(401).json({ error: '認証情報が一致しません。' });
   }
 
+  // 🔐 2段階認証（TOTP）。パスワード/マスターキーが合っていても、コードが無ければ入れない。
+  //    - コード未指定 → totp_required を返してクライアントに入力させる
+  //    - コード or リカバリーコードが一致 → 通す（リカバリーコードは一度使ったら消す）
+  if (Number((user as any).totp_enabled) === 1) {
+    const totpCode = typeof req.body?.totpCode === 'string' ? req.body.totpCode.trim() : '';
+    if (!totpCode) {
+      return res.status(401).json({
+        error: '2段階認証コードを入力してください。',
+        totp_required: true,
+      });
+    }
+    const okByCode = verifyTotpCode(String((user as any).totp_secret || ''), totpCode);
+    if (!okByCode) {
+      const consumed = await consumeRecoveryCode(user.id, totpCode);
+      if (!consumed) {
+        return res.status(401).json({
+          error: '2段階認証コードが正しくありません。',
+          totp_required: true,
+        });
+      }
+    }
+  }
+
   const session = await createSession(user.id, req.headers["user-agent"]);
   const handle = `@${user.id}@${config.domain}`;
 
@@ -506,6 +531,92 @@ apiRouter.post('/sessions/revoke-others', requireAuth, asyncHandler(async (req: 
   res.json({ success: true, removed });
 }));
 
+// ==========================================
+// 🔐 2段階認証（TOTP）
+//
+//   流れ: setup（秘密を発行・保存）→ 認証アプリで読む → enable（コードで確認して有効化）
+//         → 以降のログインでコードが必須になる。リカバリーコードは enable 時に一度だけ表示する。
+//   無効化・再発行にも現在のコード（またはリカバリーコード）を要求する
+//   （端末を放置したまま乗っ取られて解除されないように）
+// ==========================================
+
+/** 現在のコード（またはリカバリーコード）が正しいか。無効化・再発行の確認に使う */
+async function verifyCurrentTotp(user: any, code: string): Promise<boolean> {
+  if (verifyTotpCode(String(user.totp_secret || ''), code)) return true;
+  return consumeRecoveryCode(user.id, code);
+}
+
+apiRouter.get('/me/totp', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const state = await getTotpState(req.user!.id);
+  res.json(state);
+}));
+
+// 有効化の準備: 秘密を発行して保存し、認証アプリに読み込ませる情報を返す（まだ有効ではない）
+apiRouter.post('/me/totp/setup', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.user!;
+  if (Number((req.rawUser as any)?.totp_enabled) === 1) {
+    return res.status(400).json({ error: 'すでに2段階認証は有効です。' });
+  }
+  const secret = generateTotpSecret();
+  await setPendingTotpSecret(user.id, secret);
+  const instanceName = getInstanceInfo().name || 'Spica';
+  res.json({
+    secret,
+    otpauth_uri: buildOtpauthUri(secret, `@${user.id}@${config.domain}`, instanceName),
+  });
+}));
+
+// 有効化の確定: アプリに出ているコードを確認してから有効にする。リカバリーコードはここで一度だけ返す
+apiRouter.post('/me/totp/enable', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.user!;
+  const raw = req.rawUser as any;
+  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+  const secret = String(raw?.totp_secret || '');
+  if (!secret) {
+    return res.status(400).json({ error: '先に「2段階認証を設定する」から手順を始めてください。' });
+  }
+  if (!verifyTotpCode(secret, code)) {
+    return res.status(400).json({ error: 'コードが正しくありません。認証アプリに出ている6桁を入力してください。' });
+  }
+  const recoveryCodes = generateRecoveryCodes(10);
+  await enableTotp(user.id, recoveryCodes);
+  console.log(`[TOTP] 🔐 @${user.id} が2段階認証を有効にしました`);
+  res.json({ success: true, recovery_codes: recoveryCodes });
+}));
+
+// 無効化: 現在のコード（またはリカバリーコード）が必要
+apiRouter.post('/me/totp/disable', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.user!;
+  const raw = req.rawUser as any;
+  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+  if (Number(raw?.totp_enabled) !== 1) {
+    return res.status(400).json({ error: '2段階認証は有効ではありません。' });
+  }
+  if (!(await verifyCurrentTotp({ id: user.id, totp_secret: raw?.totp_secret }, code))) {
+    return res.status(401).json({ error: 'コードが正しくありません。' });
+  }
+  await disableTotp(user.id);
+  console.log(`[TOTP] 🔓 @${user.id} が2段階認証を無効にしました`);
+  res.json({ success: true });
+}));
+
+// リカバリーコードの再発行（古いコードは無効になる）
+apiRouter.post('/me/totp/recovery-codes', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.user!;
+  const raw = req.rawUser as any;
+  const code = typeof req.body?.code === 'string' ? req.body.code.trim() : '';
+  if (Number(raw?.totp_enabled) !== 1) {
+    return res.status(400).json({ error: '2段階認証は有効ではありません。' });
+  }
+  if (!(await verifyCurrentTotp({ id: user.id, totp_secret: raw?.totp_secret }, code))) {
+    return res.status(401).json({ error: 'コードが正しくありません。' });
+  }
+  const recoveryCodes = generateRecoveryCodes(10);
+  await enableTotp(user.id, recoveryCodes);
+  console.log(`[TOTP] ♻️ @${user.id} がリカバリーコードを再発行しました`);
+  res.json({ success: true, recovery_codes: recoveryCodes });
+}));
+
 // 現在のログインユーザー情報
 apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.user!;
@@ -534,6 +645,8 @@ apiRouter.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Re
     no_ai_training: Number(raw?.no_ai_training ?? 0),
     is_locked: Number(raw?.is_locked ?? 0),
     discoverable: Number(raw?.discoverable ?? 1),
+    // 2段階認証（TOTP）が有効か
+    totp_enabled: Number(raw?.totp_enabled ?? 0),
     // 権限の一覧（'admin' / 'moderate' など）。画面の出し分けはこの配列で判断する
     permissions: Array.from(await getUserPermissions(user)),
   });
@@ -920,6 +1033,7 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
         }
       })(),
       published_at: r.published_at,
+      edited_at: r.edited_at || null,
       timeline_at: r.timeline_at || r.published_at,
       // 🔗 リンクプレビュー（OGP カード）: キャッシュ済みのものだけ添付する
       link_preview: (() => {
@@ -1092,6 +1206,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       p.in_reply_to,
       p.media_attachments,
       p.published_at,
+      p.edited_at,
       p.channel_id,
       COALESCE(
         NULLIF(p.author_icon, ''),
@@ -1130,6 +1245,7 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
       p.in_reply_to,
       p.media_attachments,
       p.published_at,
+      p.edited_at,
       p.channel_id,
       COALESCE(
         NULLIF(p.author_icon, ''),
@@ -1413,6 +1529,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
             p.in_reply_to,
             p.media_attachments,
             p.published_at,
+            p.edited_at,
             COALESCE(
               NULLIF(p.author_icon, ''),
               NULLIF(u.icon_url, ''),
@@ -1466,6 +1583,7 @@ apiRouter.get('/search', asyncHandler(async (req: Request, res: Response) => {
         p.in_reply_to,
         p.media_attachments,
         p.published_at,
+        p.edited_at,
         COALESCE(
           NULLIF(p.author_icon, ''),
           NULLIF(u.icon_url, ''),
@@ -1755,6 +1873,22 @@ export const handleDeletePost = asyncHandler(async (req: Request, res: Response)
   res.json({ success: true, message: '投稿を削除しました。' });
 });
 apiRouter.delete('/posts/:id', requireAuth, handleDeletePost);
+
+// ✏️ 投稿の編集（自分のローカル投稿のみ）。ActivityPub の Update で連合先にも反映する
+apiRouter.put('/posts/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const postId = decodeURIComponent(String(req.params.id));
+  const result = await executeUpdatePost({
+    user: req.rawUser!,
+    postId,
+    content: typeof req.body?.content === 'string' ? req.body.content : undefined,
+    cw: req.body?.cw === null ? null : (typeof req.body?.cw === 'string' ? req.body.cw : undefined),
+    isSensitive: typeof req.body?.is_sensitive === 'boolean' ? req.body.is_sensitive : undefined,
+  });
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  res.json({ success: true, post: result.post, federatedTo: result.federatedTo });
+}));
 
 // 📊 アンケートへの投票 (認証必須)
 export const handleVotePoll = asyncHandler(async (req: Request, res: Response) => {
@@ -2153,7 +2287,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   const post = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at, p.edited_at,
       COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
     FROM posts p
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -2181,7 +2315,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
     parent = await db.prepare(`
       SELECT 
         p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-        p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+        p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at, p.edited_at,
         COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
       FROM posts p
       LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -2194,7 +2328,7 @@ apiRouter.get('/posts/:id/thread', asyncHandler(async (req: Request, res: Respon
   const replies = await db.prepare(`
     SELECT 
       p.id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content,
-      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at,
+      p.is_local, p.visibility, p.recipients, p.emojis, p.in_reply_to, p.quote_id, p.is_sensitive, p.media_attachments, p.published_at, p.edited_at,
       COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
     FROM posts p
     LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
@@ -5215,6 +5349,7 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
       p.is_sensitive,
       p.media_attachments,
       p.published_at,
+      p.edited_at,
       p.published_at AS timeline_at,
       COALESCE(
         NULLIF(p.author_icon, ''),
@@ -5463,7 +5598,16 @@ apiRouter.post('/webauthn/authenticate/options', async (req: Request, res: Respo
     const { user_id } = req.body;
     const reqOrigin = req.headers.origin as string | undefined;
     const options = await createWebAuthnAuthenticationOptions(user_id || undefined, reqOrigin);
-    res.json(options);
+    // 🔐 2段階認証が有効なアカウントなら、生体認証の前にコードを求める。
+    //    user_id が分かる時だけ分かる情報なので、分からなければ verify 側で判定する
+    let totp_required = false;
+    if (user_id) {
+      const row = (await db.prepare('SELECT totp_enabled FROM users WHERE id = ?').get(String(user_id))) as
+        | { totp_enabled?: number }
+        | undefined;
+      totp_required = Number(row?.totp_enabled) === 1;
+    }
+    res.json({ ...options, totp_required });
   } catch (e: any) {
     console.error('[WebAuthn] authenticate/options error:', e);
     res.status(500).json({ error: e.message || '認証オプションの生成に失敗しました。' });
@@ -5476,6 +5620,19 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
     const reqOrigin = req.headers.origin as string | undefined;
     const result = await verifyWebAuthnAuthentication(req.body, reqOrigin);
     if (result.verified && result.user) {
+      // 🔐 2段階認証が有効なアカウントは、パスキー（持っているもの）だけでは通さない。
+      //    パスキーは 1 要素として数え、コード（またはリカバリーコード）を必ず求める
+      if (Number((result.user as any).totp_enabled) === 1) {
+        const totpCode = typeof req.body?.totpCode === 'string' ? req.body.totpCode.trim() : '';
+        if (!totpCode) {
+          return res.status(401).json({ error: '2段階認証コードを入力してください。', totp_required: true });
+        }
+        const okByCode = verifyTotpCode(String((result.user as any).totp_secret || ''), totpCode);
+        const okByRecovery = okByCode ? false : await consumeRecoveryCode(result.user.id, totpCode);
+        if (!okByCode && !okByRecovery) {
+          return res.status(401).json({ error: 'コードが正しくありません。', totp_required: true });
+        }
+      }
       // ここは以前 await が抜けていて、Promise がそのまま JSON に化けて
       // `token: {}` が返っていた（＝パスキーログインが必ず失敗していた）。2026-10-04 に修正。
       const session = await createSession(result.user.id, req.headers['user-agent']);
@@ -5729,6 +5886,7 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
       p.in_reply_to,
       p.media_attachments,
       p.published_at,
+      p.edited_at,
       p.channel_id,
       COALESCE(
         NULLIF(p.author_icon, ''),

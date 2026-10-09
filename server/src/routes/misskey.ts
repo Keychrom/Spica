@@ -289,7 +289,7 @@ async function fetchTimelineRows(params: {
     SELECT * FROM (
       SELECT
         p.id AS post_id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content, p.cw,
-        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.media_attachments, p.published_at, p.channel_id,
+        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.media_attachments, p.published_at, p.channel_id, p.edited_at,
         p.quote_id, p.is_sensitive,
         COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
         NULL AS announce_id, NULL AS renoted_by_name, NULL AS renoted_by_handle,
@@ -305,7 +305,7 @@ async function fetchTimelineRows(params: {
     ) UNION ALL SELECT * FROM (
       SELECT
         p.id AS post_id, p.user_id, p.author_name, p.author_url, p.author_handle, p.content, p.cw,
-        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.media_attachments, p.published_at, p.channel_id,
+        p.is_local, p.visibility, p.emojis, p.in_reply_to, p.media_attachments, p.published_at, p.channel_id, p.edited_at,
         p.quote_id, p.is_sensitive,
         COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
         a.id AS announce_id, a.user_name AS renoted_by_name, a.user_handle AS renoted_by_handle,

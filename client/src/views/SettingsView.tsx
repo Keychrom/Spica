@@ -6,7 +6,8 @@
  * App からは React.lazy で読み込むので、初期バンドルには含まれない。
  */
 import { useEffect, useState } from 'react';
-import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Ban, Bell, BellOff, Check, CheckCircle2, Copy, Download, ExternalLink, FileText, Fingerprint, FolderArchive, Globe, ImageIcon, Key, KeyRound, LogOut, Mail, Moon, Palette, Plus, RefreshCw, Send, Server, Settings, ShieldAlert, ShieldCheck, Sliders, Sun, Trash2, Upload, User, Users, Volume2, VolumeX, Zap } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { usePrefs, updatePrefs, loadPrefs } from '../prefs';
 import { useInstallAvailable, promptInstall, isStandalone } from '../pwa';
 
@@ -746,6 +747,387 @@ function SessionsPanel({ api, authToken }: { api: any; authToken: any }) {
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 🔐 2段階認証（TOTP）の設定パネル。
+ *
+ * サーバー側の流れ（server/src/routes/api.ts の /api/me/totp/*）:
+ *   無効: GET で状態を見る → setup（秘密と QR を表示。まだ有効にはならない）
+ *         → enable（認証アプリに出ているコードで確定）→ リカバリーコードを一度だけ表示
+ *   有効: 残りのリカバリーコード数を表示。再発行・無効化には現在のコード（またはリカバリーコード）が要る
+ *   （端末を放置したまま乗っ取られて解除されないようにするため）
+ */
+function TotpSettingsPanel({ api }: { api: any }) {
+  /** パネルを開いたときの状態（GET /api/me/totp）。null は取得できていない */
+  const [status, setStatus] = useState<{ enabled: boolean; remainingCodes: number } | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  /** setup の応答（QR と手入力用の秘密）。表示中はまだ有効になっていない */
+  const [setup, setSetup] = useState<{ secret: string; otpauth_uri: string } | null>(null);
+  /** 有効化に使う、認証アプリに出ている6桁コード */
+  const [enableCode, setEnableCode] = useState<string>('');
+  /** 有効なときの操作。無効化・再発行のどちらも現在のコードを求める */
+  const [pendingAction, setPendingAction] = useState<'disable' | 'reissue' | null>(null);
+  const [currentCode, setCurrentCode] = useState<string>('');
+  /** 一度だけ表示するリカバリーコード（「保存しました」で閉じると再表示できない） */
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isBusy, setIsBusy] = useState<boolean>(false);
+  /** 直前にコピーした対象（「コピーしました」の一時表示） */
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const load = async () => {
+    setIsLoading(true);
+    try {
+      const res = await api.get('/api/me/totp');
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage({ type: 'error', text: data?.error || '2段階認証の状態を取得できませんでした。' });
+        setStatus(null);
+      } else {
+        setStatus({ enabled: Boolean(data?.enabled), remainingCodes: Number(data?.remainingCodes) || 0 });
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message || '2段階認証の状態を取得できませんでした。' });
+      setStatus(null);
+    }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2500);
+  };
+
+  /** 設定の第1歩: 秘密を発行してもらい、QR と手入力用の文字列を出す（まだ有効ではない） */
+  const startSetup = async () => {
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const res = await api.post('/api/me/totp/setup');
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage({ type: 'error', text: data?.error || '2段階認証の設定を開始できませんでした。' });
+      } else {
+        setSetup({ secret: String(data?.secret || ''), otpauth_uri: String(data?.otpauth_uri || '') });
+        setEnableCode('');
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    }
+    setIsBusy(false);
+  };
+
+  /** 有効化: アプリに出ているコードを確認してもらう。リカバリーコードはここで一度だけ返る */
+  const handleEnable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = enableCode.trim();
+    if (!code) return;
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const res = await api.post('/api/me/totp/enable', { code });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage({ type: 'error', text: data?.error || 'コードが正しくありません。' });
+      } else {
+        const codes: string[] = Array.isArray(data?.recovery_codes) ? data.recovery_codes : [];
+        setRecoveryCodes(codes);
+        setStatus({ enabled: true, remainingCodes: codes.length });
+        setSetup(null);
+        setEnableCode('');
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    }
+    setIsBusy(false);
+  };
+
+  /** 無効化・リカバリーコードの再発行（現在のコード、またはリカバリーコードが必要） */
+  const handleVerifyCurrent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = currentCode.trim();
+    if (!code || !pendingAction) return;
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const res = await api.post(pendingAction === 'disable' ? '/api/me/totp/disable' : '/api/me/totp/recovery-codes', { code });
+      const data = await res.json();
+      if (!res.ok) {
+        // コード誤りは 401（無効化・再発行のどちらも同じ）。入力欄は残して再入力を促す
+        setMessage({ type: 'error', text: data?.error || 'コードが正しくありません。' });
+      } else if (pendingAction === 'disable') {
+        setStatus({ enabled: false, remainingCodes: 0 });
+        setPendingAction(null);
+        setCurrentCode('');
+        setMessage({ type: 'success', text: '2段階認証を無効にしました。' });
+      } else {
+        const codes: string[] = Array.isArray(data?.recovery_codes) ? data.recovery_codes : [];
+        setRecoveryCodes(codes);
+        setStatus({ enabled: true, remainingCodes: codes.length });
+        setPendingAction(null);
+        setCurrentCode('');
+      }
+    } catch (err: any) {
+      setMessage({ type: 'error', text: err.message });
+    }
+    setIsBusy(false);
+  };
+
+  return (
+    <div className="bg-slate-950/70 border border-slate-800 p-4 sm:p-5 rounded-2xl space-y-4 mt-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-2 font-bold text-slate-100">
+          <ShieldCheck className="w-5 h-5 text-indigo-400 shrink-0" />
+          <span className="text-sm">🔐 2段階認証 (TOTP)</span>
+        </div>
+        {/* 状態が取れるまではバッジを出さない（読み込み中に「無効」と決めつけない） */}
+        {status && (status.enabled ? (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
+            有効
+          </span>
+        ) : (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-bold">
+            無効
+          </span>
+        ))}
+      </div>
+
+      {/* アクションメッセージ（パスキーの表示に合わせる） */}
+      {message && (
+        <div
+          className={`p-3 rounded-xl text-xs flex items-center space-x-2 animate-in fade-in ${
+            message.type === 'success'
+              ? 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-300'
+              : 'bg-rose-500/20 border border-rose-500/30 text-rose-300'
+          }`}
+        >
+          {message.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+          ) : (
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+          )}
+          <span>{message.text}</span>
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="py-4 text-center text-xs text-slate-400">
+          <RefreshCw className="w-4 h-4 animate-spin mx-auto text-indigo-400 mb-1" />
+          読み込み中...
+        </div>
+      ) : recoveryCodes ? (
+        /* リカバリーコード（有効化の直後と再発行の直後に一度だけ表示する） */
+        <div className="space-y-3">
+          <span className="text-xs font-bold text-slate-200 block">
+            リカバリーコード（この画面を閉じると再表示できません）
+          </span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 bg-slate-900 border border-slate-800 rounded-xl p-3">
+            {recoveryCodes.map((recoveryCode) => (
+              <span key={recoveryCode} className="font-mono text-xs text-indigo-300 select-all">
+                {recoveryCode}
+              </span>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            端末をなくしたときは、このコード1つで1回ログインできます。安全な場所に保存してください。
+          </p>
+          <div className="flex flex-wrap gap-2.5">
+            <button
+              type="button"
+              onClick={() => copy(recoveryCodes.join('\n'), 'recovery')}
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-[11px] font-bold transition flex items-center space-x-1.5 cursor-pointer"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>{copied === 'recovery' ? 'コピーしました' : 'コピー'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRecoveryCodes(null);
+                setCopied(null);
+              }}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[11px] font-bold transition flex items-center space-x-1.5 shadow-md cursor-pointer"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>保存しました</span>
+            </button>
+          </div>
+        </div>
+      ) : status === null ? (
+        <div className="space-y-2">
+          <p className="text-xs text-slate-400">2段階認証の状態を取得できませんでした。</p>
+          <button
+            type="button"
+            onClick={() => void load()}
+            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-[11px] font-bold transition flex items-center space-x-1.5 cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>再読み込み</span>
+          </button>
+        </div>
+      ) : status.enabled ? (
+        /* 有効: 残りのリカバリーコード数を出し、再発行・無効化を現在のコードで確認する */
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="leading-relaxed text-slate-300 text-xs">
+              ログイン時に認証アプリの6桁コードを要求します。パスキーでのログインはこの設定の影響を受けません。
+            </p>
+            <span className="text-[11px] font-bold text-slate-300 shrink-0">
+              残りのリカバリーコード: {status.remainingCodes}
+            </span>
+          </div>
+
+          {pendingAction === null ? (
+            <div className="flex flex-wrap gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingAction('reissue');
+                  setCurrentCode('');
+                  setMessage(null);
+                }}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow-md cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
+                <span>リカバリーコードを再発行</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingAction('disable');
+                  setCurrentCode('');
+                  setMessage(null);
+                }}
+                className="px-4 py-2 bg-rose-600/90 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow-md cursor-pointer"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>無効にする</span>
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleVerifyCurrent} className="space-y-2 bg-slate-900/60 border border-slate-800 rounded-xl p-3">
+              <label className="block text-[11px] font-semibold text-slate-300">
+                {pendingAction === 'disable'
+                  ? '無効にするには、現在のコード（またはリカバリーコード）を入力してください'
+                  : '再発行には、現在のコード（またはリカバリーコード）を入力してください'}
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456 または リカバリーコード"
+                  value={currentCode}
+                  onChange={(e) => setCurrentCode(e.target.value)}
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="submit"
+                  disabled={isBusy || !currentCode.trim()}
+                  className={`px-4 py-2 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 shadow-md cursor-pointer shrink-0 ${
+                    pendingAction === 'disable' ? 'bg-rose-600 hover:bg-rose-500' : 'bg-indigo-600 hover:bg-indigo-500'
+                  }`}
+                >
+                  {isBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                  <span>{pendingAction === 'disable' ? '無効にする' : '再発行する'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPendingAction(null);
+                    setCurrentCode('');
+                  }}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold transition cursor-pointer shrink-0"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      ) : (
+        /* 無効: 説明 → setup（QR と秘密）→ アプリのコードで有効化 */
+        <div className="space-y-3">
+          <p className="leading-relaxed text-slate-300 text-xs">
+            認証アプリ（Google Authenticator / 1Password / iOS のパスワードなど）の6桁コードをログイン時に要求します。パスキーをお使いの場合は不要です。
+          </p>
+
+          {setup === null ? (
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={startSetup}
+                disabled={isBusy}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 shadow-md cursor-pointer"
+              >
+                {isBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                <span>2段階認証を設定する</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3 pt-1">
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row items-center sm:items-start gap-4">
+                {/* 秘密は端末外に出さない: otpauth_uri からこの端末で QR を描く */}
+                <div className="bg-white p-2.5 rounded-xl shrink-0">
+                  <QRCodeSVG value={setup.otpauth_uri} size={160} />
+                </div>
+                <div className="flex-1 w-full space-y-1.5 min-w-0">
+                  <span className="text-[11px] font-semibold text-slate-400 block">秘密の文字列（手入力用）</span>
+                  <div className="flex items-center justify-between bg-slate-950 px-3 py-2 rounded-xl border border-slate-800 gap-2">
+                    <span className="font-mono text-xs text-indigo-300 select-all break-all">{setup.secret}</span>
+                    <button
+                      type="button"
+                      onClick={() => copy(setup.secret, 'secret')}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition flex items-center space-x-1 shrink-0 cursor-pointer"
+                      title="コピー"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{copied === 'secret' ? 'コピーしました' : 'コピー'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    アプリで読み取れないときはこの文字列を手入力してください。
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleEnable} className="space-y-2">
+                <label className="block text-[11px] font-semibold text-slate-300">
+                  認証アプリに出ている6桁コード
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="123456"
+                    value={enableCode}
+                    onChange={(e) => setEnableCode(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isBusy || !enableCode.trim()}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center space-x-1.5 shadow-md cursor-pointer shrink-0"
+                  >
+                    {isBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    <span>有効にする</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -2982,6 +3364,9 @@ export default function SettingsView(props: SettingsViewProps) {
                         )}
                       </div>
                     </div>
+
+                    {/* 🔐 2段階認証（TOTP）: 認証アプリの6桁コードをログイン時に要求する */}
+                    <TotpSettingsPanel api={api} />
 
                     {/* 📦 データエクスポート (バックアップ・データ主権) */}
                     <div className="bg-slate-950/70 border border-slate-800 p-4 sm:p-5 rounded-2xl space-y-3 mt-4">

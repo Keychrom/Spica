@@ -766,6 +766,8 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE posts ADD COLUMN cw TEXT DEFAULT NULL;",
     "ALTER TABLE posts ADD COLUMN quote_id TEXT DEFAULT NULL;",
     "ALTER TABLE posts ADD COLUMN is_sensitive INTEGER NOT NULL DEFAULT 0;",
+    // 投稿の編集（ActivityPub の Update で配る）。「編集済み」の表示に使う
+    "ALTER TABLE posts ADD COLUMN edited_at TEXT DEFAULT NULL;",
     "ALTER TABLE users ADD COLUMN icon_url TEXT DEFAULT '';",
     "ALTER TABLE users ADD COLUMN banner_url TEXT DEFAULT '';",
     // 承認制の登録モード。既存ユーザーは全て approved（既定値）
@@ -779,6 +781,10 @@ async function initDatabaseSchema(): Promise<void> {
     // プライバシー（初期設定と設定画面から変更できる。プロフィール HTML の robots に反映する）
     "ALTER TABLE users ADD COLUMN noindex INTEGER NOT NULL DEFAULT 0;",
     "ALTER TABLE users ADD COLUMN no_ai_training INTEGER NOT NULL DEFAULT 0;",
+    // 2段階認証（TOTP）。有効化の途中は secret だけ入れて enabled を 0 のままにする
+    "ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT '';",
+    "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0;",
+    "ALTER TABLE users ADD COLUMN totp_recovery_codes TEXT DEFAULT '[]';",
     "ALTER TABLE remote_actors ADD COLUMN icon_url TEXT DEFAULT '';",
     "ALTER TABLE remote_actors ADD COLUMN banner_url TEXT DEFAULT '';",
     "CREATE INDEX IF NOT EXISTS idx_posts_quote_id ON posts(quote_id);",
@@ -1302,6 +1308,12 @@ export interface UserRow {
   noindex?: number;
   /** 生成AIによる学習を拒否する（プロフィール HTML の robots に noai を出す） */
   no_ai_training?: number;
+  /** 2段階認証（TOTP）の秘密。base32。有効化の途中でも入る（確定は totp_enabled） */
+  totp_secret?: string;
+  /** 2段階認証が有効か（1 = ログイン時にコードが要る） */
+  totp_enabled?: number;
+  /** リカバリーコードのハッシュ（JSON 配列。一度使ったものは消す） */
+  totp_recovery_codes?: string;
   public_key_pem: string;
   private_key_pem: string;
   created_at: string;
@@ -1332,6 +1344,8 @@ export interface PostRow {
   is_sensitive?: number;
   media_attachments?: string;
   published_at: string;
+  /** 最後に編集した時刻（ISO）。未編集なら NULL。「編集済み」の表示に使う */
+  edited_at?: string | null;
 }
 
 export interface PinnedPostRow {

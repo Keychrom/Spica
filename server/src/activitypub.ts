@@ -118,6 +118,8 @@ export function buildNote(params: {
   sensitive?: boolean;
   poll?: NotePoll | null;
   tags?: any[];
+  /** 編集した時刻（ISO）。AP の updated として出し、連合先が「編集済み」と分かるようにする */
+  editedAt?: string;
   /** 公開範囲。'followers' の場合は Public コレクションへ送らず、フォロワー限定として宛先を組む */
   visibility?: string;
   /**
@@ -182,6 +184,7 @@ export function buildNote(params: {
     content: params.content,
     url: params.id,
     published: params.publishedAt,
+    updated: params.editedAt || undefined,
     to: directRecipients.length > 0
       ? directRecipients
       : (isFollowersOnly ? [`${params.authorUrl}/followers`] : ['https://www.w3.org/ns/activitystreams#Public']),
@@ -211,6 +214,29 @@ export function buildCreateActivity(params: {
     type: 'Create',
     actor: params.actorUrl,
     published: params.note.published,
+    to: params.note.to,
+    cc: params.note.cc,
+    object: params.note,
+  };
+}
+
+/**
+ * 編集したノートを配るための Update。
+ *
+ * 連合先は object.id が同じノートを差し替える（Misskey / Mastodon とも対応）。
+ * activity の id は**毎回変える**（同じ id だと「処理済み」として無視されうるため、編集時刻を混ぜる）。
+ */
+export function buildUpdateNoteActivity(params: {
+  note: ReturnType<typeof buildNote>;
+  actorUrl: string;
+}) {
+  const editedAt = params.note.updated || new Date().toISOString();
+  return {
+    '@context': ACTIVITYSTREAMS_CONTEXT,
+    id: `${params.note.id}/update/${encodeURIComponent(editedAt)}`,
+    type: 'Update',
+    actor: params.actorUrl,
+    published: editedAt,
     to: params.note.to,
     cc: params.note.cc,
     object: params.note,

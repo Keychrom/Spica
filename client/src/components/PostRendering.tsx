@@ -8,7 +8,7 @@
 import DOMPurify from 'dompurify';
 import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Ban, BarChart2, Bookmark, Check, CornerUpLeft, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageSquare, MoreHorizontal, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
+import { Ban, BarChart2, Bookmark, Check, CornerUpLeft, Eye, EyeOff, GitBranch, Globe, Hash, Lock, MessageSquare, MoreHorizontal, Pencil, Pin, Quote, Radio, RefreshCw, Repeat, Server, Share2, ShieldAlert, Smile, SmilePlus, Trash2, VolumeX, X } from 'lucide-react';
 import type { MediaAttachment, PollData, Post } from '../App';
 import { getPrefs } from '../prefs';
 import { api } from '../api/client';
@@ -179,6 +179,8 @@ export interface PostRendererDeps {
   handleOpenThread: any;
   /** 返信先（親投稿）を ID で開く（アプリ内でスレッドを出す） */
   openThreadById?: any;
+  /** ✏️ 投稿の編集を開始する（自分のローカル投稿のみ。DM は対象外） */
+  onStartEditPost?: any;
   handleSelectHashtag: any;
   handleStartQuote: any;
   handleToggleAnnounce: any;
@@ -1114,7 +1116,7 @@ export function markThreadContinuations<T extends { id?: string; in_reply_to?: s
 }
 
 export function createRenderPostCard(deps: PostRendererDeps) {
-  const { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, openThreadById, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } = deps;
+  const { activeMenuPostId, activeReactionPostId, activeRenoteMenuPostId, authToken, authUser, customEmojis, customReactionInput, handleBlockUser, handleDeletePost, handleMuteUser, handleOpenReply, handleOpenThread, openThreadById, onStartEditPost, handleSelectHashtag, handleStartQuote, handleToggleAnnounce, handleToggleBookmark, handleTogglePinPost, handleToggleReaction, handleVotePoll, isVotingPoll, openChannelDetail, openMediaPreview, openUserProfile, openedCwPostIds, quickEmojis, setActiveMenuPostId, setActiveReactionPostId, setActiveRenoteMenuPostId, setCurrentView, setCustomReactionInput, setReportCategory, setReportComment, setReportTarget, setShowLoginModal, setShowRichEmojiPicker, sharePost, showCustomEmojis, toggleCw } = deps;
 
   const renderReactionBadgeContent = (reaction: string) => {
     if (reaction.startsWith(':') && reaction.endsWith(':')) {
@@ -1222,6 +1224,15 @@ export function createRenderPostCard(deps: PostRendererDeps) {
                     ? formatRelativeTime(post.published_at)
                     : new Date(post.published_at).toLocaleString('ja-JP')}
                 </span>
+                {/* ✏️ 編集済み（編集したときだけ。マウスオーバーで編集時刻を出す） */}
+                {post.edited_at && (
+                  <span
+                    className="shrink-0 text-[10px] text-slate-500/80"
+                    title={`編集日時: ${new Date(post.edited_at).toLocaleString('ja-JP')}`}
+                  >
+                    編集済み
+                  </span>
+                )}
                 {post.channel && (
                   <button
                     type="button"
@@ -1309,6 +1320,20 @@ export function createRenderPostCard(deps: PostRendererDeps) {
                         <Pin className={`w-3.5 h-3.5 ${post.is_pinned ? 'fill-amber-400' : ''}`} />
                         <span>{post.is_pinned ? 'ピン留めを解除' : 'プロフィールにピン留め'}</span>
                       </button>
+
+                      {/* ✏️ 編集（削除ボタンと同じ「自分のローカル投稿」のときだけ。DM は編集できないので出さない） */}
+                      {post.visibility !== 'direct' && (
+                        <button
+                          onClick={() => {
+                            setActiveMenuPostId(null);
+                            if (onStartEditPost) onStartEditPost(post);
+                          }}
+                          className="w-full flex items-center space-x-2 px-2.5 py-2 rounded-xl text-slate-300 hover:bg-slate-800 hover:text-white transition text-left"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>編集</span>
+                        </button>
+                      )}
                     </>
                   )}
 

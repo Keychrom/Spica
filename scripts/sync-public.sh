@@ -32,6 +32,8 @@ FILES=(
   client/index.html
   docs/CONFIGURATION.md
   docs/FEATURES.md
+  # 2段階認証（TOTP）の説明。FEATURES.md からリンクしているので公開ツリーにも運ぶ
+  docs/SECURITY-2FA.md
   docs/POSTGRESQL.md
   docs/REDIS.md
   docs/SCALE.md

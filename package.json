@@ -48,6 +48,8 @@
     "test:inbox-async": "npx tsx scripts/test-inbox-async.ts",
     "test:registration-approval": "npx tsx scripts/test-registration-approval.ts",
     "test:onboarding": "npx tsx scripts/test-onboarding.ts",
+    "test:totp": "npx tsx scripts/test-totp.ts",
+    "test:post-edit": "npx tsx scripts/test-post-edit.ts",
     "check:secrets": "npx tsx scripts/check-secrets.ts",
     "check:await": "npx tsx scripts/check-await.ts",
     "check:routes": "npx tsx scripts/check-route-errors.ts",

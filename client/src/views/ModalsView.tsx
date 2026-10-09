@@ -57,8 +57,14 @@ export interface ModalsViewProps {
   driveStats: any;
   editBannerUrl: any;
   editBio: any;
+  /** ✏️ 編集中の投稿の本文 */
+  editContent: any;
+  /** ✏️ 編集中の投稿の CW（閲覧注意の注記） */
+  editCwContent: any;
   editIconUrl: any;
   editName: any;
+  /** ✏️ 編集中の投稿（null なら編集モーダルは閉じている） */
+  editTargetPost: any;
   editingChannel: any;
   fetchBookmarks: any;
   fetchChannels: any;
@@ -75,6 +81,8 @@ export interface ModalsViewProps {
   handleOpenReply: any;
   handleOpenThread: any;
   handleRemoveAttachment: any;
+  /** ✏️ 編集の保存（PUT /api/posts/:id は App 側。成功なら { ok: true, post } を返す） */
+  handleSaveEditPost: any;
   handleSaveProfile: any;
   handleSelectMedia: any;
   handleSwitchTimelineMode: any;
@@ -110,6 +118,8 @@ export interface ModalsViewProps {
   miAuthSession: any;
   navigateToView: any;
   notificationToast: any;
+  /** ✏️ 編集の結果を投稿一覧へ反映する（App 側の applyPostUpdate） */
+  onPostUpdated: any;
   openAntennaManageModal: any;
   openDraftsModal: any;
   openMediaPreview: any;
@@ -148,8 +158,14 @@ export interface ModalsViewProps {
   setDriveMsg: any;
   setEditBannerUrl: any;
   setEditBio: any;
+  /** ✏️ 編集中の本文を差し替える */
+  setEditContent: any;
+  /** ✏️ 編集中の CW を差し替える */
+  setEditCwContent: any;
   setEditIconUrl: any;
   setEditName: any;
+  /** ✏️ 編集モーダルを開閉する（null で閉じる） */
+  setEditTargetPost: any;
   setEditingChannel: any;
   setFollowList: any;
   setHasConfirmedSaved: any;
@@ -182,6 +198,8 @@ export interface ModalsViewProps {
   setShowDirectoryModal: any;
   setShowDraftsModal: any;
   setShowDriveModal: any;
+  /** ✏️ 編集モーダルの CW 入力欄を出すか */
+  setShowEditCwInput: any;
   setShowEditProfileModal: any;
   setShowListsModal: any;
   setShowLoginModal: any;
@@ -201,6 +219,8 @@ export interface ModalsViewProps {
   showDirectoryModal: any;
   showDraftsModal: any;
   showDriveModal: any;
+  /** ✏️ 編集モーダルの CW 入力欄を出すか */
+  showEditCwInput: any;
   showEditProfileModal: any;
   showExitToast: any;
   showListsModal: any;
@@ -1364,7 +1384,7 @@ function ScheduleModal({
 }
 
 export default function ModalsView(props: ModalsViewProps) {
-  const { setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editIconUrl, editName, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, featuresDm, dmUnreadCount, openDm, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, masterKeyModalPending, postDeps, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditIconUrl, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
+  const { setThreadModalPost, setThreadData, currentViewRef, fetchAntennas, setActiveAntenna, fetchDrafts, setPostAttachments, fetchScheduledPosts, setDriveItems, setDriveStats, listAbortRef, setChannels, selectedChannel, setSelectedChannel, openChannelDetail, fetchTimeline, fetchAdminData, setSelfDeleteError, setAuthToken, setAuthUser, setCurrentView, setShowAuthPortal, setAuthPortalTab, activeAntenna, activeListId, adminDeleteTargetUser, antennas, applyAutocomplete, authToken, authUser, autoCompressImages, autocompleteIndex, autocompleteSuggestions, autocompleteType, channels, checkAutocomplete, currentView, customEmojis, cwContent, directoryUsers, drafts, driveItems, driveMsg, driveStats, editBannerUrl, editBio, editContent, editCwContent, editIconUrl, editName, editTargetPost, editingChannel, fetchBookmarks, fetchChannels, fetchDirectory, fetchDrive, fetchLists, followList, followListError, followListRows, handleAutocompleteKeyDown, handleCreatePost, handleLogout, handleNotificationClick, handleOpenReply, handleOpenThread, handleRemoveAttachment, handleSaveEditPost, handleSaveProfile, handleSelectMedia, handleSwitchTimelineMode, handleToggleReaction, handleUploadAvatar, handleUploadBanner, handleVotePoll, hasConfirmedSaved, isCopied, isLoadingDirectory, isLoadingDrive, isLoadingFollowList, isLoadingThread, isMobileMenuOpen, isPasswordAuthMode, isPosting, isSavingProfile, isSensitivePost, isUploadingBanner, isUploadingIcon, isUploadingMedia, isVotingPoll, featuresDm, dmUnreadCount, openDm, issuedMasterKey, lists, miAuthSession, navigateToView, notificationToast, onPostUpdated, openAntennaManageModal, openDraftsModal, openMediaPreview, openMobilePostModal, openScheduleModal, openSettings, openUserProfile, pollChoices, pollExpiresIn, pollMultiple, postAttachments, postContent, postTargetChannelId, postVisibility, previewMediaUrl, profileTarget, pushModalState, quoteTargetPost, recoveryMsg, recoveryStep, masterKeyModalPending, postDeps, replyContent, replyTargetPost, reportCategory, reportComment, reportTarget, scheduledPosts, selfDeleteConfirmId, selfDeleteError, selfDeleteMasterKey, serverStats, setActiveListId, setAdminDeleteTargetUser, setAutoCompressImages, setCwContent, setDriveMsg, setEditBannerUrl, setEditBio, setEditContent, setEditCwContent, setEditIconUrl, setEditTargetPost, setEditName, setEditingChannel, setFollowList, setHasConfirmedSaved, setIsCopied, setIsMobileMenuOpen, setIsSensitivePost, setMiAuthSession, setNotificationToast, setPollChoices, setPollExpiresIn, setPollMultiple, setPostContent, setPostTargetChannelId, setPostVisibility, setPreviewMediaUrl, setQuoteTargetPost, setRecoveryMsg, setRecoveryStep, setReplyContent, setReplyTargetPost, setReportCategory, setReportComment, setReportTarget, setSelfDeleteConfirmId, setSelfDeleteMasterKey, setShowAntennaManageModal, setShowAntennaModal, setShowCreateChannelModal, setShowCwInput, setShowDirectoryModal, setShowDraftsModal, setShowDriveModal, setShowEditCwInput, setShowEditProfileModal, setShowListsModal, setShowLoginModal, setShowMasterKeyModal, setShowMobilePostModal, setShowPollInput, setShowRecoveryModal, setShowRegisterModal, setShowRichEmojiPicker, setShowScheduleModal, setShowSelfDeleteModal, showAntennaManageModal, showAntennaModal, showCreateChannelModal, showCustomEmojis, showCwInput, showDirectoryModal, showDraftsModal, showDriveModal, showEditCwInput, showEditProfileModal, showExitToast, showListsModal, showMasterKeyModal, showMobilePostModal, showPollInput, showRecoveryModal, showRichEmojiPicker, showScheduleModal, showSelfDeleteModal, threadData, threadModalPost, unreadNotificationsCount, uploadStatusText } = props;
 
   // --- App.tsx から移した state とハンドラ（この画面だけで使う） ---
   const [newChannelName, setNewChannelName] = useState<string>('');
@@ -1390,6 +1410,11 @@ export default function ModalsView(props: ModalsViewProps) {
   const [replyCwContent, setReplyCwContent] = useState<string>('');
 
   const [isReplying, setIsReplying] = useState<boolean>(false);
+
+  // ✏️ 投稿編集モーダルの状態（本文・CW は App 側の state を使う。ここは送信中とエラーだけ）
+  const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
+
+  const [editError, setEditError] = useState<string | null>(null);
 
   const [isAdminDeletingUser, setIsAdminDeletingUser] = useState<boolean>(false);
 
@@ -1849,6 +1874,44 @@ export default function ModalsView(props: ModalsViewProps) {
     }
   };
 
+  /**
+   * ✏️ 編集モーダルを閉じる（入力途中の内容は捨てる）。
+   * 本文と CW は App 側の state なので、ここで一緒に初期化しておく
+   * （次に開くときも handleStartEditPost が初期化するので二重の保険）。
+   */
+  const closeEditModal = () => {
+    setEditTargetPost(null);
+    setEditContent('');
+    setEditCwContent('');
+    setShowEditCwInput(false);
+    setEditError(null);
+  };
+
+  /**
+   * ✏️ 編集の保存。通信（PUT /api/posts/:id）は App 側の handleSaveEditPost が行い、
+   * 成功したら App の onPostUpdated で投稿一覧（タイムライン・スレッド・検索結果など）を
+   * 差し替えてモーダルを閉じる。失敗はモーダル内に出す（alert は使わない）。
+   */
+  const handleSaveEdit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!authToken || !editTargetPost || !editContent.trim() || isSavingEdit) return;
+    setIsSavingEdit(true);
+    setEditError(null);
+    try {
+      const result = await handleSaveEditPost();
+      if (!result || !result.ok) {
+        setEditError(result?.error || '投稿の編集に失敗しました。');
+        return;
+      }
+      if (result.post) onPostUpdated(result.post);
+      closeEditModal();
+    } catch (err: any) {
+      setEditError(err?.message || '通信エラーが発生しました。');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const handleAdminDeleteUser = async () => {
     if (!authToken || !adminDeleteTargetUser) return;
     setIsAdminDeletingUser(true);
@@ -2261,6 +2324,101 @@ export default function ModalsView(props: ModalsViewProps) {
                   </span>
                 </div>
                 <span className="font-mono text-slate-400">{replyContent.length} 文字</span>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ✏️ 投稿編集モーダル（返信モーダルと同じ作り。
+          ⚠️ 会話スレッド（z-50）の**上**に出すため返信と同じ z-[60] にする */}
+      {editTargetPost && (
+        <div className="fixed inset-0 z-[60] flex flex-col sm:items-center sm:justify-center sm:p-4 bg-slate-950 sm:bg-black/80 sm:backdrop-blur-sm h-[100dvh] sm:h-auto overflow-hidden animate-in fade-in duration-200">
+          <div className="bg-slate-950 sm:bg-slate-900 border-0 sm:border sm:border-slate-800 sm:rounded-3xl w-full sm:max-w-lg shadow-2xl flex flex-col flex-1 sm:flex-initial sm:max-h-[85vh] overflow-hidden">
+            {/* ヘッダー: 左にキャンセル、中央にタイトル、右に保存ボタン */}
+            <div className="p-3 sm:p-4 border-b border-slate-800/80 flex items-center justify-between shrink-0 bg-slate-950 sm:bg-slate-900">
+              <button
+                type="button"
+                onClick={closeEditModal}
+                className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white transition"
+              >
+                キャンセル
+              </button>
+              <h3 className="font-bold text-sm text-slate-100 flex items-center space-x-1.5">
+                <span>✏️ 投稿を編集</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => void handleSaveEdit()}
+                disabled={!editContent.trim() || isSavingEdit}
+                className="px-4 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white shadow-md shadow-indigo-600/30 transition flex items-center space-x-1.5"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>{isSavingEdit ? '保存中...' : '保存'}</span>
+              </button>
+            </div>
+
+            {/* 編集する投稿の著者（編集対象が分かるように最小限だけ出す） */}
+            <div className="px-4 py-2.5 bg-slate-900/60 sm:bg-slate-950/60 border-b border-slate-800/80 text-xs flex items-center space-x-2 shrink-0">
+              <span className="font-bold text-slate-200 truncate max-w-[180px]">{editTargetPost.author_name}</span>
+              <span className="text-[10px] text-slate-500 truncate font-mono">{editTargetPost.author_handle}</span>
+            </div>
+
+            {/* 編集フォーム（返信と同じく可変 flex-1 で入力欄を広く取る） */}
+            <form onSubmit={handleSaveEdit} className="p-4 flex-1 flex flex-col min-h-0 bg-slate-950 sm:bg-slate-900 space-y-2">
+              {/* 失敗したときのエラー表示（alert は使わずモーダル内に出す） */}
+              {editError && (
+                <div className="shrink-0 animate-in fade-in duration-150">
+                  <p className="flex items-start space-x-1.5 text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0 mt-px" />
+                    <span>{editError}</span>
+                  </p>
+                </div>
+              )}
+
+              {/* CW (閲覧注意) 注記入力欄 */}
+              {showEditCwInput && (
+                <div className="shrink-0 animate-in fade-in duration-150">
+                  <input
+                    type="text"
+                    value={editCwContent}
+                    onChange={(e) => setEditCwContent(e.target.value)}
+                    placeholder="閲覧注意の理由・注記 (例: ネタバレ、閲覧注意など)"
+                    className="w-full bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-1.5 text-xs text-amber-200 placeholder-amber-400/50 focus:ring-2 focus:ring-amber-500 focus:outline-none transition"
+                  />
+                </div>
+              )}
+
+              <textarea
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                placeholder="本文を編集..."
+                autoFocus
+                className="w-full flex-1 bg-transparent text-sm sm:text-base text-slate-100 placeholder-slate-500 focus:outline-none resize-none leading-relaxed"
+              />
+
+              <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500 shrink-0">
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditCwInput(!showEditCwInput)}
+                    className={`px-2 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 border transition cursor-pointer ${
+                      showEditCwInput
+                        ? 'bg-amber-500/20 border-amber-500/40 text-amber-300'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-amber-300'
+                    }`}
+                    title="閲覧注意 (CW) を設定"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="text-[10px] font-bold">CW</span>
+                  </button>
+
+                  <span className="flex items-center space-x-1 font-mono text-[10px]">
+                    <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                    <span>ActivityPub Update</span>
+                  </span>
+                </div>
+                <span className="font-mono text-slate-400">{editContent.length} 文字</span>
               </div>
             </form>
           </div>
