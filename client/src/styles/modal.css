@@ -31,15 +31,27 @@
   font-weight: 650;
   letter-spacing: 0.01em;
 }
-/* 右上の閉じる（Esc 表記のときはそのまま） */
+/* 右上の閉じる（文字のボタンを置くシートはそのまま） */
 .sheet__head .btn {
   margin-left: auto;
 }
-.sheet__esc {
+/* 右上のバツ。スマホ・タブレットには Esc が無く、900px 以下ではシートが全画面になって
+   外側も叩けないので、**必ず押せるボタン**を置く（指で押せる大きさにする） */
+.sheet__close {
   margin-left: auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--text-sub);
+}
+.sheet__close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .sheet__body {
   display: flex;

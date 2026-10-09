@@ -3,6 +3,7 @@
  * 送るのは本文・公開範囲・CW・センシティブ・返信先・引用元・添付・アンケート・予約。
  */
 import { useEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { api, messageOf } from '../lib/api';
 import { deleteDraft, saveDraft, schedulePost } from '../lib/drafts';
 import ComposerExtras, { type PollDraft } from './ComposerExtras';
@@ -175,7 +176,10 @@ export default function Composer({
       <div className="sheet" onClick={(event) => event.stopPropagation()}>
         <div className="sheet__head">
           <b>{title}</b>
-          <span className="sheet__esc">Esc</span>
+          {/* 閉じるボタン。スマホ・タブレットには Esc が無く、全画面のシートは外側も叩けない */}
+          <button type="button" className="sheet__close" onClick={onClose} aria-label="閉じる" title="閉じる（Esc）">
+            <X size={18} strokeWidth={1.7} />
+          </button>
         </div>
 
         {replyTo && (
