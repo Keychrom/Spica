@@ -2101,10 +2101,11 @@ export default function SettingsView(props: SettingsViewProps) {
                   <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-4">
                     <PrefChoice
                       label="新しい投稿が届いたとき"
+                      hint="「リアルタイム」は新着を自動で先頭に表示します（タイムライン上部の ⚡ からも切り替えられます。既定は件数バッジ＝オフ）"
                       value={prefs.newPostsBehavior}
                       options={[
                         { value: 'badge', label: '件数バッジ' },
-                        { value: 'auto', label: 'そのまま反映' },
+                        { value: 'auto', label: 'リアルタイム' },
                         { value: 'manual', label: '手動で読み込む' },
                       ]}
                       onChange={(value) => updatePrefs({ newPostsBehavior: value })}

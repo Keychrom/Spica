@@ -9,7 +9,7 @@ import type { Post } from '../App';
 import { AlertCircle, ArrowLeft, CheckCircle2, ExternalLink, EyeOff, Globe, HardDrive, Megaphone, Plus, Radio, RefreshCw, Search, Send, Server, Settings, ShieldAlert, ShieldCheck, Smile, User, UserPlus, Users } from 'lucide-react';
 import { AutocompleteDropdown, PollInputEditor, createRenderPostCard, markThreadContinuations } from '../components/PostRendering';
 import { Virtuoso } from 'react-virtuoso';
-import { usePrefs } from '../prefs';
+import { updatePrefs, usePrefs } from '../prefs';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 export interface TimelineViewProps {
@@ -1420,6 +1420,25 @@ export default function TimelineView(props: TimelineViewProps) {
                     )}
                   </div>
                   <div className="flex items-center space-x-2 shrink-0">
+                    {/* ⚡ リアルタイムモード（Misskey 風）。既定はオフ＝新着はバッジで知らせる */}
+                    <button
+                      type="button"
+                      onClick={() => updatePrefs({ newPostsBehavior: prefValues.newPostsBehavior === 'auto' ? 'badge' : 'auto' })}
+                      className={`flex items-center space-x-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full border transition cursor-pointer ${
+                        prefValues.newPostsBehavior === 'auto'
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
+                          : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800/60'
+                      }`}
+                      title={
+                        prefValues.newPostsBehavior === 'auto'
+                          ? 'リアルタイムモード: 新しいノートを自動で先頭に表示します（クリックでオフ）'
+                          : 'リアルタイムモード: 新しいノートを自動で先頭に表示します（既定はオフ。オフのときは「新着」ボタンで知らせます）'
+                      }
+                      aria-pressed={prefValues.newPostsBehavior === 'auto'}
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">リアルタイム</span>
+                    </button>
                     <div
                       className="flex items-center space-x-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full bg-slate-950 border border-slate-800"
                       title={isStreamingConnected ? 'リアルタイムストリーミング接続中 (SSE)' : 'ストリーミング接続待機中...'}
