@@ -1,0 +1,231 @@
+/* ============================================================
+   設定（/settings）とメッセージ（/messages）
+   どちらも「見出し + 淡い選択 + 罫線の行」で組む（他の画面と同じ言語）
+   ============================================================ */
+/* ---- 設定の 1 行 ---- */
+.set {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: var(--pad-row) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.set:last-child {
+  border-bottom: 0;
+}
+.set__body {
+  flex: 1;
+  min-width: 0;
+}
+.set__label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.set__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-sub);
+  max-width: 62ch;
+}
+.set__value {
+  font-size: 13px;
+  color: var(--text-sub);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.set__control {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 操作が 2 つ以上ある行（管理パネルの実行ボタンなど） */
+.set__actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 6px;
+}
+.set__form {
+  display: grid;
+  /* 入力欄が内容に合わせて縮まないよう、列を 1 本に固定する */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 12px;
+  max-width: 420px;
+}
+.set__ok {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+.set__err {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.set__group {
+  padding: 22px 0 6px;
+}
+.set__group h3 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+/* ---- 切り替え（トグル） ---- */
+.sw {
+  width: 42px;
+  height: 24px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+  flex: none;
+}
+.sw::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  transition: transform 0.15s;
+}
+.sw--on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.sw--on::after {
+  transform: translateX(18px);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---- 小さなタブ（設定の節、プロフィールの種別） ---- */
+.seg--wrap {
+  flex-wrap: wrap;
+}
+
+/* ---- メッセージ ---- */
+.dm {
+  padding: 0 32px 24px;
+}
+.dm__list {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.dm__list:last-child {
+  border-bottom: 0;
+}
+.dm__row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.dm__row-body {
+  flex: 1;
+  min-width: 0;
+}
+.dm__name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.dm__time {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.dm__last {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+.dm__thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 0 20px;
+}
+.dm__msg {
+  max-width: 62ch;
+}
+.dm__msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.dm__msg-head b {
+  font-size: 13px;
+  color: var(--text);
+}
+.dm__msg-text {
+  margin-top: 4px;
+  padding: 10px 14px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  font-size: var(--fs-body);
+  line-height: 1.85;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.dm__msg--mine {
+  align-self: flex-end;
+}
+.dm__msg--mine .dm__msg-text {
+  background: var(--accent-soft);
+}
+.dm__compose {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line-soft);
+}
+.dm__compose textarea {
+  flex: 1;
+  min-height: 44px;
+  resize: vertical;
+}
+
+@media (max-width: 900px) {
+  .prof,
+  .mediagrid,
+  .dm {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .set {
+    gap: 12px;
+  }
+  .set__actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+}

@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spica デザイン案 J — 紫雅（H × B の色）</title>
+<style>
+/* ============================================================
+   案J: 紫雅 MURASAKI — 案H の骨格・余白・部品そのまま × 案B の色
+   ・骨格・余白・部品・字面はすべて案H（雅）から
+   ・色だけ案B / 案I のパレット（薄ラベンダー地・白・スミレ・真珠）
+   ・モバイルは「左ナビ＝ドロワー」で全項目に到達できる形（04 に実例）
+   ============================================================ */
+:root{
+  /* --- 色（案B / 案I） --- */
+  --bg:#F4F5FA;
+  --surface:#FFFFFF;
+  --surface-2:#FAFBFF;
+  --line:#E8EAF3;
+  --line-soft:#EFF1F8;
+  --text:#191C26;
+  --text-sub:#5D6474;
+  --text-faint:#8B91A3;
+  --accent:#6D5AE6;
+  --accent-hover:#5B48D6;
+  --accent-soft:#EFECFD;
+  --magenta:#D9649B;
+  --live:#12A150;
+  --danger:#DC2650;
+  --pearl:linear-gradient(135deg,#8F7BF0 0%,#C79BEA 55%,#F3C6DC 100%);
+  /* --- 形と影（案H） --- */
+  --r-card:10px;
+  --r-pill:999px;
+  --shadow-1:0 1px 2px rgba(20,24,40,.05), 0 10px 30px -18px rgba(20,24,40,.18);
+  --shadow-2:0 20px 52px -26px rgba(30,32,60,.28);
+  /* --- 書体（案H） --- */
+  --serif:Georgia,"Times New Roman","Yu Mincho","Hiragino Mincho ProN",serif;
+  --sans:"Segoe UI","Yu Gothic","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+.theme-dark{
+  --bg:#0F111B; --surface:#171A28; --surface-2:#1B1E2E;
+  --line:#252A40; --line-soft:#1F2434;
+  --text:#E9EBF4; --text-sub:#A2A8BD; --text-faint:#7A8098;
+  --accent:#8B8DFF; --accent-soft:rgba(139,141,255,.16);
+  --shadow-1:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -18px rgba(0,0,0,.5);
+  --shadow-2:0 20px 52px -26px rgba(0,0,0,.7);
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:#E9EAF2;color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.9}
+a{color:inherit;text-decoration:none}
+svg{display:block}
+.i{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.i-18{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* ---------- 提案の見出し ---------- */
+.board{max-width:1280px;margin:0 auto;padding:56px 32px 96px}
+.board-head{margin-bottom:48px}
+.kicker{font:600 11px/1 var(--sans);letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+.board-title{font-family:var(--serif);font-size:42px;font-weight:400;letter-spacing:.1em;margin:16px 0 6px}
+.board-title small{display:block;font-family:var(--sans);font-size:14px;color:var(--text-sub);margin-top:12px;letter-spacing:.04em}
+.board-desc{color:#3C4150;max-width:880px;font-size:14.5px;margin:18px 0 0}
+.board-meta{display:flex;flex-wrap:wrap;gap:36px;margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}
+.meta-col h4{margin:0 0 12px;font:600 11px/1 var(--sans);letter-spacing:.18em;color:var(--text-faint);text-transform:uppercase}
+.swatches{display:flex;gap:10px}
+.sw{width:56px}
+.sw i{display:block;height:40px;border-radius:var(--r-card);box-shadow:var(--shadow-1)}
+.sw span{display:block;font:500 9.5px/1.7 var(--mono);color:var(--text-faint);margin-top:6px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:12px;padding:3px 12px;border:1px solid var(--line);border-radius:var(--r-pill);color:#3C4150;background:var(--surface)}
+.keypoints{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:28px}
+.kp b{display:block;font-size:14px;font-weight:650;margin-bottom:6px}
+.kp b::before{content:"◆";color:var(--accent);font-size:9px;vertical-align:2px;margin-right:10px}
+.kp p{margin:0;font-size:12.5px;color:var(--text-sub)}
+
+/* ---------- スクリーン ---------- */
+.screens{display:flex;flex-direction:column;gap:52px}
+.swrap h3{font-family:var(--serif);font-size:19px;font-weight:400;letter-spacing:.06em;margin:0 0 4px}
+.swrap h3 span{font:600 11px/1 var(--mono);letter-spacing:.16em;color:var(--accent);margin-right:14px;vertical-align:2px}
+.swrap .note{color:var(--text-sub);font-size:12.5px;margin:0 0 16px}
+.frame{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--bg);box-shadow:var(--shadow-2)}
+
+/* ============================================================
+   本体（骨格・余白・部品は案H のまま）
+   ============================================================ */
+.app{display:grid;grid-template-columns:236px minmax(0,640px) 300px;justify-content:center;background:var(--bg)}
+/* Nav */
+.nav{padding:26px 14px 20px;display:flex;flex-direction:column;gap:2px}
+.nav .brand{display:flex;align-items:center;gap:10px;padding:0 12px 26px}
+.nav .brand .mark{width:30px;height:30px;border-radius:9px;background:var(--pearl);color:#fff;display:flex;
+  align-items:center;justify-content:center;font-size:15px;font-family:var(--serif);
+  box-shadow:0 8px 18px -10px rgba(109,90,230,.6), inset 0 1px 0 rgba(255,255,255,.5)}
+.nav .brand b{font-family:var(--serif);font-size:19px;font-weight:400;letter-spacing:.1em}
+.nav .item{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:var(--r-card);color:var(--text-sub);font-size:14px}
+.nav .item.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:var(--shadow-1)}
+.nav .item.on svg{color:var(--accent)}
+.nav .item .n{margin-left:auto;font-size:11.5px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.nav .sep{height:1px;background:var(--line-soft);margin:14px 12px}
+.nav .compose{margin-top:16px;padding:11px;border-radius:var(--r-pill);background:var(--accent);color:#fff;
+  text-align:center;font-size:14px;font-weight:650;box-shadow:0 12px 26px -14px rgba(109,90,230,.7)}
+.nav .me{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--r-card);background:var(--surface);box-shadow:var(--shadow-1)}
+.nav .me b{font-size:13.5px}
+/* Main */
+.main{min-width:0}
+.head{padding:30px 32px 18px;display:flex;align-items:flex-end;gap:16px}
+.head h2{font-family:var(--serif);font-size:24px;font-weight:400;letter-spacing:.05em;margin:0;line-height:1.2}
+.head .sub{font-size:12px;color:var(--text-faint);letter-spacing:.02em;padding-bottom:3px;font-variant-numeric:tabular-nums}
+.head .tabs{margin-left:auto;display:flex;gap:20px;font-size:13.5px;color:var(--text-sub);padding-bottom:3px}
+.head .tabs .on{color:var(--text);font-weight:600;border-bottom:1px solid var(--accent);padding-bottom:2px}
+.divider{height:1px;background:var(--line);margin:0 32px}
+/* Post（案H: カードにせず、ヘアラインで区切る） */
+.feed{padding:0 32px 12px}
+.post{display:flex;gap:16px;padding:26px 0;border-bottom:1px solid var(--line-soft)}
+.post:last-child{border-bottom:0}
+.av{width:40px;height:40px;border-radius:50%;background:var(--surface-2);color:var(--text);
+  display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;flex:none;
+  box-shadow:0 0 0 1px rgba(20,24,40,.06)}
+.av.s{width:34px;height:34px;font-size:13px}
+.av.pearl{background:var(--pearl);color:#fff}
+.post .col{min-width:0;flex:1}
+.meta{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.meta .nm{font-size:15px;font-weight:650;letter-spacing:.01em}
+.meta .hd{font-size:12.5px;color:var(--text-sub)}
+.meta .dot{color:var(--line);font-size:12px}
+.meta .tm{font-size:12.5px;color:var(--text-sub);font-variant-numeric:tabular-nums}
+.meta .vis{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.08em;color:var(--accent);
+  background:var(--accent-soft);border-radius:var(--r-pill);padding:2px 11px}
+.body{margin:7px 0 0;font-size:15px;line-height:1.9;color:var(--text);max-width:62ch}
+.body .tag{color:var(--accent);font-weight:600}
+.cw{display:flex;align-items:center;gap:10px;margin-top:14px;padding:11px 16px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--r-card);font-size:13px;color:var(--text-sub)}
+.cw b{font-size:10.5px;font-weight:600;letter-spacing:.14em;color:var(--text);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:var(--r-pill);padding:3px 9px}
+.cw .more{margin-left:auto;color:var(--accent);font-weight:600;font-size:13px}
+.pics{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.pic{aspect-ratio:16/10;border-radius:var(--r-card);border:1px solid var(--line);
+  background:repeating-linear-gradient(45deg,var(--surface-2) 0 10px,var(--bg) 10px 20px)}
+.quote{margin-top:16px;padding:16px 20px;border-radius:var(--r-card);background:var(--surface);border:1px solid var(--line);border-left:1px solid var(--accent)}
+.quote .qh{font-size:12.5px;font-weight:600}
+.quote .qh span{font-weight:400;color:var(--text-sub)}
+.quote p{margin:6px 0 0;font-size:13.5px;color:var(--text-sub);line-height:1.85}
+.poll{margin-top:16px;display:flex;flex-direction:column;gap:8px}
+.poll .opt{position:relative;padding:10px 16px;border:1px solid var(--line);border-radius:var(--r-card);overflow:hidden;font-size:13.5px;background:var(--surface)}
+.poll .opt .fill{position:absolute;inset:0;width:var(--w);background:var(--accent-soft)}
+.poll .opt .row{position:relative;display:flex;justify-content:space-between}
+.poll .opt .row .pc{font-size:12.5px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.poll .foot{font-size:11.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.rx{display:flex;align-items:center;gap:10px;margin-top:18px}
+.rx .r{display:flex;align-items:center;gap:7px;padding:4px 13px;border:1px solid var(--line);border-radius:var(--r-pill);
+  font-size:12.5px;color:var(--text-sub);background:var(--surface);font-variant-numeric:tabular-nums}
+.rx .r .g{font-size:13px}
+.rx .r.mine{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);font-weight:600}
+.rx .r.add{border-style:dashed;color:var(--text-faint)}
+.acts{display:flex;align-items:center;gap:26px;margin-top:16px;color:var(--text-sub)}
+.acts .a{display:flex;align-items:center;gap:7px;font-size:12.5px;font-variant-numeric:tabular-nums}
+.acts .a.save{margin-left:auto}
+/* Aside */
+.aside{padding:30px 26px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);padding:18px 18px 12px;margin-bottom:18px;box-shadow:var(--shadow-1)}
+.card h4{margin:0 0 12px;font:600 11px/1 var(--sans);letter-spacing:.18em;color:var(--text-faint);text-transform:uppercase}
+.card .row{display:flex;align-items:baseline;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:13px}
+.card .row:last-child{border-bottom:0}
+.card .row .tag{color:var(--accent);font-weight:600}
+.card .row .c{font-size:11.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.card .who{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.card .who:last-child{border-bottom:0}
+.card .who .info{flex:1;min-width:0}
+.card .who .info b{display:block;font-size:13.5px}
+.card .who .info span{display:block;font-size:11.5px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fbtn{font-size:12px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:var(--r-pill);padding:4px 14px;background:transparent}
+
+/* ---------- 通知 ---------- */
+.n-wrap{max-width:640px;background:var(--bg)}
+.n-wrap .nhead{padding:30px 32px 16px;display:flex;align-items:flex-end;gap:12px}
+.n-wrap .nhead h2{font-family:var(--serif);font-size:23px;font-weight:400;letter-spacing:.06em;margin:0}
+.n-wrap .nhead .sub{font-size:12px;color:var(--text-faint);padding-bottom:3px;font-variant-numeric:tabular-nums}
+.n-wrap .nhead .tabs{margin-left:auto;display:flex;gap:18px;font-size:13px;color:var(--text-sub);padding-bottom:3px}
+.n-wrap .nhead .tabs .on{color:var(--text);font-weight:600;border-bottom:1px solid var(--accent);padding-bottom:2px}
+.n-item{display:flex;gap:14px;padding:20px 32px;border-top:1px solid var(--line-soft)}
+.n-item .ico{width:34px;height:34px;border-radius:50%;background:var(--accent-soft);color:var(--accent);
+  display:flex;align-items:center;justify-content:center;flex:none}
+.n-item .txt{font-size:13.5px;line-height:1.8}
+.n-item .txt b{font-weight:650}
+.n-item .sub{font-size:11.5px;color:var(--text-faint);margin-top:3px;font-variant-numeric:tabular-nums}
+.n-item .faces{display:flex;margin-top:8px}
+.n-item .faces .av{width:24px;height:24px;font-size:11px;margin-left:-7px;box-shadow:0 0 0 2px var(--bg)}
+.n-item .faces .av:first-child{margin-left:0}
+.n-item .right{margin-left:auto;display:flex;align-items:center}
+.n-item .glyphs{font-family:var(--serif);font-size:17px;color:var(--accent);letter-spacing:5px}
+
+/* ---------- システム ---------- */
+.sys{background:var(--surface);border-radius:14px;box-shadow:var(--shadow-2);padding:40px 40px 32px}
+.sys h3{font-family:var(--serif);font-size:22px;font-weight:400;letter-spacing:.06em;margin:0 0 8px}
+.sys .lead{margin:0 0 30px;font-size:13px;color:var(--text-sub);max-width:76ch}
+.sys h4{margin:0 0 14px;font:600 11px/1 var(--sans);letter-spacing:.18em;color:var(--text-faint);text-transform:uppercase}
+.sys-grid{display:grid;grid-template-columns:1fr 1fr;gap:44px}
+.tok{display:flex;flex-direction:column}
+.tok .t{display:grid;grid-template-columns:118px 1fr auto;gap:14px;align-items:baseline;padding:7px 0;
+  border-bottom:1px solid var(--line-soft);font-size:13px}
+.tok .t code{font:500 11px var(--mono);color:var(--text-sub)}
+.tok .t .val{color:var(--text-sub)}
+.tok .t .use{font-size:11px;color:var(--text-faint);text-align:right}
+.type-row{display:flex;align-items:baseline;gap:16px;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.type-row .lbl{width:82px;flex:none;font:500 10.5px var(--mono);color:var(--text-faint)}
+.prims{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:4px 0 18px}
+.btn{font-size:13.5px;font-weight:600;padding:8px 20px;border-radius:var(--r-pill)}
+.btn.solid{background:var(--accent);color:#fff;box-shadow:0 12px 24px -14px rgba(109,90,230,.8)}
+.btn.outline{border:1px solid var(--accent);color:var(--accent)}
+.btn.quiet{background:var(--surface-2);color:var(--text);border:1px solid var(--line)}
+.btn.text{color:var(--accent);padding:8px 4px}
+.field{border:1px solid var(--line);border-radius:var(--r-card);padding:9px 14px;font-size:13.5px;color:var(--text-faint);
+  min-width:170px;background:var(--surface)}
+.rules{margin:0;padding:0;list-style:none}
+.rules li{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:baseline;padding:9px 0;
+  border-bottom:1px solid var(--line-soft);font-size:13px}
+.rules li:last-child{border-bottom:0}
+.rules .chk{font:500 11px var(--mono);color:var(--accent);white-space:nowrap}
+.struct{font:500 11px/2 var(--mono);color:#3C4150;background:var(--surface-2);border-radius:var(--r-card);padding:20px 22px;white-space:pre}
+
+/* ---------- コンポーザ ---------- */
+.desk{padding:52px;background:var(--bg);display:flex;justify-content:center}
+.sheet{width:620px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow-2)}
+.sheet .sh{display:flex;align-items:center;padding:18px 24px;border-bottom:1px solid var(--line-soft)}
+.sheet .sh b{font-family:var(--serif);font-size:16px;font-weight:400;letter-spacing:.08em}
+.sheet .sh .esc{margin-left:auto;font:500 11px var(--mono);color:var(--text-faint)}
+.sheet .composer{display:flex;gap:16px;padding:22px 24px 8px}
+.sheet textarea{width:100%;border:0;outline:0;resize:none;font:400 15.5px/1.9 var(--sans);color:var(--text);
+  background:transparent;min-height:110px}
+.sheet textarea::placeholder{color:var(--text-faint)}
+.sheet .row2{display:flex;align-items:center;gap:8px;padding:0 24px 18px;flex-wrap:wrap}
+.tg{font-size:12.5px;color:var(--text-sub);border:1px solid var(--line);border-radius:var(--r-pill);padding:5px 13px;background:var(--surface)}
+.tg.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:600}
+.sheet .sf{display:flex;align-items:center;gap:16px;padding:16px 24px;border-top:1px solid var(--line-soft)}
+.sheet .sf .cnt{margin-left:auto;font-size:11.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+
+/* ---------- モバイル ---------- */
+.phones{display:flex;gap:36px}
+.phone{width:390px;height:812px;border-radius:28px;overflow:hidden;position:relative;background:var(--bg);flex:none;
+  box-shadow:var(--shadow-2);border:1px solid var(--line)}
+/* 上部バー: 左 = アバター（メニュー）/ 画面名 / 新着 */
+.m-head{padding:50px 20px 12px;display:flex;align-items:center;gap:12px}
+.m-head .menu-av{width:34px;height:34px;border-radius:50%;background:var(--pearl);color:#fff;flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;
+  box-shadow:0 0 0 1px rgba(20,24,40,.06);position:relative}
+.m-head .menu-av::after{content:"";position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;
+  background:var(--surface);border:1px solid var(--line)}
+.m-head h2{font-family:var(--serif);font-size:22px;font-weight:400;letter-spacing:.05em;margin:0}
+.m-head .r{margin-left:auto;font-size:11.5px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.m-seg{margin:0 20px 14px;display:flex;gap:20px;font-size:13.5px;color:var(--text-sub);padding:0 2px}
+.m-seg .t{padding-bottom:3px}
+.m-seg .t.on{color:var(--text);font-weight:600;border-bottom:1px solid var(--accent)}
+.m-post{padding:20px 20px 14px;border-top:1px solid var(--line-soft)}
+.m-post .meta .nm{font-size:14px}
+.m-post .body{font-size:14.5px;margin-top:6px}
+.m-post .rx{margin-top:12px}
+.m-post .acts{margin-top:12px;gap:22px}
+.mbar{position:absolute;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--line-soft);
+  display:flex;padding:12px 0 22px}
+.mbar .m{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10.5px;color:var(--text-faint)}
+.mbar .m.on{color:var(--accent)}
+.mbar .m .badge{position:absolute;transform:translate(14px,-6px);background:var(--magenta);color:#fff;
+  font-size:9.5px;font-weight:700;border-radius:var(--r-pill);padding:0 5px}
+.fab{position:absolute;right:20px;bottom:92px;width:52px;height:52px;border-radius:50%;background:var(--accent);color:#fff;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 16px 32px -14px rgba(109,90,230,.75)}
+/* ドロワー（左ナビ = メニュー） */
+.dim{position:absolute;inset:0;background:rgba(25,28,38,.34);z-index:40}
+.drawer{position:absolute;inset:0 auto 0 0;width:300px;background:var(--surface);z-index:50;padding:26px 16px 18px;
+  display:flex;flex-direction:column;gap:2px;box-shadow:24px 0 60px -30px rgba(20,24,40,.45)}
+.drawer .d-brand{display:flex;align-items:center;gap:10px;padding:0 12px 18px}
+.drawer .d-brand .mark{width:30px;height:30px;border-radius:9px;background:var(--pearl);color:#fff;display:flex;
+  align-items:center;justify-content:center;font-size:15px;font-family:var(--serif)}
+.drawer .d-brand b{font-family:var(--serif);font-size:19px;font-weight:400;letter-spacing:.1em}
+.drawer .d-who{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:var(--r-card);background:var(--surface-2);margin:0 0 14px}
+.drawer .d-who b{display:block;font-size:13.5px}
+.drawer .d-who span{display:block;font-size:11.5px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.drawer .d-item{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:var(--r-card);font-size:14.5px;color:var(--text-sub)}
+.drawer .d-item.on{background:var(--accent-soft);color:var(--accent);font-weight:650}
+.drawer .d-item .n{margin-left:auto;font-size:12px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums}
+.drawer .d-sep{height:1px;background:var(--line-soft);margin:12px 12px}
+.drawer .d-group{font:600 10.5px/1 var(--sans);letter-spacing:.18em;color:var(--text-faint);padding:2px 12px 8px}
+.drawer .d-foot{margin-top:auto;display:flex;align-items:center;gap:8px;padding:12px;border-top:1px solid var(--line-soft);
+  font-size:13px;color:var(--text-sub);flex-wrap:wrap}
+.drawer .d-foot .chipbtn{font-size:12.5px;border:1px solid var(--line);border-radius:var(--r-pill);padding:5px 12px;background:var(--surface)}
+.drawer .d-foot .chipbtn.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);font-weight:600}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-antenna" viewBox="0 0 24 24"><path d="m12 12 4.5-4.5"/><circle cx="12" cy="12" r="1.5"/><path d="M6 6a8.5 8.5 0 0 0 0 12M18 6a8.5 8.5 0 0 1 0 12"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></symbol>
+    <symbol id="i-drive" viewBox="0 0 24 24"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5L2.6 9.3l6.5-.9z"/></symbol>
+    <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a7 7 0 0 1 14 0v1"/><path d="M17 4a4 4 0 0 1 0 8M22 21v-1a7 7 0 0 0-5-6.7"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+    <symbol id="i-renote" viewBox="0 0 24 24"><path d="m17 1 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="m7 23-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24"><path d="M6 17h3l2-4V7H5v6h3z"/><path d="M14 17h3l2-4V7h-6v6h3z"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><path d="M16 8 2 22"/><path d="M17.5 15H9"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/></symbol>
+  </defs>
+</svg>
+
+<div class="board">
+
+  <header class="board-head">
+    <div class="kicker">SPICA FRONTEND REDESIGN — PROPOSAL J（H の骨格 × B の色）</div>
+    <h1 class="board-title">紫雅<small>MURASAKI — 案H の骨格・余白・部品そのままに、色だけ案B / 案I に</small></h1>
+    <p class="board-desc">
+      案I とは逆向きの掛け合わせです。こちらは<b>骨格・余白・部品・字面をすべて案H（雅）のまま</b>にして、
+      <b>色だけ案B / 案I のパレット</b>（薄ラベンダーの地・白・スミレ・真珠のグラデーション）に置き換えました。
+      つまり「案H の佇まいを保ったまま、色みをクールに寄せた」案です。カードを使わない<b>ヘアライン区切り</b>、
+      左ナビの<b>静かな選択状態</b>、<b>下線のタブ</b>、細い縁のリアクションピル、62 字の行長 — すべて案H の作法です。
+    </p>
+    <div class="board-meta">
+      <div class="meta-col">
+        <h4>Palette（案B / 案I から）</h4>
+        <div class="swatches">
+          <span class="sw"><i style="background:#F4F5FA"></i><span>#F4F5FA</span></span>
+          <span class="sw"><i style="background:#FFFFFF"></i><span>#FFFFFF</span></span>
+          <span class="sw"><i style="background:#6D5AE6"></i><span>#6D5AE6</span></span>
+          <span class="sw"><i style="background:#EFECFD"></i><span>#EFECFD</span></span>
+          <span class="sw"><i style="background:#D9649B"></i><span>#D9649B</span></span>
+          <span class="sw"><i style="background:linear-gradient(135deg,#8F7BF0,#C79BEA 55%,#F3C6DC)"></i><span>pearl</span></span>
+        </div>
+      </div>
+      <div class="meta-col">
+        <h4>Keywords</h4>
+        <div class="chips">
+          <span class="chip">案H の骨格</span><span class="chip">案H の余白</span><span class="chip">カードなし</span>
+          <span class="chip">下線タブ</span><span class="chip">案B の色</span><span class="chip">ドロワー</span>
+        </div>
+      </div>
+    </div>
+    <div class="keypoints">
+      <div class="kp"><b>案I と何が違うか</b><p>案I は「案B の骨格＋案H の規律」。案J は「案H の骨格＋案B の色」。カード型フィードとセグメントタブは使わず、罫線と下線で組む。</p></div>
+      <div class="kp"><b>色だけが案B の系統</b><p>地は薄ラベンダー、面は白、アクセントはスミレ。真珠のグラデーションはロゴと自分のアバターだけ。</p></div>
+      <div class="kp"><b>モバイルはドロワーで全項目へ</b><p>左上のアバターが「メニュー」。デスクトップの左ナビと同じ並びが開き、リスト・アンテナ・チャンネル・ドライブ・設定・管理まで届きます（04 の右の端末）。</p></div>
+    </div>
+  </header>
+
+  <div class="screens">
+
+    <!-- 01 ホーム -->
+    <section class="swrap">
+      <h3><span>01</span>ホーム（デスクトップ）</h3>
+      <p class="note">案H の骨格（236 / 640 / 300・余白広め・カードなし）。色だけ案B / 案I のクールな系統。</p>
+      <div class="frame">
+        <div class="app">
+          <aside class="nav">
+            <div class="brand"><span class="mark">✦</span><b>Spica</b></div>
+            <div class="item on"><svg class="i-18"><use href="#i-home"/></svg>ホーム</div>
+            <div class="item"><svg class="i-18"><use href="#i-bell"/></svg>通知<span class="n">3</span></div>
+            <div class="item"><svg class="i-18"><use href="#i-search"/></svg>見つける</div>
+            <div class="item"><svg class="i-18"><use href="#i-mail"/></svg>メッセージ</div>
+            <div class="item"><svg class="i-18"><use href="#i-bookmark"/></svg>ブックマーク</div>
+            <div class="sep"></div>
+            <div class="item"><svg class="i-18"><use href="#i-list"/></svg>リスト</div>
+            <div class="item"><svg class="i-18"><use href="#i-antenna"/></svg>アンテナ</div>
+            <div class="item"><svg class="i-18"><use href="#i-hash"/></svg>チャンネル</div>
+            <div class="item"><svg class="i-18"><use href="#i-drive"/></svg>ドライブ</div>
+            <div class="sep"></div>
+            <div class="item"><svg class="i-18"><use href="#i-cog"/></svg>設定</div>
+            <div class="compose">ノートを作成</div>
+            <div class="me"><span class="av s pearl">す</span><span style="min-width:0"><b>すいれん</b><span style="display:block;font-size:11.5px;color:var(--text-faint)">@suiren@localhost:3210</span></span></div>
+          </aside>
+
+          <main class="main">
+            <div class="head">
+              <h2>ホーム</h2>
+              <span class="sub">新着 2 ・ 未読 3</span>
+              <div class="tabs"><span class="on">ホーム</span><span>ローカル</span><span>連合</span></div>
+            </div>
+            <div class="divider"></div>
+            <div class="feed">
+
+              <article class="post">
+                <span class="av pearl">す</span>
+                <div class="col">
+                  <div class="meta"><span class="nm">すいれん</span><span class="hd">@suiren@localhost:3210</span><span class="dot">·</span><span class="tm">12分前</span><span class="vis">連合</span></div>
+                  <p class="body">案H の骨格のまま、色だけ案B の系統に寄せた案です。<span class="tag">#Spica</span> <span class="tag">#デザイン</span><br>カードを使わず、罫線と余白で区切ります。</p>
+                  <div class="rx">
+                    <span class="r mine"><span class="g">★</span>4</span>
+                    <span class="r"><span class="g">✦</span>2</span>
+                    <span class="r add">＋</span>
+                  </div>
+                  <div class="acts">
+                    <span class="a"><svg class="i-18"><use href="#i-reply"/></svg>3</span>
+                    <span class="a"><svg class="i-18"><use href="#i-renote"/></svg>2</span>
+                    <span class="a"><svg class="i-18"><use href="#i-quote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-share"/></svg></span>
+                    <span class="a save"><svg class="i-18"><use href="#i-bookmark"/></svg></span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="post">
+                <span class="av">み</span>
+                <div class="col">
+                  <div class="meta"><span class="nm">みかん</span><span class="hd">@mikan@misskey.io</span><span class="dot">·</span><span class="tm">32分前</span><span class="vis">連合</span></div>
+                  <div class="cw"><b>CW</b>長文・ネタバレ注意<span class="more">開く</span></div>
+                  <p class="body">連合テスト、Misskey からリアクションが届いた。ActivityPub の <b>Update</b> もちゃんと反映される。編集しても投稿 ID が変わらないのが良い。</p>
+                  <div class="pics"><div class="pic"></div><div class="pic"></div></div>
+                  <div class="rx">
+                    <span class="r"><span class="g">★</span>1</span>
+                    <span class="r add">＋</span>
+                  </div>
+                  <div class="acts">
+                    <span class="a"><svg class="i-18"><use href="#i-reply"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-renote"/></svg>1</span>
+                    <span class="a"><svg class="i-18"><use href="#i-quote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-share"/></svg></span>
+                    <span class="a save"><svg class="i-18"><use href="#i-bookmark"/></svg></span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="post">
+                <span class="av">あ</span>
+                <div class="col">
+                  <div class="meta"><span class="nm">aster</span><span class="hd">@aster@mastodon.social</span><span class="dot">·</span><span class="tm">1時間前</span></div>
+                  <p class="body">アンテナの通知、まとめ表示があると追いやすい。</p>
+                  <div class="quote">
+                    <div class="qh">かぐら <span>@kagura@localhost:3210</span></div>
+                    <p>アンテナ「Spica 開発」に新着が4件。キーワードは「デザイン」「ActivityPub」にしておくと静かで良い。</p>
+                  </div>
+                  <div class="rx">
+                    <span class="r"><span class="g">★</span>2</span>
+                    <span class="r add">＋</span>
+                  </div>
+                  <div class="acts">
+                    <span class="a"><svg class="i-18"><use href="#i-reply"/></svg>1</span>
+                    <span class="a"><svg class="i-18"><use href="#i-renote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-quote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-share"/></svg></span>
+                    <span class="a save"><svg class="i-18"><use href="#i-bookmark"/></svg></span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="post">
+                <span class="av">な</span>
+                <div class="col">
+                  <div class="meta"><span class="nm">なぎ</span><span class="hd">@nagi@localhost:3210</span><span class="dot">·</span><span class="tm">2時間前</span><span class="vis">フォロワー</span></div>
+                  <p class="body">新デザイン、どの方向が好き？</p>
+                  <div class="poll">
+                    <div class="opt"><span class="fill" style="--w:47%"></span><span class="row"><span>紫雅（案J）</span><span class="pc">47%</span></span></div>
+                    <div class="opt"><span class="fill" style="--w:32%"></span><span class="row"><span>白雅（案I）</span><span class="pc">32%</span></span></div>
+                    <div class="opt"><span class="fill" style="--w:21%"></span><span class="row"><span>雅（案H）</span><span class="pc">21%</span></span></div>
+                    <div class="foot">19票 ・ 残り 20時間</div>
+                  </div>
+                  <div class="acts">
+                    <span class="a"><svg class="i-18"><use href="#i-reply"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-renote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-quote"/></svg></span>
+                    <span class="a"><svg class="i-18"><use href="#i-share"/></svg></span>
+                    <span class="a save"><svg class="i-18"><use href="#i-bookmark"/></svg></span>
+                  </div>
+                </div>
+              </article>
+
+            </div>
+          </main>
+
+          <aside class="aside">
+            <div class="card">
+              <h4>話題のタグ</h4>
+              <div class="row"><span class="tag">#Spica</span><span class="c">128</span></div>
+              <div class="row"><span class="tag">#Fediverse</span><span class="c">96</span></div>
+              <div class="row"><span class="tag">#ActivityPub</span><span class="c">74</span></div>
+              <div class="row"><span class="tag">#デザイン</span><span class="c">51</span></div>
+            </div>
+            <div class="card">
+              <h4>このサーバー</h4>
+              <div class="row"><span>ユーザー</span><span class="c">12</span></div>
+              <div class="row"><span>ノート</span><span class="c">1,248</span></div>
+              <div class="row"><span>連合受信</span><span class="c">342</span></div>
+            </div>
+            <div class="card">
+              <h4>おすすめ</h4>
+              <div class="who"><span class="av s">か</span><span class="info"><b>かぐら</b><span>@kagura@localhost:3210</span></span><span class="fbtn">フォロー</span></div>
+              <div class="who"><span class="av s">ほ</span><span class="info"><b>ほたる</b><span>@hotaru@misskey.io</span></span><span class="fbtn">フォロー</span></div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 通知 -->
+    <section class="swrap">
+      <h3><span>02</span>通知（リストの精度）</h3>
+      <p class="note">案H のまま。カードにせず、リスト全体を 1 枚の面に載せて罫線で区切る。</p>
+      <div class="frame">
+        <div class="n-wrap">
+          <div class="nhead">
+            <h2>通知</h2>
+            <span class="sub">未読 3</span>
+            <div class="tabs"><span class="on">すべて</span><span>メンション</span><span>リアクション</span><span>フォロー</span></div>
+          </div>
+          <div class="n-item">
+            <span class="ico"><svg class="i-18"><use href="#i-star"/></svg></span>
+            <div>
+              <div class="txt"><b>3人</b>がリアクションしました</div>
+              <div class="faces"><span class="av">か</span><span class="av">み</span><span class="av">a</span></div>
+              <div class="sub">★ 2 ・ ✦ 1 ・ 5分前</div>
+            </div>
+            <span class="right glyphs">★✦</span>
+          </div>
+          <div class="n-item">
+            <span class="ico"><svg class="i-18"><use href="#i-users"/></svg></span>
+            <div>
+              <div class="txt"><b>みかん</b> がフォローしました</div>
+              <div class="sub">18分前</div>
+            </div>
+            <span class="right"><span class="fbtn">フォローを返す</span></span>
+          </div>
+          <div class="n-item">
+            <span class="ico"><svg class="i-18"><use href="#i-reply"/></svg></span>
+            <div>
+              <div class="txt"><b>aster</b> が返信しました</div>
+              <div class="quote" style="margin-top:8px"><p>「紫雅のほうが好きです。カードが無いぶん、静かで読みやすい」</p></div>
+              <div class="sub">1時間前</div>
+            </div>
+          </div>
+          <div class="n-item">
+            <span class="ico"><svg class="i-18"><use href="#i-antenna"/></svg></span>
+            <div>
+              <div class="txt">アンテナ「Spica 開発」に新着が <b>2</b> 件</div>
+              <div class="sub">3時間前</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 システム -->
+    <section class="swrap">
+      <h3><span>03</span>システム（骨格と部品は案H・色は案B）</h3>
+      <p class="note">案I の逆で、色以外はすべて案H。トークンの由来を明記しています。</p>
+      <div class="sys">
+        <h3>トークンと規則</h3>
+        <p class="lead">骨格・余白・部品・字面は案H（雅）のまま。色だけ案B / 案I から借りています。値の由来が分かるので、あとで「色を案H の暖色に戻す」「骨格を案B のカード型にする」もトークンの差し替えで済みます。</p>
+
+        <div class="sys-grid">
+          <div>
+            <h4>色（案B / 案I から）</h4>
+            <div class="tok">
+              <div class="t"><code>--bg</code><span class="val">#F4F5FA</span><span class="use">地</span></div>
+              <div class="t"><code>--surface</code><span class="val">#FFFFFF</span><span class="use">面（ナビ・カード・シート）</span></div>
+              <div class="t"><code>--line</code><span class="val">#E8EAF3</span><span class="use">罫</span></div>
+              <div class="t"><code>--text</code><span class="val">#191C26</span><span class="use">字</span></div>
+              <div class="t"><code>--text-sub</code><span class="val">#5D6474</span><span class="use">副字</span></div>
+              <div class="t"><code>--accent</code><span class="val">#6D5AE6</span><span class="use">操作・選択</span></div>
+              <div class="t"><code>--accent-soft</code><span class="val">#EFECFD</span><span class="use">選択面・リアクション</span></div>
+              <div class="t"><code>--magenta</code><span class="val">#D9649B</span><span class="use">バッジだけ</span></div>
+              <div class="t"><code>--pearl</code><span class="val">gradient</span><span class="use">ロゴと自分のアバター</span></div>
+            </div>
+
+            <div style="height:26px"></div>
+            <h4>字（案H のまま）</h4>
+            <div class="type-row"><span class="lbl">serif</span><span style="font-family:var(--serif);font-size:24px;letter-spacing:.06em">題字・画面名だけ</span></div>
+            <div class="type-row"><span class="lbl">sans 15/1.9</span><span>本文と UI（行長は 62 字まで）</span></div>
+            <div class="type-row"><span class="lbl">tabular</span><span style="font-variant-numeric:tabular-nums">時刻・件数・票数は等幅（1,248 / 342 / 47%）</span></div>
+            <div class="type-row"><span class="lbl">track .18em</span><span style="letter-spacing:.18em;font-size:12px;color:var(--text-faint)">ラベルは字間を開ける</span></div>
+
+            <div style="height:26px"></div>
+            <h4>形と影（案H のまま）</h4>
+            <div class="tok">
+              <div class="t"><code>--r-card</code><span class="val">10px</span><span class="use">面・入力・画像</span></div>
+              <div class="t"><code>--r-pill</code><span class="val">999px</span><span class="use">ボタン・タグ・リアクション</span></div>
+              <div class="t"><code>--shadow-1</code><span class="val">2 段の淡い影</span><span class="use">ナビの選択・カードだけ</span></div>
+              <div class="t"><code>--shadow-2</code><span class="val">深い 1 段</span><span class="use">浮く面（モーダル・ドロワー）</span></div>
+            </div>
+          </div>
+
+          <div>
+            <h4>部品（案H のまま）</h4>
+            <div class="prims">
+              <span class="btn solid">ノート</span>
+              <span class="btn outline">フォロー</span>
+              <span class="btn quiet">キャンセル</span>
+              <span class="btn text">あとで</span>
+              <span class="field">検索</span>
+              <span class="rx" style="margin-top:0"><span class="r mine"><span class="g">★</span>4</span><span class="r"><span class="g">✦</span>2</span><span class="r add">＋</span></span>
+            </div>
+
+            <h4>構造（案H の骨格・カードなし）</h4>
+            <div class="struct">App                    236 / 640 / 300
+├─ Nav               … 常設・選択は面の色だけ（影なし）
+└─ Screen
+   ├─ ScreenHead     … 画面名（セリフ）+ 件数 + 下線タブ
+   ├─ Divider
+   ├─ Feed            … カードを使わない（罫線で区切る）
+   │  └─ Post
+   │     ├─ Avatar（円 + 淡い輪）
+   │     ├─ Meta（名前 / ハンドル / 時刻 等幅 / 公開範囲）
+   │     ├─ Body（15px / 1.9 / 62 字）
+   │     ├─ CW / Media / Quote / Poll
+   │     ├─ Reactions（細い縁のピル）
+   │     └─ Actions
+   └─ Aside           … 面のカード 3 枚
+
+モバイル
+├─ 上部: アバター（メニューを開く）/ 画面名 / 新着
+├─ 中部: 下線タブ（ホーム・ローカル・連合）
+├─ 下部: ホーム / 検索 / 通知 / 自分 + 投稿ボタン
+└─ ドロワー（左上のアバター）: 全項目 + 設定 + 管理 + テーマ + ログアウト</div>
+
+            <div style="height:22px"></div>
+            <h4>検査できる規則</h4>
+            <ul class="rules">
+              <li><span>色は 9 トークンだけ（案B のパレット。新しい色を足さない）</span><span class="chk">grep</span></li>
+              <li><span>セリフは題字・画面名のみ（本文には使わない）</span><span class="chk">レビュー</span></li>
+              <li><span>数字には <code>tabular-nums</code> を必ず付ける</span><span class="chk">grep</span></li>
+              <li><span>本文の行長は 62 字以内（<code>max-width: 62ch</code>）</span><span class="chk">grep</span></li>
+              <li><span>角丸は 10 と 999 の 2 種類だけ。影は 2 トークンだけ</span><span class="chk">レビュー</span></li>
+              <li><span>モバイルの主要動線は 4 つ + 投稿。残りは必ずドロワーから届く</span><span class="chk">レビュー</span></li>
+              <li><span><code>!important</code> を使わない（テーマはトークン差し替え）</span><span class="chk">grep</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 コンポーザ + モバイル -->
+    <section class="swrap">
+      <h3><span>04</span>ノートを作成 / モバイル（ホームと、メニューを開いたところ）</h3>
+      <p class="note">モバイルの全項目は<b>左上のアバター</b>から開くドロワーで届きます。デスクトップの左ナビと同じ並びです。</p>
+      <div class="frame">
+        <div class="desk">
+          <div class="sheet">
+            <div class="sh"><b>ノートを作成</b><span class="esc">Esc</span></div>
+            <div class="composer">
+              <span class="av pearl">す</span>
+              <div style="flex:1;min-width:0">
+                <textarea rows="3" placeholder="いまどうしてる？  @ユーザー と #タグ は入力中に補完"></textarea>
+              </div>
+            </div>
+            <div class="row2">
+              <span class="tg on">CW</span>
+              <span class="tg">アンケート</span>
+              <span class="tg">下書き</span>
+              <span class="tg">画像 2 / 4</span>
+            </div>
+            <div class="sf">
+              <span class="tg">連合 ▾</span>
+              <span class="cnt">142 / 3000</span>
+              <span class="btn solid">ノート</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="height:30px"></div>
+      <div class="phones">
+        <!-- ホーム -->
+        <div class="phone">
+          <div class="m-head">
+            <span class="menu-av">す</span>
+            <h2>ホーム</h2>
+            <span class="r">新着 2</span>
+          </div>
+          <div class="m-seg"><span class="t on">ホーム</span><span class="t">ローカル</span><span class="t">連合</span></div>
+          <div class="m-post">
+            <div class="meta"><span class="av s pearl">す</span><span class="nm">すいれん</span><span class="hd">@suiren</span><span class="dot">·</span><span class="tm">12分前</span></div>
+            <p class="body">左のアバターを押すと、メニューが開きます。<span class="tag">#Spica</span></p>
+            <div class="rx"><span class="r mine"><span class="g">★</span>4</span><span class="r"><span class="g">✦</span>2</span></div>
+            <div class="acts">
+              <span class="a"><svg class="i-18"><use href="#i-reply"/></svg>3</span>
+              <span class="a"><svg class="i-18"><use href="#i-renote"/></svg>2</span>
+              <span class="a save"><svg class="i-18"><use href="#i-bookmark"/></svg></span>
+            </div>
+          </div>
+          <div class="m-post">
+            <div class="meta"><span class="av s">み</span><span class="nm">みかん</span><span class="hd">@mikan@misskey.io</span><span class="dot">·</span><span class="tm">32分前</span></div>
+            <p class="body">連合テスト中。Misskey からリアクションが届いた。</p>
+            <div class="pics" style="grid-template-columns:1fr;margin-top:12px"><div class="pic" style="aspect-ratio:16/9"></div></div>
+          </div>
+          <div class="fab"><svg class="i"><use href="#i-feather"/></svg></div>
+          <div class="mbar">
+            <span class="m on"><svg class="i-18"><use href="#i-home"/></svg>ホーム</span>
+            <span class="m"><svg class="i-18"><use href="#i-search"/></svg>検索</span>
+            <span class="m" style="position:relative"><svg class="i-18"><use href="#i-bell"/></svg>通知<span class="badge">3</span></span>
+            <span class="m"><svg class="i-18"><use href="#i-user"/></svg>自分</span>
+          </div>
+        </div>
+
+        <!-- メニュー（ドロワー） -->
+        <div class="phone">
+          <div class="m-head">
+            <span class="menu-av">す</span>
+            <h2>ホーム</h2>
+            <span class="r">新着 2</span>
+          </div>
+          <div class="m-seg"><span class="t on">ホーム</span><span class="t">ローカル</span><span class="t">連合</span></div>
+          <div class="m-post">
+            <div class="meta"><span class="av s pearl">す</span><span class="nm">すいれん</span><span class="hd">@suiren</span><span class="dot">·</span><span class="tm">12分前</span></div>
+            <p class="body">左のアバターを押すと、メニューが開きます。</p>
+          </div>
+          <div class="dim"></div>
+          <div class="drawer">
+            <div class="d-brand"><span class="mark">✦</span><b>Spica</b></div>
+            <div class="d-who"><span class="av s pearl">す</span><span style="min-width:0"><b>すいれん</b><span>@suiren@localhost:3210</span></span></div>
+            <div class="d-item on"><svg class="i-18"><use href="#i-home"/></svg>ホーム</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-bell"/></svg>通知<span class="n">3</span></div>
+            <div class="d-item"><svg class="i-18"><use href="#i-search"/></svg>見つける</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-mail"/></svg>メッセージ</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-bookmark"/></svg>ブックマーク</div>
+            <div class="d-sep"></div>
+            <div class="d-group">まとめ</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-list"/></svg>リスト</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-antenna"/></svg>アンテナ</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-hash"/></svg>チャンネル</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-drive"/></svg>ドライブ</div>
+            <div class="d-sep"></div>
+            <div class="d-item"><svg class="i-18"><use href="#i-cog"/></svg>設定</div>
+            <div class="d-item"><svg class="i-18"><use href="#i-shield"/></svg>管理パネル</div>
+            <div class="d-foot">
+              <span class="chipbtn on">ライト</span>
+              <span class="chipbtn">ダーク</span>
+              <span class="chipbtn">端末に合わせる</span>
+              <span class="chipbtn" style="margin-left:auto">ログアウト</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

@@ -2,37 +2,36 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Spica - ActivityPub でつながる分散型ソーシャルネットワーク" />
+    <meta name="theme-color" content="#F4F5FA" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="icon" type="image/jpeg" href="/favicon.jpg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <!-- 画面ごとの og/description/canonical はサーバーが配信時に差し込む（server/src/index.ts）。
-         ここにあるのは、差し込みが無いパス（/search など）でも最低限何か出るようにするための既定値。 -->
-    <meta name="description" content="Spica - ActivityPub でつながる分散型ソーシャルネットワーク" />
-    <link rel="alternate" type="application/rss+xml" title="Spica" href="/feed.xml" />
-    <title>Spica - 分散型ソーシャルネットワーク</title>
-    <!-- PWA Settings -->
+    <!-- PWA（ホーム画面に追加） -->
     <link rel="manifest" href="/manifest.json" />
-    <meta name="theme-color" content="#020617" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Spica" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png" />
+    <link rel="alternate" type="application/rss+xml" title="Spica" href="/feed.xml" />
+    <title>Spica</title>
+    <script>
+      // 保存されたテーマを最初の描画前に当てる（ちらつき防止）
+      try {
+        var t = localStorage.getItem('spica_theme');
+        if (t === 'dark' || t === 'light') {
+          document.documentElement.dataset.theme = t;
+        } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      } catch (e) {}
+    </script>
   </head>
-  <body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-indigo-500 selection:text-white pb-16 lg:pb-0">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').then(
-            (reg) => console.log('[PWA] ServiceWorker registered with scope:', reg.scope),
-            (err) => console.warn('[PWA] ServiceWorker registration failed:', err)
-          );
-        });
-      }
-    </script>
   </body>
 </html>

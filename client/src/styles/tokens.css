@@ -1,0 +1,100 @@
+/* ============================================================
+   案K「雅＋」のデザイントークン。
+   部品はここで定義した値だけを使う（他の色・px を書いたら設計違反）。
+   検査: npm run check:size / grep で「トークン以外の色」を探せる
+   ============================================================ */
+:root {
+  /* 色（これで全部） */
+  --bg: #f4f5fa;
+  --paper: #ffffff;
+  --surface: #fafbff;
+  --line: #e8eaf3;
+  --line-soft: #eff1f8;
+  --text: #191c26;
+  --text-sub: #5d6474;
+  --text-faint: #8b91a3;
+  --accent: #6d5ae6;
+  --accent-hover: #5b48d6;
+  --accent-soft: #efecfd;
+  --magenta: #d9649b;
+  --danger: #dc2650;
+  --live: #12a150;
+  --pearl: linear-gradient(135deg, #8f7bf0 0%, #c79bea 55%, #f3c6dc 100%);
+
+  /* 形と影 */
+  --r-card: 10px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(20, 24, 40, 0.05), 0 10px 30px -18px rgba(20, 24, 40, 0.18);
+  --shadow-2: 0 20px 52px -26px rgba(30, 32, 60, 0.28);
+
+  /* 書体（1 系統だけ） */
+  --sans: "Segoe UI", "Yu Gothic", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* 幅（レイアウトの基準） */
+  --w-nav: 236px;
+  --w-main: 640px;
+  --w-aside: 300px;
+
+  /* 読みやすさ（設定 → 表示 で変わる。html の data-* が上書きする） */
+  --fs-body: 15px;
+  --fs-ui: 13.5px;
+  --pad-row: 26px;
+}
+
+/* 設定 → 表示（文字の大きさ・行のつめ方）。サーバーに保存した好みを html に付ける */
+[data-size="small"] {
+  --fs-body: 14px;
+  --fs-ui: 12.5px;
+}
+[data-size="large"] {
+  --fs-body: 16.5px;
+  --fs-ui: 15px;
+}
+[data-density="compact"] {
+  --pad-row: 14px;
+}
+
+[data-theme="dark"] {
+  --bg: #0f111b;
+  --paper: #171a28;
+  --surface: #1b1e2e;
+  --line: #252a40;
+  --line-soft: #1f2434;
+  --text: #e9ebf4;
+  --text-sub: #a2a8bd;
+  --text-faint: #7a8098;
+  --accent: #8b8dff;
+  --accent-hover: #a5a7ff;
+  --accent-soft: rgba(139, 141, 255, 0.16);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px -18px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 20px 52px -26px rgba(0, 0, 0, 0.7);
+}
+
+/* アクセントカラー（設定 → 表示。元の UI と同じ 6 色）。
+   indigo のときは何も付けない（:root の値がそのまま使われる）。 */
+html[data-accent='cyan'] {
+  --accent: #0e93ad;
+  --accent-hover: #0b7c92;
+  --accent-soft: #e4f6fa;
+}
+html[data-accent='emerald'] {
+  --accent: #0f9d6f;
+  --accent-hover: #0c855e;
+  --accent-soft: #e4f6ef;
+}
+html[data-accent='purple'] {
+  --accent: #8d3ee0;
+  --accent-hover: #7930c4;
+  --accent-soft: #f4ecfd;
+}
+html[data-accent='rose'] {
+  --accent: #d63a5c;
+  --accent-hover: #b8304e;
+  --accent-soft: #fdebee;
+}
+html[data-accent='amber'] {
+  --accent: #b9760a;
+  --accent-hover: #9c6307;
+  --accent-soft: #fdf3e2;
+}

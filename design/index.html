@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spica デザイン提案 — 11案の比較</title>
+<style>
+:root{--ink:#14161E;--sub:#5D6474;--line:#E3E6EF;--bg:#F4F5FA}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif;line-height:1.8}
+.wrap{max-width:1180px;margin:0 auto;padding:48px 28px 96px}
+.kicker{font-size:12px;letter-spacing:.18em;font-weight:800;color:#6D5AE6}
+h1{font-size:32px;margin:10px 0 8px;letter-spacing:.01em}
+.lead{color:var(--sub);max-width:880px;margin:0 0 26px;font-size:15px}
+h2{font-size:17px;margin:46px 0 6px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h2 .note{font-weight:400;font-size:13px;color:var(--sub);margin-left:10px}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
+.cards.two{grid-template-columns:repeat(2,1fr)}
+.cards.one{grid-template-columns:repeat(2,1fr)}
+.card{display:flex;flex-direction:column;background:#fff;border:1px solid var(--line);border-radius:18px;overflow:hidden;
+  box-shadow:0 14px 34px -24px rgba(30,32,60,.35);text-decoration:none;color:inherit}
+.card:hover{border-color:#C9CEE0}
+.card .hero{height:96px;position:relative;display:flex;align-items:flex-end;padding:12px 16px}
+.card .hero .nm{font-size:20px;font-weight:800;letter-spacing:.02em}
+.card .hero .en{margin-left:auto;font-weight:800;font-size:13px}
+.card .body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:10px;flex:1}
+.card .desc{font-size:13px;color:var(--sub);margin:0;line-height:1.85;flex:1}
+.sw{display:flex;gap:6px}
+.sw i{width:26px;height:26px;border-radius:7px;border:1px solid rgba(20,24,40,.12);display:block}
+.tag{font-size:11px;font-weight:700;border-radius:999px;padding:3px 10px;border:1px solid var(--line);color:var(--sub);background:#FAFBFF}
+.tags{display:flex;gap:6px;flex-wrap:wrap}
+.open{font-size:12.5px;font-weight:800;color:#6D5AE6}
+table{border-collapse:collapse;width:100%;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:18px}
+th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{background:#FAFBFF;font-size:11.5px;color:var(--sub);letter-spacing:.03em;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.nm{font-weight:800;white-space:nowrap}
+td.nm span{display:block;font-weight:400;font-size:11px;color:var(--sub)}
+.note-box{background:#fff;border:1px solid var(--line);border-left:4px solid #6D5AE6;border-radius:12px;padding:16px 18px;font-size:13.5px;color:#39404F;margin-top:18px}
+.note-box b{color:var(--ink)}
+code{background:#EEF0F7;border-radius:6px;padding:1px 6px;font-size:12.5px}
+ul{padding-left:22px;color:#39404F;font-size:13.5px}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+.split .box{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.split .box h3{margin:0 0 8px;font-size:14.5px}
+.split .box p{margin:0;font-size:13px;color:var(--sub);line-height:1.85}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kicker">SPICA FRONTEND REDESIGN — DESIGN PROPOSAL v3</div>
+  <h1>フロントエンド再構築：デザイン11案</h1>
+  <p class="lead">
+    4 つの性格の違うグループと、その組み合わせがあります。<b>前半（A/B/C）</b>=いまの延長で質を上げる、
+    <b>後半（D/E/F）</b>=既存の見た目を大きく壊す、
+    <b>追加（G/H）</b>=シンプルさとエレガンスに振り切る、
+    <b>組み合わせ（I 白雅 / J 紫雅 / K 雅＋）</b>=案B と案H の掛け合わせ（I は案B の骨格＋案H の規律、J は案H の骨格＋案B の色、K は案H そのものに案B の色とデスクトップ上部を重ねた版）。
+    どれもサーバー API は変えず、機能は落としません。クリックでモックアップが開きます（サーバー不要）。
+    分析と進め方は <code>design/README.md</code> へ。
+  </p>
+
+  <h2>前半：いまの延長で質を上げる<span class="note">移行が自然。まず土台を直したいとき</span></h2>
+  <div class="cards">
+    <a class="card" href="a-stellar.html">
+      <div class="hero" style="background:radial-gradient(130% 150% at 15% 0%, #2B2F5E 0%, #10142E 55%, #08090F 100%)">
+        <span class="nm" style="color:#EAECF5">STELLAR</span><span class="en" style="color:#6F7589">A</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#08090F"></i><i style="background:#0E1018"></i><i style="background:#1A1F30"></i><i style="background:#8B8DFF"></i><i style="background:#7CD4FD"></i><i style="background:#4ADE80"></i></div>
+        <p class="desc">静かな星夜のダーク。ヘアラインと余白で整理する完成形。夜と長文に強い。</p>
+        <div class="tags"><span class="tag">ダーク</span><span class="tag">移行◎</span><span class="tag">現行の延長</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="b-daylight.html">
+      <div class="hero" style="background:linear-gradient(135deg,#F6F7FB 0%,#EFECFD 55%,#F3C6DC 100%)">
+        <span class="nm" style="color:#191C26">DAYLIGHT</span><span class="en" style="color:#8B91A3">B</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F4F5FA"></i><i style="background:#FFFFFF"></i><i style="background:#6D5AE6"></i><i style="background:#EFECFD"></i><i style="background:#D9649B"></i><i style="background:#12A150"></i></div>
+        <p class="desc">真珠の白。影で区切る白いカードと広い余白で、いちばん読みやすい。</p>
+        <div class="tags"><span class="tag">ライト</span><span class="tag">新規にやさしい</span><span class="tag">昼に強い</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="c-deck.html">
+      <div class="hero" style="background:linear-gradient(120deg,#0D0E11 0%,#1B1D24 60%,#3A2A12 100%)">
+        <span class="nm" style="color:#FFA53B">DECK</span><span class="en" style="color:#6B7078">C</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#0D0E11"></i><i style="background:#141519"></i><i style="background:#FFA53B"></i><i style="background:#63C7E8"></i><i style="background:#4ADE80"></i><i style="background:#FB7185"></i></div>
+        <p class="desc">情報の管制塔。カラムを並べて同時に追い、キーボードで全部操作する。</p>
+        <div class="tags"><span class="tag">高密度</span><span class="tag">マルチカラム</span><span class="tag">PC 常用</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+  </div>
+
+  <h2>後半：既存の見た目を大きく壊す<span class="note">装飾ではなく「組版・意匠・造形」で作る</span></h2>
+  <div class="cards">
+    <a class="card" href="d-katsuji.html">
+      <div class="hero" style="background:#FAF7F0;border-bottom:3px double #17181B">
+        <span class="nm" style="color:#17181B;font-family:'Yu Mincho','Hiragino Mincho ProN',serif;letter-spacing:.14em">活字</span>
+        <span class="en" style="color:#B4341F">D / KATSUJI</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#FAF7F0"></i><i style="background:#17181B"></i><i style="background:#B4341F"></i><i style="background:#23456F"></i><i style="background:#D6D0C1"></i></div>
+        <p class="desc">新聞・活版印刷の組版。明朝の本文、罫線、朱の印。角丸も影も使わず「紙面」として組む。</p>
+        <div class="tags"><span class="tag">明朝体</span><span class="tag">破壊度：大</span><span class="tag">読む</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="e-sumi.html">
+      <div class="hero" style="background:#F4EEE2;border-bottom:1px solid #1E1B18">
+        <span class="nm" style="color:#1E1B18;font-family:'Yu Mincho','Hiragino Mincho ProN',serif;letter-spacing:.3em">墨</span>
+        <span class="en" style="color:#A8342A">E / SUMI</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F4EEE2"></i><i style="background:#1E1B18"></i><i style="background:#A8342A"></i><i style="background:#33475F"></i><i style="background:#D6CBB4"></i></div>
+        <p class="desc">和紙と墨と朱印。左ナビは縦書きの背表紙、リアクションは朱の円印、投稿は原稿用紙。</p>
+        <div class="tags"><span class="tag">縦書き</span><span class="tag">和</span><span class="tag">identity</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="f-kosei.html">
+      <div class="hero" style="background:#F2F0EA;border-bottom:3px solid #0E0E0E">
+        <span class="nm" style="color:#0E0E0E;font-weight:900">構成</span>
+        <span class="en" style="color:#E0261C">F / KŌSEI</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F2F0EA"></i><i style="background:#0E0E0E"></i><i style="background:#E0261C"></i><i style="background:#F2C200"></i><i style="background:#1D3FBF"></i></div>
+        <p class="desc">構成主義のポスター。極太のゴシック、太い黒罫、原色。面と投稿に通し番号。</p>
+        <div class="tags"><span class="tag">幾何</span><span class="tag">原色</span><span class="tag">遠目で分かる</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+  </div>
+
+  <h2>追加：シンプルさとエレガンス<span class="note">装飾を引いて、整列・余白・字面の精度で作る。設計規則つき</span></h2>
+  <div class="cards two">
+    <a class="card" href="g-plain.html">
+      <div class="hero" style="background:#FFFFFF;border-bottom:1px solid #EAEAEA">
+        <span class="nm" style="color:#111315">素</span><span class="en" style="color:#2563EB">G / PLAIN</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#FFFFFF"></i><i style="background:#FAFAFA"></i><i style="background:#EAEAEA"></i><i style="background:#111315"></i><i style="background:#6B7078"></i><i style="background:#2563EB"></i></div>
+        <p class="desc">引き算のミニマリズム。色 6 個・角丸 1 種・影 0・字 6 段。整列と余白だけで作る。右のウィジェット列は既定で消す。ライト/ダークを同じトークンで。</p>
+        <div class="tags"><span class="tag">トークンだけ</span><span class="tag">影ゼロ</span><span class="tag">検査できる規則</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="h-miyabi.html">
+      <div class="hero" style="background:#FBFAF7;border-bottom:1px solid #E8E3D9">
+        <span class="nm" style="color:#1C1A17;font-family:Georgia,'Yu Mincho',serif;letter-spacing:.06em">雅</span>
+        <span class="en" style="color:#12564F">H / MIYABI</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#FBFAF7"></i><i style="background:#F4F1EA"></i><i style="background:#E8E3D9"></i><i style="background:#1C1A17"></i><i style="background:#12564F"></i><i style="background:#A98A4B"></i></div>
+        <p class="desc">エレガンス。象牙の地に墨、アクセントは深い青緑 1 色。題字と見出しだけセリフ、数字は等幅、行長は 62 字まで。装飾ゼロで上質を作る。</p>
+        <div class="tags"><span class="tag">字面</span><span class="tag">等幅数字</span><span class="tag">静か</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+  </div>
+
+  <h2>組み合わせ：I 白雅 / J 紫雅 / K 雅＋（案B × 案H）<span class="note">I = 案B の骨格 ＋ 案H の規律 ／ J = 案H の骨格 ＋ 案B の色 ／ K = 案H そのもの ＋ 案B の色とデスクトップ上部</span></h2>
+  <div class="cards">
+    <a class="card" href="i-hakuga.html">
+      <div class="hero" style="background:linear-gradient(135deg,#F4F5FA 0%,#EFECFD 55%,#F3C6DC 100%);border-bottom:1px solid #E8EAF3">
+        <span class="nm" style="color:#191C26;font-family:Georgia,'Yu Mincho',serif;letter-spacing:.08em">白雅</span>
+        <span class="en" style="color:#6D5AE6">I / HAKUGA</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F4F5FA"></i><i style="background:#FFFFFF"></i><i style="background:#6D5AE6"></i><i style="background:#EFECFD"></i><i style="background:#D9649B"></i><i style="background:linear-gradient(135deg,#8F7BF0,#C79BEA 55%,#F3C6DC)"></i></div>
+        <p class="desc">案B の DAYLIGHT の色と骨格（薄ラベンダー地・白カード・左ナビ264/中央640/右330・セグメントタブ）に、案H の雅の規律（セリフは題字と画面名だけ・数字は等幅・本文15px/1.9・行長62字・角丸は10とピル・影2トークン・細い縁のリアクションピル）を重ねた案。ダークも案B の系統で反転します。システム表に「どの値がどちら由来か」を明記。</p>
+        <div class="tags"><span class="tag">案B の色と骨格</span><span class="tag">案H の字面</span><span class="tag">等幅数字・行長62字</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="j-murasaki.html">
+      <div class="hero" style="background:#F4F5FA;border-bottom:1px solid #E8EAF3">
+        <span class="nm" style="color:#191C26;font-family:Georgia,'Yu Mincho',serif;letter-spacing:.1em">紫雅</span>
+        <span class="en" style="color:#6D5AE6">J / MURASAKI</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F4F5FA"></i><i style="background:#FFFFFF"></i><i style="background:#6D5AE6"></i><i style="background:#EFECFD"></i><i style="background:#D9649B"></i><i style="background:linear-gradient(135deg,#8F7BF0,#C79BEA 55%,#F3C6DC)"></i></div>
+        <p class="desc">案H の骨格・余白・部品・字面をそのままに、色だけ案B / 案I のクールな系統に置き換えた案。カードを使わずヘアラインで区切り、下線のタブ。モバイルは左上のアバターから全項目に届くドロワー（実例つき）。</p>
+        <div class="tags"><span class="tag">案H の骨格</span><span class="tag">案B の色</span><span class="tag">ドロワー</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+    <a class="card" href="k-miyabi-plus.html">
+      <div class="hero" style="background:#F4F5FA;border-bottom:1px solid #E8EAF3">
+        <span class="nm" style="color:#191C26;font-family:Georgia,'Yu Mincho',serif;letter-spacing:.1em">雅＋</span>
+        <span class="en" style="color:#6D5AE6">K / MIYABI PLUS</span>
+      </div>
+      <div class="body">
+        <div class="sw"><i style="background:#F4F5FA"></i><i style="background:#FFFFFF"></i><i style="background:#6D5AE6"></i><i style="background:#EFECFD"></i><i style="background:#D9649B"></i><i style="background:linear-gradient(135deg,#8F7BF0,#C79BEA 55%,#F3C6DC)"></i></div>
+        <p class="desc">案H そのものに、案B の色とデスクトップ上部の3つ（セグメントタブ・新着ピル・リロード）だけを重ねた版。骨格・余白・部品・字面・モバイルのドロワーは案H のまま。戻した部品も案H のトークン（角丸10とピル・影2種）で描きます。</p>
+        <div class="tags"><span class="tag">案H ＋</span><span class="tag">セグメントタブ</span><span class="tag">新着ピル・リロード</span></div>
+        <span class="open">モックアップを開く →</span>
+      </div>
+    </a>
+  </div>
+
+  <h2>一覧で比べる</h2>
+  <table>
+    <tr>
+      <th>案</th><th>トーン</th><th>既定テーマ</th><th>アクセント</th><th>本文の書体</th><th>骨格</th><th>リアクション</th><th>破壊度 / 実装</th><th>向いている</th>
+    </tr>
+    <tr>
+      <td class="nm">A <span>STELLAR</span></td><td>静かな星夜</td><td>ダーク</td><td>紫 #8B8DFF</td><td>ゴシック</td><td>3カラム</td><td>チップ</td><td>小 / 中</td><td>夜・長文</td>
+    </tr>
+    <tr>
+      <td class="nm">B <span>DAYLIGHT</span></td><td>真珠の白</td><td>ライト</td><td>紫 #6D5AE6</td><td>ゴシック</td><td>3カラム</td><td>チップ</td><td>中 / 中</td><td>昼・新規</td>
+    </tr>
+    <tr>
+      <td class="nm">C <span>DECK</span></td><td>管制塔</td><td>ダーク</td><td>琥珀 #FFA53B</td><td>ゴシック</td><td>レール＋並列</td><td>角チップ</td><td>中 / 大</td><td>PC 常用</td>
+    </tr>
+    <tr>
+      <td class="nm">D <span>活字</span></td><td>紙面</td><td>紙（反転=夜刊）</td><td>朱 #B4341F</td><td><b>明朝</b></td><td>題字＋段組</td><td>朱印（円）</td><td>大 / 中</td><td>読む・引用</td>
+    </tr>
+    <tr>
+      <td class="nm">E <span>墨</span></td><td>和紙と墨</td><td>和紙（反転=夜の墨）</td><td>朱 #A8342A</td><td><b>明朝</b></td><td>背表紙＋本文</td><td>朱印（円）</td><td>大 / 中</td><td>和の identity</td>
+    </tr>
+    <tr>
+      <td class="nm">F <span>構成</span></td><td>ポスター</td><td>紙</td><td>赤 #E0261C</td><td>ゴシック（極太見出し）</td><td>番号帯＋3帯</td><td>円＋数字</td><td>大 / 中</td><td>遠目で分かる</td>
+    </tr>
+    <tr>
+      <td class="nm">G <span>素</span></td><td>ミニマル</td><td>ライト＋ダーク</td><td>青 #2563EB</td><td>ゴシック</td><td>2カラム（右は任意）</td><td>文字＋数字</td><td>中 / 小</td><td>道具として磨く</td>
+    </tr>
+    <tr>
+      <td class="nm">H <span>雅</span></td><td>上質・静か</td><td>ライト（暖色）</td><td>青緑 #12564F</td><td>ゴシック＋セリフ見出し</td><td>3カラム（余白広め）</td><td>細い縁のピル</td><td>中 / 小</td><td>長く使っても疲れない</td>
+    </tr>
+    <tr>
+      <td class="nm">I <span>白雅（B骨格＋H規律）</span></td><td>クールで静か</td><td>ライト＋ダーク</td><td>スミレ #6D5AE6</td><td>ゴシック＋セリフ見出し</td><td>3カラム（案B の骨格）</td><td>細い縁のピル</td><td>中 / 小</td><td>長く使う・新規にやさしい</td>
+    </tr>
+    <tr>
+      <td class="nm">J <span>紫雅（H骨格＋B色）</span></td><td>静かで余白多め</td><td>ライト＋ダーク</td><td>スミレ #6D5AE6</td><td>ゴシック＋セリフ見出し</td><td>3カラム（案H の骨格・カードなし）</td><td>細い縁のピル</td><td>中 / 小</td><td>読む・静けさ重視</td>
+    </tr>
+    <tr>
+      <td class="nm">K <span>雅＋（H＋B色と上部）</span></td><td>静か＋道具感</td><td>ライト＋ダーク</td><td>スミレ #6D5AE6</td><td>ゴシック＋セリフ見出し</td><td>3カラム（案H の骨格）</td><td>細い縁のピル</td><td>中 / 小</td><td>操作の手応えも欲しい</td>
+    </tr>
+  </table>
+
+  <h2>それぞれの性格</h2>
+  <div class="split">
+    <div class="box">
+      <h3>A / B / C — 「道具」として磨く</h3>
+      <p>骨格は現在の延長。色・余白・密度を整えて使い勝手を上げる。実装の見通しが立ち、既存ユーザーが戸惑いにくい。</p>
+    </div>
+    <div class="box">
+      <h3>D / E / F — 「身元」を作る</h3>
+      <p>見た目の言語そのものを変える。遠目で Spica と分かる画面は強い資産。その代わり好き嫌いが分かれる。</p>
+    </div>
+    <div class="box">
+      <h3>G — 「引き算」で作る</h3>
+      <p>装飾を全部やめ、トークンと整列だけで作る。色 6 個・影 0・角丸 1 種。逸脱を grep と CI で防ぐので、作り直し後も崩れない。</p>
+    </div>
+    <div class="box">
+      <h3>H — 「精度」で作る</h3>
+      <p>余白・字面・陰影の精度で上質を作る。セリフは見出しだけ、数字は等幅、行長は 62 字まで。静かだが安く見えない。</p>
+    </div>
+    <div class="box">
+      <h3>I / J / K — 「掛け合わせ」る</h3>
+      <p><b>I</b> は案B の骨格＋案H の規律、<b>J</b> は案H の骨格＋案B の色、<b>K</b> は案H そのものに案B の色とデスクトップ上部（セグメントタブ・新着ピル・リロード）を重ねた版。どちら由来かをトークンごとに決めてあるので、混ざっても崩れず、片方に戻すのも簡単。モバイルのナビ（上部アバター→ドロワー）は3案共通です。</p>
+    </div>
+  </div>
+
+  <h2>推奨</h2>
+  <div class="note-box">
+    <b>据わり重視なら A（＋B 同梱）。身元重視なら D 活字。土台の正しさを最優先するなら G 素。</b><br>
+    G は「コードの正しさ」を設計に直結させた案で、<b>作り直しの土台（トークン・部品・検査規則）として どの案にも流用できます</b>。
+    たとえば「骨格とトークンは G、見た目は D の組版」という組み合わせが現実的です。
+    H は G と同じ骨格のまま上質側に振った案で、こちらもテーマとして同居できます。<br>
+    くわしくは <code>design/README.md</code> の「3. 前半3案」「3b. 後半3案」「3c. 追加2案」「4. 推奨」へ。
+  </div>
+
+  <h2>共通の前提</h2>
+  <ul>
+    <li>サーバー API（<code>server/</code>）は変えない。URL 契約も維持</li>
+    <li>機能は落とさない（CW・引用・アンケート・アンテナ・チャンネル・ドライブ・管理・PWA 全部そのまま）</li>
+    <li>装飾効果（立体・ガラス・ネオン・強いグラデーション）はどの案でも使わない — 生成りに見える原因になるため</li>
+    <li>角丸・影・色は「トークン」で持つ。テーマ切替・アクセント色は <code>!important</code> 上書きをやめて正規の実装に</li>
+  </ul>
+</div>
+</body>
+</html>

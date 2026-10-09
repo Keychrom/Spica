@@ -1,0 +1,159 @@
+/* ============================================================
+   画面ごとの部品: ログイン / 置き場所（未実装の案内） / 回転
+   ============================================================ */
+@keyframes spica-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spica-spin 0.9s linear infinite;
+}
+
+/* ---- ログイン ---- */
+.auth {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  background: var(--bg);
+}
+.auth__card {
+  width: 420px;
+  max-width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-2);
+  padding: 32px 30px 24px;
+}
+.auth__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.auth__brand b {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.auth__lead {
+  margin: 0 0 22px;
+  font-size: 13px;
+  color: var(--text-sub);
+  line-height: 1.9;
+}
+.auth__form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.auth__label {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin-top: 10px;
+}
+.auth__error {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.auth__submit {
+  margin-top: 18px;
+  width: 100%;
+  padding: 12px;
+  font-size: 14.5px;
+}
+.auth__foot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 12.5px;
+}
+.auth__rules {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--text-sub);
+}
+.auth__rules b {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.auth__rules ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.auth__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--text-sub);
+}
+/* 入力とボタンを並べる（確認コードの送信など） */
+.set__compose {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- 未実装画面の案内 ---- */
+.placeholder {
+  padding: 60px 32px;
+  text-align: center;
+}
+.placeholder__phase {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  text-transform: uppercase;
+  font-family: var(--mono);
+}
+.placeholder__note {
+  margin: 0 0 24px;
+  font-size: 13.5px;
+  color: var(--text-sub);
+  line-height: 2;
+}
+
+/* ---- 描画で落ちたとき（ErrorBoundary） ---- */
+.crash {
+  max-width: 560px;
+  margin: 12vh auto;
+  text-align: center;
+  padding: 0 20px;
+}
+.crash__title {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+.crash__detail {
+  font-size: 13px;
+  color: var(--text-sub);
+  font-family: var(--mono);
+  word-break: break-word;
+  margin: 0 0 22px;
+}
+.crash__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}

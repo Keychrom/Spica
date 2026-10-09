@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spica デザイン案 E — 墨（SUMI）</title>
+<style>
+/* ============================================================
+   案E: 墨 SUMI — 和紙と墨と朱印
+   既存の見た目を大きく壊す方向。日本の意匠で組む。
+   ・和紙の地・墨の文字・朱（しゅ）の一点
+   ・左は「背表紙」— 縦書きのナビゲーション
+   ・アバターは印（スクエアの枠）、リアクションは朱印
+   ・原稿用紙の方眼で書く
+   ============================================================ */
+:root{
+  --washi:#F4EEE2;
+  --washi2:#EAE2D2;
+  --sumi:#1E1B18;
+  --sumi2:#5E574B;
+  --sumi3:#8C8272;
+  --line:#D6CBB4;
+  --shu:#A8342A;
+  --ai:#33475F;
+  --mincho:"Yu Mincho","YuMincho","Hiragino Mincho ProN","Noto Serif JP","MS PMincho",serif;
+  --gothic:"Yu Gothic","YuGothic","Hiragino Kaku Gothic ProN","Noto Sans JP","Meiryo",sans-serif;
+  --grain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='200' height='200' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:#E4DCCB;color:var(--sumi);font-family:var(--mincho);font-size:15px;line-height:1.95}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+  background-image:var(--grain);background-size:200px 200px;opacity:.05;mix-blend-mode:multiply}
+a{color:inherit;text-decoration:none}
+svg{display:block}
+.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.i-sm{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* ---------- 提案の見出し ---------- */
+.board{max-width:1320px;margin:0 auto;padding:44px 30px 90px}
+.board-head{background:#FBF7EE;border:1px solid var(--sumi);padding:26px 30px 22px;margin-bottom:40px;position:relative}
+.board-head::after{content:"";position:absolute;inset:5px;border:1px solid var(--line);pointer-events:none}
+.board-kicker{font-family:var(--gothic);font-size:11px;letter-spacing:.24em;font-weight:700;color:var(--shu)}
+.board-title{font-size:40px;font-weight:600;margin:8px 0 4px;letter-spacing:.3em}
+.board-title small{font-size:15px;color:var(--sumi2);font-weight:400;margin-left:14px;letter-spacing:.12em;font-family:var(--gothic)}
+.board-desc{color:var(--sumi2);max-width:880px;font-size:14.5px;line-height:2.1;margin:12px 0 0}
+.board-meta{display:flex;flex-wrap:wrap;gap:30px;margin-top:24px;padding-top:18px;border-top:1px solid var(--line)}
+.meta-col h4{margin:0 0 10px;font-family:var(--gothic);font-size:11px;color:var(--sumi3);letter-spacing:.16em;font-weight:700}
+.swatches{display:flex;gap:8px}
+.sw{width:52px;text-align:center}
+.sw i{display:block;height:42px;border:1px solid var(--sumi)}
+.sw span{display:block;font-family:var(--gothic);font-size:9px;color:var(--sumi3);margin-top:5px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-family:var(--gothic);font-size:11.5px;padding:4px 12px;border:1px solid var(--sumi);color:var(--sumi2);background:#FBF7EE}
+.keypoints{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:26px;border-top:1px solid var(--sumi);border-bottom:1px solid var(--sumi)}
+.kp{padding:18px 22px 16px;border-right:1px solid var(--line)}
+.kp:last-child{border-right:0}
+.kp b{display:block;font-family:var(--gothic);font-size:13px;margin-bottom:6px;font-weight:700}
+.kp b::before{content:"〇 ";color:var(--shu)}
+.kp p{margin:0;font-size:12.5px;color:var(--sumi2);line-height:2}
+
+/* ---------- スクリーン ---------- */
+.screens{display:flex;flex-direction:column;gap:56px}
+.swrap h3{font-family:var(--gothic);font-size:15px;margin:0 0 4px;font-weight:700}
+.swrap h3 b{color:var(--shu);margin-right:8px}
+.swrap .note{color:var(--sumi3);font-size:12.5px;margin:0 0 14px;font-family:var(--gothic)}
+.frame{border:1px solid var(--sumi);background:var(--washi);padding:6px}
+.frame-in{border:1px solid var(--line)}
+
+/* ============================================================
+   本体
+   ============================================================ */
+.sumi{background:var(--washi);color:var(--sumi);font-family:var(--mincho)}
+.night{
+  --washi:#15140F;--washi2:#1D1B15;--sumi:#EFE8D8;--sumi2:#B4AB98;--sumi3:#847C6B;
+  --line:#33302A;--shu:#C6463A;--ai:#8FB0DF;
+}
+.night .quote{background:rgba(255,255,255,.05)}
+.night .face,.night .cw,.night .mark,.night .searchbox,.night .okuzuke,.night .pic{background:#221F18}
+
+/* 背表紙（縦書きの左ナビ） */
+.app{display:grid;grid-template-columns:96px minmax(0,672px) 316px;justify-content:center}
+.spine{border-right:1px solid var(--line);background:var(--washi2);display:flex;flex-direction:column;align-items:center;padding:18px 0 16px}
+.spine .vbrand{writing-mode:vertical-rl;text-orientation:upright;font-size:21px;font-weight:600;letter-spacing:.36em;margin-bottom:10px}
+.spine .seal-mark{width:30px;height:30px;background:var(--shu);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:15px;margin-bottom:22px;box-shadow:0 1px 0 rgba(0,0,0,.15)}
+.spine-nav{display:flex;flex-direction:column;align-items:center;gap:2px}
+.s-item{writing-mode:vertical-rl;text-orientation:upright;font-size:13.5px;letter-spacing:.22em;color:var(--sumi2);
+  padding:11px 7px;position:relative;border-left:2px solid transparent}
+.s-item.on{color:var(--sumi);border-left-color:var(--shu);background:rgba(168,52,42,.06)}
+.s-item .ct{font-size:9.5px;color:#fff;background:var(--shu);padding:2px 0;margin-right:4px}
+.spine .sep-v{width:1px;height:26px;background:var(--line);margin:10px 0}
+.spine .vuser{margin-top:auto;text-align:center}
+.spine .vuser .face{width:38px;height:38px;border:1px solid var(--sumi);display:flex;align-items:center;justify-content:center;
+  font-size:16px;font-weight:600;background:#FBF7EE;margin:0 auto 8px}
+.spine .vuser .nm{writing-mode:vertical-rl;text-orientation:upright;font-size:12.5px;letter-spacing:.2em;color:var(--sumi2);margin:0 auto}
+.spine .write-btn{width:46px;height:46px;background:var(--shu);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-size:20px;font-weight:600;margin:16px 0 0;box-shadow:0 2px 0 rgba(0,0,0,.2)}
+
+/* 中央 */
+.center{min-width:0;border-right:1px solid var(--line)}
+.c-head{display:flex;align-items:center;gap:14px;padding:18px 22px 12px;border-bottom:1px solid var(--sumi)}
+.c-head .no{width:26px;height:26px;background:var(--sumi);color:var(--washi);display:flex;align-items:center;justify-content:center;font-size:13px}
+.c-head h2{margin:0;font-size:22px;font-weight:600;letter-spacing:.24em}
+.c-head .sub{font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);margin-left:2px}
+.c-head .right{margin-left:auto;display:flex;align-items:center;gap:12px;font-family:var(--gothic);font-size:11.5px;color:var(--sumi2)}
+.c-head .right b{color:var(--shu)}
+
+/* 投稿 */
+.post{padding:20px 22px 14px;border-bottom:1px solid var(--line)}
+.post .top{display:flex;align-items:center;gap:11px}
+.face{width:42px;height:42px;border:1px solid var(--sumi);background:#FBF7EE;display:flex;align-items:center;justify-content:center;
+  font-size:17px;font-weight:600;flex:none}
+.face.s{width:30px;height:30px;font-size:13px}
+.post .who{min-width:0}
+.post .who b{font-size:15.5px;font-weight:600;letter-spacing:.04em}
+.post .who .h{font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);margin-left:6px}
+.post .when{margin-left:auto;font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);white-space:nowrap}
+.post .vis{font-family:var(--gothic);font-size:10.5px;color:var(--shu);border:1px solid var(--shu);padding:1px 8px;margin-left:10px}
+.post .tx{font-size:15.5px;line-height:2.1;margin:10px 0 0}
+.post .tx .tag{color:var(--ai);border-bottom:1px solid var(--ai)}
+.post .tx .men{color:var(--shu)}
+.cw{display:flex;align-items:center;gap:12px;margin-top:12px;border:1px solid var(--sumi);background:#FBF7EE;padding:9px 13px;font-family:var(--gothic);font-size:12.5px;color:var(--sumi2)}
+.cw .lb{font-size:10.5px;letter-spacing:.2em;color:var(--washi);background:var(--sumi);padding:2px 9px}
+.cw .more{margin-left:auto;color:var(--shu);font-weight:700}
+.pics{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.pic{border:1px solid var(--sumi);padding:5px;background:#FBF7EE}
+.pic .im{height:132px;background:repeating-linear-gradient(45deg,var(--washi2) 0 10px,#FBF7EE 10px 20px);border:1px solid var(--line)}
+.pic .cap{font-family:var(--gothic);font-size:10px;color:var(--sumi3);padding-top:5px;line-height:1.6}
+.quote{margin-top:12px;border:1px solid var(--line);background:rgba(255,255,255,.35);padding:12px 14px}
+.quote .qh{font-family:var(--gothic);font-size:11.5px;color:var(--sumi2)}
+.quote .qh b{color:var(--sumi);font-size:12.5px}
+.quote p{margin:4px 0 0;font-size:14px;color:var(--sumi2);line-height:1.95}
+.poll{margin-top:12px;border:1px solid var(--sumi)}
+.poll .opt{display:grid;grid-template-columns:1fr 70px;border-bottom:1px solid var(--line)}
+.poll .opt .lb{position:relative;padding:9px 13px;font-size:14px}
+.poll .opt .lb .fill{position:absolute;inset:0;width:var(--w);background:rgba(168,52,42,.10);border-right:1px solid rgba(168,52,42,.35)}
+.poll .opt .lb span{position:relative}
+.poll .opt .pc{font-family:var(--gothic);font-size:12.5px;font-weight:700;color:var(--shu);text-align:right;padding:9px 13px;border-left:1px solid var(--line)}
+.poll .foot{font-family:var(--gothic);font-size:11px;color:var(--sumi3);padding:8px 13px}
+/* 朱印 */
+.seals{display:flex;align-items:center;gap:12px;margin-top:14px}
+.seal{display:inline-flex;align-items:center;gap:8px}
+.seal .sq{width:30px;height:30px;border:1.5px solid var(--shu);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--shu);font-size:14px}
+.seal.mine .sq{background:var(--shu);color:#fff}
+.seal .ct{font-family:var(--gothic);font-size:12.5px;font-weight:700;color:var(--sumi2)}
+.seal.mine .ct{color:var(--shu)}
+.seal .add{border-style:dashed;color:var(--sumi3);border-color:var(--sumi3)}
+.seal .add .sq{border-style:dashed;color:var(--sumi3)}
+/* 行為（文字。中黒で並べる） */
+.menu{display:flex;align-items:center;gap:0;margin-top:12px;font-family:var(--gothic);font-size:11.5px;color:var(--sumi2)}
+.menu a{padding:2px 10px;border-right:1px solid var(--line)}
+.menu a:first-child{padding-left:0}
+.menu a:last-child{border-right:0}
+.menu b{color:var(--sumi);font-weight:700}
+.menu .sp{margin-left:auto;border-right:0;color:var(--sumi3)}
+/* 区切りの星 */
+.hoshi{display:flex;align-items:center;gap:12px;padding:0 22px;color:var(--sumi3);font-size:11px}
+.hoshi::before,.hoshi::after{content:"";height:1px;background:var(--line);flex:1}
+
+/* 右（余白の欄） */
+.side{padding:20px 22px}
+.side h4{margin:0 0 10px;font-size:13.5px;font-weight:600;letter-spacing:.2em;padding-bottom:8px;border-bottom:1px solid var(--sumi)}
+.side h4::before{content:"〇";color:var(--shu);margin-right:8px}
+.searchbox{display:flex;align-items:center;gap:8px;border:1px solid var(--sumi);background:#FBF7EE;padding:10px 13px;
+  font-family:var(--gothic);font-size:12.5px;color:var(--sumi3);margin-bottom:24px}
+.tags{font-family:var(--gothic);font-size:13.5px;margin-bottom:26px}
+.tags .t{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px dotted var(--line)}
+.tags .t .nm{color:var(--ai);font-weight:700}
+.tags .t .ct{margin-left:auto;font-size:11.5px;color:var(--sumi3)}
+.okuzuke{border:1px solid var(--sumi);background:#FBF7EE;padding:14px 15px 12px;font-family:var(--gothic);font-size:12px;color:var(--sumi2);margin-bottom:26px}
+.okuzuke .r{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dotted var(--line)}
+.okuzuke .r:last-child{border-bottom:0}
+.okuzuke .r b{color:var(--sumi)}
+.hito{font-family:var(--gothic);margin-bottom:20px}
+.hito .p{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px dotted var(--line)}
+.hito .p .who{flex:1;min-width:0}
+.hito .p .who b{display:block;font-size:13px}
+.hito .p .who span{display:block;font-size:11px;color:var(--sumi3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hito .p .f{font-size:11.5px;font-weight:700;border:1px solid var(--sumi);padding:3px 12px;color:var(--sumi)}
+
+/* ---------- したためる（コンポーザ） ---------- */
+.desk{padding:46px;background:var(--washi2);display:flex;justify-content:center}
+.waku{width:700px;background:var(--washi);border:1px solid var(--sumi);padding:5px}
+.waku-in{border:1px solid var(--sumi);padding:0}
+.w-head{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--sumi)}
+.w-head b{font-size:20px;font-weight:600;letter-spacing:.34em}
+.w-head .x{font-family:var(--gothic);font-size:11.5px;color:var(--sumi3)}
+.w-body{padding:20px 22px 6px;display:flex;gap:16px}
+.w-body .face{width:48px;height:48px;font-size:20px}
+.genko{flex:1;min-width:0}
+.genko textarea{width:100%;border:0;outline:none;resize:none;background:transparent;color:var(--sumi);
+  font-family:var(--mincho);font-size:15.5px;line-height:22px;padding:0;min-height:132px;
+  background-image:
+    linear-gradient(to right, rgba(30,27,24,.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(30,27,24,.09) 1px, transparent 1px);
+  background-size:22px 22px}
+.genko .hint{font-family:var(--gothic);font-size:11px;color:var(--sumi3);margin-top:8px}
+.marks{display:flex;gap:8px;margin-top:14px;font-family:var(--gothic);flex-wrap:wrap}
+.mark{font-size:12px;font-weight:700;color:var(--sumi2);border:1px solid var(--sumi);padding:4px 13px;background:#FBF7EE}
+.mark.on{background:var(--sumi);color:var(--washi)}
+.figs{display:flex;gap:12px;margin-top:16px}
+.figs .f{width:128px}
+.figs .f .bx{height:92px;border:1px solid var(--sumi);background:#FBF7EE;padding:4px;position:relative}
+.figs .f .bx .im{height:100%;background:repeating-linear-gradient(45deg,var(--washi2) 0 9px,#FBF7EE 9px 18px);border:1px solid var(--line)}
+.figs .f .cap{font-family:var(--gothic);font-size:9.5px;color:var(--sumi3);margin-top:5px;line-height:1.6}
+.figs .f .rm{position:absolute;right:-1px;top:-1px;font-family:var(--gothic);font-size:10px;background:var(--sumi);color:var(--washi);padding:1px 6px}
+.w-foot{display:flex;align-items:center;gap:14px;border-top:1px solid var(--sumi);margin-top:18px;padding:14px 22px;font-family:var(--gothic)}
+.w-foot .t{font-size:12.5px;color:var(--sumi2)}
+.w-foot .vis{border:1px solid var(--sumi);padding:7px 14px;font-size:12.5px;font-weight:700}
+.w-foot .count{margin-left:auto;font-size:12px;color:var(--sumi3);font-variant-numeric:tabular-nums}
+.w-foot .count b{color:var(--sumi);font-size:14px}
+.w-foot .send{background:var(--shu);color:#fff;font-family:var(--mincho);font-size:15px;font-weight:600;letter-spacing:.28em;padding:9px 26px 9px 32px}
+
+/* ---------- モバイル ---------- */
+.phones{display:flex;gap:40px;align-items:flex-start}
+.phone{width:392px;height:830px;background:var(--washi);border:1px solid var(--sumi);border-radius:24px;overflow:hidden;position:relative;flex:none;font-family:var(--mincho)}
+.phone::before{content:"";position:absolute;top:11px;left:50%;transform:translateX(-50%);width:104px;height:20px;border-radius:999px;background:var(--sumi);z-index:40}
+.m-head{padding:40px 16px 10px;border-bottom:1px solid var(--sumi);display:flex;align-items:center;gap:12px}
+.m-head .lg{font-size:21px;font-weight:600;letter-spacing:.3em}
+.m-head .seal-mark{width:26px;height:26px;background:var(--shu);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
+.m-head .r{margin-left:auto;font-family:var(--gothic);font-size:11px;color:var(--sumi3)}
+.m-tabs{display:flex;border-bottom:1px solid var(--line);background:var(--washi2)}
+.m-tabs .t{flex:1;text-align:center;font-family:var(--gothic);font-size:12px;font-weight:700;color:var(--sumi2);padding:9px 0;border-right:1px solid var(--line)}
+.m-tabs .t:last-child{border-right:0}
+.m-tabs .t.on{background:var(--sumi);color:var(--washi)}
+.m-post{padding:16px 16px 10px;border-bottom:1px solid var(--line)}
+.m-post .top{display:flex;align-items:center;gap:9px}
+.m-post .face{width:32px;height:32px;font-size:13px}
+.m-post .who b{font-size:14px}
+.m-post .who .h{font-size:10.5px;color:var(--sumi3);font-family:var(--gothic);margin-left:5px}
+.m-post .when{margin-left:auto;font-family:var(--gothic);font-size:10.5px;color:var(--sumi3)}
+.m-post .tx{font-size:14.5px;line-height:2;margin-top:8px}
+.m-post .tx .tag{color:var(--ai);border-bottom:1px solid var(--ai)}
+.m-post .seals{margin-top:10px}
+.m-post .seals .sq{width:24px;height:24px;font-size:11px}
+.m-post .menu{font-size:11px;margin-top:8px}
+.mbar{position:absolute;bottom:0;left:0;right:0;background:var(--washi);border-top:1px solid var(--sumi);display:flex;padding:10px 0 16px;z-index:30}
+.mbar .m{flex:1;text-align:center;font-family:var(--gothic);font-size:11.5px;font-weight:700;color:var(--sumi3);letter-spacing:.14em}
+.mbar .m.on{color:var(--sumi);border-bottom:2px solid var(--shu);padding-bottom:2px}
+.mbar .m .bd{display:inline-block;background:var(--shu);color:#fff;font-size:9px;padding:0 5px;margin-left:3px}
+.m-compose .h{display:flex;align-items:center;justify-content:space-between;padding:42px 16px 12px;border-bottom:1px solid var(--sumi)}
+.m-compose .h b{font-size:17px;font-weight:600;letter-spacing:.3em}
+.m-compose .h .send{background:var(--shu);color:#fff;font-size:13px;font-weight:600;letter-spacing:.2em;padding:7px 16px}
+.m-genko{margin:20px 16px;border:1px solid var(--sumi);padding:14px;font-size:14.5px;line-height:22px;min-height:176px;
+  background-image:
+    linear-gradient(to right, rgba(30,27,24,.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(30,27,24,.09) 1px, transparent 1px);
+  background-size:22px 22px}
+.m-row{margin:0 16px 12px;border:1px solid var(--line);padding:11px 13px;font-family:var(--gothic);font-size:12px;color:var(--sumi2)}
+.m-row b{color:var(--sumi)}
+.m-count{margin:0 16px;text-align:right;font-family:var(--gothic);font-size:11px;color:var(--sumi3)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  </defs>
+</svg>
+
+<div class="board">
+
+  <header class="board-head">
+    <div class="board-kicker">SPICA FRONTEND REDESIGN — PROPOSAL E</div>
+    <h1 class="board-title">墨<small>SUMI — 和紙と墨と朱印。日本の意匠で組む</small></h1>
+    <p class="board-desc">
+      和紙の地に墨の文字、差し色は<b>朱（しゅ）ただ一点</b>。左のナビは<b>縦書きの背表紙</b>（本の背のように面が並ぶ）、
+      アバターは<b>印（いん）</b>の枠、リアクションは<b>朱印</b>を押す仕草、投稿は<b>原稿用紙の方眼</b>にしたためる。
+      和の約束事（余白・縦組・朱・奥付）で作るので、他の追随がなく、<b>「AI が量産した画面」とは正反対の質感</b>になります。
+    </p>
+    <div class="board-meta">
+      <div class="meta-col">
+        <h4>PALETTE</h4>
+        <div class="swatches">
+          <span class="sw"><i style="background:#F4EEE2"></i><span>和紙</span></span>
+          <span class="sw"><i style="background:#1E1B18"></i><span>墨</span></span>
+          <span class="sw"><i style="background:#A8342A"></i><span>朱</span></span>
+          <span class="sw"><i style="background:#33475F"></i><span>藍</span></span>
+          <span class="sw"><i style="background:#D6CBB4"></i><span>罫</span></span>
+        </div>
+      </div>
+      <div class="meta-col">
+        <h4>KEYWORDS</h4>
+        <div class="chips">
+          <span class="chip">和紙</span><span class="chip">縦書き</span><span class="chip">朱印</span>
+          <span class="chip">印</span><span class="chip">原稿用紙</span><span class="chip">余白</span>
+        </div>
+      </div>
+    </div>
+    <div class="keypoints">
+      <div class="kp"><b>縦書きの背表紙</b><p>左のナビを本の背のように縦組に。面（セクション）が並び、いまいる面に朱の線が付く。</p></div>
+      <div class="kp"><b>朱印でリアクション</b><p>「★ 4」を朱の円印で表す。押した印は朱で塗られる。丸・四角・余白の和の造形だけで作る。</p></div>
+      <div class="kp"><b>原稿用紙に書く</b><p>投稿欄は22pxの方眼。文字数は「142 字」。書く行為そのものを和の道具に寄せる。</p></div>
+    </div>
+  </header>
+
+  <div class="screens">
+
+    <!-- 01 本体 -->
+    <section class="swrap">
+      <h3><b>01</b>一番面（デスクトップ 1440×900）</h3>
+      <p class="note">左は背表紙（縦書きナビ）。中央は墨の投稿、区切りに星の罫。右は余白の欄（タグ・奥付・文人）。</p>
+      <div class="frame"><div class="frame-in">
+        <div class="sumi">
+          <div class="app">
+
+            <!-- 背表紙 -->
+            <aside class="spine">
+              <div class="vbrand">スピカ</div>
+              <div class="seal-mark">★</div>
+              <nav class="spine-nav">
+                <span class="s-item on">ホーム</span>
+                <span class="s-item">通知<span class="ct">3</span></span>
+                <span class="s-item">探す</span>
+                <span class="s-item">メッセージ</span>
+                <span class="s-item">ブックマーク</span>
+                <span class="s-item">リスト</span>
+                <span class="s-item">アンテナ</span>
+                <span class="s-item">チャンネル</span>
+                <span class="s-item">ドライブ</span>
+              </nav>
+              <div class="sep-v"></div>
+              <nav class="spine-nav">
+                <span class="s-item">設定</span>
+                <span class="s-item">管理</span>
+              </nav>
+              <span class="write-btn">書</span>
+              <div class="vuser">
+                <span class="face">す</span>
+                <span class="nm">すいれん</span>
+              </div>
+            </aside>
+
+            <!-- 中央 -->
+            <main class="center">
+              <div class="c-head">
+                <span class="no">一</span>
+                <h2>ホーム</h2>
+                <span class="sub">ホーム ・ ローカル ・ 連合</span>
+                <span class="right">新着 <b>2</b> ・ 未読 <b>3</b></span>
+              </div>
+
+              <article class="post">
+                <div class="top">
+                  <span class="face">す</span>
+                  <span class="who"><b>すいれん</b><span class="h">@suiren@localhost:3210</span></span>
+                  <span class="when">十二分前</span>
+                  <span class="vis">連合</span>
+                </div>
+                <p class="tx">Spica のフロント、デザインから作り直すことにしました。まず3案つくって比べています。<span class="tag">#Spica</span> <span class="tag">#デザイン</span><br>左ナビと中央カラムの一貫性を、いちばん大事にしたい。</p>
+                <div class="seals">
+                  <span class="seal mine"><span class="sq">★</span><span class="ct">4</span></span>
+                  <span class="seal"><span class="sq">✦</span><span class="ct">2</span></span>
+                  <span class="seal"><span class="sq add">＋</span></span>
+                </div>
+                <div class="menu">
+                  <a>返信 <b>3</b></a><a>リノート <b>2</b></a><a>引用</a><a>共有</a>
+                  <a class="sp">ブックマーク</a>
+                </div>
+              </article>
+
+              <div class="hoshi">✦</div>
+
+              <article class="post">
+                <div class="top">
+                  <span class="face">み</span>
+                  <span class="who"><b>みかん</b><span class="h">@mikan@misskey.io</span></span>
+                  <span class="when">三十二分前</span>
+                  <span class="vis">連合</span>
+                </div>
+                <div class="cw"><span class="lb">CW</span>長文・ネタバレ注意<span class="more">つづきを読む</span></div>
+                <p class="tx">連合テスト、Misskey からリアクションが届いた。ActivityPub の <b>Update</b> もちゃんと反映される。編集しても投稿 ID が変わらないのが良い。</p>
+                <div class="pics">
+                  <div class="pic"><div class="im"></div><div class="cap">テスト投稿の画面（絵の説明をここに）</div></div>
+                  <div class="pic"><div class="im"></div><div class="cap">リアクションの内訳</div></div>
+                </div>
+                <div class="seals">
+                  <span class="seal"><span class="sq">★</span><span class="ct">1</span></span>
+                  <span class="seal"><span class="sq add">＋</span></span>
+                </div>
+                <div class="menu">
+                  <a>返信</a><a>リノート <b>1</b></a><a>引用</a><a>共有</a>
+                  <a class="sp">栞をはさむ</a>
+                </div>
+              </article>
+
+              <div class="hoshi">✦</div>
+
+              <article class="post">
+                <div class="top">
+                  <span class="face">あ</span>
+                  <span class="who"><b>aster</b><span class="h">@aster@mastodon.social</span></span>
+                  <span class="when">一時前</span>
+                </div>
+                <p class="tx">アンテナの通知、まとめ表示があると追いやすい。</p>
+                <div class="quote">
+                  <div class="qh"><b>かぐら</b> @kagura@localhost:3210</div>
+                  <p>アンテナ「Spica 開発」に新着が4件。キーワードは「デザイン」「ActivityPub」にしておくと静かで良い。</p>
+                </div>
+                <div class="seals">
+                  <span class="seal"><span class="sq">★</span><span class="ct">2</span></span>
+                  <span class="seal"><span class="sq add">＋</span></span>
+                </div>
+                 <div class="menu">
+                  <a>返信 <b>1</b></a><a>リノート</a><a>引用</a><a>共有</a>
+                  <a class="sp">栞をはさむ</a>
+                </div>
+              </article>
+
+              <div class="hoshi">✦</div>
+
+              <article class="post" style="border-bottom:0">
+                <div class="top">
+                  <span class="face">な</span>
+                  <span class="who"><b>なぎ</b><span class="h">@nagi@localhost:3210</span></span>
+                  <span class="when">二時前</span>
+                  <span class="vis">フォロワー限定</span>
+                </div>
+                <p class="tx">新デザイン、どの方向が好き？</p>
+                <div class="poll">
+                  <div class="opt"><span class="lb"><span class="fill" style="--w:42%"></span><span>活字（紙面）</span></span><span class="pc">42%</span></div>
+                  <div class="opt"><span class="lb"><span class="fill" style="--w:33%"></span><span>墨（和）</span></span><span class="pc">33%</span></div>
+                  <div class="opt"><span class="lb"><span class="fill" style="--w:25%"></span><span>構成（ポスター）</span></span><span class="pc">25%</span></div>
+                  <div class="foot">12票 ・ 残り20時間</div>
+                </div>
+                <div class="menu">
+                  <a>返信</a><a>リノート</a><a>アンケート</a><a>共有</a>
+                  <a class="sp">栞をはさむ</a>
+                </div>
+              </article>
+            </main>
+
+            <!-- 右 -->
+            <aside class="side">
+              <div class="searchbox"><svg class="i-sm"><use href="#i-search"/></svg>探す — @人 / #題 / from: / has:media</div>
+
+              <h4>今の話題</h4>
+              <div class="tags">
+                <div class="t"><span class="nm">#Spica</span><span class="ct">128</span></div>
+                <div class="t"><span class="nm">#Fediverse</span><span class="ct">96</span></div>
+                <div class="t"><span class="nm">#ActivityPub</span><span class="ct">74</span></div>
+                <div class="t"><span class="nm">#デザイン</span><span class="ct">51</span></div>
+              </div>
+
+              <h4>奥付</h4>
+              <div class="okuzuke">
+                <div class="r"><span>版元</span><b>localhost:3210</b></div>
+                <div class="r"><span>発行</span><b>12 人</b></div>
+                <div class="r"><span>記事</span><b>1,248</b></div>
+                <div class="r"><span>受信</span><b>342</b></div>
+                <div class="r"><span>規格</span><b>ActivityPub</b></div>
+              </div>
+
+              <h4>おすすめ</h4>
+              <div class="hito">
+                <div class="p"><span class="face s">か</span><span class="who"><b>かぐら</b><span>@kagura@localhost:3210</span></span><span class="f">フォロー</span></div>
+                <div class="p"><span class="face s">ほ</span><span class="who"><b>ほたる</b><span>@hotaru@misskey.io</span></span><span class="f">フォロー</span></div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+    <!-- 02 通知（夜） -->
+    <section class="swrap">
+      <h3><b>02</b>通知（夜の墨 — 反転）</h3>
+      <p class="note">同じ組版のまま、地を墨に、文字を和紙に。朱はそのまま残る（夜でも印は朱）。</p>
+      <div class="frame" style="max-width:720px"><div class="frame-in">
+        <div class="sumi night">
+          <div style="font-family:var(--mincho)">
+            <div class="c-head" style="border-bottom:1px solid var(--sumi)">
+              <span class="no" style="background:var(--sumi);color:var(--washi)">二</span>
+              <h2>通知</h2>
+              <span class="sub">未読 3</span>
+              <span class="right">すべて ・ メンション ・ リアクション ・ フォロー</span>
+            </div>
+            <article class="post" style="display:flex;gap:14px">
+              <span class="who" style="font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);white-space:nowrap;padding-top:3px">十九時<br>五分前</span>
+              <div>
+                <p class="tx" style="margin-top:0"><b>3人</b>があなたの記事にリアクションしました</p>
+                <div class="seals">
+                  <span class="seal"><span class="sq">★</span><span class="ct">2 かぐら・ほたる</span></span>
+                  <span class="seal"><span class="sq">✦</span><span class="ct">1 aster</span></span>
+                </div>
+              </div>
+            </article>
+            <article class="post" style="display:flex;gap:14px">
+              <span class="who" style="font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);white-space:nowrap;padding-top:3px">十九時<br>十八分前</span>
+              <div>
+                <p class="tx" style="margin-top:0"><b>みかん</b> がフォローしました</p>
+                <div class="menu"><a style="color:var(--shu);font-weight:700;border-right:0">フォローを返す</a></div>
+              </div>
+            </article>
+            <article class="post" style="display:flex;gap:14px;border-bottom:0">
+              <span class="who" style="font-family:var(--gothic);font-size:11.5px;color:var(--sumi3);white-space:nowrap;padding-top:3px">十九時<br>一時前</span>
+              <div>
+                <p class="tx" style="margin-top:0"><b>aster</b> が返信しました</p>
+                <div class="quote"><p>「墨の案が好きです。朱印のリアクションは、押したくなる」</p></div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </div></div>
+    </section>
+
+    <!-- 03 コンポーザ -->
+    <section class="swrap">
+      <h3><b>03</b>したためる（ノートを作成）</h3>
+      <p class="note">額縁（二重の枠）に原稿用紙。「142 字 / 3000 字」。</p>
+      <div class="frame"><div class="frame-in">
+        <div class="desk">
+          <div class="waku"><div class="waku-in">
+            <div class="w-head">
+              <b>したためる</b>
+              <span class="x">Esc でやめる</span>
+            </div>
+            <div class="w-body">
+              <span class="face">す</span>
+              <div class="genko">
+                <textarea rows="4" placeholder="いまどうしてる？"></textarea>
+                <div class="hint">@ユーザー ・ #タグ は書きながら補完 ／ 22px の方眼に組んでいます</div>
+                <div class="marks">
+                  <span class="mark on">CW</span>
+                  <span class="mark">アンケート</span>
+                  <span class="mark">下書き</span>
+                </div>
+                <div class="figs">
+                  <div class="f"><div class="bx"><div class="im"></div><span class="rm">×</span></div><div class="cap">絵の説明（ALT）をここに</div></div>
+                  <div class="f"><div class="bx"><div class="im"></div><span class="rm">×</span></div><div class="cap">二枚目</div></div>
+                  <div class="f"><div class="bx" style="border-style:dashed;background:none"><div class="im" style="background:none;border-style:dashed"></div></div><div class="cap">2 / 4 枚</div></div>
+                </div>
+              </div>
+            </div>
+            <div class="w-foot">
+              <span class="t">絵</span>
+              <span class="t">絵文字</span>
+              <span class="t">アンケート</span>
+              <span class="t">予約</span>
+              <span class="vis">連合へ ▾</span>
+              <span class="count"><b>142</b> 字 / 3000 字</span>
+              <span class="send">記す</span>
+            </div>
+          </div></div>
+        </div>
+      </div></div>
+    </section>
+
+    <!-- 04 モバイル -->
+    <section class="swrap">
+      <h3><b>04</b>モバイル（390×844）</h3>
+      <p class="note">左：一番面。右：したためる（原稿用紙）。</p>
+      <div class="phones">
+        <div class="phone">
+          <div class="m-head"><span class="lg">スピカ</span><span class="seal-mark">★</span><span class="r">十月九日</span></div>
+          <div class="m-tabs"><span class="t on">ホーム</span><span class="t">ローカル</span><span class="t">連合</span><span class="t">通知 3</span></div>
+
+          <div class="m-post">
+            <div class="top"><span class="face">す</span><span class="who"><b>すいれん</b><span class="h">@suiren</span></span><span class="when">十二分前</span></div>
+            <div class="tx">Spica のフロント、デザインから作り直すことにしました。まず3案つくって比べています。<span class="tag">#Spica</span></div>
+            <div class="seals">
+              <span class="seal mine"><span class="sq">★</span><span class="ct">4</span></span>
+              <span class="seal"><span class="sq">✦</span><span class="ct">2</span></span>
+            </div>
+            <div class="menu"><a>返信 <b>3</b></a><a>リノート <b>2</b></a><a>引用</a><a class="sp">ブックマーク</a></div>
+          </div>
+
+          <div class="m-post">
+            <div class="top"><span class="face">み</span><span class="who"><b>みかん</b><span class="h">@mikan@misskey.io</span></span><span class="when">三十二分前</span></div>
+            <div class="tx">連合テスト中。Misskey からリアクションが届いた。</div>
+            <div class="pics" style="grid-template-columns:1fr"><div class="pic"><div class="im" style="height:104px"></div><div class="cap">テスト投稿の画面</div></div></div>
+            <div class="seals"><span class="seal"><span class="sq">★</span><span class="ct">1</span></span></div>
+            <div class="menu"><a>返信</a><a>リノート <b>1</b></a><a>引用</a><a class="sp">ブックマーク</a></div>
+          </div>
+
+          <div class="mbar">
+            <span class="m on">ホーム</span>
+            <span class="m">探す</span>
+            <span class="m">通知<span class="bd">3</span></span>
+            <span class="m">自分</span>
+          </div>
+        </div>
+
+        <div class="phone m-compose">
+          <div class="h"><b>したためる</b><span class="send">記す</span></div>
+          <div class="m-genko">新しいデザイン案、3つできました。どれが好きですか？</div>
+          <div class="m-row"><b>CW</b> をつけると、読む人が開く前に選べます</div>
+          <div class="m-row">アンケート：選択肢 <b>2</b> ／ 期限 <b>24時間</b></div>
+          <div class="m-row">連合へ ▾　絵 0 / 4　絵の説明（ALT）</div>
+          <div class="m-count">26 字 / 3000 字</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

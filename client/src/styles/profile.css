@@ -1,0 +1,178 @@
+/* ============================================================
+   プロフィール（/users/:id）
+   骨格はタイムラインと同じ。カードを使わず、罫線と余白で組む
+   ============================================================ */
+/* ---- 見出し（バナー・顔・名前・数） ---- */
+.prof {
+  padding: 0 32px 4px;
+}
+.prof__banner {
+  height: 132px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.prof__banner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.prof__top {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-top: -28px;
+  padding: 0 4px;
+}
+.prof__av {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 3px solid var(--bg);
+  overflow: hidden;
+  flex: none;
+}
+.prof__av img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.prof__act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-bottom: 6px;
+}
+.prof__name {
+  margin: 14px 4px 2px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.prof__handle {
+  margin: 0 4px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.prof__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 4px 0;
+}
+.prof__badge {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-sub);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px 11px;
+}
+.prof__badge--lock {
+  color: var(--text-faint);
+}
+.prof__note {
+  margin: 12px 4px 0;
+  font-size: var(--fs-body);
+  line-height: 1.9;
+  max-width: 62ch;
+  white-space: pre-wrap;
+}
+.prof__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  margin: 14px 4px 0;
+}
+.prof__meta-item {
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.prof__meta-item b {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+.prof__counts {
+  display: flex;
+  gap: 22px;
+  margin: 16px 4px 0;
+  padding-bottom: 16px;
+}
+.prof__count {
+  font-size: 12.5px;
+  color: var(--text-sub);
+}
+.prof__count b {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.prof__count:hover b {
+  color: var(--accent);
+}
+
+/* ---- メディアの一覧（3 列） ---- */
+.mediagrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 4px 32px 24px;
+}
+.mediagrid a,
+.mediagrid span {
+  display: block;
+  aspect-ratio: 1;
+  background: var(--surface);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.mediagrid img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---- つながり（フォロー / フォロワー / ブロック / ミュート）の 1 行 ---- */
+.people {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+  width: 100%;
+  text-align: left;
+}
+.people:last-child {
+  border-bottom: 0;
+}
+.people__body {
+  flex: 1;
+  min-width: 0;
+}
+.people__body b {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.people__body span {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.people__sub {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}

@@ -1,0 +1,212 @@
+/* ============================================================
+   モバイル（900px 以下）: 上部のアバター・下部バー・投稿ボタン・ドロワー
+   ============================================================ */
+/* ---- モバイル: 上部・下部・投稿ボタン ---- */
+/* モバイルの左上に出るアバター（メニュー）。デスクトップでは出さない */
+.mhead__menu {
+  display: none;
+}
+.mbar {
+  display: none;
+}
+.fab {
+  display: none;
+}
+.drawer {
+  display: none;
+}
+@media (max-width: 900px) {
+  .mhead__menu {
+    display: flex;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--pearl);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(20, 24, 40, 0.06);
+    flex: none;
+    overflow: hidden;
+  }
+  .mhead__menu img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .mbar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--paper);
+    border-top: 1px solid var(--line-soft);
+    padding: 12px 0 calc(14px + env(safe-area-inset-bottom, 0px));
+    z-index: 30;
+  }
+  .mbar__item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    position: relative;
+  }
+  .mbar__item--on {
+    color: var(--accent);
+  }
+  .mbar__badge {
+    position: absolute;
+    transform: translate(14px, -6px);
+    background: var(--magenta);
+    color: #fff;
+    font-size: 9.5px;
+    font-weight: 700;
+    border-radius: var(--r-pill);
+    padding: 0 5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .fab {
+    display: flex;
+    position: fixed;
+    right: 20px;
+    bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 16px 32px -14px rgba(109, 90, 230, 0.75);
+    z-index: 31;
+  }
+  body {
+    padding-bottom: 90px;
+  }
+  .feed {
+    padding: 0 20px 12px;
+  }
+  /* タブは折り返さず、入りきらなければ横に流す（文字が途中で切れるのを避ける） */
+  .headrow {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .headrow::-webkit-scrollbar {
+    display: none;
+  }
+  /* 折り返してよいタブ（設定の節）は 2 行に。それ以外は横に流す */
+  .headrow .seg:not(.seg--wrap) {
+    flex: none;
+  }
+  .headrow .seg--wrap {
+    flex: 1;
+    flex-wrap: wrap;
+  }
+  .seg__t {
+    padding: 8px 9px;
+    font-size: 13px;
+  }
+  /* はじめての設定の案内は縦に積む */
+  .nudge {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .nudge .btn {
+    align-self: flex-start;
+  }
+  /* ドライブは 2 列。取り消しのボタンは指で押せる大きさに */
+  .drive__grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .drive__thumb {
+    aspect-ratio: 1;
+  }
+  .drive__actions .iconbtn {
+    width: 36px;
+    height: 36px;
+  }
+  /* ドロワー（左上のアバターから開く左ナビ） */
+  .drawer {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+  }
+  .drawer__dim {
+    position: absolute;
+    inset: 0;
+    background: rgba(25, 28, 38, 0.34);
+  }
+  .drawer__panel {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(300px, 84vw);
+    background: var(--paper);
+    padding: 26px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    box-shadow: 24px 0 60px -30px rgba(20, 24, 40, 0.45);
+  }
+  .drawer__brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px 18px;
+  }
+  .drawer__brand b {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+  .drawer__who {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 11px 12px;
+    border-radius: var(--r-card);
+    background: var(--surface);
+    margin: 0 0 14px;
+  }
+  .drawer__group {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    color: var(--text-faint);
+    padding: 2px 12px 8px;
+  }
+  .drawer__sep {
+    height: 1px;
+    background: var(--line-soft);
+    margin: 12px 12px;
+  }
+  .drawer__foot {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0 0;
+    border-top: 1px solid var(--line-soft);
+    flex-wrap: wrap;
+  }
+  .modal {
+    padding: 0;
+  }
+  .sheet {
+    width: 100%;
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+}

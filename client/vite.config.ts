@@ -1,76 +1,47 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import path from 'node:path';
-import fs from 'node:fs';
 
-// ルートまたはサーバーの .env からポート番号を取得
-let backendPort = '3000';
-const envCandidates = [
-  path.resolve(__dirname, '../.env'),
-  path.resolve(__dirname, '.env'),
-  path.resolve(__dirname, '../server/.env'),
+/**
+ * 新しいフロントエンド（案K「雅＋」）の開発サーバー。
+ *
+ *   npm run dev:next        → http://localhost:5174
+ *
+ * API は既定で、いま動いている本番相当のインスタンス（localhost:3210）へ転送する。
+ * 自分でサーバーを起動して確認したいときは、向き先を変えられる:
+ *
+ *   SPICA_API=http://localhost:3000 npm run dev:next
+ *
+ * 転送するのは「サーバーにしか無いもの」だけ。画面のパス（/users/…, /tags/…）は
+ * SPA（この開発サーバー）が受けるので、ここには入れない
+ * （入れるとサーバーの index.html が返って、画面が空になる）。
+ */
+const apiTarget = process.env.SPICA_API || 'http://localhost:3210';
+
+const proxyPaths = [
+  '/api',
+  '/uploads',
+  '/proxy',
+  '/.well-known',
+  '/nodeinfo',
+  '/inbox',
+  '/actor',
+  '/outbox',
+  '/activities',
 ];
-for (const envFile of envCandidates) {
-  if (fs.existsSync(envFile)) {
-    const content = fs.readFileSync(envFile, 'utf-8');
-    const match = content.match(/^PORT\s*=\s*(\d+)/m);
-    if (match) {
-      backendPort = match[1];
-      break;
-    }
-  }
-}
-if (process.env.PORT) {
-  backendPort = process.env.PORT;
-}
-
-const backendTarget = `http://localhost:${backendPort}`;
 
 export default defineConfig({
+  root: import.meta.dirname,
   plugins: [react()],
   server: {
-    port: 5173,
+    port: 5174,
     host: true,
-    // 任意のトンネルドメインからのアクセスを許可
     allowedHosts: true,
-    // 開発時に Vite(5173) への API / ActivityPub リクエストをバックエンドへ転送
-    proxy: {
-      '/api': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/.well-known': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/users': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/nodeinfo': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/inbox': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/actor': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/outbox': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/activities': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-      '/uploads': {
-        target: backendTarget,
-        changeOrigin: true,
-      },
-    },
+    proxy: Object.fromEntries(
+      proxyPaths.map((p) => [p, { target: apiTarget, changeOrigin: true }]),
+    ),
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
   },
 });

@@ -1,0 +1,247 @@
+/* ============================================================
+   モーダル（コンポーザなど、浮かせて出す面）。影は --shadow-2 だけ。
+   ============================================================ */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(25, 28, 38, 0.34);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  z-index: 60;
+  overflow-y: auto;
+}
+.sheet {
+  width: 620px;
+  max-width: 100%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-2);
+}
+.sheet__head {
+  display: flex;
+  align-items: center;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.sheet__head b {
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+/* 右上の閉じる（Esc 表記のときはそのまま） */
+.sheet__head .btn {
+  margin-left: auto;
+}
+.sheet__esc {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.sheet__body {
+  display: flex;
+  gap: 16px;
+  padding: 22px 24px 8px;
+}
+.sheet__body textarea {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  font-size: 15.5px;
+  line-height: 1.9;
+  background: transparent;
+  min-height: 110px;
+}
+.sheet__body textarea::placeholder {
+  color: var(--text-faint);
+}
+.sheet__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 18px;
+  flex-wrap: wrap;
+}
+.sheet__cw {
+  margin: 0 24px 14px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.sheet__cw input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  padding: 9px 12px;
+  font-size: 13.5px;
+  background: var(--paper);
+  outline: none;
+}
+.sheet__foot {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--line-soft);
+}
+.sheet__count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 予約の日時と「下書きに保存」（ノートを作成の下の段） */
+.sheet__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 22px 0;
+}
+.sheet__when {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.sheet__when .field {
+  padding: 7px 10px;
+  font-size: 12.5px;
+  width: auto;
+}
+
+/* 添付とアンケート（ノートを作成の追加部分） */
+.extra {
+  padding: 2px 22px 0;
+}
+.extra__tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.extra__tools .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.extra__media {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+.extra__thumb {
+  position: relative;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  background: var(--surface);
+}
+.extra__thumb img,
+.extra__play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  font-size: 18px;
+  color: var(--text-faint);
+}
+.extra__alt {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 6px 8px;
+  font-size: 11.5px;
+  background: var(--paper);
+  outline: none;
+}
+.extra__x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  color: var(--text-sub);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.extra__poll {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+.extra__choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.extra__choice .btn {
+  white-space: nowrap;
+  flex: none;
+}
+.extra__opts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.extra__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.extra__check .field {
+  padding: 5px 8px;
+  font-size: 12px;
+  width: auto;
+}
+
+/* 本文に入れるカスタム絵文字のピッカー */
+.emoji-pop {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  padding: 10px 12px;
+}
+.emoji-pop__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.emoji-pop__item {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.emoji-pop__item:hover {
+  background: var(--paper);
+}
+.emoji-pop__item img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}

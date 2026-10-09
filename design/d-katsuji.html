@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spica デザイン案 D — 活字（KATSUJI）</title>
+<style>
+/* ============================================================
+   案D: 活字 KATSUJI — 紙面（新聞・活版印刷の組版）
+   既存の見た目を大きく壊す方向。装飾ではなく「組版」で作る。
+   ・角丸ゼロ・影ゼロ・グラデーションゼロ
+   ・本文は明朝、ラベルはゴシック（日本の新聞と同じ使い分け）
+   ・アクセントは朱 1 色。罫線（1px / 3px 二重）で区切る
+   ============================================================ */
+:root{
+  --paper:#FAF7F0;
+  --paper2:#F2EDE1;
+  --ink:#17181B;
+  --ink2:#575651;
+  --ink3:#8B8880;
+  --rule:#D6D0C1;
+  --rule-strong:#17181B;
+  --shu:#B4341F;
+  --ai:#23456F;
+  --mincho:"Yu Mincho","YuMincho","Hiragino Mincho ProN","Noto Serif JP","MS PMincho",serif;
+  --gothic:"Yu Gothic","YuGothic","Hiragino Kaku Gothic ProN","Noto Sans JP","Meiryo",sans-serif;
+  --grain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='200' height='200' filter='url(%23n)' opacity='0.5'/></svg>");
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{
+  margin:0;background:#E7E2D6;color:var(--ink);
+  font-family:var(--mincho);font-size:15px;line-height:1.9;
+}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+  background-image:var(--grain);background-size:200px 200px;opacity:.045;mix-blend-mode:multiply}
+a{color:inherit;text-decoration:none}
+svg{display:block}
+.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.i-sm{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* ---------- 提案の見出し ---------- */
+.board{max-width:1360px;margin:0 auto;padding:44px 30px 90px}
+.board-head{border-top:6px solid var(--rule-strong);border-bottom:1px solid var(--rule);background:var(--paper);
+  padding:26px 30px 22px;margin-bottom:40px}
+.board-kicker{font-family:var(--gothic);font-size:11px;letter-spacing:.24em;font-weight:700;color:var(--shu)}
+.board-title{font-size:40px;font-weight:600;margin:8px 0 4px;letter-spacing:.06em}
+.board-title small{font-size:15px;color:var(--ink2);font-weight:400;margin-left:14px;letter-spacing:.1em;font-family:var(--gothic)}
+.board-desc{color:var(--ink2);max-width:880px;font-size:14.5px;line-height:2;margin:10px 0 0}
+.board-meta{display:flex;flex-wrap:wrap;gap:30px;margin-top:24px;padding-top:18px;border-top:1px solid var(--rule)}
+.meta-col h4{margin:0 0 10px;font-family:var(--gothic);font-size:11px;color:var(--ink3);letter-spacing:.16em;font-weight:700}
+.swatches{display:flex;gap:8px}
+.sw{width:52px;text-align:center}
+.sw i{display:block;height:42px;border:1px solid var(--rule-strong)}
+.sw span{display:block;font-family:var(--gothic);font-size:9px;color:var(--ink3);margin-top:5px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-family:var(--gothic);font-size:11.5px;padding:4px 12px;border:1px solid var(--rule-strong);color:var(--ink2);background:var(--paper)}
+.keypoints{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-top:26px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.kp{padding:18px 22px 16px;border-right:1px solid var(--rule)}
+.kp:last-child{border-right:0}
+.kp b{display:block;font-family:var(--gothic);font-size:13px;margin-bottom:6px;font-weight:700}
+.kp b::before{content:"■ ";color:var(--shu)}
+.kp p{margin:0;font-size:12.5px;color:var(--ink2);line-height:1.95}
+
+/* ---------- スクリーン ---------- */
+.screens{display:flex;flex-direction:column;gap:56px;font-family:var(--gothic)}
+.swrap h3{font-family:var(--gothic);font-size:15px;margin:0 0 4px;font-weight:700}
+.swrap h3 b{color:var(--shu);margin-right:8px}
+.swrap .note{color:var(--ink3);font-size:12.5px;margin:0 0 14px;font-family:var(--gothic)}
+.frame{border:1px solid var(--rule-strong);background:var(--paper);box-shadow:10px 10px 0 rgba(23,24,27,.07)}
+
+/* ============================================================
+   紙面
+   ============================================================ */
+.paper{background:var(--paper);font-family:var(--mincho);color:var(--ink)}
+/* 反転（夜刊）— トークンを差し替えるだけで成立する */
+.reverse{
+  --paper:#191A1D;--paper2:#202124;--ink:#F3EFE4;--ink2:#B6B2A6;--ink3:#807D74;
+  --rule:#3A3B3E;--rule-strong:#F3EFE4;--shu:#E4634C;--ai:#8FB0DF;
+}
+
+/* 題字（マストヘッド） */
+.mast{display:flex;align-items:flex-end;gap:22px;padding:20px 26px 12px;border-bottom:3px double var(--rule-strong)}
+.mast .brand{display:flex;align-items:baseline;gap:14px}
+.mast .logotype{font-size:34px;font-weight:600;letter-spacing:.14em;line-height:1}
+.mast .sub{font-family:var(--gothic);font-size:10.5px;letter-spacing:.3em;color:var(--ink2);padding-bottom:4px}
+.mast .issue{margin-left:auto;text-align:right;font-family:var(--gothic);font-size:11px;color:var(--ink2);line-height:1.7}
+.mast .issue b{color:var(--ink);font-size:12.5px}
+/* 段（セクション）ナビ */
+.sections{display:flex;align-items:center;gap:0;border-bottom:1px solid var(--rule);padding:0 26px;background:var(--paper2)}
+.sec{font-family:var(--gothic);font-size:12.5px;font-weight:700;color:var(--ink2);padding:11px 16px;border-left:1px solid var(--rule)}
+.sec:first-child{border-left:0}
+.sec.on{color:var(--paper);background:var(--ink)}
+.sec .n{font-size:10px;color:var(--shu);margin-right:5px}
+.sec.on .n{color:var(--paper)}
+.sections .spacer{flex:1}
+.sections .tool{font-family:var(--gothic);font-size:12px;color:var(--ink2);padding:11px 12px;border-left:1px solid var(--rule)}
+
+/* 本文3段組（紙面 + 欄外） */
+.page{display:grid;grid-template-columns:minmax(0,760px) 300px;gap:0;justify-content:center}
+.page.rev{background:var(--paper)}
+.main-col{border-right:1px solid var(--rule);padding:0 26px 34px}
+.side-col{padding:22px 24px}
+
+/* 面の見出し */
+.kanzuke{display:flex;align-items:baseline;gap:14px;padding:20px 0 10px;border-bottom:3px double var(--rule-strong);margin-bottom:6px}
+.kanzuke h2{margin:0;font-size:22px;font-weight:600;letter-spacing:.1em}
+.kanzuke .no{font-family:var(--gothic);font-size:11px;letter-spacing:.2em;color:var(--shu);font-weight:700}
+.kanzuke .lead{margin-left:auto;font-family:var(--gothic);font-size:11.5px;color:var(--ink2)}
+.kanzuke .lead b{color:var(--shu);font-size:13px}
+
+/* 記事（投稿） */
+.article{display:grid;grid-template-columns:76px 1fr;gap:0;border-bottom:1px solid var(--rule);padding:18px 0 14px}
+.article:last-of-type{border-bottom:0}
+.dateline{font-family:var(--gothic);font-size:11px;color:var(--ink3);line-height:1.7;padding-top:3px;text-align:right;padding-right:14px;border-right:1px solid var(--rule)}
+.dateline b{display:block;font-size:12px;color:var(--ink2)}
+.art-body{padding-left:16px;min-width:0}
+.byline{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;font-family:var(--gothic)}
+.byline .face{width:26px;height:26px;border:1px solid var(--rule-strong);flex:none;display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;background:var(--paper2);font-family:var(--gothic);color:var(--ink)}
+.byline b{font-size:14.5px;font-weight:700}
+.byline .h{font-size:11.5px;color:var(--ink3)}
+.byline .vis{margin-left:auto;font-size:10.5px;color:var(--ink2);border:1px solid var(--rule);padding:1px 8px;letter-spacing:.06em}
+.body-text{font-size:15px;line-height:2.05;margin:8px 0 0;color:var(--ink)}
+.body-text .tag{color:var(--ai);border-bottom:1px solid var(--ai)}
+.body-text .men{color:var(--shu)}
+.cwline{display:flex;align-items:center;gap:10px;margin-top:10px;border:1px solid var(--rule-strong);background:var(--paper2);
+  padding:8px 12px;font-family:var(--gothic);font-size:12.5px;color:var(--ink2)}
+.cwline b{font-size:11px;letter-spacing:.14em;color:var(--paper);background:var(--ink);padding:1px 8px}
+.cwline .more{margin-left:auto;color:var(--shu);font-weight:700}
+figure.fig{margin:12px 0 0;border:1px solid var(--rule-strong);padding:8px}
+figure.fig .img{height:150px;border:1px solid var(--rule);
+  background:repeating-linear-gradient(45deg,var(--paper2) 0 10px,var(--paper) 10px 20px)}
+figure.fig figcaption{font-family:var(--gothic);font-size:11px;color:var(--ink2);padding-top:7px}
+figure.fig .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.quote{margin:12px 0 0;border-left:3px solid var(--ink);padding:2px 0 2px 14px}
+.quote .qh{font-family:var(--gothic);font-size:11.5px;color:var(--ink2)}
+.quote .qh b{color:var(--ink);font-size:12.5px}
+.quote p{margin:4px 0 0;font-size:13.5px;color:var(--ink2);line-height:1.9}
+.poll{margin:12px 0 0;border:1px solid var(--rule-strong)}
+.poll .opt{display:grid;grid-template-columns:1fr 74px;border-bottom:1px solid var(--rule)}
+.poll .opt:last-child{border-bottom:0}
+.poll .opt .lb{position:relative;padding:8px 12px;font-size:13.5px}
+.poll .opt .lb .fill{position:absolute;inset:0;background:var(--paper2);width:var(--w);border-right:1px solid var(--rule)}
+.poll .opt .lb span{position:relative}
+.poll .opt .pc{font-family:var(--gothic);font-size:12.5px;font-weight:700;text-align:right;padding:8px 12px;border-left:1px solid var(--rule)}
+.poll .foot{font-family:var(--gothic);font-size:11px;color:var(--ink3);padding:7px 12px;border-top:1px solid var(--rule)}
+/* 朱印（リアクション） */
+.stamps{display:flex;align-items:center;gap:10px;margin-top:12px}
+.stamp{display:inline-flex;align-items:center;gap:7px;font-family:var(--gothic)}
+.stamp .seal{width:26px;height:26px;border:1.5px solid var(--shu);border-radius:50%;display:flex;align-items:center;justify-content:center;
+  color:var(--shu);font-size:13px;font-weight:700}
+.stamp .ct{font-size:12px;font-weight:700;color:var(--ink2)}
+.stamp.mine .seal{background:var(--shu);color:var(--paper)}
+.stamp.mine .ct{color:var(--shu)}
+.stamp .add{border-style:dashed;color:var(--ink3);border-color:var(--ink3)}
+/* 行為（アイコンではなく小さな文字） */
+.acts{display:flex;gap:16px;margin-top:10px;font-family:var(--gothic);font-size:11.5px;color:var(--ink2)}
+.acts .a{display:flex;align-items:center;gap:5px;border-bottom:1px solid transparent;padding-bottom:1px}
+.acts .a:hover{color:var(--shu);border-bottom-color:var(--shu)}
+.acts .a b{font-weight:700;color:var(--ink)}
+.acts .right{margin-left:auto}
+
+/* 欄外（サイドバー） */
+.side-col h4{margin:0 0 10px;font-family:var(--gothic);font-size:12.5px;font-weight:700;letter-spacing:.08em;
+  padding-bottom:7px;border-bottom:1px solid var(--rule-strong)}
+.side-col h4::before{content:"◆ ";color:var(--shu)}
+.toc{list-style:none;margin:0 0 26px;padding:0;font-family:var(--gothic);font-size:13px}
+.toc li{display:flex;align-items:baseline;gap:4px;padding:6px 0;border-bottom:1px dotted var(--rule)}
+.toc .t{color:var(--ai);font-weight:700}
+.toc .dots{flex:1;border-bottom:1px dotted var(--rule);transform:translateY(-4px)}
+.toc .c{font-size:11.5px;color:var(--ink3)}
+.colophon{margin:0 0 26px;border:1px solid var(--rule-strong);padding:14px 14px 12px;font-family:var(--gothic);font-size:12px;color:var(--ink2)}
+.colophon .row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dotted var(--rule)}
+.colophon .row:last-child{border-bottom:0}
+.colophon .row b{color:var(--ink)}
+.cast{font-family:var(--gothic);margin-bottom:22px}
+.cast .c{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dotted var(--rule)}
+.cast .face{width:30px;height:30px;border:1px solid var(--rule-strong);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--paper2)}
+.cast .who{flex:1;min-width:0}
+.cast .who b{display:block;font-size:13px}
+.cast .who span{display:block;font-size:11px;color:var(--ink3)}
+.cast .f{font-size:11.5px;font-weight:700;border:1px solid var(--rule-strong);padding:3px 12px}
+.searchbar{display:flex;align-items:center;gap:8px;border:1px solid var(--rule-strong);background:var(--paper);
+  padding:9px 12px;font-family:var(--gothic);font-size:12.5px;color:var(--ink3);margin-bottom:24px}
+
+/* ---------- コンポーザ（寄稿） ---------- */
+.desk{padding:44px;background:var(--paper2);display:flex;justify-content:center}
+.sheet{width:720px;background:var(--paper);border:1px solid var(--rule-strong);box-shadow:10px 10px 0 rgba(23,24,27,.08)}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;border-bottom:3px double var(--rule-strong);padding:14px 22px}
+.sheet-head b{font-size:19px;font-weight:600;letter-spacing:.14em}
+.sheet-head .x{font-family:var(--gothic);font-size:12px;color:var(--ink2)}
+.sheet-body{padding:18px 22px 8px;display:flex;gap:16px}
+.sheet-body .face{width:44px;height:44px;border:1px solid var(--rule-strong);display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;background:var(--paper2);font-family:var(--gothic)}
+.genko{flex:1;min-width:0}
+.genko textarea{
+  width:100%;border:0;outline:none;resize:none;background-color:transparent;color:var(--ink);
+  font-family:var(--mincho);font-size:15.5px;line-height:calc(22px * 1.0);padding:0;
+  background-image:
+    linear-gradient(to right, rgba(23,24,27,.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(23,24,27,.07) 1px, transparent 1px);
+  background-size:22px 22px;min-height:132px}
+.genko .ph{font-family:var(--gothic);font-size:11px;color:var(--ink3);margin-top:6px}
+.marks{display:flex;gap:8px;margin-top:12px;font-family:var(--gothic);flex-wrap:wrap}
+.mark{font-size:12px;font-weight:700;color:var(--ink2);border:1px solid var(--rule-strong);padding:4px 12px;background:var(--paper)}
+.mark.on{background:var(--ink);color:var(--paper)}
+.figs{display:flex;gap:12px;margin-top:14px}
+.figs .f{width:132px}
+.figs .f .box{height:96px;border:1px solid var(--rule-strong);background:repeating-linear-gradient(45deg,var(--paper2) 0 10px,var(--paper) 10px 20px);position:relative}
+.figs .f .cap{font-family:var(--gothic);font-size:9.5px;color:var(--ink3);margin-top:4px;line-height:1.5}
+.figs .f .rm{position:absolute;right:-1px;top:-1px;font-family:var(--gothic);font-size:10px;background:var(--ink);color:var(--paper);padding:1px 6px}
+.sheet-foot{display:flex;align-items:center;gap:14px;border-top:1px solid var(--rule);margin-top:16px;padding:13px 22px;font-family:var(--gothic)}
+.sheet-foot .t{font-size:12.5px;color:var(--ink2);border-bottom:1px solid transparent}
+.sheet-foot .t:hover{color:var(--shu)}
+.sheet-foot .count{margin-left:auto;font-size:12px;color:var(--ink3);font-variant-numeric:tabular-nums}
+.sheet-foot .count b{color:var(--ink);font-size:14px}
+.sheet-foot .send{background:var(--shu);color:#fff;font-weight:700;font-size:14px;padding:10px 30px;letter-spacing:.16em}
+.sheet-foot .vis{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:700;border:1px solid var(--rule-strong);padding:7px 14px}
+
+/* ---------- モバイル ---------- */
+.phones{display:flex;gap:40px;align-items:flex-start}
+.phone{width:392px;height:830px;border:1px solid var(--rule-strong);border-radius:22px;background:var(--paper);overflow:hidden;position:relative;flex:none;
+  box-shadow:10px 10px 0 rgba(23,24,27,.08);font-family:var(--mincho)}
+.phone .notch{position:absolute;top:10px;left:50%;transform:translateX(-50%);width:110px;height:22px;border-radius:999px;background:var(--ink);z-index:40}
+.m-mast{display:flex;align-items:baseline;gap:10px;padding:42px 16px 10px;border-bottom:3px double var(--rule-strong)}
+.m-mast .lg{font-size:22px;font-weight:600;letter-spacing:.14em}
+.m-mast .dt{margin-left:auto;font-family:var(--gothic);font-size:10px;color:var(--ink2)}
+.m-secs{display:flex;border-bottom:1px solid var(--rule);background:var(--paper2)}
+.m-secs .s{font-family:var(--gothic);font-size:11.5px;font-weight:700;color:var(--ink2);padding:9px 10px;border-left:1px solid var(--rule)}
+.m-secs .s.on{background:var(--ink);color:var(--paper)}
+.m-art{padding:14px 16px 10px;border-bottom:1px solid var(--rule)}
+.m-art .by{display:flex;align-items:baseline;gap:8px;font-family:var(--gothic)}
+.m-art .by .face{width:22px;height:22px;border:1px solid var(--rule-strong);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:var(--paper2)}
+.m-art .by b{font-size:13px}
+.m-art .by .h,.m-art .by .tm{font-size:10.5px;color:var(--ink3)}
+.m-art .tx{font-size:14px;line-height:1.95;margin-top:6px}
+.m-art .tx .tag{color:var(--ai);border-bottom:1px solid var(--ai)}
+.m-art figure.fig{margin-top:10px;padding:6px}
+.m-art figure.fig .img{height:110px}
+.m-art .stamps{margin-top:9px}
+.m-art .acts{margin-top:7px;gap:14px;font-size:11px}
+.mbar{position:absolute;bottom:0;left:0;right:0;border-top:3px double var(--rule-strong);background:var(--paper);
+  display:flex;padding:8px 0 16px;z-index:30}
+.mbar .m{flex:1;text-align:center;font-family:var(--gothic);font-size:11.5px;font-weight:700;color:var(--ink3);letter-spacing:.14em}
+.mbar .m.on{color:var(--ink);border-bottom:2px solid var(--shu);padding-bottom:2px}
+.mbar .m .bd{display:inline-block;background:var(--shu);color:#fff;font-size:9px;padding:0 5px;margin-left:3px}
+.m-compose{padding:0}
+.m-compose .h{display:flex;align-items:center;justify-content:space-between;padding:44px 16px 12px;border-bottom:3px double var(--rule-strong)}
+.m-compose .h b{font-size:16px;font-weight:600;letter-spacing:.14em}
+.m-compose .h .send{background:var(--shu);color:#fff;font-family:var(--gothic);font-size:12.5px;font-weight:700;padding:7px 16px}
+.m-genko{margin:18px 16px;border:1px solid var(--rule-strong);padding:14px;
+  background-image:
+    linear-gradient(to right, rgba(23,24,27,.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(23,24,27,.07) 1px, transparent 1px);
+  background-size:22px 22px;font-size:14.5px;line-height:22px;min-height:176px}
+.m-row{display:flex;align-items:center;gap:10px;margin:0 16px 12px;border:1px solid var(--rule);padding:11px 13px;
+  font-family:var(--gothic);font-size:12px;color:var(--ink2)}
+.m-row b{color:var(--ink)}
+.m-count{margin:0 16px;text-align:right;font-family:var(--gothic);font-size:11px;color:var(--ink3)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="M9 17l-5-5 5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></symbol>
+    <symbol id="i-renote" viewBox="0 0 24 24"><path d="m17 1 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="m7 23-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24"><path d="M6 17h3l2-4V7H5v6h3z"/><path d="M14 17h3l2-4V7h-6v6h3z"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  </defs>
+</svg>
+
+<div class="board">
+
+  <header class="board-head">
+    <div class="board-kicker">SPICA FRONTEND REDESIGN — PROPOSAL D</div>
+    <h1 class="board-title">活字<small>KATSUJI — 紙面。新聞と活版印刷の組版で作る</small></h1>
+    <p class="board-desc">
+      タイムラインを<b>紙面</b>として組む案。角丸・影・グラデーションを全部やめ、<b>明朝体の本文・ゴシックのラベル・罫線</b>だけで作ります。
+      時刻は記事の左肩に「地の文」として出し、リアクションは<b>朱の印</b>、操作はアイコンではなく小さな文字。
+      新聞の約束事（題字・面付け・欄外・奥付）をそのまま持ち込むので、<b>生成りの AI っぽさが出る余地がありません</b>。
+      紙面は反転（<b>夜刊</b>）も同じトークンの差し替えだけで成立します。
+    </p>
+    <div class="board-meta">
+      <div class="meta-col">
+        <h4>PALETTE</h4>
+        <div class="swatches">
+          <span class="sw"><i style="background:#FAF7F0"></i><span>#FAF7F0 紙</span></span>
+          <span class="sw"><i style="background:#17181B"></i><span>#17181B 墨</span></span>
+          <span class="sw"><i style="background:#B4341F"></i><span>#B4341F 朱</span></span>
+          <span class="sw"><i style="background:#23456F"></i><span>#23456F 藍</span></span>
+          <span class="sw"><i style="background:#D6D0C1"></i><span>#D6D0C1 罫</span></span>
+        </div>
+      </div>
+      <div class="meta-col">
+        <h4>KEYWORDS</h4>
+        <div class="chips">
+          <span class="chip">明朝体</span><span class="chip">罫線</span><span class="chip">角丸ゼロ</span>
+          <span class="chip">朱一色</span><span class="chip">紙面</span><span class="chip">読むため</span>
+        </div>
+      </div>
+    </div>
+    <div class="keypoints">
+      <div class="kp"><b>組版で作る</b><p>余白・行間・罫線の太さ（1px と 3px 二重）だけで階層を作る。装飾効果は一切使わない。</p></div>
+      <div class="kp"><b>読む速度が上がる</b><p>明朝の本文 15px・行間 2.05。長いノートとスレッドが「読める」紙面になる。</p></div>
+      <div class="kp"><b>夜刊（反転）が無料</b><p>トークンの差し替えだけで暗い紙面に。通知の節がその実例（同じ CSS で反転）。</p></div>
+    </div>
+  </header>
+
+  <div class="screens">
+
+    <!-- 01 紙面 -->
+    <section class="swrap">
+      <h3><b>01</b>第一面（デスクトップ 1440×900）</h3>
+      <p class="note">題字の下に段（セクション）が並び、本文は面付けで 2 段。右は欄外（タグの目次・奥付・登場人物）。</p>
+      <div class="frame">
+        <div class="paper">
+          <div class="mast">
+            <div class="brand">
+              <span class="logotype">Spica</span>
+              <span class="sub">連合型ソーシャル通信</span>
+            </div>
+            <div class="issue">
+              <b>2026年10月9日（金）</b><br>
+              第 1,248 号 ／ 発行 12 人
+            </div>
+          </div>
+
+          <div class="sections">
+            <span class="sec on"><span class="n">01</span>ホーム</span>
+            <span class="sec"><span class="n">02</span>ローカル</span>
+            <span class="sec"><span class="n">03</span>連合</span>
+            <span class="sec"><span class="n">04</span>通知（3）</span>
+            <span class="sec">ブックマーク</span>
+            <span class="sec">リスト</span>
+            <span class="sec">アンテナ</span>
+            <span class="sec">チャンネル</span>
+            <span class="sec">ドライブ</span>
+            <span class="spacer"></span>
+            <span class="sec">設定</span>
+            <span class="sec">管理</span>
+            <span class="tool">すいれん ▾</span>
+          </div>
+
+          <div class="page">
+            <div class="main-col">
+              <div class="kanzuke">
+                <span class="no">第一面</span>
+                <h2>ホーム</h2>
+                <span class="lead">新着 <b>2</b> 件 ・ 未読通知 <b>3</b> 件</span>
+              </div>
+
+              <article class="article">
+                <div class="dateline"><b>12:04</b>12分前</div>
+                <div class="art-body">
+                  <div class="byline">
+                    <span class="face">す</span><b>すいれん</b><span class="h">@suiren@localhost:3210</span>
+                    <span class="vis">連合配信</span>
+                  </div>
+                  <p class="body-text">Spica のフロント、デザインから作り直すことにしました。まず3案つくって比べています。<span class="tag">#Spica</span> <span class="tag">#デザイン</span><br>左ナビと中央カラムの一貫性を、いちばん大事にしたい。</p>
+                  <div class="stamps">
+                    <span class="stamp mine"><span class="seal">★</span><span class="ct">4</span></span>
+                    <span class="stamp"><span class="seal">✦</span><span class="ct">2</span></span>
+                    <span class="stamp"><span class="seal add">＋</span></span>
+                  </div>
+                  <div class="acts">
+                    <span class="a">返信 <b>3</b></span>
+                    <span class="a">リノート <b>2</b></span>
+                    <span class="a">引用</span>
+                    <span class="a">共有</span>
+                    <span class="a right">保存</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="article">
+                <div class="dateline"><b>11:32</b>32分前</div>
+                <div class="art-body">
+                  <div class="byline">
+                    <span class="face">み</span><b>みかん</b><span class="h">@mikan@misskey.io</span>
+                    <span class="vis">連合配信</span>
+                  </div>
+                  <div class="cwline"><b>CW</b>長文・ネタバレ注意<span class="more">つづきを読む</span></div>
+                  <p class="body-text">連合テスト、Misskey からリアクションが届いた。ActivityPub の <b>Update</b> もちゃんと反映される。編集しても投稿 ID が変わらないのが良い。</p>
+                  <figure class="fig">
+                    <div class="grid2">
+                      <div class="img"></div>
+                      <div class="img"></div>
+                    </div>
+                    <figcaption>図1：テスト投稿の画面 ／ 図2：リアクションの内訳（画像の説明文をキャプションとして表示）</figcaption>
+                  </figure>
+                  <div class="stamps">
+                    <span class="stamp"><span class="seal">★</span><span class="ct">1</span></span>
+                    <span class="stamp"><span class="seal add">＋</span></span>
+                  </div>
+                  <div class="acts">
+                    <span class="a">返信</span><span class="a">リノート <b>1</b></span><span class="a">引用</span><span class="a">共有</span><span class="a right">保存</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="article">
+                <div class="dateline"><b>11:00</b>1時間前</div>
+                <div class="art-body">
+                  <div class="byline">
+                    <span class="face">a</span><b>aster</b><span class="h">@aster@mastodon.social</span>
+                  </div>
+                  <p class="body-text">アンテナの通知、まとめ表示があると追いやすい。</p>
+                  <div class="quote">
+                    <div class="qh"><b>かぐら</b> @kagura@localhost:3210</div>
+                    <p>アンテナ「Spica 開発」に新着が4件。キーワードは「デザイン」「ActivityPub」にしておくと静かで良い。</p>
+                  </div>
+                  <div class="stamps">
+                    <span class="stamp"><span class="seal">★</span><span class="ct">2</span></span>
+                    <span class="stamp"><span class="seal add">＋</span></span>
+                  </div>
+                  <div class="acts">
+                    <span class="a">返信 <b>1</b></span><span class="a">リノート</span><span class="a">引用</span><span class="a">共有</span><span class="a right">保存</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="article">
+                <div class="dateline"><b>10:00</b>2時間前</div>
+                <div class="art-body">
+                  <div class="byline">
+                    <span class="face">な</span><b>なぎ</b><span class="h">@nagi@localhost:3210</span>
+                    <span class="vis">フォロワー限定</span>
+                  </div>
+                  <p class="body-text">新デザイン、どの方向が好き？</p>
+                  <div class="poll">
+                    <div class="opt"><span class="lb"><span class="fill" style="--w:42%"></span><span>活字（紙面）</span></span><span class="pc">42%</span></div>
+                    <div class="opt"><span class="lb"><span class="fill" style="--w:33%"></span><span>墨（和）</span></span><span class="pc">33%</span></div>
+                    <div class="opt"><span class="lb"><span class="fill" style="--w:25%"></span><span>構成（ポスター）</span></span><span class="pc">25%</span></div>
+                    <div class="foot">12票 ・ 残り 20時間</div>
+                  </div>
+                  <div class="acts">
+                    <span class="a">返信</span><span class="a">リノート</span><span class="a">アンケート</span><span class="a">共有</span><span class="a right">保存</span>
+                  </div>
+                </div>
+              </article>
+            </div>
+
+            <aside class="side-col">
+              <div class="searchbar"><svg class="i-sm"><use href="#i-search"/></svg>検索 — @user / #タグ / from: / has:media</div>
+
+              <h4>話題のタグ（目次）</h4>
+              <ul class="toc">
+                <li><span class="t">#Spica</span><span class="dots"></span><span class="c">128件</span></li>
+                <li><span class="t">#Fediverse</span><span class="dots"></span><span class="c">96件</span></li>
+                <li><span class="t">#ActivityPub</span><span class="dots"></span><span class="c">74件</span></li>
+                <li><span class="t">#デザイン</span><span class="dots"></span><span class="c">51件</span></li>
+              </ul>
+
+              <h4>奥付（このサーバー）</h4>
+              <div class="colophon">
+                <div class="row"><span>発行所</span><b>localhost:3210</b></div>
+                <div class="row"><span>発行人</span><b>12 人</b></div>
+                <div class="row"><span>記事</span><b>1,248</b></div>
+                <div class="row"><span>連合受信</span><b>342</b></div>
+                <div class="row"><span>準拠</span><b>ActivityPub / NodeInfo 2.1</b></div>
+              </div>
+
+              <h4>登場人物（おすすめ）</h4>
+              <div class="cast">
+                <div class="c"><span class="face">か</span><span class="who"><b>かぐら</b><span>@kagura@localhost:3210</span></span><span class="f">フォロー</span></div>
+                <div class="c"><span class="face">ほ</span><span class="who"><b>ほたる</b><span>@hotaru@misskey.io</span></span><span class="f">フォロー</span></div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02 通知（夜刊＝反転） -->
+    <section class="swrap">
+      <h3><b>02</b>通知（夜刊 — 反転した紙面）</h3>
+      <p class="note">同じ CSS のまま、トークンだけ差し替えた暗い紙面。朱はそのまま、リンクは藍を明るく。</p>
+      <div class="frame" style="max-width:760px">
+        <div class="paper reverse">
+          <div class="mast" style="padding:16px 22px 10px">
+            <div class="brand"><span class="logotype" style="font-size:26px">Spica</span><span class="sub">夜刊</span></div>
+            <div class="issue">第 1,248 号<br>2026年10月9日</div>
+          </div>
+          <div class="sections" style="padding:0 22px">
+            <span class="sec"><span class="n">01</span>ホーム</span>
+            <span class="sec on"><span class="n">04</span>通知（3）</span>
+            <span class="spacer"></span>
+            <span class="tool">すべて ／ メンション ／ リアクション ／ フォロー</span>
+          </div>
+          <div style="padding:0 22px 20px">
+            <div class="article" style="grid-template-columns:64px 1fr">
+              <div class="dateline"><b>19:55</b>5分前</div>
+              <div class="art-body">
+                <p class="body-text" style="margin-top:0"><b>3人</b>があなたの記事にリアクションしました</p>
+                <div class="stamps">
+                  <span class="stamp"><span class="seal">★</span><span class="ct">2 かぐら・ほたる</span></span>
+                  <span class="stamp"><span class="seal">✦</span><span class="ct">1 aster</span></span>
+                </div>
+              </div>
+            </div>
+            <div class="article" style="grid-template-columns:64px 1fr">
+              <div class="dateline"><b>19:42</b>18分前</div>
+              <div class="art-body">
+                <p class="body-text" style="margin-top:0"><b>みかん</b> がフォローしました</p>
+                <div class="acts"><span class="a" style="color:var(--shu);font-weight:700">フォローを返す</span></div>
+              </div>
+            </div>
+            <div class="article" style="grid-template-columns:64px 1fr">
+              <div class="dateline"><b>19:00</b>1時間前</div>
+              <div class="art-body">
+                <p class="body-text" style="margin-top:0"><b>aster</b> が返信しました</p>
+                <div class="quote"><p>「活字の案が読みやすいです。明朝の長文は目が疲れにくい」</p></div>
+              </div>
+            </div>
+            <div class="article" style="grid-template-columns:64px 1fr;border-bottom:0">
+              <div class="dateline"><b>16:00</b>3時間前</div>
+              <div class="art-body">
+                <p class="body-text" style="margin-top:0">アンテナ「Spica 開発」に新着が <b>2</b> 件</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 コンポーザ -->
+    <section class="swrap">
+      <h3><b>03</b>寄稿（ノートを作成）</h3>
+      <p class="note">原稿用紙の罫（22px 方眼）に書く。<b>画像の説明（ALT）はキャプション</b>として扱う。「画像の説明を書く」ではなく「キャプション」。</p>
+      <div class="frame">
+        <div class="desk">
+          <div class="sheet">
+            <div class="sheet-head">
+              <b>寄稿</b>
+              <span class="x">Esc で閉じる</span>
+            </div>
+            <div class="sheet-body">
+              <span class="face">す</span>
+              <div class="genko">
+                <textarea rows="4" placeholder="いまどうしてる？"></textarea>
+                <div class="ph">@ユーザー・#タグ は入力中に補完 ／ 1行 22px の方眼に組んでいます</div>
+                <div class="marks">
+                  <span class="mark on">見出し（CW）あり</span>
+                  <span class="mark">アンケート</span>
+                  <span class="mark">下書きに保存</span>
+                </div>
+                <div class="figs">
+                  <div class="f">
+                    <div class="box"><span class="rm">×</span></div>
+                    <div class="cap">図1 キャプション（ALT）をここに</div>
+                  </div>
+                  <div class="f">
+                    <div class="box"><span class="rm">×</span></div>
+                    <div class="cap">図2 キャプション（ALT）をここに</div>
+                  </div>
+                  <div class="f">
+                    <div class="box" style="background:none;border-style:dashed"></div>
+                    <div class="cap">2 / 4 枚</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="sheet-foot">
+              <span class="t">図版</span>
+              <span class="t">絵記号</span>
+              <span class="t">アンケート</span>
+              <span class="t">予約</span>
+              <span class="vis">連合配信 ▾</span>
+              <span class="count"><b>142</b> 字 / 3000 字</span>
+              <span class="send">寄稿</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 モバイル -->
+    <section class="swrap">
+      <h3><b>04</b>モバイル（390×844）</h3>
+      <p class="note">左：第一面（題字は1行に畳む）。右：寄稿（原稿用紙）。</p>
+      <div class="phones">
+        <div class="phone">
+          <div class="notch"></div>
+          <div class="m-mast"><span class="lg">Spica</span><span class="dt">2026年10月9日 第1,248号</span></div>
+          <div class="m-secs">
+            <span class="s on">ホーム</span><span class="s">ローカル</span><span class="s">連合</span><span class="s">通知 3</span>
+          </div>
+          <div class="m-art">
+            <div class="by"><span class="face">す</span><b>すいれん</b><span class="h">@suiren</span><span class="tm">12分前</span></div>
+            <div class="tx">Spica のフロント、デザインから作り直すことにしました。まず3案つくって比べています。<span class="tag">#Spica</span></div>
+            <div class="stamps">
+              <span class="stamp mine"><span class="seal" style="width:22px;height:22px;font-size:11px">★</span><span class="ct">4</span></span>
+              <span class="stamp"><span class="seal" style="width:22px;height:22px;font-size:11px">✦</span><span class="ct">2</span></span>
+            </div>
+            <div class="acts"><span class="a">返信 <b>3</b></span><span class="a">リノート <b>2</b></span><span class="a">引用</span><span class="a right">保存</span></div>
+          </div>
+          <div class="m-art">
+            <div class="by"><span class="face">み</span><b>みかん</b><span class="h">@mikan@misskey.io</span><span class="tm">32分前</span></div>
+            <div class="tx">連合テスト中。Misskey からリアクションが届いた。</div>
+            <figure class="fig"><div class="img"></div><figcaption>図：テスト投稿の画面（キャプション）</figcaption></figure>
+            <div class="stamps"><span class="stamp"><span class="seal" style="width:22px;height:22px;font-size:11px">★</span><span class="ct">1</span></span></div>
+            <div class="acts"><span class="a">返信</span><span class="a">リノート <b>1</b></span><span class="a">引用</span><span class="a right">保存</span></div>
+          </div>
+          <div class="mbar">
+            <span class="m on">一面</span>
+            <span class="m">探す</span>
+            <span class="m">通知<span class="bd">3</span></span>
+            <span class="m">自分</span>
+          </div>
+        </div>
+
+        <div class="phone m-compose">
+          <div class="notch"></div>
+          <div class="h"><b>寄稿</b><span class="send">寄稿</span></div>
+          <div class="m-genko">新しいデザイン案、3つできました。どれが好きですか？</div>
+          <div class="m-row"><b>見出し（CW）</b>をつけると、読む人が開く前に選べます</div>
+          <div class="m-row">アンケート：選択肢 <b>2</b> ／ 期限 <b>24時間</b></div>
+          <div class="m-row">連合配信 ▾　画像 0 / 4　キャプション（ALT）</div>
+          <div class="m-count">26 字 / 3000 字</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

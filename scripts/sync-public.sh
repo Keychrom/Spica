@@ -30,6 +30,10 @@ FILES=(
   # client/ は src だけを運んでいたため、index.html の変更（メタ情報・フィード案内）が
   # 公開ツリーへ入らない事故になりかけた。単体のファイルはここに明示する
   client/index.html
+  # 2026-10-10 にフロントエンドを一から書き直した（案K 雅＋）。ビルドの設定と説明も運ぶ
+  client/vite.config.ts
+  client/tsconfig.json
+  client/README.md
   docs/CONFIGURATION.md
   docs/FEATURES.md
   # 2段階認証（TOTP）の説明。FEATURES.md からリンクしているので公開ツリーにも運ぶ
@@ -50,14 +54,18 @@ FILES=(
   # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
   package-lock.json
   server/package.json
-  # client ワークスペースの依存（react-virtuoso など）もここ。運び忘れると .17 のビルドが失敗する
+  # client ワークスペースの依存（lucide-react など）もここ。運び忘れると .17 のビルドが失敗する
   client/package.json
 )
 DIRS=(
   .github/workflows
   client/src
-  # manifest / アイコンなど（2026-10-04 追加: manifest.json の share_target が運ばれなかった）
+  # manifest / アイコン / sw.js など（2026-10-04 追加: manifest.json の share_target が運ばれなかった）
   client/public
+  # 大きさの検査（npm run check:size）で使う。フロントエンドの README から参照している
+  client/scripts
+  # フロントエンドのデザイン（案K 雅＋）。client/README.md と design/README.md が相互に参照する
+  design
   server/src
   scripts
 )
@@ -93,7 +101,8 @@ for dir in "${DIRS[@]}"; do
     case "$rel" in
       # ★ 拡張子を増やすときは注意: ここに無い種類（かつては .css）は**黙って運ばれない**。
       #   2026-10-04 に .css を追加（文字サイズ・密度の見た目が公開ツリーへ入らなかった）
-      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml|*.css) copy_file "$rel" ;;
+      #   2026-10-10 に .html / .md を追加（design/ のモックアップと説明が運ばれなかった）
+      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml|*.css|*.html|*.md) copy_file "$rel" ;;
     esac
   done < <(cd "$DEV_DIR" && find "$dir" -type f \
     -not -path "*/node_modules/*" -not -path "*/dist/*" \

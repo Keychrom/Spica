@@ -1,0 +1,179 @@
+/* ============================================================
+   投稿の部品: メディア / 引用 / アンケート / リアクション / 操作
+   ============================================================ */
+/* メディア */
+.pics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 16px;
+}
+.pics--one {
+  grid-template-columns: 1fr;
+}
+.pic {
+  aspect-ratio: 16 / 10;
+  border-radius: var(--r-card);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  object-fit: cover;
+  width: 100%;
+  cursor: zoom-in;
+}
+.pics--one .pic {
+  aspect-ratio: 16 / 9;
+}
+
+/* 引用 */
+.quote {
+  margin-top: 16px;
+  padding: 16px 20px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 1px solid var(--accent);
+  font-size: 13.5px;
+  color: var(--text-sub);
+}
+.quote__head {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.quote__head span {
+  font-weight: 400;
+  color: var(--text-sub);
+}
+.quote p {
+  margin: 6px 0 0;
+  line-height: 1.85;
+}
+
+/* アンケート */
+.poll {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poll__opt {
+  position: relative;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  font-size: 13.5px;
+  width: 100%;
+  text-align: left;
+}
+.poll__fill {
+  position: absolute;
+  inset: 0;
+  background: var(--accent-soft);
+}
+.poll__row {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.poll__pct {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.poll__foot {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* リアクション */
+.rx {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.rx__item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  font-size: 12.5px;
+  color: var(--text-sub);
+  background: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+.rx__item:hover {
+  border-color: var(--accent);
+}
+.rx__item--mine {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.rx__add {
+  border-style: dashed;
+  color: var(--text-faint);
+}
+
+/* 操作 */
+.acts {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 16px;
+}
+.acts__a {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-sub);
+  padding: 5px 10px;
+  border-radius: var(--r-card);
+  font-variant-numeric: tabular-nums;
+}
+.acts__a:hover {
+  color: var(--accent);
+  background: var(--surface);
+}
+.acts__a--save {
+  margin-left: auto;
+}
+.acts__a--on {
+  color: var(--accent);
+}
+
+/* 押せるアンケートの選択肢（投票前） */
+.poll__opt--tap {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.poll__opt--tap:hover {
+  border-color: var(--accent);
+}
+.poll__mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--paper);
+  vertical-align: baseline;
+}
+.poll__mark--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
