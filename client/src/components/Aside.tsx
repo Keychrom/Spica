@@ -17,6 +17,9 @@ interface AsideProps {
 
 export default function Aside({ live, server, tags, recommended, followed, signedIn, onFollow }: AsideProps) {
   const stats = server?.stats;
+  // 「おすすめ」は、まだフォローしていない人だけ（フォローしたら消える）。
+  // サーバー側でも外しているが、押した直後にも消えるようにここでも見る
+  const picks = recommended.filter((user) => !followed.has(user.handle)).slice(0, 3);
   return (
     <>
       {tags.length > 0 && (
@@ -55,10 +58,10 @@ export default function Aside({ live, server, tags, recommended, followed, signe
         </div>
       </section>
 
-      {recommended.length > 0 && (
+      {picks.length > 0 && (
         <section className="card">
           <h2>おすすめ</h2>
-          {recommended.slice(0, 3).map((user) => (
+          {picks.map((user) => (
             <div className="card__who" key={user.id}>
               <span className="av av--s">
                 {user.icon_url ? <img src={user.icon_url} alt="" /> : user.name.slice(0, 1)}

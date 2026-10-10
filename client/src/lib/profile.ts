@@ -53,6 +53,29 @@ export interface Person {
   created_at?: string;
   /** ブロック/ミュート一覧の id はユーザー ID（actor URL ではない） */
   user_id?: string;
+  /** フォロー一覧は follows の行なので、相手の在処はこの 2 つ（id は行の ID で相手ではない） */
+  following_url?: string;
+  follower_url?: string;
+}
+
+/**
+ * プロフィールを開くための識別子を作る（`/api/users/:identifier` が受ける形）。
+ *
+ * ⚠️ フォロー一覧の `id` は **follows の行の ID** で、相手の ID ではない。
+ *    そのまま渡すと「ユーザーが見つかりません」になる（同じサーバーの人でも）。
+ *   - ローカルの相手 → 素の ID（サーバーは users.id で引く）
+ *   - リモートの相手 → actor URL のまま（サーバーが解決する）
+ */
+export function personIdentifier(person: Person): string {
+  const actorUrl = person.following_url || person.follower_url || '';
+  if (actorUrl.startsWith('http')) {
+    const localPrefix = `${window.location.origin}/users/`;
+    if (actorUrl.startsWith(localPrefix)) {
+      return actorUrl.slice(localPrefix.length).replace(/\/.*$/, '');
+    }
+    return actorUrl;
+  }
+  return person.user_id || person.id;
 }
 
 export function personHandle(person: Person): string {

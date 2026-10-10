@@ -4181,16 +4181,32 @@ apiRouter.get('/announcements', asyncHandler(async (_req: Request, res: Response
 apiRouter.get('/directory', asyncHandler(async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(String(req.query.limit || '50'), 10) || 50, 100);
   const q = String(req.query.q || '').trim();
+  // ログイン中は「自分」と「もうフォローしている人」を外す（「おすすめ」欄がフォロー済みで
+  // 埋まらないように）。外すぶん多めに引いてから詰める。未ログインの公開一覧はそのまま
+  const viewerActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  const fetchLimit = viewerActorUrl && !q ? Math.min(limit * 2, 100) : limit;
 
   try {
-    const rows = await db.prepare(`
+    const initialRows = await db.prepare(`
       SELECT id, name, summary, icon_url, banner_url, created_at, fields, discoverable
       FROM users
       WHERE is_frozen = 0 AND approval_status = 'approved' AND COALESCE(discoverable, 1) = 1
         AND (? = '' OR id LIKE ? OR name LIKE ?)
       ORDER BY created_at ASC
       LIMIT ?
-    `).all(q, `%${q}%`, `%${q}%`, limit) as any[];
+    `).all(q, `%${q}%`, `%${q}%`, fetchLimit) as any[];
+
+    // フォロー中（承認済み）の actor URL を 1 本で引いて落とす
+    let rows = initialRows;
+    if (viewerActorUrl) {
+      const followedRows = (await db
+        .prepare("SELECT following_url FROM follows WHERE follower_url = ? AND status = 'accepted'")
+        .all(viewerActorUrl)) as { following_url: string }[];
+      const followed = new Set(followedRows.map((row) => row.following_url));
+      rows = initialRows
+        .filter((user) => user.id !== req.user!.id && !followed.has(`${config.origin}/users/${user.id}`))
+        .slice(0, limit);
+    }
 
     // 利用者ごとに 3 本ずつ撃つと 50 人で 150 クエリになる。しかも投稿数の
     // `COUNT(*) FROM posts WHERE user_id = ?` は user_id に索引が無く全件走査（実測 116ms/人）。

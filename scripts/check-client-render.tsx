@@ -23,10 +23,12 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import Nav from '../client/src/components/Nav.js';
 import Layout from '../client/src/components/Layout.js';
 import MenuButton from '../client/src/components/MenuButton.js';
+import Aside from '../client/src/components/Aside.js';
 import PostCard from '../client/src/components/PostCard.js';
 import PostMedia from '../client/src/components/PostMedia.js';
 import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
+import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import type { Post } from '../client/src/lib/format.js';
 
 let checks = 0;
@@ -182,6 +184,42 @@ check('アイコンを前面に出す（線が上に乗らない）', /\.post \.
 check('返信側の線はアイコンの手前で止まる', /\.post--rail-t::before \{[^}]*height: calc\(var\(--pad-row\) \+ 2px\)/s.test(css));
 check('親側の線はアイコンの下から始まる', /\.post--rail-b::after \{[^}]*top: calc\(var\(--pad-row\) \+ 38px\)/s.test(css));
 check('線はアイコンの中心に来る（左 19px・幅 2px）', css.includes('left: 19px') && css.includes('width: 2px'));
+
+// ======================================================================
+console.log('\n👥 人の一覧の行き先と「おすすめ」の中身');
+// フォロー一覧の id は follows の行 ID。そのまま開くと「存在しません」になる
+const localRow = {
+  id: 'row-1',
+  following_url: 'http://spica.test/users/bob',
+  username: 'bob',
+  domain: 'spica.test',
+  name: 'Bob',
+} as never as Person;
+const remoteRow = {
+  id: 'row-2',
+  following_url: 'https://remote.test/users/eve',
+  username: 'eve',
+  domain: 'remote.test',
+} as never as Person;
+check('ローカルの相手は素の ID へ', personIdentifier(localRow) === 'bob');
+check('リモートの相手は actor URL のまま', personIdentifier(remoteRow) === 'https://remote.test/users/eve');
+check('ブロック/ミュートの行（id が本人）はそのまま', personIdentifier({ id: 'carol' } as never as Person) === 'carol');
+
+const asideHtml = renderToStaticMarkup(
+  createElement(Aside, {
+    server: null,
+    tags: [],
+    recommended: [
+      { id: 'bob', name: 'Bob', handle: '@bob@spica.test', icon_url: '' },
+      { id: 'dave', name: 'Dave', handle: '@dave@spica.test', icon_url: '' },
+    ],
+    followed: new Set(['@bob@spica.test']),
+    signedIn: true,
+    onFollow: noop,
+  } as never),
+);
+check('おすすめにフォロー済みは出ない', !asideHtml.includes('Bob'));
+check('おすすめに未フォローは出る', asideHtml.includes('Dave'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

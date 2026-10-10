@@ -365,6 +365,23 @@ async function run() {
     check('タグ補完に現れない', JSON.stringify(autocomplete).includes('himitsu12345'), false);
 
     // ------------------------------------------------------------------
+    console.log('\n👥 [4b] おすすめ（ディレクトリ）はフォロー済みと自分を外すか');
+    // 「おすすめ」欄にフォロー済みが並ぶと、押しても何も起きない行ができてしまう。
+    // ログイン中は本人とフォロー中（accepted）を外す。未ログインの公開一覧は変えない。
+    const directoryIds = async (token: string | null) => {
+      const res = await fetch(`${BASE}/api/directory`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      return ((data?.users ?? []) as any[]).map((u) => u.id);
+    };
+    const seenByBob = await directoryIds(bob.token);
+    check('フォロー中の相手は出ない（bob から見て alice）', seenByBob.includes('alice'), false);
+    check('自分は出ない', seenByBob.includes('bob'), false);
+    check('第三者は出る', seenByBob.includes('carol'), true);
+    check('未ログインの公開一覧には出る', (await directoryIds(null)).includes('alice'), true);
+
+    // ------------------------------------------------------------------
     console.log('\n🔒 [5] ActivityPub: dereference / outbox');
     // AP の dereference は /users/:username/posts/:postId（postId は数値部分）で解決される
     const shortId = (fullId: string) => fullId.split('/').pop() as string;

@@ -27,10 +27,12 @@ export function useAsideData(myId: string | undefined): AsideData {
       if (res.ok && Array.isArray(res.data)) setTags(res.data as TagCount[]);
     })();
     void (async () => {
-      const res = await api.get('/api/directory', { auth: false });
+      // ログイン中はトークンも送る（サーバーが「自分」と「フォロー中」を外してくれる）
+      const res = await api.get('/api/directory');
       if (res.ok && res.data && typeof res.data === 'object') {
         const data = res.data as { users?: DirectoryUser[] };
-        setDirectory((data.users ?? []).filter((item) => item.id !== myId).slice(0, 3));
+        // 画面側でもフォロー済みを除くので、多めに持っておく
+        setDirectory((data.users ?? []).filter((item) => item.id !== myId).slice(0, 12));
       }
     })();
   }, [myId]);

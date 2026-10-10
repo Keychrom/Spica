@@ -18,16 +18,18 @@
   height: 100%;
   object-fit: cover;
 }
+/* バナーに重ねるのはアイコンだけ（操作ボタンはバナーの下に置く。
+   行ごと上へずらすと「プロフィールを編集」がバナーに少し乗ってしまう） */
 .prof__top {
   display: flex;
   align-items: flex-end;
   gap: 16px;
-  margin-top: -28px;
   padding: 0 4px;
 }
 .prof__av {
   width: 76px;
   height: 76px;
+  margin-top: -28px;
   border-radius: 50%;
   background: var(--surface);
   border: 3px solid var(--bg);

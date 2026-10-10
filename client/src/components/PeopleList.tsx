@@ -3,7 +3,7 @@
  * どの画面でも同じ 1 行を使う。
  */
 import { navigate } from '../lib/router';
-import { initialOf, personHandle, type Person } from '../lib/profile';
+import { initialOf, personHandle, personIdentifier, type Person } from '../lib/profile';
 
 interface PeopleListProps {
   people: Person[];
@@ -26,7 +26,11 @@ export default function PeopleList({ people, loading, empty, action }: PeopleLis
             <span className="av av--s">
               {person.icon_url ? <img src={person.icon_url} alt="" /> : initialOf(person.name || person.username)}
             </span>
-            <button type="button" className="people__body" onClick={() => navigate('/users/' + encodeURIComponent(person.id))}>
+            <button
+              type="button"
+              className="people__body"
+              onClick={() => navigate('/users/' + encodeURIComponent(personIdentifier(person)))}
+            >
               <b>{person.name || person.username || handle}</b>
               <span>{handle}</span>
             </button>
