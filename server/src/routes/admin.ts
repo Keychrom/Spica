@@ -258,6 +258,10 @@ adminRouter.delete('/users/:id', asyncHandler(async (req: Request, res: Response
 }));
 
 // 連携先インスタンス（リモートActor）一覧
+//
+// 画面は「ドメインごとの人数」と「受け取ったノート数」を並べて出す。
+// ⚠️ 以前は actor_count だけを返していたため、画面が読む actors / posts が常に空になり、
+//    **どこのサーバーでも 0 人 / 0 件**と表示されていた（実際は 1 日 3 万件ほど届いていても）。
 adminRouter.get('/federation', asyncHandler(async (req: Request, res: Response) => {
   const actors = await db.prepare(`
     SELECT id, username, domain, name, summary, inbox_url, updated_at
@@ -266,18 +270,53 @@ adminRouter.get('/federation', asyncHandler(async (req: Request, res: Response) 
     LIMIT 100
   `).all();
 
-  const domainStats = await db.prepare(`
-    SELECT domain, COUNT(*) as actor_count
-    FROM remote_actors
-    GROUP BY domain
-    ORDER BY actor_count DESC
-  `).all();
-
   res.json({
     actors,
-    domainStats,
+    domainStats: await getFederationDomainStats(),
   });
 }));
+
+/**
+ * ドメインごとの「人数」と「受け取ったノート数」。
+ *
+ * 投稿者ごとに数えてから合算する（`posts` を `remote_actors` と結合して 1 本で集計すると
+ * 実測で数分かかった。投稿者ごとの集計は `idx_posts_local_published` だけで完結して約 0.9 秒）。
+ * 管理画面を開くたびに払うには重いので 60 秒だけ覚えておく（`/api/server-info` と同じ考え方）。
+ */
+let federationStatsCache: { at: number; rows: { domain: string; actors: number; posts: number }[] } | null = null;
+const FEDERATION_STATS_TTL_MS = 60_000;
+
+async function getFederationDomainStats(): Promise<{ domain: string; actors: number; posts: number }[]> {
+  if (federationStatsCache && Date.now() - federationStatsCache.at < FEDERATION_STATS_TTL_MS) {
+    return federationStatsCache.rows;
+  }
+  const actorRows = (await db
+    .prepare('SELECT id, domain FROM remote_actors')
+    .all()) as { id: string; domain: string }[];
+  const perActor = (await db
+    .prepare('SELECT author_url AS k, COUNT(*) AS c FROM posts WHERE is_local = 0 GROUP BY author_url')
+    .all()) as { k: string; c: number }[];
+
+  const domainOf = new Map(actorRows.map((row) => [row.id, row.domain]));
+  const actorCount = new Map<string, number>();
+  for (const row of actorRows) {
+    actorCount.set(row.domain, (actorCount.get(row.domain) ?? 0) + 1);
+  }
+  const postCount = new Map<string, number>();
+  for (const row of perActor) {
+    const domain = domainOf.get(row.k);
+    if (!domain) continue; // 台帳に無い相手（削除済みなど）
+    postCount.set(domain, (postCount.get(domain) ?? 0) + Number(row.c));
+  }
+
+  const rows = [...actorCount.entries()]
+    .map(([domain, actors]) => ({ domain, actors, posts: postCount.get(domain) ?? 0 }))
+    // 受信量の多い順（同数なら人数の多い順）
+    .sort((a, b) => b.posts - a.posts || b.actors - a.actors);
+
+  federationStatsCache = { at: Date.now(), rows };
+  return rows;
+}
 
 // ==========================================
 // リレーサーバー管理 API

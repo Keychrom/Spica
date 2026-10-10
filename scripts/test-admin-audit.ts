@@ -338,6 +338,37 @@ async function run(): Promise<void> {
     // 一般ユーザーは監査ログに触れない
     const normalAudit = await fetch(`${BASE}/api/admin/audit`, { headers: normalAuth });
     check('一般ユーザーは監査ログを読めない（403）', normalAudit.status, 403);
+
+    // ── 連合の様子（ドメインごとの人数と受信ノート数）────────────
+    // 画面は actors / posts を読む。以前はサーバーが actor_count しか返しておらず、
+    // **どこのサーバーでも 0 人 / 0 件**と表示されていた
+    console.log('🌐 [7] 連合の様子');
+    const stamp = Date.now();
+    const remoteSeed = [
+      { domain: 'a.test', actor: 'https://a.test/users/x', posts: 3 },
+      { domain: 'b.test', actor: 'https://b.test/users/y', posts: 1 },
+    ];
+    for (const item of remoteSeed) {
+      await seedDb.prepare(
+        `INSERT INTO remote_actors (id, username, domain, name, icon_url, inbox_url, public_key_id, public_key_pem, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`,
+      ).run(item.actor, 'x', item.domain, item.domain, '', `${item.actor}/inbox`, `${item.actor}#main-key`, '', new Date().toISOString());
+      for (let i = 0; i < item.posts; i++) {
+        await seedDb.prepare(
+          `INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, visibility, published_at)
+           VALUES (?,?,?,?,?,?,0,'public',?) ON CONFLICT(id) DO NOTHING`,
+        ).run(`${item.actor}/posts/${stamp}_${i}`, item.actor, item.domain, item.actor, `@x@${item.domain}`, `連合の検査 ${item.domain} ${i}`, new Date().toISOString());
+      }
+    }
+    const fed = await (await fetch(`${BASE}/api/admin/federation`, { headers: adminAuth })).json();
+    const stats = (fed.domainStats || []) as { domain: string; actors: number; posts: number }[];
+    const aStats = stats.find((row) => row.domain === 'a.test');
+    const bStats = stats.find((row) => row.domain === 'b.test');
+    check('ドメインごとの人数が返る', aStats?.actors, 1);
+    check('ドメインごとの受信ノート数が返る', aStats?.posts, 3);
+    check('別のドメインも別々に数える', bStats?.posts, 1);
+    check('受信量の多い順に並ぶ', stats[0]?.domain, 'a.test');
+    check('一般ユーザーは連合の様子を読めない（403）', (await fetch(`${BASE}/api/admin/federation`, { headers: normalAuth })).status, 403);
   } finally {
     try { server?.kill('SIGTERM'); } catch {}
     await sleep(700);
