@@ -73,11 +73,18 @@ select {
   justify-content: center;
   font-size: 13px;
   box-shadow: 0 8px 18px -10px rgba(109, 90, 230, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  overflow: hidden;
+  flex: none;
 }
+/* 管理者が設定したロゴ（未設定のときは ✦ がそのまま出る。画像の敷き方は .av img と同じ） */
 .nav__brand b {
   font-size: 19px;
   font-weight: 700;
   letter-spacing: 0.01em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav__item {
   display: flex;
@@ -138,6 +145,9 @@ select {
   text-align: left;
   width: 100%;
 }
+/* 自分のプロフィールを開いているとき（下部バーの「自分」と同じ合図） */
+.nav__me--on { background: var(--accent-soft); }
+.nav__me--on b { color: var(--accent); }
 .nav__me b {
   font-size: 13.5px;
   display: block;

@@ -8,12 +8,14 @@ import AnnouncementBar from './AnnouncementBar';
 import { Bell, Feather, Home, Search, User } from 'lucide-react';
 import Nav from './Nav';
 import Drawer from './Drawer';
-import type { SessionUser } from '../lib/format';
+import type { ServerInfo, SessionUser } from '../lib/format';
 import type { ThemeChoice } from '../lib/theme';
 
 interface LayoutProps {
   path: string;
   user: SessionUser | null;
+  /** サーバー情報（左上のロゴと名前を、管理者が設定したものに合わせる） */
+  server?: ServerInfo | null;
   unread: number;
   theme: ThemeChoice;
   onTheme: (choice: ThemeChoice) => void;
@@ -32,6 +34,8 @@ interface LayoutProps {
 export default function Layout(props: LayoutProps) {
   const { path, user, unread } = props;
   const onHome = path === '/' || path.startsWith('/?');
+  // 自分のプロフィール（と自分のノート）を開いているときは「自分」を光らせる
+  const onMe = Boolean(user?.id) && path.startsWith(`/users/${user?.id}`);
 
   return (
     <>
@@ -39,9 +43,11 @@ export default function Layout(props: LayoutProps) {
         <Nav
           path={path}
           user={user}
+          server={props.server}
           unread={unread}
           onCompose={props.onCompose}
           onOpenProfile={props.onOpenProfile}
+          meActive={onMe}
         />
         <main className="main">
           <AnnouncementBar path={path} />
@@ -68,7 +74,7 @@ export default function Layout(props: LayoutProps) {
           通知
           {unread > 0 && <span className="mbar__badge">{unread > 99 ? '99+' : unread}</span>}
         </a>
-        <button type="button" className="mbar__item" onClick={props.onOpenProfile}>
+        <button type="button" className={`mbar__item${onMe ? ' mbar__item--on' : ''}`} onClick={props.onOpenProfile}>
           <User size={20} strokeWidth={1.5} />
           自分
         </button>
@@ -83,6 +89,7 @@ export default function Layout(props: LayoutProps) {
         onClose={props.onCloseDrawer}
         path={path}
         user={user}
+        server={props.server}
         unread={unread}
         theme={props.theme}
         onTheme={props.onTheme}

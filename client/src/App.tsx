@@ -25,6 +25,7 @@ import { useAppBadge, useLaunchParams } from './lib/usePwaActions';
 import { useAsideData } from './lib/useAsideData';
 import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
 import ShortcutHelp from './components/ShortcutHelp';
+import MenuButton from './components/MenuButton';
 import { useLiveUpdates } from './lib/useLiveUpdates';
 import type { DirectoryUser, Post, SessionUser } from './lib/format';
 
@@ -167,18 +168,8 @@ export default function App() {
   }, []);
 
   const menuButton = useMemo(
-    () => (
-      <button
-        type="button"
-        className="mhead__menu"
-        onClick={() => setDrawerOpen(true)}
-        aria-label="メニュー"
-        title="メニュー"
-      >
-        {user?.icon_url ? <img src={user.icon_url} alt="" /> : (user?.name || '?').slice(0, 1)}
-      </button>
-    ),
-    [user],
+    () => <MenuButton user={user} server={server} onOpen={() => setDrawerOpen(true)} />,
+    [user, server],
   );
 
   const aside = (
@@ -259,6 +250,7 @@ export default function App() {
       <Layout
         path={path}
         user={user}
+        server={server}
         unread={unread}
         theme={theme}
         onTheme={onTheme}
@@ -268,7 +260,7 @@ export default function App() {
         drawerOpen={drawerOpen}
         onOpenDrawer={() => setDrawerOpen(true)}
         onCloseDrawer={() => setDrawerOpen(false)}
-        notificationsActive={false}
+        notificationsActive={path.startsWith('/notifications')}
         aside={aside}
       >
         {content}

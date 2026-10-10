@@ -17,6 +17,7 @@
     "dev:client": "npm --workspace=client run dev",
     "build": "npm --workspace=server run build && npm --workspace=client run build",
     "check:size": "node client/scripts/check-size.mjs",
+    "check:client-render": "npx tsx --tsconfig client/tsconfig.json scripts/check-client-render.tsx",
     "start": "npm --workspace=server start",
     "test": "npx tsx scripts/test-astrabit.ts",
     "test:inbox-signature": "npx tsx scripts/test-inbox-signature.ts",

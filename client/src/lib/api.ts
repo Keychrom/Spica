@@ -51,8 +51,15 @@ async function request(method: string, path: string, options: RequestOptions = {
   }
   let body: BodyInit | undefined;
   if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    body = JSON.stringify(options.body);
+    if (typeof FormData !== 'undefined' && options.body instanceof FormData) {
+      // ファイルのアップロード。**JSON にしてはいけない**（そのまま送ると本文が `{}` になり、
+      // サーバーには「ファイルがありません」と見える）。Content-Type も付けない
+      // （multipart の境界はブラウザが決める）
+      body = options.body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.body);
+    }
   }
 
   const res = await fetch(path, { method, headers, body, signal: options.signal });

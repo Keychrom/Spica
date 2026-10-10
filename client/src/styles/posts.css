@@ -37,7 +37,9 @@
   background: var(--pearl);
   color: #fff;
 }
-.av img {
+/* 枠いっぱいに敷く画像（アイコン・左上のサーバーロゴ） */
+.av img,
+.nav__mark img {
   width: 100%;
   height: 100%;
   object-fit: cover;

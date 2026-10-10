@@ -13,7 +13,7 @@ import {
   isActive,
   type NavItem,
 } from '../lib/nav';
-import type { SessionUser } from '../lib/format';
+import type { ServerInfo, SessionUser } from '../lib/format';
 import type { ThemeChoice } from '../lib/theme';
 
 interface DrawerProps {
@@ -21,6 +21,8 @@ interface DrawerProps {
   onClose: () => void;
   path: string;
   user: SessionUser | null;
+  /** サーバー情報（左上のロゴと名前を、管理者が設定したものに合わせる） */
+  server?: ServerInfo | null;
   unread: number;
   theme: ThemeChoice;
   onTheme: (choice: ThemeChoice) => void;
@@ -51,6 +53,7 @@ export default function Drawer({
   onClose,
   path,
   user,
+  server,
   unread,
   theme,
   onTheme,
@@ -72,9 +75,10 @@ export default function Drawer({
     <div className="drawer" role="dialog" aria-modal="true">
       <button type="button" className="drawer__dim" aria-label="閉じる" onClick={onClose} />
       <div className="drawer__panel">
+        {/* 左上は「このサーバーの顔」。管理者が設定したロゴと名前を使う */}
         <div className="drawer__brand">
-          <span className="nav__mark">✦</span>
-          <b>Spica</b>
+          <span className="nav__mark">{server?.icon_url ? <img src={server.icon_url} alt="" /> : '✦'}</span>
+          <b>{server?.name || 'Spica'}</b>
         </div>
 
         {user ? (
