@@ -36,7 +36,19 @@ export interface Post {
   media_attachments?: PostMedia[];
   attachments?: PostMedia[];
   quote?: Post | null;
-  renote?: Post | null;
+  /**
+   * ブースト（リノート）されたノートのときだけ入る「ブーストした人」の情報。
+   * ⚠️ ノートの中身はトップレベル（`content` など）にあり、ここには入らない
+   *    （送るのはサーバーなので、名前と形を合わせる）
+   */
+  renote?: {
+    id?: string;
+    name?: string;
+    handle?: string;
+    icon?: string;
+    url?: string;
+    at?: string;
+  } | null;
   poll?: {
     choices: { text: string; votes_count?: number; votes?: number; me?: boolean }[];
     expires_at?: string;
@@ -225,5 +237,7 @@ export function formatContent(raw: string): string {
 
 /** 本文が実質空（メディアだけの投稿など）かどうか */
 export function isBlankContent(raw: string): boolean {
-  return raw.replace(/<[^>]*>/g, '').replace(/[\s\u3000]/g, '') === '';
+  // 本文が無いノート（リモートの壊れたデータなど）でも落ちないようにしておく
+  // （1 件の異常で画面が真っ白になるのを防ぐ）
+  return String(raw ?? '').replace(/<[^>]*>/g, '').replace(/[\s\u3000]/g, '') === '';
 }

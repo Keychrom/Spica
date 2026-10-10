@@ -34,3 +34,15 @@ export function postPermalink(post: { id?: string }): string {
 export function canonicalPostIdFromPath(user: string, postPathId: string): string {
   return `${window.location.origin}/users/${user}/posts/${postPathId}`;
 }
+
+/**
+ * 相手（actor URL か素の ID）を、アプリ内のプロフィールのパスにする。
+ * ローカルの actor URL は素の ID に直す（サーバーはローカルを id で引くため）。
+ */
+export function actorPath(actorUrlOrId: string): string {
+  const localPrefix = `${window.location.origin}/users/`;
+  const value = actorUrlOrId.startsWith(localPrefix)
+    ? actorUrlOrId.slice(localPrefix.length).replace(/\/.*$/, '')
+    : actorUrlOrId;
+  return `/users/${encodeURIComponent(value)}`;
+}

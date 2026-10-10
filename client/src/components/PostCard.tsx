@@ -12,7 +12,7 @@ import PostMedia from './PostMedia';
 import PostPoll from './PostPoll';
 import { loadCustomEmojis } from '../lib/media';
 import { usePrefs } from '../lib/prefs';
-import { postPath } from '../lib/permalink';
+import { actorPath, postPath } from '../lib/permalink';
 import { navigate } from '../lib/router';
 import {
   formatContent,
@@ -60,8 +60,11 @@ function QuoteCard({ post }: { post: Post }) {
 export default function PostCard(props: PostCardProps) {
   const { post, thread } = props;
   const { extraReactions = [] } = props;
-  const shown = post.renote ?? post;
-  const renotedBy = post.renote ? post.author_name : null;
+  // ⚠️ サーバーは**ノートの中身をトップレベル**に置き、`renote` には「ブーストした人」を入れる
+  //    （`{ id, name, handle, icon, url, at }`）。ここを取り違えると、ブーストが画面に出た瞬間に
+  //    中身が undefined になって落ちる（2026-10-10: 「すべて保存」にしたらエラーになった）
+  const shown = post;
+  const boost = post.renote;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cwOpen, setCwOpen] = useState(false);
   const blank = isBlankContent(shown.content);
@@ -116,11 +119,17 @@ export default function PostCard(props: PostCardProps) {
       </a>
 
       <div className="post__col">
-        {renotedBy && (
-          <div style={{ fontSize: 11.5, color: 'var(--text-faint)', display: 'flex', gap: 6, alignItems: 'center', marginBottom: 4 }}>
+        {/* ブースト（リノート）は、した人が分かるようにする（押すとその人を開く） */}
+        {boost && (
+          <a
+            className="rep"
+            href={actorPath(String(boost.url || boost.name || ''))}
+            title="ブーストした人を開く"
+          >
             <Repeat2 size={13} strokeWidth={1.6} />
-            {renotedBy} がリノート
-          </div>
+            {boost.name} がリノート
+            {boost.at && <span className="rep__at">{relativeTime(boost.at)}</span>}
+          </a>
         )}
 
         {/* 返信は、誰への返信かが分かるようにする（押すと親のノートを開く） */}

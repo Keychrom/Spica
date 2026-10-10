@@ -221,6 +221,45 @@ const asideHtml = renderToStaticMarkup(
 check('おすすめにフォロー済みは出ない', !asideHtml.includes('Bob'));
 check('おすすめに未フォローは出る', asideHtml.includes('Dave'));
 
+// ======================================================================
+console.log('\n🔁 ブースト（リノート）のノート');
+// 実物の API が返す形（.17 の /api/timeline から取ったもの）: 中身はトップレベル、
+// renote には「ブーストした人」が入る。取り違えると中身が undefined になって落ちる
+const boosted = {
+  id: 'https://misskey.day/notes/as5kwy27b5',
+  user_id: 'https://misskey.day/users/aqwvcgdilt',
+  author_name: 'ブーストされた人',
+  author_handle: '@someone@misskey.day',
+  author_url: 'https://misskey.day/users/aqwvcgdilt',
+  content: '',
+  visibility: 'public',
+  published_at: '2026-10-10T06:30:06.703Z',
+  renote: {
+    id: 'https://misskey.day/notes/as5kwy27b5/activity',
+    name: 'ブーストした人',
+    handle: '@404_@misskey.day',
+    icon: '',
+    url: 'https://misskey.day/users/aqwvcgdilt',
+    at: '2026-10-10T06:30:06.703Z',
+  },
+} as never as Post;
+const boostHtml = renderToStaticMarkup(
+  createElement(PostCard, {
+    post: boosted,
+    onReact: noop,
+    onBookmark: noop,
+    onRenote: noop,
+    onReply: noop,
+    onQuote: noop,
+    onShare: noop,
+  } as never),
+);
+check('ブーストしても落ちない（中身が undefined にならない）', boostHtml.includes('post__col'));
+check('ノートの作者はトップレベルを使う', boostHtml.includes('ブーストされた人'));
+check('「◯◯ がリノート」はブーストした人', boostHtml.includes('ブーストした人 がリノート'));
+check('押すとブーストした人を開ける', boostHtml.includes('href="/users/https%3A%2F%2Fmisskey.day%2Fusers%2Faqwvcgdilt"'));
+check('本文が無くても印だけ出る', !boostHtml.includes('class=ody'));
+
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);
 else console.error(`❌ ${checks} 件中 ${failures} 件の確認に失敗しました`);
