@@ -56,12 +56,13 @@ export default function HomeView({
   const mode = pick(modeProp) ?? pick(defaultMode) ?? 'home';
 
   /**
-   * タブを選ぶ = URL を書き換える（画面の中だけで持たない）。
-   * こうしておくと、ナビの「ホーム」（=`/` へ移動）で連合から確実に戻れる
-   * （以前は `/` のまま何も変わらず、連合が表示されたままになっていた）。
+   * タブを選ぶ = URL を書き換える（画面の中だけで持たない）。**ホームも明示する**
+   * （`/?mode=home`）。「指定が無ければ既定のタブ」に頼ると、既定を ローカル にしたときに
+   * ホームの状態が URL から読めず、ナビの「ホーム」や戻るで辻褄が合わなくなる。
+   *
+   * 指定なしの `/` は「設定の既定のタブ」のまま（ブックマークや初回の入口）。
    */
-  const goToMode = (value: string) =>
-    navigate(value === 'home' ? '/' : '/?mode=' + encodeURIComponent(value));
+  const goToMode = (value: string) => navigate('/?mode=' + encodeURIComponent(value));
 
   // キーボードショートカット（g h / g l / g f）から切り替える
   useEffect(() => {

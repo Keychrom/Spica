@@ -28,7 +28,9 @@ export interface NavItem {
 }
 
 export const NAV_PRIMARY: NavItem[] = [
-  { path: '/', label: 'ホーム', icon: Home },
+  // ホームは `/?mode=home` と明示する。`/` のままだと「設定の既定のタブ」に従うので、
+  // 既定をローカルにしていると**ラベルはホームなのにローカルが出る**（辻褄が合わない）
+  { path: '/?mode=home', label: 'ホーム', icon: Home },
   { path: '/notifications', label: '通知', icon: Bell, badge: 'notifications' },
   { path: '/search', label: '見つける', icon: Search },
   { path: '/messages', label: 'メッセージ', icon: Mail },
@@ -56,7 +58,10 @@ export function canModerate(role: string | undefined): boolean {
 
 /** 現在地に一致する項目（サブパスも含む） */
 export function isActive(path: string, item: NavItem): boolean {
-  if (item.path === '/') return path === '/' || path.startsWith('/?') || path.startsWith('/tags/');
+  // ホーム（タイムラインの画面）は、どのタブ（`/?mode=…`）でも点ける
+  if (item.path === '/' || item.path.startsWith('/?')) {
+    return path === '/' || path.startsWith('/?') || path.startsWith('/tags/');
+  }
   if (item.path === '/search') return path.startsWith('/search') || path.startsWith('/tags/');
   return path.startsWith(item.path);
 }

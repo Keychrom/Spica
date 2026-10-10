@@ -37,6 +37,7 @@ import PostMedia from '../client/src/components/PostMedia.js';
 import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
+import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import type { Post } from '../client/src/lib/format.js';
 
 let checks = 0;
@@ -289,6 +290,18 @@ check('?mode=local ならローカルを選択中に', activeTabOf(timelineScree
 check('?mode= が無ければホーム', activeTabOf(timelineScreen({})), 'ホーム');
 check('設定の既定タブを使う', activeTabOf(timelineScreen({ defaultMode: 'local' })), 'ローカル');
 check('URL の値が変ならホームへ落とす', activeTabOf(timelineScreen({ mode: 'bogus' })), 'ホーム');
+check('?mode=home もホーム（明示できる）', activeTabOf(timelineScreen({ mode: 'home' })), 'ホーム');
+check('?mode=home は既定のタブより優先', activeTabOf(timelineScreen({ mode: 'home', defaultMode: 'local' })), 'ホーム');
+
+// ナビと下部バーの「ホーム」も明示（`/` に任せない）。どのタブでもナビの印は点いたまま
+console.log('\n🧭 ナビの「ホーム」も明示する');
+const navHome = NAV_PRIMARY.find((item) => item.label === 'ホーム') as never as Parameters<typeof isActive>[1];
+const navFind = NAV_PRIMARY.find((item) => item.label === '見つける') as never as Parameters<typeof isActive>[1];
+check('左ナビのホームは `/?mode=home`', NAV_PRIMARY.find((item) => item.label === 'ホーム')?.path === '/?mode=home');
+check('連合タブでもナビのホームは点く', isActive('/?mode=all', navHome));
+check('ログイン直後（`/`）でも点く', isActive('/', navHome));
+check('見つけるはホームでは点かない', isActive('/?mode=home', navFind) === false);
+check('下部バーのホームも `/?mode=home`', layout('/?mode=all').includes('href="/?mode=home"'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

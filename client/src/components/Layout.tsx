@@ -58,7 +58,8 @@ export default function Layout(props: LayoutProps) {
 
       {/* モバイル: 下部バー（よく行く 4 つだけ）と投稿ボタン */}
       <nav className="mbar">
-        <a className={`mbar__item${onHome ? ' mbar__item--on' : ''}`} href="/">
+        {/* ホームは `?mode=home` と明示する（既定のタブに従わせない。ナビと同じ考え方） */}
+        <a className={`mbar__item${onHome ? ' mbar__item--on' : ''}`} href="/?mode=home">
           <Home size={20} strokeWidth={1.5} />
           ホーム
         </a>
