@@ -103,14 +103,13 @@ export default function Routes({
 
   if (pathOnly === '/' || pathOnly.startsWith('/tags/')) {
     // リモートのノートは `/?post=<正規 ID>` で共有される（サーバーの案内がそうなっている）
-    const sharedPostId = queryValue(path, 'post');
-    if (sharedPostId) {
+    if (queryValue(path, 'post')) {
       return (
         <PostScreen
           menuButton={menuButton}
           signedIn={signedIn}
           user={user}
-          canonicalId={decodePart(sharedPostId)}
+          canonicalId={decodePart(String(queryValue(path, 'post')))}
           onReply={onReply}
           onQuote={onQuote}
         />
@@ -122,6 +121,7 @@ export default function Routes({
         menuButton={menuButton}
         signedIn={signedIn}
         tag={tag}
+        mode={queryValue(path, 'mode')}
         defaultMode={prefs.defaultTimeline}
         onboardingPending={user?.onboarding_completed === 0}
         myId={user?.id}

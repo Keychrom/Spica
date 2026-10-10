@@ -20,10 +20,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
   dispatchEvent: () => true,
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
 };
+// localStorage も最低限（HomeView の案内が読む）
+const storage = new Map<string, string>();
+(globalThis as any).window.localStorage = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => void storage.set(key, String(value)),
+  removeItem: (key: string) => void storage.delete(key),
+};
 import Nav from '../client/src/components/Nav.js';
 import Layout from '../client/src/components/Layout.js';
 import MenuButton from '../client/src/components/MenuButton.js';
 import Aside from '../client/src/components/Aside.js';
+import HomeView from '../client/src/views/HomeView.js';
 import PostCard from '../client/src/components/PostCard.js';
 import PostMedia from '../client/src/components/PostMedia.js';
 import MediaViewer from '../client/src/components/MediaViewer.js';
@@ -259,6 +267,28 @@ check('ノートの作者はトップレベルを使う', boostHtml.includes('�
 check('「◯◯ がリノート」はブーストした人', boostHtml.includes('ブーストした人 がリノート'));
 check('押すとブーストした人を開ける', boostHtml.includes('href="/users/https%3A%2F%2Fmisskey.day%2Fusers%2Faqwvcgdilt"'));
 check('本文が無くても印だけ出る', !boostHtml.includes('class=ody'));
+
+// ======================================================================
+console.log('\n🗂 タイムラインのタブは URL が決める');
+// 以前は画面の中だけで持っていたので、ナビの「ホーム」（= `/` へ移動）を押しても
+// URL が変わらず、連合を選んだまま何も起きなかった
+const timelineScreen = (extra: Record<string, unknown>) =>
+  renderToStaticMarkup(
+    createElement(HomeView, {
+      menuButton: null,
+      onCompose: noop,
+      onReply: noop,
+      onQuote: noop,
+      signedIn: true,
+      ...extra,
+    } as never),
+  );
+const activeTabOf = (html: string) => (html.match(/seg__t seg__t--on">([^<]+)</) || [])[1];
+check('?mode=all なら連合を選択中に', activeTabOf(timelineScreen({ mode: 'all' })), '連合');
+check('?mode=local ならローカルを選択中に', activeTabOf(timelineScreen({ mode: 'local' })), 'ローカル');
+check('?mode= が無ければホーム', activeTabOf(timelineScreen({})), 'ホーム');
+check('設定の既定タブを使う', activeTabOf(timelineScreen({ defaultMode: 'local' })), 'ローカル');
+check('URL の値が変ならホームへ落とす', activeTabOf(timelineScreen({ mode: 'bogus' })), 'ホーム');
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

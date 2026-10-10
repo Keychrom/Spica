@@ -24,6 +24,12 @@ interface HomeViewProps {
   signedIn: boolean;
   /** タグページ（/tags/:tag）のときだけ渡す */
   tag?: string;
+  /**
+   * URL の `?mode=`（無ければホーム）。**選択を URL に載せる**のは、ナビの「ホーム」を
+   * 押したときに確実に戻れるようにするため（画面の中だけで持つと、`/` へ移動しても
+   * URL が変わらず、連合を選んだまま何も起きない）
+   */
+  mode?: string;
   /** 設定で選んだ既定のタブ（ホーム / ローカル / 連合） */
   defaultMode?: string;
   /** はじめての設定がまだか（済んでいれば出さない） */
@@ -39,21 +45,33 @@ export default function HomeView({
   onQuote,
   signedIn,
   tag,
+  mode: modeProp,
   defaultMode,
   onboardingPending,
   myId,
   canModerate,
 }: HomeViewProps) {
-  const [mode, setMode] = useState(defaultMode && TABS.some((t) => t.value === defaultMode) ? defaultMode : 'home');
+  /** 選べる値だけを受け付ける（URL に変な値が入っていても既定へ落とす） */
+  const pick = (value?: string) => (value && TABS.some((tab) => tab.value === value) ? value : undefined);
+  const mode = pick(modeProp) ?? pick(defaultMode) ?? 'home';
+
+  /**
+   * タブを選ぶ = URL を書き換える（画面の中だけで持たない）。
+   * こうしておくと、ナビの「ホーム」（=`/` へ移動）で連合から確実に戻れる
+   * （以前は `/` のまま何も変わらず、連合が表示されたままになっていた）。
+   */
+  const goToMode = (value: string) =>
+    navigate(value === 'home' ? '/' : '/?mode=' + encodeURIComponent(value));
 
   // キーボードショートカット（g h / g l / g f）から切り替える
   useEffect(() => {
-    const onMode = (event: Event) => {
+    const onModeEvent = (event: Event) => {
       const next = (event as CustomEvent<{ mode?: string }>).detail?.mode;
-      if (next && TABS.some((tab) => tab.value === next)) setMode(next);
+      if (next && TABS.some((tab) => tab.value === next)) goToMode(next);
     };
-    window.addEventListener('spica:timeline-mode', onMode);
-    return () => window.removeEventListener('spica:timeline-mode', onMode);
+    window.addEventListener('spica:timeline-mode', onModeEvent);
+    return () => window.removeEventListener('spica:timeline-mode', onModeEvent);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [nudge, setNudge] = useState(() => !window.localStorage.getItem('spica_onboarding_done'));
 
@@ -101,9 +119,8 @@ export default function HomeView({
         tabs={TABS}
         activeTab={tag ? '' : mode}
         onTab={(value) => {
-          // タグページからタブを押したら、タイムラインに戻ってその種類にする
-          if (tag) navigate('/');
-          setMode(value);
+          // 選択は URL に載せる（goToMode）。タグページから押したらタイムラインに戻る
+          goToMode(value);
           window.scrollTo({ top: 0 });
         }}
         newCount={timeline.newCount}
