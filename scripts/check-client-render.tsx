@@ -8,6 +8,7 @@
  *     JSX の変換は client 側の設定を使う）
  */
 import { createElement } from 'react';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 // ブラウザの window を最低限だけ真似る（permalink が origin を見るため）
@@ -172,6 +173,15 @@ check('閉じるボタンがある', viewerHtml.includes('viewer__close') && vie
 check('複数なら送りが出る', viewerHtml.includes('viewer__nav--prev') && viewerHtml.includes('viewer__nav--next'));
 check('何枚目かが出る', viewerHtml.includes('1 / 2'));
 check('画像は原寸（縮小版ではない）', viewerHtml.includes('src="/uploads/a.png"'));
+
+// ======================================================================
+// 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）
+console.log('\n📏 線はアイコンの後ろを通る（アイコンに重ねない）');
+const css = readFileSync('client/src/styles/posts.css', 'utf8');
+check('アイコンを前面に出す（線が上に乗らない）', /\.post \.av \{[^}]*z-index: 1/s.test(css));
+check('返信側の線はアイコンの手前で止まる', /\.post--rail-t::before \{[^}]*height: calc\(var\(--pad-row\) \+ 2px\)/s.test(css));
+check('親側の線はアイコンの下から始まる', /\.post--rail-b::after \{[^}]*top: calc\(var\(--pad-row\) \+ 38px\)/s.test(css));
+check('線はアイコンの中心に来る（左 19px・幅 2px）', css.includes('left: 19px') && css.includes('width: 2px'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

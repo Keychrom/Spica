@@ -17,7 +17,13 @@
 }
 /* ---- 会話の線（親と返信をアバターの位置でつなぐ） ----
    タイムラインは新しい順なので、放っておくと返信が親より上に来る。
-   並べ替えた組に、上（返信側）・下（親側）の線を引いて 1 本につなげる。 */
+   並べ替えた組に、上（返信側）・下（親側）の線を引いて 1 本につなげる。
+   ⚠️ 線はアイコンの**後ろ**を通す（アイコンに重ねない）。線は position: absolute なので
+   何もしないと通常配置のアイコンの上に描かれてしまうため、アイコンを前面に出す。 */
+.post .av {
+  position: relative;
+  z-index: 1;
+}
 .post--rail-t::before,
 .post--rail-b::after {
   content: '';
@@ -29,14 +35,14 @@
   background: var(--accent);
   opacity: 0.45;
 }
-/* 自分は子（1 つ上の親から、自分のアバターの真ん中まで） */
+/* 自分は子（1 つ上の親から、自分のアバターの手前まで。2px だけ多くして縁を隠す） */
 .post--rail-t::before {
   top: 0;
-  height: calc(var(--pad-row) + 20px);
+  height: calc(var(--pad-row) + 2px);
 }
 /* 自分は親（自分のアバターの下から、次の返信へ） */
 .post--rail-b::after {
-  top: calc(var(--pad-row) + 40px);
+  top: calc(var(--pad-row) + 38px);
   bottom: 0;
 }
 /* 「@user@domain への返信」（押すと親のノートを開く） */
