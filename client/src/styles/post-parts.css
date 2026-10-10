@@ -29,6 +29,31 @@
   cursor: zoom-in;
 }
 
+/* 🎵 音声はプレイヤーをそのまま出す（画像の枠・比率・カーソルは当てない）。
+   複数の添付に混ざっていても横幅いっぱいを使う（プレイヤーが潰れないように） */
+.pics__audio {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.pics .pic--audio,
+.pics--one .pic--audio {
+  aspect-ratio: auto;
+  object-fit: initial;
+  cursor: default;
+  padding: 8px 10px;
+}
+.pics__audio-name {
+  font-size: 12.5px;
+  color: var(--text-sub);
+}
+/* 動画も「押して大きく見る」対象ではない */
+.pics > video.pic {
+  cursor: default;
+}
+
 /* 引用 */
 .quote {
   margin-top: 16px;

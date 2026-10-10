@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import { X, ChevronLeft, ChevronRight } from 'lucide-react';
-import type { PostMedia as Media } from '../lib/format';
+import { mediaAlt, type PostMedia as Media } from '../lib/format';
 
 interface MediaViewerProps {
   media: Media[];
@@ -34,6 +34,7 @@ export default function MediaViewer({ media, startIndex, onClose }: MediaViewerP
   }, [onClose, many, media.length]);
 
   if (!current) return null;
+  const alt = mediaAlt(current);
 
   return (
     <div className="viewer" role="dialog" aria-modal="true" onClick={onClose}>
@@ -69,10 +70,10 @@ export default function MediaViewer({ media, startIndex, onClose }: MediaViewerP
       )}
 
       <figure className="viewer__body" onClick={(event) => event.stopPropagation()}>
-        <img src={current.url} alt={current.alt || ''} />
-        {(current.alt || many) && (
+        <img src={current.url} alt={alt} />
+        {(alt || many) && (
           <figcaption className="viewer__cap">
-            {current.alt}
+            {alt}
             {many && <span className="viewer__count">{index + 1} / {media.length}</span>}
           </figcaption>
         )}

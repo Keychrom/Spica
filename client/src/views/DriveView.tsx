@@ -142,12 +142,15 @@ export default function DriveView({ menuButton, signedIn }: DriveViewProps) {
 
           <div className="drive__grid">
             {items.map((item) => {
-              const isVideo = Boolean(item.duration) || Boolean(item.mediaType?.startsWith('video')) || Boolean(item.mediaType?.startsWith('audio'));
+              const isAudio = Boolean(item.mediaType?.startsWith('audio'));
+              const isVideo = !isAudio && (Boolean(item.duration) || Boolean(item.mediaType?.startsWith('video')));
               const inUse = Boolean(item.postId);
               return (
                 <figure className="drive__item" key={item.id}>
                   <div className="drive__thumb">
-                    {isVideo ? (
+                    {isAudio ? (
+                      <span className="drive__play">♪</span>
+                    ) : isVideo ? (
                       <span className="drive__play">▶</span>
                     ) : (
                       <img src={item.thumbnailUrl || item.url} alt={item.name || ''} loading="lazy" />

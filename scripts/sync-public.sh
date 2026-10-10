@@ -117,7 +117,8 @@ echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 同上"
 
 echo ""
 echo "■ 公開ツリーにしかないファイル（削除の確認）"
-for stale in server/src/db/pgWorker.ts; do
+# 手動検査の統合（2026-10-10）: 添付の下見 2 本を scripts/check-media.ts にまとめた
+for stale in server/src/db/pgWorker.ts scripts/check-audio-media.ts scripts/check-upload-formdata.ts; do
   if [ -f "$PUB_DIR/$stale" ] && [ ! -f "$DEV_DIR/$stale" ]; then
     echo "  ✂️  削除: $stale"
     if $APPLY; then rm -f "$PUB_DIR/$stale"; fi

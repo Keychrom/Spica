@@ -12,11 +12,52 @@ export interface PostReaction {
   me: boolean;
 }
 
+/**
+ * 添付（画像・動画・音声）。
+ * ⚠️ サーバーが返す名前は **`mediaType`（`image/png` など）・`description`（ALT）・`thumbnailUrl`**。
+ *    連合先の投稿も受信時にこの形へ揃えてある（`type` / `alt` / `thumbnail_url` は古いデータ用の受け皿）。
+ *    ここを間違えると、音声や動画が `<img>` として出てしまい再生もできない。
+ */
 export interface PostMedia {
   url: string;
+  mediaType?: string;
+  name?: string;
+  /** 代替テキスト（ALT）。連合先には添付の name として届く */
+  description?: string;
+  thumbnailUrl?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  duration?: number | null;
+  /** @deprecated 古い形の受け皿 */
   type?: string;
+  /** @deprecated 古い形の受け皿 */
   alt?: string;
+  /** @deprecated 古い形の受け皿 */
   thumbnail_url?: string;
+}
+
+/** 添付の種類。種類が無いものは画像として扱う（昔の添付は画像だけだった） */
+export function mediaKind(item: PostMedia): 'image' | 'video' | 'audio' {
+  const type = String(item.mediaType || item.type || '').toLowerCase();
+  if (type.startsWith('video/')) return 'video';
+  if (type.startsWith('audio/')) return 'audio';
+  return 'image';
+}
+
+/** 大きく見る（MediaViewer）のは画像だけ。動画と音声はその場で再生できる */
+export function isImageMedia(item: PostMedia): boolean {
+  return mediaKind(item) === 'image';
+}
+
+/** サムネイル（無ければ元の URL） */
+export function mediaThumb(item: PostMedia): string {
+  return item.thumbnailUrl || item.thumbnail_url || item.url;
+}
+
+/** 代替テキスト（サーバーは `description` に入れる） */
+export function mediaAlt(item: PostMedia): string {
+  return item.description || item.alt || '';
 }
 
 export interface Post {

@@ -65,8 +65,14 @@ export async function uploadMedia(files: File[]): Promise<{ media: UploadedMedia
   return { media: data.media ?? (data.attachment ? [data.attachment] : []) };
 }
 
+/** 音声（プレイヤーでその場で再生する） */
+export function isAudioAttachment(attachment: Attachment): boolean {
+  return attachment.mediaType.startsWith('audio');
+}
+
+/** 動画（その場で再生する。静止画と違ってサムネイルが無いことがある） */
 export function isVideoAttachment(attachment: Attachment): boolean {
-  return attachment.mediaType.startsWith('video') || attachment.mediaType.startsWith('audio');
+  return attachment.mediaType.startsWith('video');
 }
 
 /* ---- カスタム絵文字（リアクションと本文で使う :name:） ---- */

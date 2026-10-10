@@ -38,7 +38,7 @@ import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
-import type { Post } from '../client/src/lib/format.js';
+import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
 
 let checks = 0;
 let failures = 0;
@@ -159,20 +159,23 @@ check('案内は親へのリンク', /<a class="rep" href="\/users\/alice\/posts
 
 // ======================================================================
 console.log('\n🖼 画像を押して大きく見る');
+// 添付の名前はサーバーが返す実物に合わせる（mediaType / description / thumbnailUrl）
 const withImages = { id: 'http://spica.test/users/alice/posts/9', user_id: 'alice', content: '', author_name: 'Alice', author_handle: '@alice@spica.test', published_at: '2026-10-10T00:00:00.000Z', media_attachments: [
-  { url: '/uploads/a.png', type: 'image/png', alt: 'ひとつめ' },
-  { url: '/uploads/b.png', type: 'image/png' },
-  { url: '/uploads/c.mp4', type: 'video/mp4' },
+  { url: '/uploads/a.png', mediaType: 'image/png', description: 'ひとつめ' },
+  { url: '/uploads/b.png', mediaType: 'image/png', thumbnailUrl: '/uploads/b-thumb.jpg' },
+  { url: '/uploads/c.mp4', mediaType: 'video/mp4', thumbnailUrl: '/uploads/c.jpg' },
 ] } as never as Post;
 const mediaHtml = renderToStaticMarkup(createElement(PostMedia, { post: withImages } as never));
 check('画像はボタンで包む（押して大きく見る）', (mediaHtml.match(/class="picbtn"/g) || []).length === 2);
 check('動画は包まない（その場で再生）', mediaHtml.includes('<video'));
+check('動画のポスターは thumbnailUrl', mediaHtml.includes('poster="/uploads/c.jpg"'));
 check('押した画像の alt が案内になる', mediaHtml.includes('aria-label="ひとつめ"'));
+check('画像は thumbnailUrl を優先（無ければ元の URL）', mediaHtml.includes('src="/uploads/b-thumb.jpg"') && mediaHtml.includes('src="/uploads/a.png"'));
 
 const viewerHtml = renderToStaticMarkup(
   createElement(MediaViewer, {
     media: [
-      { url: '/uploads/a.png', alt: 'ひとつめ' },
+      { url: '/uploads/a.png', description: 'ひとつめ' },
       { url: '/uploads/b.png' },
     ],
     startIndex: 0,
@@ -184,6 +187,37 @@ check('閉じるボタンがある', viewerHtml.includes('viewer__close') && vie
 check('複数なら送りが出る', viewerHtml.includes('viewer__nav--prev') && viewerHtml.includes('viewer__nav--next'));
 check('何枚目かが出る', viewerHtml.includes('1 / 2'));
 check('画像は原寸（縮小版ではない）', viewerHtml.includes('src="/uploads/a.png"'));
+check('説明（ALT）が出る', viewerHtml.includes('ひとつめ'));
+
+// ---- 🎵 音声（サーバーは audio/mpeg のような mediaType で返す）
+console.log('\n🎵 音声はその場で再生できる（画像にしない）');
+const withAudio = { id: 'http://spica.test/users/alice/posts/10', user_id: 'alice', content: '', author_name: 'Alice', author_handle: '@alice@spica.test', published_at: '2026-10-10T00:00:00.000Z', media_attachments: [
+  { url: '/uploads/song.mp3', mediaType: 'audio/mpeg', name: 'song.mp3', description: '弾き語り' },
+] } as never as Post;
+const audioHtml = renderToStaticMarkup(createElement(PostMedia, { post: withAudio } as never));
+check('音声はプレイヤーで出す', audioHtml.includes('<audio') && audioHtml.includes('controls'));
+check('音声を <img> にしない（壊れた絵にしない）', !audioHtml.includes('<img'));
+check('音声は勝手に鳴らさない', !audioHtml.includes('autoplay'));
+check('説明（ALT）か名前を添える', audioHtml.includes('弾き語り'));
+
+const mixed = { id: 'http://spica.test/users/alice/posts/11', user_id: 'alice', content: '', author_name: 'Alice', author_handle: '@alice@spica.test', published_at: '2026-10-10T00:00:00.000Z', media_attachments: [
+  { url: '/uploads/a.png', mediaType: 'image/png' },
+  { url: '/uploads/song.mp3', mediaType: 'audio/mpeg', name: 'song.mp3' },
+  { url: '/uploads/c.mp4', mediaType: 'video/mp4' },
+] } as never as Post;
+const mixedHtml = renderToStaticMarkup(createElement(PostMedia, { post: mixed } as never));
+check('混ざっても種類ごとに描き分ける', mixedHtml.includes('<img') && mixedHtml.includes('<audio') && mixedHtml.includes('<video'));
+check('大きく見る（画像）は 1 つだけ', (mixedHtml.match(/class="picbtn"/g) || []).length === 1);
+
+// ---- 種類の判定（部品の外から見ても正しい。実物の名前で）
+check('mediaKind: audio/mpeg は音声', mediaKind({ url: 'x', mediaType: 'audio/mpeg' } as never) === 'audio');
+check('mediaKind: video/mp4 は動画', mediaKind({ url: 'x', mediaType: 'video/mp4' } as never) === 'video');
+check('mediaKind: 種類が無ければ画像（昔の添付）', mediaKind({ url: 'x' } as never) === 'image');
+check('mediaKind: 古い形（type）も見る', mediaKind({ url: 'x', type: 'audio/ogg' } as never) === 'audio');
+check('mediaThumb: thumbnailUrl を優先', mediaThumb({ url: '/a.png', thumbnailUrl: '/t.png' } as never) === '/t.png');
+check('mediaThumb: 古い thumbnail_url も見る', mediaThumb({ url: '/a.png', thumbnail_url: '/t2.png' } as never) === '/t2.png');
+check('mediaAlt: description を ALT に使う', mediaAlt({ url: 'x', description: 'ひとつめ', alt: 'ふるい' } as never) === 'ひとつめ');
+check('isImageMedia: 音声は含めない', isImageMedia({ url: 'x', mediaType: 'audio/mpeg' } as never) === false);
 
 // ======================================================================
 // 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）
@@ -193,6 +227,11 @@ check('アイコンを前面に出す（線が上に乗らない）', /\.post \.
 check('返信側の線はアイコンの手前で止まる', /\.post--rail-t::before \{[^}]*height: calc\(var\(--pad-row\) \+ 2px\)/s.test(css));
 check('親側の線はアイコンの下から始まる', /\.post--rail-b::after \{[^}]*top: calc\(var\(--pad-row\) \+ 38px\)/s.test(css));
 check('線はアイコンの中心に来る（左 19px・幅 2px）', css.includes('left: 19px') && css.includes('width: 2px'));
+
+// 音声プレイヤーの見た目（画像の比率を当てると潰れる）
+const partsCss = readFileSync('client/src/styles/post-parts.css', 'utf8');
+check('音声に画像の比率を当てない', /\.pics--one \.pic--audio \{[^}]*aspect-ratio: auto/s.test(partsCss));
+check('音声は横幅いっぱいを使う', /\.pics__audio \{[^}]*grid-column: 1 \/ -1/s.test(partsCss));
 
 // ======================================================================
 console.log('\n👥 人の一覧の行き先と「おすすめ」の中身');

@@ -22,7 +22,8 @@ import {
   unfollow,
   type Person,
   type Profile,
-} from '../lib/profile';import type { Post } from '../lib/format';
+} from '../lib/profile';
+import { isImageMedia, mediaThumb, type Post } from '../lib/format';
 
 const TABS: ScreenTab[] = [
   { value: 'posts', label: 'ノート' },
@@ -230,15 +231,17 @@ export default function ProfileView({
                   )}
                   <div className="mediagrid">
                     {mediaPosts.map((post) => {
-                      const media = (post.media_attachments || post.attachments || [])[0];
-                      const thumb = media?.thumbnail_url || media?.url || '';
+                      // 画像だけを並べる（音声・動画の URL を <img> にすると壊れて見える）
+                      const media = (post.media_attachments || post.attachments || []).find(isImageMedia);
+                      const thumb = media ? mediaThumb(media) : '';
+                      if (!thumb) return null;
                       return (
                         <a
                           key={post.id}
                           href={postPath(post)}
                           title={post.content?.slice(0, 80)}
                         >
-                          {thumb && <img src={thumb} alt="" loading="lazy" />}
+                          <img src={thumb} alt="" loading="lazy" />
                         </a>
                       );
                     })}

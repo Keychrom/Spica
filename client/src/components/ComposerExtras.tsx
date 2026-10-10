@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ImagePlus, ListPlus, Smile, X } from 'lucide-react';
 import {
   MAX_ATTACHMENTS,
+  isAudioAttachment,
   isVideoAttachment,
   loadCustomEmojis,
   uploadMedia,
@@ -96,7 +97,7 @@ export default function ComposerExtras({
           onClick={() => fileRef.current?.click()}
         >
           <ImagePlus size={15} strokeWidth={1.6} />
-          {busy ? '上げています…' : '画像・動画'}
+          {busy ? '上げています…' : '画像・動画・音声'}
         </button>
         <input
           ref={fileRef}
@@ -162,7 +163,9 @@ export default function ComposerExtras({
         <div className="extra__media">
           {media.map((item, index) => (
             <figure className="extra__thumb" key={item.url + index}>
-              {isVideoAttachment(item) ? (
+              {isAudioAttachment(item) ? (
+                <span className="extra__play">♪</span>
+              ) : isVideoAttachment(item) ? (
                 <span className="extra__play">▶</span>
               ) : (
                 <img src={item.thumbnailUrl || item.url} alt="" />
