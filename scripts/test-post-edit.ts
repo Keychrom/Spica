@@ -361,6 +361,16 @@ async function run(): Promise<void> {
     const thread = await api('GET', `/api/posts/${encodeURIComponent(postId)}/thread`);
     check('スレッドの親も編集後の本文', thread.data?.post?.content, 'リアクション付きで再編集');
 
+    // タイムラインは新しい順なので、返信が親より上に来る。**画面はこの並びを入れ替えて
+    // 線でつなぐ**（web の lib/thread.ts）。その材料（in_reply_to）が返っていることを確かめる
+    const listAfterReply = await api('GET', '/api/timeline?mode=local&limit=20');
+    const replyItem = (listAfterReply.data as any[])?.find((p) => p.id === reply.data?.id);
+    check('タイムラインに返信が出る', Boolean(replyItem), true);
+    check('返信の in_reply_to が親を指す', replyItem?.in_reply_to, postId);
+    const idxReply = (listAfterReply.data as any[])?.findIndex((p) => p.id === reply.data?.id) ?? -1;
+    const idxParent = (listAfterReply.data as any[])?.findIndex((p) => p.id === postId) ?? -1;
+    check('返信は親より上に並ぶ（画面が入れ替える前提）', idxReply < idxParent, true);
+
     // ======================================================================
     console.log('\n📡 [6] 編集が SSE で届くこと（画面を開いている人が待たされない）');
 

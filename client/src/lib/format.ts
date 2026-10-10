@@ -48,6 +48,8 @@ export interface Post {
   } | null;
   /** プロフィールにピン留めされているか */
   is_pinned?: boolean;
+  /** 返信先の正規 ID（URL）。タイムラインで親と線でつなぐのに使う */
+  in_reply_to?: string | null;
   reply_count?: number;
   announce_count?: number;
   quote_count?: number;

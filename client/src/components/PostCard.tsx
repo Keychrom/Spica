@@ -1,15 +1,19 @@
 /**
  * 投稿カード（1 部品）。通知・検索・プロフィール・ブックマークでも同じものを使う。
  * 見た目は親から渡されたデータだけで決まる（状態を持たない）。
+ *
+ * ・本文や余白を押すと、そのノートの画面（スレッド）へ移る
+ * ・`thread` を受け取ると、親・返信の相手と線でつながる（タイムライン用）
  */
 import { useEffect, useState } from 'react';
 import { Bookmark, CornerUpLeft, Quote, Repeat2, Share2 } from 'lucide-react';
 import PostMenu from './PostMenu';
-import { votePoll } from '../lib/postActions';
 import PostMedia from './PostMedia';
+import PostPoll from './PostPoll';
 import { loadCustomEmojis } from '../lib/media';
 import { usePrefs } from '../lib/prefs';
 import { postPath } from '../lib/permalink';
+import { navigate } from '../lib/router';
 import {
   formatContent,
   formatCount,
@@ -23,6 +27,8 @@ export const QUICK_REACTIONS = ['⭐', '❤️', '👍', '🎉', '🤔', '😂']
 
 interface PostCardProps {
   post: Post;
+  /** タイムラインから渡す会話の印（親・返信とつながっているか、返信先の案内） */
+  thread?: { railTop: boolean; railBottom: boolean; replyTo: { label: string; href: string } | null };
   onReact: (post: Post, reaction: string) => void;
   onBookmark: (post: Post) => void;
   onRenote: (post: Post) => void;
@@ -51,84 +57,9 @@ function QuoteCard({ post }: { post: Post }) {
   );
 }
 
-function Poll({ post, canVote }: { post: Post; canVote: boolean }) {
-  const poll = post.poll;
-  const [picked, setPicked] = useState<number[]>([]);
-  const [busy, setBusy] = useState(false);
-  if (!poll?.choices?.length) return null;
-  // ここから下は中身が確定している（関数の中でも使えるように別名をつける）
-  const data = poll;
-  // サーバーは votes_count で返す（古い形の votes も受ける）
-  const countOf = (choice: { votes_count?: number; votes?: number }) => choice.votes_count ?? choice.votes ?? 0;
-  const total = data.total_votes ?? data.choices.reduce((sum, c) => sum + countOf(c), 0);
-  const open = canVote && !data.my_voted && !data.is_expired;
-
-  function tap(index: number) {
-    if (!open) return;
-    if (data.multiple) {
-      setPicked((current) =>
-        current.includes(index) ? current.filter((i) => i !== index) : [...current, index],
-      );
-      return;
-    }
-    void send([index]);
-  }
-
-  async function send(choices: number[]) {
-    if (choices.length === 0 || busy) return;
-    setBusy(true);
-    await votePoll(post, choices);
-    setBusy(false);
-    setPicked([]);
-  }
-
-  return (
-    <div className="poll">
-      {data.choices.map((choice, index) => {
-        const pct = total > 0 ? Math.round((countOf(choice) / total) * 100) : 0;
-        const on = picked.includes(index) || choice.me;
-        const inner = (
-          <>
-            <span className="poll__fill" style={{ width: `${pct}%` }} />
-            <span className="poll__row">
-              <span>
-                {(open || data.multiple) && <span className={`poll__mark${on ? ' poll__mark--on' : ''}`} />}
-                {choice.text}
-              </span>
-              <span className="poll__pct">{pct}%</span>
-            </span>
-          </>
-        );
-        return open ? (
-          <button type="button" className="poll__opt poll__opt--tap" key={index} onClick={() => tap(index)}>
-            {inner}
-          </button>
-        ) : (
-          <div className="poll__opt" key={index}>
-            {inner}
-          </div>
-        );
-      })}
-      <div className="poll__foot">
-        {formatCount(total)}票{poll.expires_at ? ` ・ ${relativeTime(poll.expires_at)}まで` : ''}
-        {data.multiple && open && (
-          <button
-            type="button"
-            className="btn btn--text"
-            style={{ marginLeft: 10 }}
-            disabled={busy || picked.length === 0}
-            onClick={() => void send(picked)}
-          >
-            投票する
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function PostCard(props: PostCardProps) {
-  const { post, extraReactions = [] } = props;
+  const { post, thread } = props;
+  const { extraReactions = [] } = props;
   const shown = post.renote ?? post;
   const renotedBy = post.renote ? post.author_name : null;
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -137,6 +68,20 @@ export default function PostCard(props: PostCardProps) {
 
   const reactions = shown.reactions ?? [];
   const [customEmojis, setCustomEmojis] = useState<string[]>([]);
+
+  /**
+   * 本文や余白を押したら、そのノートの画面（スレッド）へ移る。
+   * 中の操作（ボタン・リンク・入力・動画・画像・リアクション）を押したときは、
+   * そちらの動作を優先する（移らない）。文字を選んでいるときも移らない。
+   */
+  const openThread = (event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, a, input, textarea, select, video, audio, .picbtn, .rx__item, .poll__opt')) {
+      return;
+    }
+    if (window.getSelection()?.toString()) return;
+    navigate(postPath(shown));
+  };
 
   // 選択肢を開いたときに、このサーバーのカスタム絵文字（:name:）を足す
   useEffect(() => {
@@ -162,7 +107,10 @@ export default function PostCard(props: PostCardProps) {
   ).slice(0, 16);
 
   return (
-    <article className="post">
+    <article
+      className={`post${thread?.railTop ? ' post--rail-t' : ''}${thread?.railBottom ? ' post--rail-b' : ''}`}
+      onClick={openThread}
+    >
       <a className="av" href={`/users/${shown.user_id}`} aria-label={shown.author_name}>
         {shown.author_icon ? <img src={shown.author_icon} alt="" /> : shown.author_name.slice(0, 1)}
       </a>
@@ -173,6 +121,14 @@ export default function PostCard(props: PostCardProps) {
             <Repeat2 size={13} strokeWidth={1.6} />
             {renotedBy} がリノート
           </div>
+        )}
+
+        {/* 返信は、誰への返信かが分かるようにする（押すと親のノートを開く） */}
+        {thread?.replyTo && (
+          <a className="rep" href={thread.replyTo.href} title="返信先のノートを開く">
+            <CornerUpLeft size={13} strokeWidth={1.7} />
+            {thread.replyTo.label}
+          </a>
         )}
 
         <div className="meta">
@@ -206,7 +162,7 @@ export default function PostCard(props: PostCardProps) {
             )}
             <PostMedia post={shown} />
             <QuoteCard post={shown} />
-            <Poll post={shown} canVote={Boolean(props.signedIn)} />
+            <PostPoll post={shown} canVote={Boolean(props.signedIn)} />
           </>
         )}
 

@@ -2,8 +2,9 @@
  * 投稿の一覧（読み込み中・空・本体・続き）。
  * タイムライン系の画面はこれを使う（ホーム / ブックマーク / リスト / アンテナ / チャンネル / タグ）。
  */
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import PostCard from './PostCard';
+import { groupThreads } from '../lib/thread';
 import type { Timeline } from '../lib/useTimeline';
 import type { Post } from '../lib/format';
 
@@ -35,6 +36,8 @@ export default function PostList({
   onSignIn,
 }: PostListProps) {
   const { posts, loading, loadingMore, cursor, loadMore } = timeline;
+  // 会話の続きが分かるように並べ替え、親子の印を付ける（線は CSS が描く）
+  const threads = useMemo(() => groupThreads(posts), [posts]);
 
   return (
     <div className="feed">
@@ -42,10 +45,11 @@ export default function PostList({
 
       {!loading && posts.length === 0 && <div className="feed__state">{empty}</div>}
 
-      {posts.map((post) => (
+      {threads.map(({ post, railTop, railBottom, replyTo }) => (
         <PostCard
           key={post.id}
           post={post}
+          thread={{ railTop, railBottom, replyTo }}
           onReact={(p, reaction) => void timeline.react(p, reaction)}
           onBookmark={(p) => void timeline.bookmark(p)}
           onRenote={(p) => void timeline.renote(p)}

@@ -5,13 +5,51 @@
   padding: 0 32px 12px;
 }
 .post {
+  position: relative;
   display: flex;
   gap: 16px;
   padding: var(--pad-row) 0;
   border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
 }
 .post:last-child {
   border-bottom: 0;
+}
+/* ---- 会話の線（親と返信をアバターの位置でつなぐ） ----
+   タイムラインは新しい順なので、放っておくと返信が親より上に来る。
+   並べ替えた組に、上（返信側）・下（親側）の線を引いて 1 本につなげる。 */
+.post--rail-t::before,
+.post--rail-b::after {
+  content: '';
+  position: absolute;
+  left: 19px;
+  width: 2px;
+  border-radius: var(--r-pill);
+  /* アクセント色を薄く敷く（どのアクセントでも浮かない） */
+  background: var(--accent);
+  opacity: 0.45;
+}
+/* 自分は子（1 つ上の親から、自分のアバターの真ん中まで） */
+.post--rail-t::before {
+  top: 0;
+  height: calc(var(--pad-row) + 20px);
+}
+/* 自分は親（自分のアバターの下から、次の返信へ） */
+.post--rail-b::after {
+  top: calc(var(--pad-row) + 40px);
+  bottom: 0;
+}
+/* 「@user@domain への返信」（押すと親のノートを開く） */
+.rep {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.rep:hover {
+  color: var(--accent);
 }
 .av {
   width: 40px;

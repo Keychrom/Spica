@@ -7,10 +7,26 @@
  *   （中身は `npx tsx --tsconfig client/tsconfig.json scripts/check-client-render.tsx`。
  *     JSX の変換は client 側の設定を使う）
  */
+import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// ブラウザの window を最低限だけ真似る（permalink が origin を見るため）
+(globalThis as any).window = {
+  location: { origin: 'http://spica.test', pathname: '/', search: '' },
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  getSelection: () => null,
+  dispatchEvent: () => true,
+  matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }),
+};
 import Nav from '../client/src/components/Nav.js';
 import Layout from '../client/src/components/Layout.js';
 import MenuButton from '../client/src/components/MenuButton.js';
+import PostCard from '../client/src/components/PostCard.js';
+import PostMedia from '../client/src/components/PostMedia.js';
+import MediaViewer from '../client/src/components/MediaViewer.js';
+import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
+import type { Post } from '../client/src/lib/format.js';
 
 let checks = 0;
 let failures = 0;
@@ -91,6 +107,71 @@ const noIconNav = renderToStaticMarkup(
   Nav({ path: '/', user, server: { name: 'Spica', icon_url: '' } as never, unread: 0, onCompose: noop, onOpenProfile: noop }) as never,
 );
 check('左ナビ: ロゴ未設定なら ✦ と既定の名前', noIconNav.includes('✦') && noIconNav.includes('<b>Spica</b>'));
+
+// ======================================================================
+console.log('\n🧵 会話の線（返信が親より上に来ている組を並べ替える）');
+const parent = { id: 'http://spica.test/users/alice/posts/1', user_id: 'alice', content: '', author_name: 'Alice', author_handle: '@alice@spica.test', published_at: '2026-10-10T00:00:00.000Z' } as never as Post;
+const child = { id: 'http://spica.test/users/bob/posts/2', user_id: 'bob', content: '', author_name: 'Bob', author_handle: '@bob@spica.test', published_at: '2026-10-10T00:00:00.000Z', in_reply_to: 'http://spica.test/users/alice/posts/1' } as never as Post;
+const lone = { id: 'http://spica.test/users/carol/posts/3', user_id: 'carol', content: '', author_name: 'Carol', author_handle: '@carol@spica.test', published_at: '2026-10-10T00:00:00.000Z' } as never as Post;
+
+const grouped = groupThreads([child, parent, lone]);
+check('親が先に来る（返信が上でも入れ替える）', grouped[0].post.id === parent.id && grouped[1].post.id === child.id);
+check('親に「下へつながる」印', grouped[0].railBottom === true && grouped[0].railTop === false);
+check('返信に「上へつながる」印', grouped[1].railTop === true && grouped[1].railBottom === false);
+check('無関係なノートには印を付けない', grouped[2].railTop === false && grouped[2].railBottom === false);
+check('返信には返信先の案内が付く', grouped[1].replyTo?.label === '@alice@spica.test への返信');
+check('案内の行き先は親のノート', String(grouped[1].replyTo?.href || '').includes('/users/alice/posts/1'));
+
+const alreadyOrdered = groupThreads([parent, child]);
+check('親が先の並びは入れ替えない', alreadyOrdered[0].post.id === parent.id);
+check('親が先でも線は付く', alreadyOrdered[0].railBottom === true && alreadyOrdered[1].railTop === true);
+check('ミスキー形（ユーザー名なし）はドメインだけ', describeReplyTarget('https://misskey.test/notes/abc').label === 'misskey.test の投稿への返信');
+
+// ---- カードの見た目（クラスが付くか）
+const card = (thread?: never) =>
+  renderToStaticMarkup(
+    createElement(PostCard, {
+      post: parent,
+      thread,
+      onReact: noop,
+      onBookmark: noop,
+      onRenote: noop,
+      onReply: noop,
+      onQuote: noop,
+      onShare: noop,
+    } as never),
+  );
+check('線のクラスが付く（親側は下、返信側は上）', card({ railTop: false, railBottom: true, replyTo: null } as never).includes('post--rail-b'));
+check('返信の案内が出る', card({ railTop: true, railBottom: false, replyTo: { label: '@alice@x への返信', href: '/users/alice/posts/1' } } as never).includes('@alice@x への返信'));
+check('案内は親へのリンク', /<a class="rep" href="\/users\/alice\/posts\/1"/.test(card({ railTop: true, railBottom: false, replyTo: { label: 'x', href: '/users/alice/posts/1' } } as never)));
+
+// ======================================================================
+console.log('\n🖼 画像を押して大きく見る');
+const withImages = { id: 'http://spica.test/users/alice/posts/9', user_id: 'alice', content: '', author_name: 'Alice', author_handle: '@alice@spica.test', published_at: '2026-10-10T00:00:00.000Z', media_attachments: [
+  { url: '/uploads/a.png', type: 'image/png', alt: 'ひとつめ' },
+  { url: '/uploads/b.png', type: 'image/png' },
+  { url: '/uploads/c.mp4', type: 'video/mp4' },
+] } as never as Post;
+const mediaHtml = renderToStaticMarkup(createElement(PostMedia, { post: withImages } as never));
+check('画像はボタンで包む（押して大きく見る）', (mediaHtml.match(/class="picbtn"/g) || []).length === 2);
+check('動画は包まない（その場で再生）', mediaHtml.includes('<video'));
+check('押した画像の alt が案内になる', mediaHtml.includes('aria-label="ひとつめ"'));
+
+const viewerHtml = renderToStaticMarkup(
+  createElement(MediaViewer, {
+    media: [
+      { url: '/uploads/a.png', alt: 'ひとつめ' },
+      { url: '/uploads/b.png' },
+    ],
+    startIndex: 0,
+    onClose: noop,
+  } as never),
+);
+check('大きく見る面が出る', viewerHtml.includes('class="viewer"'));
+check('閉じるボタンがある', viewerHtml.includes('viewer__close') && viewerHtml.includes('aria-label="閉じる"'));
+check('複数なら送りが出る', viewerHtml.includes('viewer__nav--prev') && viewerHtml.includes('viewer__nav--next'));
+check('何枚目かが出る', viewerHtml.includes('1 / 2'));
+check('画像は原寸（縮小版ではない）', viewerHtml.includes('src="/uploads/a.png"'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

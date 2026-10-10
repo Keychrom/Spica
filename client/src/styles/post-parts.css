@@ -23,6 +23,11 @@
 .pics--one .pic {
   aspect-ratio: 16 / 9;
 }
+/* 画像はボタンで包む（押すと大きく見る）。見た目は .pic のまま */
+.picbtn {
+  display: block;
+  cursor: zoom-in;
+}
 
 /* 引用 */
 .quote {
@@ -176,4 +181,75 @@
 .poll__mark--on {
   background: var(--accent);
   border-color: var(--accent);
+}
+
+/* ---- 画像を大きく見る（オーバーレイ） ---- */
+.viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(8, 9, 14, 0.86);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.viewer__body {
+  margin: 0;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+}
+.viewer__body img {
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  object-fit: contain;
+  border-radius: var(--r-card);
+  background: var(--paper);
+}
+.viewer__cap {
+  color: #fff;
+  font-size: 12.5px;
+  text-align: center;
+  max-width: 62ch;
+  opacity: 0.85;
+}
+.viewer__count {
+  margin-left: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+.viewer__close,
+.viewer__nav {
+  position: fixed;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.viewer__close:hover,
+.viewer__nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.viewer__close {
+  top: 18px;
+  right: 18px;
+}
+.viewer__nav {
+  top: 50%;
+  margin-top: -22px;
+}
+.viewer__nav--prev {
+  left: 14px;
+}
+.viewer__nav--next {
+  right: 14px;
 }
