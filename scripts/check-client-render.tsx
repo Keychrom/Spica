@@ -39,6 +39,7 @@ import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
+import { MAX_ATTACHMENTS } from '../client/src/lib/media.js';
 
 let checks = 0;
 let failures = 0;
@@ -172,6 +173,32 @@ check('動画のポスターは thumbnailUrl', mediaHtml.includes('poster="/uplo
 check('押した画像の alt が案内になる', mediaHtml.includes('aria-label="ひとつめ"'));
 check('画像は thumbnailUrl を優先（無ければ元の URL）', mediaHtml.includes('src="/uploads/b-thumb.jpg"') && mediaHtml.includes('src="/uploads/a.png"'));
 
+// ---- 添付の枚数（上限 6・打ち切らない）
+console.log('\n🧮 添付は 6 枚まで出せる（4 枚で打ち切らない）');
+const makeImages = (count: number) => ({
+  id: `http://spica.test/users/alice/posts/media-${count}`,
+  user_id: 'alice',
+  content: '',
+  author_name: 'Alice',
+  author_handle: '@alice@spica.test',
+  published_at: '2026-10-10T00:00:00.000Z',
+  media_attachments: Array.from({ length: count }, (_, i) => ({
+    url: `/uploads/p${i + 1}.png`,
+    mediaType: 'image/png',
+  })),
+}) as never as Post;
+
+const sixHtml = renderToStaticMarkup(createElement(PostMedia, { post: makeImages(6) } as never));
+check('6 枚すべて出す（打ち切らない）', (sixHtml.match(/class="picbtn"/g) || []).length === 6);
+check('5 枚以上は 3 列にする', sixHtml.includes('pics pics--many'));
+
+const eightHtml = renderToStaticMarkup(createElement(PostMedia, { post: makeImages(8) } as never));
+check('連合先の 8 枚も全部出す', (eightHtml.match(/class="picbtn"/g) || []).length === 8);
+check('上限の 4 枚なら 2 列のまま', !renderToStaticMarkup(createElement(PostMedia, { post: makeImages(4) } as never)).includes('pics--many'));
+check('画面の上限は 6', MAX_ATTACHMENTS === 6);
+// 画面とサーバーの上限は必ず同じ（片方だけ増やすと選べるのに弾かれる）
+check('サーバーの上限も 6（ソースで確認）', /MAX_POST_ATTACHMENTS = 6/.test(readFileSync('server/src/postService.ts', 'utf8')));
+
 const viewerHtml = renderToStaticMarkup(
   createElement(MediaViewer, {
     media: [
@@ -232,6 +259,7 @@ check('線はアイコンの中心に来る（左 19px・幅 2px）', css.includ
 const partsCss = readFileSync('client/src/styles/post-parts.css', 'utf8');
 check('音声に画像の比率を当てない', /\.pics--one \.pic--audio \{[^}]*aspect-ratio: auto/s.test(partsCss));
 check('音声は横幅いっぱいを使う', /\.pics__audio \{[^}]*grid-column: 1 \/ -1/s.test(partsCss));
+check('5 枚以上は 3 列（CSS も用意されている）', /\.pics--many \{[^}]*grid-template-columns: repeat\(3, 1fr\)/s.test(partsCss));
 
 // ======================================================================
 console.log('\n👥 人の一覧の行き先と「おすすめ」の中身');

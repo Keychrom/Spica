@@ -31,6 +31,15 @@ export interface CreatePostParams {
 }
 
 /**
+ * 1 つの投稿に付けられる添付の数。
+ * ⚠️ **画面（`client/src/lib/media.ts` の `MAX_ATTACHMENTS`）と揃えること。**
+ *    片方だけ増やすと「画面では選べるのに投稿が弾かれる（またはその逆）」になる。
+ *    受信（連合先からの Note）と外向きの Note では**切らない** — 相手が付けた数を
+ *    そのまま保存・転送する（切ると連合先の 5 枚目以降が消える）。
+ */
+export const MAX_POST_ATTACHMENTS = 6;
+
+/**
  * 投稿作成の共通コアエンジン (通常投稿および予約投稿の自動実行で利用)
  */
 export async function executeCreatePost(params: CreatePostParams): Promise<{ post: any; federatedTo: number }> {
@@ -44,7 +53,7 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
   }
   const parsedAttachments = (Array.isArray(attachments) ? attachments : [])
     .filter((att: any) => att && typeof att.url === 'string' && att.url.length > 0)
-    .slice(0, 4)
+    .slice(0, MAX_POST_ATTACHMENTS)
     .map((att: any) => ({
       url: String(att.url),
       mediaType: typeof att.mediaType === 'string' ? att.mediaType : 'image/jpeg',

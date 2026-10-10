@@ -33,11 +33,14 @@ export default function PostMedia({ post }: { post: Post }) {
 
   // 大きく見られるのは画像だけ（動画と音声はその場で再生できる）
   const images = media.filter(isImageMedia);
+  // 枚数で見た目を変える: 1 枚は大きく、5 枚以上は 3 列（2 列だと縦に伸びすぎる）
+  const gridClass = `pics${media.length === 1 ? ' pics--one' : media.length >= 5 ? ' pics--many' : ''}`;
 
   return (
     <>
-      <div className={`pics${media.length === 1 ? ' pics--one' : ''}`}>
-        {media.slice(0, 4).map((item, index) => {
+      <div className={gridClass}>
+        {/* 上限まで全部出す（連合先の投稿は相手が付けた数だけ来るので、ここで切らない） */}
+        {media.map((item, index) => {
           const key = `${item.url}-${index}`;
           const kind = mediaKind(item);
 

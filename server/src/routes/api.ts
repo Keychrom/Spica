@@ -23,7 +23,7 @@ import { isMailConfigured, sendMail, generateVerificationCode, issueVerification
 
 import { uploadMediaFile } from '../storage.js';
 import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
-import { executeCreatePost, executeUpdatePost } from '../postService.js';
+import { executeCreatePost, executeUpdatePost, MAX_POST_ATTACHMENTS } from '../postService.js';
 import { isApprovedUser } from '../registration.js';
 import { buildOtpauthUri, generateRecoveryCodes, generateTotpSecret, verifyTotpCode } from '../totp.js';
 import { consumeRecoveryCode, disableTotp, enableTotp, getTotpState, setPendingTotpSecret } from '../totpService.js';
@@ -1634,8 +1634,8 @@ export async function saveUploadedMediaFiles(
   if (!files || files.length === 0) {
     return { ok: false, status: 400, error: 'アップロードするメディアファイルを選択してください。' };
   }
-  if (files.length > 4) {
-    return { ok: false, status: 400, error: '一度にアップロードできるファイルは最大4件までです。' };
+  if (files.length > MAX_POST_ATTACHMENTS) {
+    return { ok: false, status: 400, error: `一度にアップロードできるファイルは最大${MAX_POST_ATTACHMENTS}件までです。` };
   }
 
   // 動画・音声はサイズが大きいため1件までに制限する

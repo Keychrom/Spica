@@ -129,6 +129,28 @@ const imageHtml = render(imageRow);
 check('画像は押して大きく見る形で出る', imageHtml.includes('class="picbtn"') && imageHtml.includes('<img'));
 check('画像にプレイヤーは出さない', !imageHtml.includes('<audio'));
 
+// ======================================================================
+console.log('\n🧮 6 枚まで付けて、6 枚とも出る');
+const sixForm = new FormData();
+for (let i = 1; i <= 6; i++) {
+  sixForm.append('file', new Blob([png], { type: 'image/png' }), `dot${i}.png`);
+}
+const sixUpload = await api.post('/api/media/upload', sixForm);
+const sixMedia = (sixUpload.data as any)?.media ?? [];
+check('6 件まとめて上げられる', sixUpload.status === 200 && sixMedia.length === 6);
+
+const sixPost = await api.post('/api/posts', {
+  content: `6 枚つき ${stamp}`,
+  visibility: 'public',
+  attachments: sixMedia,
+});
+const sixRow = await fromTimeline((sixPost.data as any)?.id);
+check('6 件つきで投稿できる', sixPost.status === 201);
+check('タイムラインにも 6 件残る', sixRow?.media_attachments?.length === 6);
+const sixHtml = render(sixRow);
+check('画面にも 6 枚出る（4 枚で打ち切らない）', (sixHtml.match(/class="picbtn"/g) || []).length === 6);
+check('5 枚以上は 3 列', sixHtml.includes('pics pics--many'));
+
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);
 else console.error(`❌ ${checks} 件中 ${failures} 件の確認に失敗しました`);

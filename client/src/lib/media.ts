@@ -31,7 +31,12 @@ export interface Attachment {
   height?: number;
 }
 
-export const MAX_ATTACHMENTS = 4;
+/**
+ * 1 つの投稿に付けられる添付の数。
+ * ⚠️ **サーバー（`server/src/postService.ts` の `MAX_POST_ATTACHMENTS`）と揃えること。**
+ *    ここだけ増やすと、選べるのに投稿が弾かれる。
+ */
+export const MAX_ATTACHMENTS = 6;
 
 export function toAttachment(media: UploadedMedia): Attachment {
   return {

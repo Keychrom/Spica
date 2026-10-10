@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { db, UserRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
+import { MAX_POST_ATTACHMENTS } from '../postService.js';
 import { getUserFromToken, createSession } from '../auth.js';
 import { isApprovedUser } from '../registration.js';
 import {
@@ -530,7 +531,7 @@ misskeyRouter.post('/notes/conversation', asyncHandler(async (req: Request, res:
 /** ファイル ID（ドライブの URL）から投稿の添付を作る */
 async function buildAttachmentsFromFileIds(fileIds: unknown): Promise<any[] | undefined> {
   if (!Array.isArray(fileIds) || fileIds.length === 0) return undefined;
-  const ids = fileIds.map((id) => String(id)).filter(Boolean).slice(0, 4);
+  const ids = fileIds.map((id) => String(id)).filter(Boolean).slice(0, MAX_POST_ATTACHMENTS);
   if (ids.length === 0) return undefined;
 
   const rows = (await db.prepare(

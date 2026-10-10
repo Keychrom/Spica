@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { db, UserRow } from './db.js';
 import { config } from './config.js';
 import { normalizeVisibility, PostVisibility } from './postVisibility.js';
+import { MAX_POST_ATTACHMENTS } from './postService.js';
 import { uploadMediaFile, UploadedMedia } from './storage.js';
 import { checkMediaQuota, recordMedia } from './mediaService.js';
 
@@ -56,8 +57,8 @@ const MAX_MEDIA_PER_IMPORT = 500;
 const MAX_MEDIA_BYTES_PER_IMPORT = 200 * 1024 * 1024;
 /** 付随データ（フォロー・フォロワー・ブックマーク・リアクション）の上限 */
 const MAX_RELATIONS_PER_IMPORT = 5000;
-/** 1 投稿に添付できるメディアの数（投稿作成側と合わせる） */
-const MAX_ATTACHMENTS_PER_POST = 4;
+/** 1 投稿に添付できるメディアの数（投稿作成側と同じ値を共有する） */
+const MAX_ATTACHMENTS_PER_POST = MAX_POST_ATTACHMENTS;
 /** 1 投稿の本文・CW の上限（壊れたアーカイブで巨大な値を入れさせない） */
 const MAX_CONTENT_LENGTH = 100000;
 const MAX_CW_LENGTH = 1000;

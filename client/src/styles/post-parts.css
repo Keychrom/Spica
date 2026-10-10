@@ -11,6 +11,11 @@
 .pics--one {
   grid-template-columns: 1fr;
 }
+/* 5 枚以上は 3 列（上限は 6 枚。連合先からはそれ以上来ることもある） */
+.pics--many {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
 .pic {
   aspect-ratio: 16 / 10;
   border-radius: var(--r-card);

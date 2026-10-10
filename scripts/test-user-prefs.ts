@@ -179,11 +179,17 @@ async function run() {
 
     // ------------------------------------------------------------------
     console.log('\n🚫 [4] ドメインミュートがタイムラインから消す');
-    // リモートの投稿を 1 件、DB に直接入れる（example.com の人）
-    const { DatabaseSync } = await import('node:sqlite');
-    const testDb = new DatabaseSync(path.resolve(ROOT_DIR, 'server', TEST_DB));
+    // リモートの投稿を 1 件、DB に直接入れる（example.com の人）。
+    // ⚠️ ここは SQLite 決め打ちにしない — PG のバッテリー（run-suites-pg.sh）でも回るので、
+    //    driver を見て繋ぐ（以前は node:sqlite を直接開いていて PG だと "no such table: posts" になった）
+    const { createAsyncDatabase } = await import('../server/src/db/asyncDriver.js');
+    const testDb = createAsyncDatabase({
+      driver: process.env.DB_DRIVER,
+      connectionString: process.env.DATABASE_URL,
+      dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB),
+    });
     const remotePostId = 'https://example.com/notes/1';
-    testDb.prepare(`
+    await testDb.prepare(`
       INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, visibility, published_at, fts_indexed)
       VALUES (?, ?, 'Remote Person', 'https://example.com/users/r', '@r@example.com', '', 'リモートの投稿です', 0, 'public', ?, 0)
     `).run(remotePostId, 'https://example.com/users/r', new Date().toISOString());
