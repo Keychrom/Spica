@@ -6,7 +6,7 @@
 #
 # 方針:
 #   - コピーするのはソースとドキュメントだけ。.env / *.sqlite / uploads / dist / node_modules は触らない。
-#   - 公開ツリーだけにある手書きの差分（README の Alpha 警告、SETUP.md / UPGRADE.md の本番向け記述）は
+#   - 公開ツリーだけにある手書きの差分（README の Beta 警告、SETUP.md / UPGRADE.md の本番向け記述）は
 #     上書きしない。対象ファイルを明示して、必要なものだけを運ぶ。
 #   - 運んだあとは `npm run check:secrets` で秘密の混入を確認する。
 set -eu
@@ -21,7 +21,7 @@ if [ ! -d "$PUB_DIR/.git" ]; then
 fi
 
 # 運ぶ対象（公開ツリーと共有しているファイルだけ）
-# ※ README.md は公開ツリー側にだけ Alpha 警告の一文があるので、丸ごとコピーしない。
+# ※ README.md は公開ツリー側にだけ Beta 警告の一文があるので、丸ごとコピーしない。
 #    差分が数行なら手で当てる（下の「手で当てるファイル」を参照）。
 FILES=(
   .env.example
@@ -111,7 +111,7 @@ done
 
 echo ""
 echo "■ 手で当てるファイル（丸ごとコピーしない）"
-echo "  README.md … 公開ツリーの Alpha 警告を残したまま、差分だけを手で当てる"
+echo "  README.md … 公開ツリーの Beta 警告を残したまま、差分だけを手で当てる"
 echo "  docs/SETUP.md … 公開ツリー側が本番向けの別版"
 echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 同上"
 
