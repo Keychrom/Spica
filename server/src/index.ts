@@ -16,6 +16,8 @@ import { usersRouter } from './routes/users.js';
 import { inboxRouter } from './routes/inbox.js';
 import { outboxRouter } from './routes/outbox.js';
 import { nodeinfoRouter } from './routes/nodeinfo.js';
+// 版数は 1 か所（server/package.json）から読む。ここに書き写さない
+import { SERVER_VERSION } from './version.js';
 import { apiRouter } from './routes/api.js';
 import { adminRouter } from './routes/admin.js';
 import { actorRouter } from './routes/actor.js';
@@ -798,7 +800,7 @@ if (finalDistPath) {
       name: config.instanceName,
       status: 'online',
       protocol: 'ActivityPub (W3C Recommendation)',
-      version: '1.0.0',
+      version: SERVER_VERSION,
       domain: config.domain,
       origin: config.origin,
     });

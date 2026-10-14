@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 開発ツリー（SN-SNS）から公開ツリー（D:/Spica）へソースだけを同期する。
+# 手元の非公開ツリーから公開ツリー（D:/Spica）へソースだけを同期する。
 #
 #   bash scripts/sync-public.sh            # 何が変わるか表示（コピーしない）
 #   bash scripts/sync-public.sh --apply    # 実際にコピー

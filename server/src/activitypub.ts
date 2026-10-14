@@ -5,6 +5,8 @@ import { getInstanceActorKeyPair } from './instanceActor.js';
 import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 import { enqueueDelivery, nextRetryDelayMs } from './deliveryQueue.js';
 import { runWithConcurrency } from './jobs.js';
+// 版数は 1 か所（server/package.json）から読む。User-Agent に書き写さない
+import { SERVER_VERSION } from './version.js';
 import crypto from 'node:crypto';
 
 export const ACTIVITYSTREAMS_CONTEXT = [
@@ -463,7 +465,7 @@ export async function fetchActorAliases(actorUrl: string): Promise<string[]> {
     let res = await safeFetch(actorUrl, {
       headers: {
         Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
-        'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+        'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
         ...signedFetchHeaders(actorUrl),
       },
     });
@@ -472,7 +474,7 @@ export async function fetchActorAliases(actorUrl: string): Promise<string[]> {
       res = await safeFetch(actorUrl, {
         headers: {
           Accept: `${ACTIVITY_CONTENT_TYPE}, application/ld+json; profile="https://www.w3.org/ns/activitystreams"`,
-          'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+          'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
           ...signedFetchHeaders(actorUrl, true),
         },
       });
@@ -677,7 +679,7 @@ export async function fetchRemoteActor(actorUrl: string, forceRefresh = false): 
   console.log(`[Actor] Fetching remote actor: ${actorUrl}`);
   const actorHeaders = (forceSign: boolean) => ({
     Accept: 'application/activity+json, application/ld+json; profile="https://www.w3.org/ns/activitystreams"',
-    'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+    'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
     // Authorized Fetch 運用のサーバーからも取得できるよう、有効時は署名を付ける
     ...signedFetchHeaders(actorUrl, forceSign),
   });
@@ -853,7 +855,7 @@ export async function attemptDelivery(params: {
     privateKeyPem,
   });
 
-  headers['User-Agent'] = `Spica/1.0.0 (+${config.origin})`;
+  headers['User-Agent'] = `Spica/${SERVER_VERSION} (+${config.origin})`;
 
   console.log(`[Delivery] Sending activity (${params.activity.type}) to ${params.inboxUrl}`);
 

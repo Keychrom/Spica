@@ -1,23 +1,9 @@
-import fs from 'node:fs';
 import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { db, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
-
-/**
- * サーバーのバージョン。**server/package.json から読む**。
- * ここをハードコードすると、上げるたびに書き換え忘れて FediDB などの表示が古いままになる。
- */
-function readServerVersion(): string {
-  try {
-    const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
-    return typeof pkg.version === 'string' && pkg.version ? pkg.version : '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
-const SERVER_VERSION = readServerVersion();
+// 版数は 1 か所（server/package.json）から読む。ここに書き写さない
+import { SERVER_VERSION } from '../version.js';
 
 export const nodeinfoRouter = Router();
 

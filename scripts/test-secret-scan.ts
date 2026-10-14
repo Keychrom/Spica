@@ -114,7 +114,7 @@ try {
   writeFixture('src/example.ts', [
     `// 例: S3_SECRET_ACCESS_KEY=your-secret-key-here`,
     `const key = process.env.S3_SECRET_ACCESS_KEY;`,
-    `const label = 'MASTER_KEY は SN-SNS の .env に置く';`,
+    `const label = 'MASTER_KEY は手元の .env に置く';`,
     `const placeholder = '<あなたのキー>';`,
   ].join('\n'));
   check('プレースホルダや env 参照は検出しない', findingsFor('example.ts').length, 0);

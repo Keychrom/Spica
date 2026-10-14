@@ -131,7 +131,7 @@ const RULES: Rule[] = [
   {
     id: 'private-key',
     re: /-----BEGIN (?:RSA |EC |OPENSSH |PGP |DSA )?PRIVATE KEY-----/,
-    hint: '秘密鍵そのものです。公開ツリーには絶対に入れないでください（SN-SNS 側でのみ保持）。',
+    hint: '秘密鍵そのものです。公開ツリーには絶対に入れないでください（手元の .env でのみ保持）。',
   },
   {
     id: 'spica-session-token',
@@ -363,7 +363,7 @@ export function scanForSecrets(options: ScanOptions = {}): ScanResult {
     if (fromGit) {
       files = fromGit;
     } else {
-      // git が無い（SN-SNS の開発ツリー等）→ 作業ツリーを走査し、.gitignore を尊重する
+      // git が無い（非公開の開発ツリー等）→ 作業ツリーを走査し、.gitignore を尊重する
       files = walk(ROOT_DIR).filter((f) => !isIgnored(f, ignores));
       usedGit = false;
     }
@@ -487,7 +487,7 @@ function main() {
     console.log(`     ${f.hint}`);
   }
   console.log('');
-  console.log('このままコミットすると秘密が公開されます。SN-SNS 側（.env / server_settings）に移してください。');
+  console.log('このままコミットすると秘密が公開されます。手元の .env（または server_settings）に移してください。');
   process.exit(1);
 }
 

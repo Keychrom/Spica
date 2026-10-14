@@ -1,6 +1,8 @@
 import { db } from './db.js';
 import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 import { enqueueJob, registerJobHandler } from './jobs.js';
+// 版数は 1 か所（server/package.json）から読む。User-Agent に書き写さない
+import { SERVER_VERSION } from './version.js';
 
 /**
  * リンクプレビュー（OGP / oEmbed）カード
@@ -202,7 +204,7 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
       timeoutMs: FETCH_TIMEOUT_MS,
       headers: {
         Accept: 'text/html,application/xhtml+xml',
-        'User-Agent': `Spica/1.0.0 (+LinkPreview)`,
+        'User-Agent': `Spica/${SERVER_VERSION} (+LinkPreview)`,
       },
     });
 

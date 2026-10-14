@@ -37,6 +37,8 @@ import {
   RETRY_DELAYS_MS,
 } from '../deliveryQueue.js';
 import { processDeliveryQueue } from '../scheduler.js';
+// 版数は 1 か所（server/package.json）から読む。User-Agent に書き写さない
+import { SERVER_VERSION } from '../version.js';
 
 const uploadImageFile = multer({
   storage: multer.memoryStorage(),
@@ -360,7 +362,7 @@ adminRouter.post('/relays', asyncHandler(async (req: Request, res: Response) => 
       const fetchRes = await fetch(candidateActorUrl, {
         headers: {
           Accept: 'application/activity+json, application/ld+json',
-          'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+          'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
         },
       });
       if (fetchRes.ok) {
@@ -371,7 +373,7 @@ adminRouter.post('/relays', asyncHandler(async (req: Request, res: Response) => 
         const fallbackRes = await fetch(cleanUrl, {
           headers: {
             Accept: 'application/activity+json, application/ld+json',
-            'User-Agent': `Spica/1.0.0 (+${config.origin})`,
+            'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
           },
         });
         if (fallbackRes.ok) {

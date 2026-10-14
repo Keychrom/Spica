@@ -4,6 +4,8 @@ import path from 'node:path';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
 import { getInstanceActorKeyPair } from './instanceActor.js';
+// 版数は 1 か所（server/package.json）から読む。User-Agent に書き写さない
+import { SERVER_VERSION } from './version.js';
 import { assertFetchableRemoteUrl, safeFetch } from './remoteFetchGuard.js';
 
 /**
@@ -334,8 +336,8 @@ export async function fetchProxiedImage(url: string): Promise<ProxyFetchResult> 
       res = await safeFetch(url, {
         timeoutMs: FETCH_TOTAL_TIMEOUT_MS,
         headers: {
-          // 相手サーバーに余計な情報を渡さない
-          'User-Agent': `Spica/${config.instanceName} (+${config.origin})`,
+          // 相手サーバーに余計な情報を渡さない（名乗るのはソフト名と版数だけ。インスタンス名は入れない）
+          'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
           Accept: 'image/*,*/*;q=0.8',
         },
       });

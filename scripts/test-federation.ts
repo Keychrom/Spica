@@ -284,7 +284,7 @@ async function run() {
 
     // 8. 投稿＆連合配信検証: Bob (Node B) が投稿 -> Alice (Node A) のタイムラインに届くか
     console.log('📝 [Federation 投稿検証] Bob が Node B で投稿...');
-    const postContent = '分散型SNS SN-SNSの世界へようこそ！🚀 ActivityPubで繋がっています！';
+    const postContent = '分散型SNS Spicaの世界へようこそ！🚀 ActivityPubで繋がっています！';
     const postRes = await fetch(`${BASE_B}/api/posts`, {
       method: 'POST',
       headers: {
