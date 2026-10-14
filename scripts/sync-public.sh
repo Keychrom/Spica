@@ -102,7 +102,9 @@ for dir in "${DIRS[@]}"; do
       # ★ 拡張子を増やすときは注意: ここに無い種類（かつては .css）は**黙って運ばれない**。
       #   2026-10-04 に .css を追加（文字サイズ・密度の見た目が公開ツリーへ入らなかった）
       #   2026-10-10 に .html / .md を追加（design/ のモックアップと説明が運ばれなかった）
-      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml|*.css|*.html|*.md) copy_file "$rel" ;;
+      #   2026-10-14 に .mp3 を追加（通知音が公開ツリー・配信先へ入らなかった）。
+      #   アイコン類（.png / .jpg）も同じ罠だったので一緒に明示する（中身は一致を確認済み）
+      *.ts|*.tsx|*.js|*.mjs|*.sh|*.sql|*.json|*.yml|*.yaml|*.css|*.html|*.md|*.mp3|*.png|*.jpg|*.jpeg|*.webp|*.svg|*.ico) copy_file "$rel" ;;
     esac
   done < <(cd "$DEV_DIR" && find "$dir" -type f \
     -not -path "*/node_modules/*" -not -path "*/dist/*" \

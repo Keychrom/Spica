@@ -34,6 +34,11 @@ export interface Prefs {
   recentReactions?: string[];
   /* ---- 操作 ---- */
   keyboardShortcuts?: boolean;
+  /* ---- 通知音 ---- */
+  /** 新着ノートが届いたときの音（lib/sounds.ts の id。'' は鳴らさない） */
+  soundOnNote?: string;
+  /** 自分が投稿したときの音（同上） */
+  soundOnPost?: string;
   /* ---- つながり ---- */
   mutedDomains?: string[];
   /* ---- DM ---- */

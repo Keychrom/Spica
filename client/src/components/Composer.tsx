@@ -124,6 +124,8 @@ export default function Composer({
     // 下書きから出したときは、下書きを片付ける
     if (draftId) await deleteDraft(draftId);
     onPosted();
+    // 「投稿できた」の合図（通知音が聞く）。下書きの保存や予約では出さない
+    window.dispatchEvent(new CustomEvent('spica:post-sent'));
     onClose();
   }
 

@@ -40,6 +40,12 @@
   align-items: center;
   gap: 8px;
 }
+/* 通知音の選択（設定 → 通知）。select と「試聴」を 1 行に収める。
+   .field は width:100% なので、ここだけ幅を決めておく（狭い画面では縮める） */
+.set__sound {
+  width: 250px;
+  max-width: 46vw;
+}
 /* 操作が 2 つ以上ある行（管理パネルの実行ボタンなど） */
 .set__actions {
   flex-wrap: wrap;

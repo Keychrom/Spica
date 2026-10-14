@@ -8,7 +8,7 @@
  *     JSX の変換は client 側の設定を使う）
  */
 import { createElement } from 'react';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 // ブラウザの window を最低限だけ真似る（permalink が origin を見るため）
@@ -40,6 +40,13 @@ import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
 import { MAX_ATTACHMENTS } from '../client/src/lib/media.js';
+import {
+  DEFAULT_SOUND_ON_NOTE,
+  DEFAULT_SOUND_ON_POST,
+  SOUNDS,
+  playSound,
+} from '../client/src/lib/sounds.js';
+import SoundSection from '../client/src/components/settings/SoundSection.js';
 
 let checks = 0;
 let failures = 0;
@@ -245,6 +252,41 @@ check('mediaThumb: thumbnailUrl を優先', mediaThumb({ url: '/a.png', thumbnai
 check('mediaThumb: 古い thumbnail_url も見る', mediaThumb({ url: '/a.png', thumbnail_url: '/t2.png' } as never) === '/t2.png');
 check('mediaAlt: description を ALT に使う', mediaAlt({ url: 'x', description: 'ひとつめ', alt: 'ふるい' } as never) === 'ひとつめ');
 check('isImageMedia: 音声は含めない', isImageMedia({ url: 'x', mediaType: 'audio/mpeg' } as never) === false);
+
+// ======================================================================
+console.log('\n🔔 通知音（8 つ・設定で選べる）');
+const soundOptions = SOUNDS.map((sound) => sound.file).sort();
+// 実ファイルと一覧が 1 対 1 か（無い音を選べる状態にしない）
+const actualSounds = readdirSync('client/public/sounds').filter((file) => file.endsWith('.mp3')).sort();
+check('音の一覧と実ファイルが一致する', JSON.stringify(soundOptions) === JSON.stringify(actualSounds));
+check('8 つある', SOUNDS.length === 8 && actualSounds.length === 8);
+check('新着ノートの既定は Little Spark', DEFAULT_SOUND_ON_NOTE === 'LittleSpark');
+check('投稿の既定は Pop Signal', DEFAULT_SOUND_ON_POST === 'PopSignal');
+
+// サーバー側の検証（SOUND_IDS / 既定）と揃っているか（ソースで確認）
+const prefsSource = readFileSync('server/src/userPrefs.ts', 'utf8');
+check('サーバーの既定も同じ（LittleSpark / PopSignal）',
+  prefsSource.includes("soundOnNote: 'LittleSpark'") && prefsSource.includes("soundOnPost: 'PopSignal'"));
+check('サーバーの検証に 8 つとも載っている', SOUNDS.every((sound) => prefsSource.includes(`'${sound.id}'`)));
+
+const soundHtml = renderToStaticMarkup(createElement(SoundSection) as never);
+check('設定に 8 つの音が出る', SOUNDS.every((sound) => soundHtml.includes(sound.label)));
+check('「鳴らさない」も選べる', soundHtml.includes('鳴らさない'));
+check('新着と投稿の 2 か所で選べる', soundHtml.includes('新着ノートが届いたとき') && soundHtml.includes('自分が投稿したとき'));
+check('試聴できる', (soundHtml.match(/試聴/g) || []).length === 2);
+check('2 つとも選び直せる（select）', (soundHtml.match(/<select/g) || []).length === 2);
+
+// 音が使えない環境（Node）でも落ちない・知らない id は無視する
+let playCrashed = false;
+try {
+  playSound('LittleSpark');
+  playSound('NotASound');
+  playSound('');
+  playSound(undefined);
+} catch {
+  playCrashed = true;
+}
+check('再生できない環境でも落ちない', !playCrashed);
 
 // ======================================================================
 // 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）

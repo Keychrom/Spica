@@ -3,6 +3,7 @@
  */
 import { useEffect, useState } from 'react';
 import { pushStatus, subscribePush, testPush, unsubscribePush } from '../../lib/push';
+import SoundSection from './SoundSection';
 import {
   loadNotificationSettings,
   saveNotificationPrefs,
@@ -68,6 +69,11 @@ export default function NotifySection() {
           </div>
         </div>
       ))}
+
+      <div className="set__group">
+        <h3>受信音（アプリ内の音）</h3>
+      </div>
+      <SoundSection />
 
       <div className="set__group">
         <h3>端末への通知（プッシュ）</h3>

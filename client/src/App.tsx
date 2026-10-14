@@ -27,6 +27,7 @@ import { useKeyboardShortcuts } from './lib/useKeyboardShortcuts';
 import ShortcutHelp from './components/ShortcutHelp';
 import MenuButton from './components/MenuButton';
 import { useLiveUpdates } from './lib/useLiveUpdates';
+import { useSounds } from './lib/sounds';
 import type { DirectoryUser, Post, SessionUser } from './lib/format';
 
 interface ComposerTarget {
@@ -106,6 +107,9 @@ export default function App() {
 
   // リアルタイム更新（SSE）: ログイン中はつなぎっぱなし。通知は未読に反映する
   const live = useLiveUpdates(Boolean(user), () => void refreshUnread());
+
+  // 通知音（新着ノート・自分の投稿）
+  useSounds(Boolean(user), user?.id ?? null);
 
   // ホーム画面のショートカット・共有シートから開かれたとき / アイコンのバッジ
   useLaunchParams({

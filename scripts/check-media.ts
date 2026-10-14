@@ -151,6 +151,18 @@ const sixHtml = render(sixRow);
 check('画面にも 6 枚出る（4 枚で打ち切らない）', (sixHtml.match(/class="picbtn"/g) || []).length === 6);
 check('5 枚以上は 3 列', sixHtml.includes('pics pics--many'));
 
+// ======================================================================
+console.log('\n🔔 通知音が配られる');
+const soundIds = ['CalmBell', 'CrystalSignal', 'LittleSpark', 'LoungeChime', 'PoliteClick', 'CrystalSounds', 'LittleChime', 'PopSignal'];
+const badSounds: string[] = [];
+for (const id of soundIds) {
+  const res = await realFetch(`${BASE}/sounds/${id}.mp3`);
+  const type = String(res.headers.get('content-type') || '');
+  if (res.status !== 200 || !type.startsWith('audio/')) badSounds.push(`${id}: ${res.status} ${type}`);
+}
+check('8 つの通知音が audio として配られる', badSounds.length === 0);
+if (badSounds.length > 0) console.log('   ✗', badSounds.join(' / '));
+
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);
 else console.error(`❌ ${checks} 件中 ${failures} 件の確認に失敗しました`);

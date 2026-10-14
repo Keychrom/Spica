@@ -132,6 +132,8 @@ async function run() {
     check('既定の新着の扱い', initial.newPostsBehavior, 'badge');
     check('既定の通知のまとめ', initial.notificationGrouping, 'group');
     check('既定のドメインミュート', initial.mutedDomains.length, 0);
+    check('既定の新着ノートの通知音', initial.soundOnNote, 'LittleSpark');
+    check('既定の投稿の通知音', initial.soundOnPost, 'PopSignal');
 
     const putRes = await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
       themeMode: 'pure_black',
@@ -165,6 +167,28 @@ async function run() {
 
     // 直前の [1] で入れた値も、検証に通ったものは残る
     check('有効な値は残っている', dirty.hideBoostsInHome, true);
+
+    // ------------------------------------------------------------------
+    console.log('\n🔔 [2b] 通知音は 8 つの中からだけ選べる');
+    const soundPick = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      soundOnNote: 'LoungeChime',
+      soundOnPost: 'CalmBell',
+    })).json()).prefs;
+    check('知っている音は保存できる（新着）', soundPick.soundOnNote, 'LoungeChime');
+    check('知っている音は保存できる（投稿）', soundPick.soundOnPost, 'CalmBell');
+
+    const soundBad = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      soundOnNote: 'NotASound',
+      soundOnPost: '../../etc/passwd',
+    })).json()).prefs;
+    check('知らない音は既定へ戻す（新着）', soundBad.soundOnNote, 'LittleSpark');
+    check('知らない音は既定へ戻す（投稿）', soundBad.soundOnPost, 'PopSignal');
+
+    const soundOff = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      soundOnNote: '',
+    })).json()).prefs;
+    check('「鳴らさない」はそのまま保存する', soundOff.soundOnNote, '');
+    check('もう一方は触らない', soundOff.soundOnPost, 'PopSignal');
 
     // ------------------------------------------------------------------
     console.log('\n🔤 [3] mutedDomains の正規化');

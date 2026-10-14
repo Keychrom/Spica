@@ -54,6 +54,10 @@ export interface UserPrefs {
 
   // 🔔 通知
   notificationGrouping: 'group' | 'individual';
+  /** 新着ノートが届いたときの通知音（`SOUND_IDS` の id。'' は鳴らさない） */
+  soundOnNote: string;
+  /** 自分が投稿したときの通知音（同上） */
+  soundOnPost: string;
 
   // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` が on のときだけ使う）
   /** 誰から受け取るか（既定は誰からも受け取らない） */
@@ -91,6 +95,10 @@ export const USER_PREFS_DEFAULTS: UserPrefs = {
   recentReactions: [],
 
   notificationGrouping: 'group',
+  // 通知音の既定（新着 = Little Spark / 投稿 = Pop Signal）。
+  // ⚠️ 画面側の表示既定（client/src/lib/sounds.ts の DEFAULT_SOUND_*）とも揃えること
+  soundOnNote: 'LittleSpark',
+  soundOnPost: 'PopSignal',
 
   // 既定は「誰からも受け取らない」。相手が許可リストに入っているときだけ受け取る（docs/DM.md）
   dmPolicy: 'noone',
@@ -138,6 +146,28 @@ function pickRecentReactions(value: unknown, fallback: string[]): string[] {
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
   return typeof value === 'string' && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+/**
+ * 通知音の id（`client/public/sounds/*.mp3` のファイル名から拡張子を除いたもの）。
+ * ⚠️ **`client/src/lib/sounds.ts` の `SOUNDS` と同じ並びにすること**（片方だけ足すと、
+ *    画面では選べるのに保存で既定に戻される）。
+ * `''` は「鳴らさない」で、明示的に許す。
+ */
+export const SOUND_IDS = [
+  'CalmBell',
+  'CrystalSignal',
+  'LittleSpark',
+  'LoungeChime',
+  'PoliteClick',
+  'CrystalSounds',
+  'LittleChime',
+  'PopSignal',
+] as const;
+
+function pickSound(value: unknown, fallback: string): string {
+  if (value === '') return '';
+  return typeof value === 'string' && (SOUND_IDS as readonly string[]).includes(value) ? value : fallback;
 }
 
 function pickBool(value: unknown, fallback: boolean): boolean {
@@ -247,6 +277,8 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
     recentReactions: pickRecentReactions(source.recentReactions, d.recentReactions),
 
     notificationGrouping: pickEnum(source.notificationGrouping, ['group', 'individual'] as const, d.notificationGrouping),
+    soundOnNote: pickSound(source.soundOnNote, d.soundOnNote),
+    soundOnPost: pickSound(source.soundOnPost, d.soundOnPost),
 
     dmPolicy: pickEnum(source.dmPolicy, ['noone', 'allowlist'] as const, d.dmPolicy),
     dmAllow: pickDmAllow(source.dmAllow, d.dmAllow),
