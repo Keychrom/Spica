@@ -85,7 +85,7 @@ export async function processActivity(
         let targetUserId: string | null = targetUsername ? targetUsername.toLowerCase() : null;
         
         if (!targetUserId && targetActorUrl) {
-          // targetActorUrl からユーザーIDを柔軟に抽出 (例: https://astrabit.../users/admin)
+          // targetActorUrl からユーザーIDを柔軟に抽出 (例: https://spica.../users/admin)
           const match = targetActorUrl.match(/\/users\/([^/?#]+)/i);
           if (match) {
             targetUserId = decodeURIComponent(match[1]).toLowerCase();

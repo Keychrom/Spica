@@ -80,7 +80,7 @@ export DATABASE_URL='postgres://spica:パスワード@127.0.0.1:5432/spica'
 npm run db:pg:init -- --dsn "$DATABASE_URL"
 
 # データを移送して、行数と内容を突き合わせる
-npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --truncate --verify
+npm run db:pg:migrate -- --from data_spica.sqlite --dsn "$DATABASE_URL" --truncate --verify
 ```
 
 - `--verify` は**行数と内容の要約（チェックサム）を突き合わせます**。合わない行があれば失敗として出ます。

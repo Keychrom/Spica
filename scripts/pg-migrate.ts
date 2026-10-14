@@ -4,7 +4,7 @@
  * ノードごと DB を移すための道具。エクスポート/インポート（ユーザー単位のアーカイブ）では
  * ノードの全データは移らないため、テーブル単位で移送する。
  *
- *   npm run db:pg:migrate -- --from server/data_astrabit.sqlite --dsn "$DATABASE_URL" --verify
+ *   npm run db:pg:migrate -- --from server/data_spica.sqlite --dsn "$DATABASE_URL" --verify
  *
  * 動き:
  *   ・外部キーの依存順にテーブルを処理する（参照される側が先）
@@ -107,7 +107,7 @@ async function main(): Promise<number> {
 
   const fromPath = args.from
     ? path.resolve(args.from)
-    : path.resolve(ROOT_DIR, 'server', process.env.DB_PATH || 'data_astrabit.sqlite');
+    : path.resolve(ROOT_DIR, 'server', process.env.DB_PATH || 'data_spica.sqlite');
   if (!fs.existsSync(fromPath)) {
     console.error(`❌ 移送元の SQLite が見つかりません: ${fromPath}`);
     return 66;

@@ -209,7 +209,7 @@ const DOMAIN = rawDomain.replace(/^https?:\/\//, '').replace(/\/+$/, '');
 const PROTOCOL = process.env.PROTOCOL || (DOMAIN.includes('localhost') || DOMAIN.includes('127.0.0.1') ? 'http' : 'https');
 const ORIGIN = `${PROTOCOL}://${DOMAIN}`;
 
-const DB_PATH = process.env.DB_PATH || path.resolve(process.cwd(), 'data_astrabit.sqlite');
+const DB_PATH = process.env.DB_PATH || path.resolve(process.cwd(), 'data_spica.sqlite');
 
 // データベースの種類。既定は SQLite（追加ミドルウェア不要）。
 // 'postgres' を選ぶと DATABASE_URL に接続する。どちらも同じ非同期データ層で動く

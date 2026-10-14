@@ -120,7 +120,7 @@ async function run() {
         DOMAIN: 'spica.test',
         PROTOCOL: 'https',
         DB_PATH: path.resolve(ROOT_DIR, 'server', TEST_DB),
-        INSTANCE_NAME: 'AstraBit Relay Test',
+        INSTANCE_NAME: 'Spica Relay Test',
       },
       stdio: 'pipe',
       shell: true,
@@ -223,7 +223,7 @@ async function run() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${admin.sessionToken}`,
       },
-      body: JSON.stringify({ content: '【ローカル】AstraBitローカル投稿です🏠' }),
+      body: JSON.stringify({ content: '【ローカル】Spicaローカル投稿です🏠' }),
     });
 
     // B: フォロー中Misskeyユーザーの投稿を受信（署名付き）

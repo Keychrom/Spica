@@ -19,7 +19,7 @@
     "check:size": "node client/scripts/check-size.mjs",
     "check:client-render": "npx tsx --tsconfig client/tsconfig.json scripts/check-client-render.tsx",
     "start": "npm --workspace=server start",
-    "test": "npx tsx scripts/test-astrabit.ts",
+    "test": "npx tsx scripts/test-spica.ts",
     "test:inbox-signature": "npx tsx scripts/test-inbox-signature.ts",
     "test:federation": "npx tsx scripts/test-federation.ts",
     "test:relay": "npx tsx scripts/test-relay-and-timelines.ts",

@@ -93,7 +93,7 @@ DOMAIN=spica.example.com
 PROTOCOL=https
 INSTANCE_NAME=Spica
 INSTANCE_DESCRIPTION=My sovereign Spica node.
-DB_PATH=data_astrabit.sqlite
+DB_PATH=data_spica.sqlite
 ```
 
 - 設定できる項目の一覧は **[設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md)** にあります。
@@ -376,9 +376,9 @@ npm run db:maintenance -- --apply
 
 ```bash
 pm2 stop spica                       # または systemctl stop spica
-cp server/data_astrabit.sqlite server/data_astrabit.sqlite.broken   # 念のため退避
-rm -f server/data_astrabit.sqlite-wal server/data_astrabit.sqlite-shm
-cp server/data/backups/data_astrabit-YYYYMMDD-HHMMSSmmm.sqlite server/data_astrabit.sqlite
+cp server/data_spica.sqlite server/data_spica.sqlite.broken   # 念のため退避
+rm -f server/data_spica.sqlite-wal server/data_spica.sqlite-shm
+cp server/data/backups/data_spica-YYYYMMDD-HHMMSSmmm.sqlite server/data_spica.sqlite
 pm2 start spica
 ```
 

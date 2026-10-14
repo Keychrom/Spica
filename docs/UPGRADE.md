@@ -54,8 +54,8 @@ cp .env .env.bak_$(date +%Y%m%d_%H%M%S)
 cd /var/www/spica/server
 
 # WAL の内容を本体へ反映してからコピーすると安全（sqlite3 が無い場合は 3 ファイルをまとめてコピー）
-sqlite3 data_astrabit.sqlite "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
-cp data_astrabit.sqlite data_astrabit.sqlite-wal data_astrabit.sqlite-shm ~/spica-backups/ 2>/dev/null
+sqlite3 data_spica.sqlite "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+cp data_spica.sqlite data_spica.sqlite-wal data_spica.sqlite-shm ~/spica-backups/ 2>/dev/null
 cp -r data/uploads ~/spica-backups/uploads-$(date +%Y%m%d) 2>/dev/null || true
 cp ../.env ~/spica-backups/.env-$(date +%Y%m%d)
 ```
@@ -176,7 +176,7 @@ pm2 reload spica         # または sudo systemctl restart spica
 
 > [!NOTE]
 > - アーカイブには**ソースとドキュメントだけ**が入っています。`.env`・DB・`data/uploads`・
->   `node_modules` は含まれないので、重ねても消えません（心配なら更新前に `md5sum .env server/data_astrabit.sqlite`
+>   `node_modules` は含まれないので、重ねても消えません（心配なら更新前に `md5sum .env server/data_spica.sqlite`
 >   などで控えを取ってください。上の手順 1 で DB のバックアップは取っています）。
 > - 逆に、**上流で削除されたファイルはそのまま残ります**。完全に一致させたい場合は、別の場所で
 >   `git clone` してから `rsync -a --delete --exclude '.env' --exclude 'node_modules' --exclude 'data' --exclude 'server/data*' クローン先/ 配置先/`
@@ -271,10 +271,10 @@ npm run build
 
 # プロセスを止めてから、バックアップしたデータベースを復元する
 pm2 stop spica
-rm -f server/data_astrabit.sqlite-wal server/data_astrabit.sqlite-shm   # ← 重要
-cp ~/spica-backups/data_astrabit.sqlite server/data_astrabit.sqlite     # 方法 A で取った 1 ファイル
+rm -f server/data_spica.sqlite-wal server/data_spica.sqlite-shm   # ← 重要
+cp ~/spica-backups/data_spica.sqlite server/data_spica.sqlite     # 方法 A で取った 1 ファイル
 # 3 点セットで取った場合は -wal / -shm も一緒に戻す（古い -wal だけを残さない）
-#   cp ~/spica-backups/data_astrabit.sqlite-wal server/data_astrabit.sqlite-wal
+#   cp ~/spica-backups/data_spica.sqlite-wal server/data_spica.sqlite-wal
 
 pm2 restart spica
 ```

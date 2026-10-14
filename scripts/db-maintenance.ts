@@ -155,7 +155,7 @@ async function main(): Promise<number> {
   }
 
   const serverDir = resolveServerDir();
-  const rawDbPath = process.env.DB_PATH || 'data_astrabit.sqlite';
+  const rawDbPath = process.env.DB_PATH || 'data_spica.sqlite';
   const dbPath = args.dbPath ? path.resolve(args.dbPath) : path.resolve(serverDir, rawDbPath);
   if (!fs.existsSync(dbPath)) {
     console.error(`❌ DB が見つかりません: ${dbPath}`);

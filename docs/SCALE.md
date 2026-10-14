@@ -300,7 +300,7 @@ p50 40ms 以下で返っています（同期ドライバという性質自体�
 
 ```bash
 # 1. スナップショットを取って、負荷試験用の利用者を仕込む
-node -e "new (require('node:sqlite').DatabaseSync)('server/data_astrabit.sqlite',{readOnly:true}).exec(\"VACUUM INTO '.bench/bench.sqlite'\")"
+node -e "new (require('node:sqlite').DatabaseSync)('server/data_spica.sqlite',{readOnly:true}).exec(\"VACUUM INTO '.bench/bench.sqlite'\")"
 npx tsx scripts/load-test-seed.ts --db .bench/bench.sqlite --follows 150 --token-out .bench/token
 
 # 2. ノードを起動（例: SQLite / 3900 番）

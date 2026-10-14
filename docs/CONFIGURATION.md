@@ -34,7 +34,7 @@ Spica の設定は **2 か所**に分かれています。
 | `BIND_HOST` | `0.0.0.0` | 待受アドレス。リバースプロキシ配下で外部に直接公開しない場合は `127.0.0.1` を推奨 |
 | `DOMAIN` | `localhost:<PORT>` | **外部公開ドメイン名（ポートを含めない）**。例: `spica.example.com` |
 | `PROTOCOL` | `DOMAIN` に `localhost` を含む場合は `http`、それ以外は `https` | 外部から見た通信プロトコル |
-| `DB_PATH` | `data_astrabit.sqlite` | SQLite ファイルのパス。相対パスは `server/` 基準で解決されます |
+| `DB_PATH` | `data_spica.sqlite` | SQLite ファイルのパス。相対パスは `server/` 基準で解決されます |
 | `DB_DRIVER` | `sqlite` | `sqlite` または `postgres`。**既定は SQLite** で、書かなければ従来どおりです |
 | `DATABASE_URL` | （なし） | `DB_DRIVER=postgres` のときの接続文字列。**パスワードを含むため公開リポジトリに置かないでください**（[POSTGRESQL.md](POSTGRESQL.md)） |
 | `DATABASE_POOL_MAX` | `5` | PostgreSQL のコネクションプールの本数。同時に走るクエリの上限でもある。相手の DB を圧迫する場合は減らす（`1` で 1 本ずつ直列に戻る） |

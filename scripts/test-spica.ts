@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const ROOT_DIR = process.cwd();
-const TEST_DB = 'data_test_astrabit.sqlite';
+const TEST_DB = 'data_test_spica.sqlite';
 
 // テストDBのクリーンアップ
 [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((f) => {
@@ -33,13 +33,13 @@ async function waitForServer(url: string, maxRetries = 30): Promise<boolean> {
 
 async function run() {
   console.log('====================================================');
-  console.log('🌌 AstraBit (spica.test) 検証テスト');
+  console.log('🌌 Spica (spica.test) 検証テスト');
   console.log('====================================================\n');
 
   let server: ChildProcess | null = null;
 
   try {
-    console.log('▶️ AstraBit サーバーを起動中 (Port 3000)...');
+    console.log('▶️ Spica サーバーを起動中 (Port 3000)...');
     server = spawn('npx', ['tsx', 'src/index.ts'], {
       cwd: path.resolve(ROOT_DIR, 'server'),
       env: {
@@ -48,18 +48,18 @@ async function run() {
         DOMAIN: 'spica.test',
         PROTOCOL: 'https',
         DB_PATH: path.resolve(ROOT_DIR, 'server', TEST_DB),
-        INSTANCE_NAME: 'AstraBit Test Node',
+        INSTANCE_NAME: 'Spica Test Node',
       },
       stdio: 'pipe',
       shell: true,
     });
 
-    server.stdout?.on('data', (d) => console.log(`[AstraBit] ${d.toString().trim()}`));
+    server.stdout?.on('data', (d) => console.log(`[Spica] ${d.toString().trim()}`));
 
     console.log('⏳ サーバーの起動待機中...');
     const ok = await waitForServer('http://localhost:3000');
     if (!ok) throw new Error('サーバーが起動しませんでした。');
-    console.log('✅ AstraBit サーバー起動完了！\n');
+    console.log('✅ Spica サーバー起動完了！\n');
 
     // 1. 初回管理者アカウント登録
     console.log('🔑 [マスターキー登録 1] 初回管理者アカウント admin を登録中...');
@@ -83,7 +83,7 @@ async function run() {
     const regAliceRes = await fetch('http://localhost:3000/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'alice', name: 'Alice Wonderland', summary: 'Hello AstraBit!', agreedToRules: true }),
+      body: JSON.stringify({ id: 'alice', name: 'Alice Wonderland', summary: 'Hello Spica!', agreedToRules: true }),
     });
     const aliceData = await regAliceRes.json();
     console.log(`✅ 一般ユーザー作成完了: ${aliceData.user.handle}`);
@@ -170,7 +170,7 @@ async function run() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${adminData.sessionToken}`,
       },
-      body: JSON.stringify({ content: 'AstraBit 本番ノードの起動完了！宇宙へ繋がります 🌌🚀' }),
+      body: JSON.stringify({ content: 'Spica 本番ノードの起動完了！宇宙へ繋がります 🌌🚀' }),
     });
     const postData = await postRes.json();
     console.log(`✅ 投稿作成成功: "${postData.content}"`);
@@ -180,7 +180,7 @@ async function run() {
     console.log(`✅ タイムライン取得: ${tlData.length} 件 (最新: ${tlData[0]?.content})`);
 
     console.log('\n====================================================');
-    console.log('🎊 AstraBit の全機能・認証・ActivityPub テスト完全成功！');
+    console.log('🎊 Spica の全機能・認証・ActivityPub テスト完全成功！');
     console.log('====================================================');
 
   } catch (err) {

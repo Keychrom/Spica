@@ -279,7 +279,7 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
 npm run db:maintenance -- --backup-only
 
 # 3) 移送する（外部キーの依存順に、1,000 行ずつ。中断しても再実行できる）
-npm run db:pg:migrate -- --from data_astrabit.sqlite --dsn "$DATABASE_URL" --truncate --verify
+npm run db:pg:migrate -- --from data_spica.sqlite --dsn "$DATABASE_URL" --truncate --verify
 ```
 
 移送ツールの挙動:

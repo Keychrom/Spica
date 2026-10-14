@@ -536,7 +536,7 @@ export function createAsyncDatabase(options: CreateAsyncDatabaseOptions = {}): A
   }
 
   // 同期版を経由せずに単体で使う場合（CLI・テストなど）
-  const dbPath = options.dbPath ?? process.env.DB_PATH ?? 'data_astrabit.sqlite';
+  const dbPath = options.dbPath ?? process.env.DB_PATH ?? 'data_spica.sqlite';
   return new AsyncSqliteDatabase(new DatabaseSync(dbPath));
 }
 

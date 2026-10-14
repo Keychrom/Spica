@@ -42,7 +42,7 @@ function check(name: string, cond: boolean, detail = ''): void {
 }
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spica-dbmaint-'));
-const dbPath = path.join(tmpDir, 'data_astrabit.sqlite');
+const dbPath = path.join(tmpDir, 'data_spica.sqlite');
 const uploadsDir = path.join(tmpDir, 'data/uploads');
 const backupDir = path.join(tmpDir, 'data/backups');
 fs.mkdirSync(path.join(uploadsDir, 'alice'), { recursive: true });
