@@ -58,6 +58,12 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
   pathRef.current = path;
   /** 読み直しの世代。増えたら「続き」の結果は捨てる */
   const loadSeq = useRef(0);
+  /**
+   * いま並べてよい行を読み込んだタイムライン。**別のタイムラインの行を画面に出さない**ための
+   * 最終防波堤（切り替えた直後に前のタブの行が残って見える／遅れて届いた行が紛れ込むのを、
+   * どこから来た行であってもここで止める）。
+   */
+  const [shownPath, setShownPath] = useState<string | null>(null);
 
   const reload = useCallback(
     async (options: { keepScroll?: boolean } = {}) => {
@@ -90,6 +96,7 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
         }
         setPosts(next);
         setCursor(res.headers.get('X-Next-Cursor'));
+        setShownPath(path); // ここで読み込んだタイムラインの行だけを画面に出す
       } catch (err) {
         if (!ac.signal.aborted) console.error(err);
       } finally {
@@ -112,6 +119,7 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
     setPosts([]);
     setCursor(null);
     setNewCount(0);
+    setShownPath(null);
   }, [path]);
 
   // リアルタイムで新着が届いたら読み直す（読み込み直すボタンと同じ扱い）
@@ -174,10 +182,11 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
   }, []);
 
   return {
-    posts,
+    // いまのタイムラインを読み込んでいなければ何も出さない（別のタブの行が残らない）
+    posts: shownPath === path ? posts : [],
     loading,
     loadingMore,
-    cursor,
+    cursor: shownPath === path ? cursor : null,
     newCount,
     reload,
     loadMore,
