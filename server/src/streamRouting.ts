@@ -129,15 +129,14 @@ export async function getFollowerUserIds(actorUrl: string): Promise<string[]> {
   return ids;
 }
 
-/** 投稿 1 件分の配信材料を作る（リモート投稿のときだけフォロワーを引く） */
+/** 投稿 1 件分の配信材料を作る（フォロワーを引いてから判定する） */
 export async function buildNoteRouting(note: RoutableNote): Promise<NoteRouting> {
   const local = note.is_local === true || Number(note.is_local) === 1;
   const author = String(note.author_url || note.user_id || '');
-  return {
-    local,
-    author,
-    followers: local ? [] : await getFollowerUserIds(author),
-  };
+  // ローカル投稿でも引く: ホームは「自分 + フォロー中」なので、ローカルの他人の投稿を
+  // ホームへ配らないためには「誰がフォローしているか」が要る（60 秒キャッシュ・索引が効く）。
+  // ローカル投稿は数が少ないので、ここを省く最適化はしない（意味が変わってしまう）
+  return { local, author, followers: await getFollowerUserIds(author) };
 }
 
 /** この投稿をこのクライアントへ配るべきか */
@@ -154,12 +153,10 @@ export function shouldDeliverNote(client: StreamTarget, note: RoutableNote, rout
     if (client.userId === actorUrlToUserId(routing.author)) return true;
   }
 
-  if (routing.local) {
-    // ローカル投稿はローカルタイムラインとホームの両方に出る
-    if (streams.has('local') || streams.has('home')) return true;
-  } else if (streams.has('home') && client.userId && routing.followers.includes(client.userId)) {
-    return true;
-  }
+  // ローカルは「このサーバーの投稿全部」。ホームは「自分 + フォロー中の人」だけ
+  // （`/api/timeline?mode=home` の定義と**必ず揃える**。ずれると、鳴る音と並ぶ投稿が食い違う）
+  if (routing.local && streams.has('local')) return true;
+  if (streams.has('home') && client.userId && routing.followers.includes(client.userId)) return true;
 
   if (streams.has('all')) return true;
 

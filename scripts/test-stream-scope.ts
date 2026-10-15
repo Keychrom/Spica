@@ -99,7 +99,8 @@ try {
 
   check('* は何でも受け取る', routing.shouldDeliverNote(target(null, ['*']), remoteNote, remoteRouting), true);
   check('ローカル投稿は local へ届く', routing.shouldDeliverNote(target(null, ['local']), localNote, localRouting), true);
-  check('ローカル投稿は home へ届く（home の定義にローカルが含まれる）', routing.shouldDeliverNote(target('bob', ['home']), localNote, localRouting), true);
+  check('ローカル投稿はフォローしていない home には届かない（ローカルの全員は入れない）', routing.shouldDeliverNote(target('bob', ['home']), localNote, localRouting), false);
+  check('ローカル投稿でも自分の投稿は届く', routing.shouldDeliverNote(target('alice', ['home']), localNote, localRouting), true);
   check('ローカル投稿は tag だけの購読者には届かない', routing.shouldDeliverNote(target(null, ['tag:nomatch']), localNote, localRouting), false);
   check('リモート投稿は all へ届く', routing.shouldDeliverNote(target(null, ['all']), remoteNote, remoteRouting), true);
   check('リモート投稿はフォロー中の home へ届く', routing.shouldDeliverNote(target('alice', ['home']), remoteNote, remoteRouting), true);
@@ -145,6 +146,20 @@ try {
   routing.clearFollowerCache();
   check('キャッシュを消せば新しい値を返す', (await routing.getFollowerUserIds(remoteNote.author_url)).sort(), ['alice', 'bob']);
 
+  // ローカル投稿でもフォロワーを引く（ホームは「自分 + フォロー中」なので、これが要る）
+  await db
+    .prepare(
+      `INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+       VALUES (?, ?, ?, ?, 1, 'accepted', ?)`,
+    )
+    .run('f3', `${config.origin}/users/carol`, localNote.author_url, `${localNote.author_url}/inbox`, now);
+  routing.clearFollowerCache();
+  check('ローカル投稿のフォロワーも引ける', await routing.getFollowerUserIds(localNote.author_url), ['carol']);
+  // 材料は投稿ごとに作るので、フォローを足した後は作り直してから見る
+  const localRoutingFresh = await routing.buildNoteRouting(localNote);
+  check('ローカル投稿もフォロー中の home には届く', routing.shouldDeliverNote(target('carol', ['home']), localNote, localRoutingFresh), true);
+  check('ローカル投稿はフォローしていない home には届かない', routing.shouldDeliverNote(target('bob', ['home']), localNote, localRoutingFresh), false);
+
   // ── 4. プロセスをまたいだメッセージでも同じ判定 ─────────────
   console.log('\n── 4. Redis 経由のメッセージ（受信側の判定）──────────');
   routing.clearFollowerCache();
@@ -169,8 +184,8 @@ try {
   streaming.handleRemoteStreamEvent(
     JSON.stringify({ k: 'event', e: 'note', d: localNote, r: localRouting }),
   );
-  check('ローカル投稿は home に届く', alice.notes().length, 2);
-  check('ローカル投稿もフォロー外の home に届く', bob.notes().length, 1);
+  check('自分のローカル投稿は home に届く（投稿者は自分）', alice.notes().length, 2);
+  check('ローカル投稿はフォロー外の home には届かない', bob.notes().length, 0);
   check('ローカル投稿は local にも届く', guest.notes().length, 1);
 
   // routing が無いメッセージ（古い経路・note 以外）は今までどおり全員へ

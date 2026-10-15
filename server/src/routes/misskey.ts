@@ -260,8 +260,11 @@ async function fetchTimelineRows(params: {
     const myActorUrl = `${config.origin}/users/${viewerId}`;
     postFollowJoin = 'LEFT JOIN follows f ON f.following_url = p.author_url AND f.follower_url = ?';
     announceFollowJoin = 'LEFT JOIN follows f ON f.following_url = a.user_id AND f.follower_url = ?';
-    postConds.push('(p.is_local = 1 OR f.follower_url IS NOT NULL)');
-    announceConds.push('(a.is_local = 1 OR f.follower_url IS NOT NULL)');
+    // ⚠️ /api/timeline のホームと同じ定義にすること（自分 + フォロー中。ローカルの全員は入れない）
+    postConds.push('(p.author_url = ? OR f.follower_url IS NOT NULL)');
+    announceConds.push('(a.user_id = ? OR f.follower_url IS NOT NULL)');
+    params_.push(myActorUrl);
+    announceParams.push(myActorUrl);
     followParam = myActorUrl;
   } else if (mode === 'local') {
     postConds.push('p.is_local = 1');

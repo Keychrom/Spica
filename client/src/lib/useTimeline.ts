@@ -49,10 +49,20 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
   const abortRef = useRef<AbortController | null>(null);
   const postsRef = useRef<Post[]>([]);
   postsRef.current = posts;
+  /**
+   * いま読み込んでいるタイムライン。**「続き」の混入を防ぐ**ために使う。
+   * タイムラインを切り替えた直後に前のタブの続きが遅れて届くと、別のタイムラインの行が
+   * 混ざる（ローカル／ホーム／連合がごちゃごちゃになる）。
+   */
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  /** 読み直しの世代。増えたら「続き」の結果は捨てる */
+  const loadSeq = useRef(0);
 
   const reload = useCallback(
     async (options: { keepScroll?: boolean } = {}) => {
       abortRef.current?.abort();
+      loadSeq.current += 1; // 進行中の「続き」の結果は捨てる（別のタイムラインなので）
       if (!path) {
         setPosts([]);
         setCursor(null);
@@ -93,6 +103,17 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
     void reload();
   }, [reload]);
 
+  /**
+   * タイムラインを切り替えたら、**前のタイムラインを出したままにしない**。
+   * 残したままだと、読み込みが終わるまで「タブはホームなのに連合が並んでいる」状態になり、
+   * 読み込みに失敗するとそのまま居座る（混ざって見える）。
+   */
+  useEffect(() => {
+    setPosts([]);
+    setCursor(null);
+    setNewCount(0);
+  }, [path]);
+
   // リアルタイムで新着が届いたら読み直す（読み込み直すボタンと同じ扱い）
   useEffect(() => {
     const onNote = () => void reload({ keepScroll: true });
@@ -129,15 +150,23 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
 
   async function loadMore(): Promise<void> {
     if (!cursor || loadingMore || !path) return;
+    const startedPath = path;
+    const seq = loadSeq.current;
     setLoadingMore(true);
-    const joiner = path.includes('?') ? '&' : '?';
-    const res = await api.get(path + joiner + 'cursor=' + encodeURIComponent(cursor), { auth: signedIn });
-    if (res.ok) {
-      const more = extractPosts(res.data);
-      if (more && more.length > 0) setPosts((current) => [...current, ...more]);
-      setCursor(res.headers.get('X-Next-Cursor'));
+    try {
+      const joiner = startedPath.includes('?') ? '&' : '?';
+      const res = await api.get(startedPath + joiner + 'cursor=' + encodeURIComponent(cursor), { auth: signedIn });
+      // 待っている間にタブが変わった／読み直しが始まったら、この続きは別のタイムラインのもの。
+      // 混ぜると並びが壊れる（前のページの行が新しいタブの一覧に紛れ込む）
+      if (loadSeq.current !== seq || pathRef.current !== startedPath) return;
+      if (res.ok) {
+        const more = extractPosts(res.data);
+        if (more && more.length > 0) setPosts((current) => [...current, ...more]);
+        setCursor(res.headers.get('X-Next-Cursor'));
+      }
+    } finally {
+      setLoadingMore(false);
     }
-    setLoadingMore(false);
   }
 
   const applyPatch = useCallback((postId: string, patch: Partial<Post>) => {

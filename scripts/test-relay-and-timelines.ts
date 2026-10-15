@@ -314,11 +314,40 @@ async function run() {
       headers: { Authorization: `Bearer ${admin.sessionToken}` },
     });
     const homePosts = await homeRes.json();
-    console.log(`👥 [ホームTL件数]: ${homePosts.length} 件 (ローカル + フォロー中Misskey + フォロー中リレーのブースト)`);
-    // ローカル投稿 + フォロー中 Misskey の投稿 + フォロー中リレーのブースト（リノート表示）の 3 件
+    console.log(`👥 [ホームTL件数]: ${homePosts.length} 件 (自分の投稿 + フォロー中Misskey + フォロー中リレーのブースト)`);
+    // 自分の投稿 + フォロー中 Misskey の投稿 + フォロー中リレーのブースト（リノート表示）の 3 件
     if (homePosts.length !== 3) {
       throw new Error(`ホームタイムライン件数が不正です (期待値: 3, 実際: ${homePosts.length})`);
     }
+
+    // 2-b) ホームは「自分 + フォロー中」だけ。**フォローしていない人のローカル投稿は入らない**
+    //      （以前はローカルの全員がホームに入っていて、ホームとローカルの区別が付かなかった）
+    const bobReg = await fetch(`${BASE}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'bob', name: 'Bob', agreedToRules: true }),
+    });
+    const bob = await bobReg.json();
+    if (!bob?.sessionToken) throw new Error(`bob の作成に失敗: HTTP ${bobReg.status} ${JSON.stringify(bob)}`);
+    const bobPostRes = await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bob.sessionToken}` },
+      body: JSON.stringify({ content: '【ローカル他人】フォローしていない人の投稿です' }),
+    });
+    if (bobPostRes.status !== 201) {
+      throw new Error(`bob の投稿に失敗: HTTP ${bobPostRes.status} ${await bobPostRes.text()}`);
+    }
+    const homeAfter = await (await fetch(`${BASE}/api/timeline?mode=home`, {
+      headers: { Authorization: `Bearer ${admin.sessionToken}` },
+    })).json();
+    if (homeAfter.some((p: any) => p.user_id === 'bob')) {
+      throw new Error('フォローしていない人のローカル投稿がホームに混ざっています。');
+    }
+    const localAfter = await (await fetch(`${BASE}/api/timeline?mode=local`)).json();
+    if (!localAfter.some((p: any) => p.user_id === 'bob')) {
+      throw new Error('ローカルタイムラインにローカル投稿が出ていません。');
+    }
+    console.log('✅ ホーム（自分 + フォロー中）とローカル（全員）が分かれている');
 
     // 3) 連合タイムライン (リレー含む全件)
     const fedRes = await fetch(`${BASE}/api/timeline?mode=all`);
@@ -326,9 +355,15 @@ async function run() {
     console.log(`🌐 [連合TL件数]: ${fedPosts.length} 件 (リレーデータ含む全件)`);
     // 投稿3件（ローカル / Misskey / リレー元ノート）+ リレーAnnounceのリノート表示1件。
     // タイムラインは UNION ALL のため、リノートは「リノートした人」の情報付きで別エントリとして並ぶ
+    // 投稿4件（ローカル2 = admin / bob、 Misskey、 リレー元ノート）+ リレーAnnounceのリノート表示1件。
+    // タイムラインは UNION ALL のため、リノートは「リノートした人」の情報付きで別エントリとして並ぶ
     // （Misskey / Mastodon のブースト表示と同じ挙動）。
-    if (fedPosts.length !== 4) {
-      throw new Error(`連合タイムライン件数が不正です (期待値: 4, 実際: ${fedPosts.length})`);
+    if (fedPosts.length !== 5) {
+      throw new Error(`連合タイムライン件数が不正です (期待値: 5, 実際: ${fedPosts.length})`);
+    }
+    // 連合には**ローカルの他人の投稿も入る**（連合＝このサーバーが見ている全部）
+    if (!fedPosts.some((p: any) => p.user_id === 'bob')) {
+      throw new Error('連合タイムラインにローカルの他人の投稿が入っていません。');
     }
     const relayedEntry = fedPosts.find((p: any) => p.renote?.url === RELAY_ACTOR);
     if (!relayedEntry) {

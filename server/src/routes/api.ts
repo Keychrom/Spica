@@ -1156,8 +1156,14 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
     if (myActorUrl) {
       postFollowJoin = 'LEFT JOIN follows f ON f.following_url = p.author_url AND f.follower_url = ?';
       announceFollowJoin = 'LEFT JOIN follows f ON f.following_url = a.user_id AND f.follower_url = ?';
-      postConds.push('(p.is_local = 1 OR f.follower_url IS NOT NULL)');
-      announceConds.push('(a.is_local = 1 OR f.follower_url IS NOT NULL)');
+      // ホームは「**自分 + フォロー中の人**」だけ（2026-10-15 に変更）。
+      // 以前は `p.is_local = 1 OR フォロー中` で、ローカルの全員の投稿がホームに並んでいた
+      // （小さいサーバーでもホームが賑わう利点はあったが、フォローしていない人の投稿が
+      //  混ざる＝ホームとローカルの区別が付かない）。ローカルだけ見たいときは「ローカル」タブへ
+      postConds.push('(p.author_url = ? OR f.follower_url IS NOT NULL)');
+      announceConds.push('(a.user_id = ? OR f.follower_url IS NOT NULL)');
+      params.push(myActorUrl); // 自分の投稿もホームに出す
+      announceParams.push(myActorUrl); // 自分のブーストも
       followParam = myActorUrl;
       // 本人の設定（ホームでブースト・返信を隠す）。ゲストには設定が無いので触らない
       const homePrefs = await getUserPrefs(req.user!.id);
