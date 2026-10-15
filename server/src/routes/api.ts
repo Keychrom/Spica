@@ -1146,7 +1146,7 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
 }
 
 // タイムライン取得（ローカル / ホーム / 連合 / タグ別）- リノート（RT）・リアクション・返信集計付き
-apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
+export const handleTimeline = asyncHandler(async (req: Request, res: Response) => {
   const mode = req.query.mode as string; // 'local', 'home', 'all', 'tag'
   const tag = (req.query.tag as string || '').trim().replace(/^#/, '');
   const page = parsePageQuery(req, 50);
@@ -1383,7 +1383,8 @@ apiRouter.get('/timeline', asyncHandler(async (req: Request, res: Response) => {
   }
 
   res.json(enriched);
-}));
+});
+apiRouter.get('/timeline', handleTimeline);
 
 // 人気・トレンドハッシュタグ一覧
 apiRouter.get('/tags/popular', asyncHandler(async (_req: Request, res: Response) => {
@@ -2621,7 +2622,8 @@ export const handleUnfollow = asyncHandler(async (req: Request, res: Response) =
 apiRouter.post('/unfollow', requireAuth, handleUnfollow);
 
 // 自プロフィール更新 (名前, bio, アイコンURL, ヘッダーURL, 鍵アカウント設定)
-apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+// Misskey 互換の `i/update` からも呼ぶ（中身は Misskey の項目名へ読み替えて渡す）
+export const handleUpdateProfile = asyncHandler(async (req: Request, res: Response) => {
   const { name, summary, icon_url, banner_url, is_locked, fields, discoverable, noindex, no_ai_training } = req.body;
   const user = req.rawUser!;
 
@@ -2679,7 +2681,8 @@ apiRouter.put('/user/profile', requireAuth, asyncHandler(async (req: Request, re
     followingCount,
     postCount,
   });
-}));
+});
+apiRouter.put('/user/profile', requireAuth, handleUpdateProfile);
 
 // ==========================================
 // 📦 アカウントの引っ越し（Move / alsoKnownAs）
@@ -3588,8 +3591,8 @@ apiRouter.post('/notifications/read-all', requireAuth, asyncHandler(async (req: 
   }
 }));
 
-// 単一の通知を既読にする
-apiRouter.post('/notifications/:id/read', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+// 単一の通知を既読にする（Misskey 互換の `i/read-notification` からも呼ぶ）
+export const handleReadNotification = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const notificationId = req.params.id as string;
 
@@ -3605,7 +3608,8 @@ apiRouter.post('/notifications/:id/read', requireAuth, asyncHandler(async (req: 
     console.error('[API Mark Read Error]:', err);
     res.status(500).json({ error: err.message });
   }
-}));
+});
+apiRouter.post('/notifications/:id/read', requireAuth, handleReadNotification);
 
 // ==========================================
 // 🔖 ブックマーク (Bookmarks) エンドポイント
@@ -3690,7 +3694,7 @@ apiRouter.post('/posts/:id/bookmark', requireAuth, asyncHandler(async (req: Requ
 }));
 
 // ブックマーク一覧取得
-apiRouter.get('/bookmarks', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleListBookmarks = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const page = parsePageQuery(req, 50);
   if (page.error) {
@@ -3724,11 +3728,51 @@ apiRouter.get('/bookmarks', requireAuth, asyncHandler(async (req: Request, res: 
     console.error('[Get Bookmarks Error]:', err);
     res.status(500).json({ error: 'ブックマーク一覧の取得に失敗しました。' });
   }
-}));
+});
+apiRouter.get('/bookmarks', requireAuth, handleListBookmarks);
 
 // ==========================================
 // 📌 プロフィールピン留め (Pinned Posts) エンドポイント
 // ==========================================
+
+/** ピン留めを**指定した状態に**する（Misskey 互換の `i/pin` / `i/unpin` から呼ぶ） */
+export async function setPinnedPost(
+  userId: string,
+  targetPostId: string,
+  pinned: boolean,
+): Promise<{ success: boolean; pinned?: boolean; error?: string; status?: number }> {
+  const cleanPostId = targetPostId.trim();
+  if (!cleanPostId) {
+    return { success: false, status: 400, error: 'postId は必須です。' };
+  }
+  const post = await db.prepare('SELECT id, user_id, is_local FROM posts WHERE id = ?').get(cleanPostId) as
+    | { id: string; user_id: string; is_local: number }
+    | undefined;
+  if (!post) {
+    return { success: false, status: 404, error: '投稿が見つかりません。' };
+  }
+  if (post.is_local !== 1 || post.user_id !== userId) {
+    return { success: false, status: 403, error: '自分の投稿のみプロフィールにピン留めできます。' };
+  }
+
+  const existing = await db.prepare('SELECT 1 FROM pinned_posts WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
+  // SQLite では行が `{ '1': 1 }` で返るので、真偽に直してから比べる
+  if (Boolean(existing) === pinned) {
+    // 既にその状態（Misskey の i/pin は二重に押されても増やさない）
+    return { success: true, pinned };
+  }
+  if (pinned) {
+    const count = (await db.prepare('SELECT COUNT(*) as c FROM pinned_posts WHERE user_id = ?').get(userId) as any).c;
+    if (count >= 5) {
+      return { success: false, status: 400, error: 'ピン留めできるノートは最大5件までです。' };
+    }
+    await db.prepare('INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES (?, ?, ?)')
+      .run(userId, cleanPostId, new Date().toISOString());
+  } else {
+    await db.prepare('DELETE FROM pinned_posts WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
+  }
+  return { success: true, pinned };
+}
 
 // ピン留めトグルの共通ロジック (最大5件、本人の投稿のみ)
 async function togglePinPost(userId: string, targetPostId: string): Promise<{ success: boolean; pinned?: boolean; postId?: string; notFound?: boolean; notAllowed?: boolean; limitReached?: boolean; error?: string }> {
@@ -3825,7 +3869,7 @@ apiRouter.post('/posts/:id/pin', requireAuth, asyncHandler(async (req: Request, 
 // ==========================================
 
 // ユーザーブロック
-apiRouter.post('/users/:identifier/block', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleBlockUser = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
   const myActorUrl = `${config.origin}/users/${user.id}`;
@@ -3899,10 +3943,11 @@ apiRouter.post('/users/:identifier/block', requireAuth, asyncHandler(async (req:
     console.error('[User Block Error]:', err);
     res.status(500).json({ error: 'ユーザーのブロックに失敗しました。' });
   }
-}));
+});
+apiRouter.post('/users/:identifier/block', requireAuth, handleBlockUser);
 
 // ユーザーブロック解除
-apiRouter.post('/users/:identifier/unblock', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleUnblockUser = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
   const myActorUrl = `${config.origin}/users/${user.id}`;
@@ -3966,10 +4011,11 @@ apiRouter.post('/users/:identifier/unblock', requireAuth, asyncHandler(async (re
     console.error('[User Unblock Error]:', err);
     res.status(500).json({ error: 'ブロック解除に失敗しました。' });
   }
-}));
+});
+apiRouter.post('/users/:identifier/unblock', requireAuth, handleUnblockUser);
 
 // ユーザーミュート
-apiRouter.post('/users/:identifier/mute', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleMuteUser = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
 
@@ -4013,10 +4059,11 @@ apiRouter.post('/users/:identifier/mute', requireAuth, asyncHandler(async (req: 
     console.error('[User Mute Error]:', err);
     res.status(500).json({ error: 'ユーザーのミュートに失敗しました。' });
   }
-}));
+});
+apiRouter.post('/users/:identifier/mute', requireAuth, handleMuteUser);
 
 // ユーザーミュート解除
-apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleUnmuteUser = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const rawIdentifier = decodeURIComponent(req.params.identifier as string);
 
@@ -4048,10 +4095,11 @@ apiRouter.post('/users/:identifier/unmute', requireAuth, asyncHandler(async (req
     console.error('[User Unmute Error]:', err);
     res.status(500).json({ error: 'ミュート解除に失敗しました。' });
   }
-}));
+});
+apiRouter.post('/users/:identifier/unmute', requireAuth, handleUnmuteUser);
 
 // ブロック中ユーザー一覧取得
-apiRouter.get('/user/blocks', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleListBlocks = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
     const blocks = await db.prepare(`
@@ -4065,10 +4113,11 @@ apiRouter.get('/user/blocks', requireAuth, asyncHandler(async (req: Request, res
     console.error('[Get Blocks Error]:', err);
     res.status(500).json({ error: 'ブロック一覧の取得に失敗しました。' });
   }
-}));
+});
+apiRouter.get('/user/blocks', requireAuth, handleListBlocks);
 
 // ミュート中ユーザー一覧取得
-apiRouter.get('/user/mutes', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleListMutes = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   try {
     const mutes = await db.prepare(`
@@ -4082,7 +4131,8 @@ apiRouter.get('/user/mutes', requireAuth, asyncHandler(async (req: Request, res:
     console.error('[Get Mutes Error]:', err);
     res.status(500).json({ error: 'ミュート一覧の取得に失敗しました。' });
   }
-}));
+});
+apiRouter.get('/user/mutes', requireAuth, handleListMutes);
 
 // ==========================================
 // 入力補完 (オートコンプリート: ユーザー & ハッシュタグ)
@@ -4386,7 +4436,7 @@ apiRouter.delete('/muted-words/:id', requireAuth, asyncHandler(async (req: Reque
 }));
 
 // 🔒 フォローリクエスト（鍵アカウントの承認待ち）
-apiRouter.get('/follow-requests', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleListFollowRequests = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const myActorUrl = `${config.origin}/users/${user.id}`;
   const rows = await db.prepare(`
@@ -4410,10 +4460,11 @@ apiRouter.get('/follow-requests', requireAuth, asyncHandler(async (req: Request,
   }));
 
   res.json(enriched);
-}));
+});
+apiRouter.get('/follow-requests', requireAuth, handleListFollowRequests);
 
 // フォローリクエストの承認 / 拒否
-apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleRespondFollowRequest = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const actorUrl = typeof req.body?.actorUrl === 'string' ? req.body.actorUrl.trim() : '';
   const action = req.body?.action === 'accept' ? 'accept' : req.body?.action === 'reject' ? 'reject' : null;
@@ -4463,7 +4514,8 @@ apiRouter.post('/follow-requests/respond', requireAuth, asyncHandler(async (req:
   }
 
   res.json({ success: true, action, actorUrl });
-}));
+});
+apiRouter.post('/follow-requests/respond', requireAuth, handleRespondFollowRequest);
 
 // 📋 リスト（ユーザーを束ねた専用タイムライン）
 //    アンテナの「ユーザー指定」と同じ考え方で、登録したメンバーの投稿だけを時系列で返す
@@ -4482,7 +4534,7 @@ apiRouter.get('/lists', requireAuth, asyncHandler(async (req: Request, res: Resp
 }));
 
 // リスト作成
-apiRouter.post('/lists', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleCreateList = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
   if (!name) {
@@ -4499,10 +4551,11 @@ apiRouter.post('/lists', requireAuth, asyncHandler(async (req: Request, res: Res
     .run(id, user.id, name, now, now);
   console.log(`[List] 📋 @${user.id} がリスト「${name}」を作成`);
   res.status(201).json({ success: true, id, name });
-}));
+});
+apiRouter.post('/lists', requireAuth, handleCreateList);
 
 // リスト名の変更
-apiRouter.put('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleUpdateList = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const id = String(req.params.id);
   const name = typeof req.body?.name === 'string' ? req.body.name.trim().slice(0, 60) : '';
@@ -4515,10 +4568,11 @@ apiRouter.put('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: 
     return res.status(404).json({ error: 'リストが見つかりません。' });
   }
   res.json({ success: true, id, name });
-}));
+});
+apiRouter.put('/lists/:id', requireAuth, handleUpdateList);
 
 // リスト削除
-apiRouter.delete('/lists/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleDeleteList = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const id = String(req.params.id);
   const existing = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(id, user.id);
@@ -4528,10 +4582,11 @@ apiRouter.delete('/lists/:id', requireAuth, asyncHandler(async (req: Request, re
   await db.prepare('DELETE FROM list_members WHERE list_id = ?').run(id);
   await db.prepare('DELETE FROM lists WHERE id = ?').run(id);
   res.json({ success: true });
-}));
+});
+apiRouter.delete('/lists/:id', requireAuth, handleDeleteList);
 
 // メンバー追加（ローカルID / ハンドル / actor URL を受け付ける）
-apiRouter.post('/lists/:id/members', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleAddListMember = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
   const list = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
@@ -4569,10 +4624,11 @@ apiRouter.post('/lists/:id/members', requireAuth, asyncHandler(async (req: Reque
   }
 
   res.status(201).json({ success: true, member, display_name: displayName });
-}));
+});
+apiRouter.post('/lists/:id/members', requireAuth, handleAddListMember);
 
 // メンバー削除
-apiRouter.delete('/lists/:id/members/:memberId', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleRemoveListMember = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
   const list = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id);
@@ -4584,10 +4640,11 @@ apiRouter.delete('/lists/:id/members/:memberId', requireAuth, asyncHandler(async
     return res.status(404).json({ error: 'メンバーが見つかりません。' });
   }
   res.json({ success: true });
-}));
+});
+apiRouter.delete('/lists/:id/members/:memberId', requireAuth, handleRemoveListMember);
 
 // リストのタイムライン（メンバーの投稿のみ / 公開範囲とミュートワードを尊重）
-apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleListTimeline = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const listId = String(req.params.id);
   const list = await db.prepare('SELECT * FROM lists WHERE id = ? AND user_id = ?').get(listId, user.id) as any;
@@ -4645,7 +4702,8 @@ apiRouter.get('/lists/:id/timeline', requireAuth, asyncHandler(async (req: Reque
   const enriched = await enrichAndFilterPosts(visible, viewerActor, user.id);
 
   res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
-}));
+});
+apiRouter.get('/lists/:id/timeline', requireAuth, handleListTimeline);
 
 // 📥 アカウント移行インポート
 //    - Spica 自身のエクスポート（ZIP / JSON）: 投稿に加えてメディア・フォロー・フォロワー・
@@ -5235,7 +5293,7 @@ apiRouter.get('/antennas', requireAuth, asyncHandler(async (req: Request, res: R
 }));
 
 // アンテナ作成
-apiRouter.post('/antennas', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleCreateAntenna = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const { name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify } = req.body;
 
@@ -5277,10 +5335,11 @@ apiRouter.post('/antennas', requireAuth, asyncHandler(async (req: Request, res: 
     notify: Boolean(notify),
     created_at: now,
   });
-}));
+});
+apiRouter.post('/antennas', requireAuth, handleCreateAntenna);
 
 // アンテナ詳細取得
-apiRouter.get('/antennas/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleShowAntenna = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
   const ant = await db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
@@ -5293,10 +5352,11 @@ apiRouter.get('/antennas/:id', requireAuth, asyncHandler(async (req: Request, re
     with_file: Boolean(ant.with_file),
     notify: Boolean(ant.notify),
   });
-}));
+});
+apiRouter.get('/antennas/:id', requireAuth, handleShowAntenna);
 
 // アンテナ更新
-apiRouter.put('/antennas/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleUpdateAntenna = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
   const { name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify } = req.body;
@@ -5334,10 +5394,11 @@ apiRouter.put('/antennas/:id', requireAuth, asyncHandler(async (req: Request, re
     notify: Boolean(newNotify),
     created_at: ant.created_at,
   });
-}));
+});
+apiRouter.put('/antennas/:id', requireAuth, handleUpdateAntenna);
 
 // アンテナ削除
-apiRouter.delete('/antennas/:id', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleDeleteAntenna = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
   const resDel = await db.prepare('DELETE FROM antennas WHERE id = ? AND user_id = ?').run(antId, user.id);
@@ -5345,10 +5406,11 @@ apiRouter.delete('/antennas/:id', requireAuth, asyncHandler(async (req: Request,
     return res.status(404).json({ error: 'アンテナが見つかりません。' });
   }
   res.json({ success: true });
-}));
+});
+apiRouter.delete('/antennas/:id', requireAuth, handleDeleteAntenna);
 
 // アンテナタイムライン取得
-apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const antId = String(req.params.id);
   const ant = await db.prepare('SELECT * FROM antennas WHERE id = ? AND user_id = ?').get(antId, user.id) as unknown as AntennaRow | undefined;
@@ -5470,7 +5532,8 @@ apiRouter.get('/antennas/:id/timeline', requireAuth, asyncHandler(async (req: Re
     },
     posts: decorated,
   });
-}));
+});
+apiRouter.get('/antennas/:id/timeline', requireAuth, handleAntennaTimeline);
 
 // ==========================================
 // 📝 下書き (Drafts) エンドポイント

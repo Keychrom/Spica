@@ -1,22 +1,47 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request, RequestHandler, Response, NextFunction } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { db, UserRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
-import { MAX_POST_ATTACHMENTS } from '../postService.js';
+import { MAX_POST_ATTACHMENTS, executeUpdatePost } from '../postService.js';
 import { getUserFromToken, createSession } from '../auth.js';
 import { isApprovedUser } from '../registration.js';
+import { fetchRemoteActor } from '../activitypub.js';
+import { getStreamClientCount } from '../streaming.js';
+import { encodeCursor } from '../pagination.js';
+import { deleteMedia, listMedia, toClientMedia } from '../mediaService.js';
 import {
   enrichAndFilterPosts,
+  handleAddListMember,
   handleAnnouncePost,
+  handleBlockUser,
+  handleCreateAntenna,
+  handleCreateList,
   handleCreatePost,
+  handleDeleteAntenna,
+  handleDeleteList,
   handleDeletePost,
   handleFollow,
+  handleAntennaTimeline,
+  handleListBookmarks,
+  handleListTimeline,
+  handleMuteUser,
   handleReactToPost,
+  handleReadNotification,
+  handleRemoveListMember,
+  handleRespondFollowRequest,
+  handleShowAntenna,
+  handleTimeline,
   handleToggleBookmark,
+  handleUnblockUser,
   handleUnfollow,
+  handleUnmuteUser,
+  handleUpdateAntenna,
+  handleUpdateList,
+  handleUpdateProfile,
   handleVotePoll,
   mediaUploadMiddleware,
   saveUploadedMediaFiles,
+  setPinnedPost,
 } from './api.js';
 import {
   buildMisskeyNote,
@@ -30,10 +55,15 @@ import {
 } from '../misskeyFormat.js';
 
 /**
- * Misskey 互換 API（サードパーティ製クライアントから使うための最小セット）
+ * Misskey 互換 API（サードパーティ製クライアントから使うためのセット）
  *
- *   - 読み取り: meta / i / notes の各タイムライン / notes/show / users/show / notifications
- *   - 書き込み: notes/create・delete、reactions、favorites、following、drive/files/create
+ *   - 読み取り: meta / i / emojis / タイムライン（home・local・global・hybrid）/ notes の各一覧
+ *     （show・conversation・children・replies・mentions・renotes・featured・search・search-by-tag）/
+ *     users（show・notes・search・relation・followers・following）/ notifications / favorites /
+ *     lists / antennas / drive/files / ap/show / get-online-users-count
+ *   - 書き込み: notes/create・delete・update、reactions、favorites、polls/vote、following、
+ *     following/requests、mute、blocking、i/update・i/pin・i/unpin・i/read-notification、
+ *     users/lists/*、antennas/*、drive/files/create・delete
  *   - 認証: `Authorization: Bearer <トークン>` または本文の `i`
  *
  * **方針**: 実装は「Spica の API を別名で包む」だけにして、判定・連合・通知のロジックは
@@ -50,6 +80,7 @@ import {
  *     設定 `dm_enabled` が on のときだけ `/api/dm/messages` で扱う（docs/DM.md）
  *   - 権限の細分化: MiAuth で要求された権限は承認画面に表示するが、発行するトークンは
  *     通常のセッションと同じ（アプリごとの権限分離はしない）
+ *   - チャット・ページ・Play・クリップ・ギャラリー・Webhook・管理 API（Spica に無い機能）
  */
 export const misskeyRouter = Router();
 
@@ -829,50 +860,76 @@ async function findUser(identifier: string): Promise<{ user?: UserRow; remote?: 
   return null;
 }
 
+/** 1 人のユーザーを Misskey 形式で組み立てる（`users/show`・`users/relation`・`ap/show` で共用） */
+async function userObject(identifier: string): Promise<any | null> {
+  const found = await findUser(identifier);
+  if (!found && String(identifier).startsWith('http')) {
+    // `ap/show` は「URL を開く」操作なので、キャッシュに無ければ取りに行く（他の経路は取らない）
+    try {
+      const actor = await fetchRemoteActor(String(identifier));
+      return buildMisskeyUser({
+        id: actor.id,
+        name: actor.name,
+        handle: `@${actor.username}@${actor.domain}`,
+        icon_url: actor.icon_url,
+        banner_url: actor.banner_url,
+        summary: actor.summary,
+        is_local: 0,
+        notes_count: ((await db.prepare('SELECT COUNT(*) AS c FROM posts WHERE author_url = ?').get(actor.id) as any)?.c) || 0,
+      });
+    } catch {
+      return null;
+    }
+  }
+  if (!found) return null;
+
+  if (found.remote) {
+    const notesCount = (await db.prepare('SELECT COUNT(*) AS c FROM posts WHERE author_url = ?').get(found.remote.id) as any)?.c || 0;
+    return buildMisskeyUser({
+      id: found.remote.id,
+      name: found.remote.name,
+      handle: `@${found.remote.username}@${found.remote.domain}`,
+      icon_url: found.remote.icon_url,
+      banner_url: found.remote.banner_url,
+      summary: found.remote.summary,
+      is_local: 0,
+      notes_count: notesCount,
+    });
+  }
+
+  const user = found.user!;
+  const counts = (await db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1 AND COALESCE(visibility, 'public') != 'direct') AS notes,
+      (SELECT COUNT(*) FROM follows WHERE following_url = ? AND status = 'accepted') AS followers,
+      (SELECT COUNT(*) FROM follows WHERE follower_url = ?) AS following
+  `).get(user.id, `${config.origin}/users/${user.id}`, `${config.origin}/users/${user.id}`)) as any;
+  return buildMisskeyUser({
+    id: user.id,
+    name: user.name,
+    handle: `@${user.id}@${config.domain}`,
+    icon_url: user.icon_url,
+    banner_url: user.banner_url,
+    summary: user.summary,
+    is_local: 1,
+    fields: user.fields,
+    created_at: user.created_at,
+    is_locked: user.is_locked,
+    role: user.role,
+    followers_count: counts?.followers,
+    following_count: counts?.following,
+    notes_count: counts?.notes,
+  });
+}
+
 /** 1 人のユーザーを Misskey 形式で返す（`users/show` と `following/create` で共用） */
 async function respondUser(identifier: string, res: Response): Promise<void> {
-  const found = await findUser(identifier);
-  if (!found) {
+  const user = await userObject(identifier);
+  if (!user) {
     res.status(404).json({ error: 'ユーザーが見つかりません。', code: 'NO_SUCH_USER' });
     return;
   }
-  if (found.user) {
-    const counts = (await db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM posts WHERE user_id = ? AND is_local = 1 AND COALESCE(visibility, 'public') != 'direct') AS notes,
-        (SELECT COUNT(*) FROM follows WHERE following_url = ? AND status = 'accepted') AS followers,
-        (SELECT COUNT(*) FROM follows WHERE follower_url = ?) AS following
-    `).get(found.user.id, `${config.origin}/users/${found.user.id}`, `${config.origin}/users/${found.user.id}`)) as any;
-    res.json(buildMisskeyUser({
-      id: found.user.id,
-      name: found.user.name,
-      handle: `@${found.user.id}@${config.domain}`,
-      icon_url: found.user.icon_url,
-      banner_url: found.user.banner_url,
-      summary: found.user.summary,
-      is_local: 1,
-      fields: found.user.fields,
-      created_at: found.user.created_at,
-      is_locked: found.user.is_locked,
-      role: found.user.role,
-      followers_count: counts?.followers,
-      following_count: counts?.following,
-      notes_count: counts?.notes,
-    }));
-    return;
-  }
-  const remote = found.remote;
-  const notesCount = (await db.prepare('SELECT COUNT(*) AS c FROM posts WHERE author_url = ?').get(remote.id) as any)?.c || 0;
-  res.json(buildMisskeyUser({
-    id: remote.id,
-    name: remote.name,
-    handle: `@${remote.username}@${remote.domain}`,
-    icon_url: remote.icon_url,
-    banner_url: remote.banner_url,
-    summary: remote.summary,
-    is_local: 0,
-    notes_count: notesCount,
-  }));
+  res.json(user);
 }
 
 misskeyRouter.post('/users/show', asyncHandler(async (req: Request, res: Response) => {
@@ -1116,6 +1173,878 @@ misskeyRouter.post(
     });
   }),
 );
+
+// ===========================================================================
+// スレッド・メンション・ブーストした人・ピン留め
+// ===========================================================================
+
+/**
+ * Misskey のノート ID を Spica の並び順カーソル（時刻 + ID）に翻訳する。
+ * Spica の一覧 API は「不透明なカーソル」で続きを読むので、untilId から組み立て直す。
+ */
+async function misskeyCursorPair(noteId: string): Promise<{ at: string; id: string } | null> {
+  const target = await resolveMisskeyId(noteId);
+  if (!target) return null;
+  if (target.kind === 'post') return { at: target.at, id: target.id };
+  // ブーストの ID が来たら元の投稿に読み替える（一覧は元投稿の並びなので）
+  const row = (await db.prepare(
+    'SELECT p.id, p.published_at FROM announces a JOIN posts p ON p.id = a.post_id WHERE a.id = ?',
+  ).get(target.id)) as { id: string; published_at: string } | undefined;
+  return row ? { at: row.published_at, id: row.id } : null;
+}
+
+/** 返信一覧（`notes/children` / `notes/replies`）。古い順に返す */
+async function respondWithReplies(req: Request, res: Response): Promise<void> {
+  const viewer = await attachUser(req);
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''));
+  if (!target) {
+    res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+    return;
+  }
+  const postId = await targetPostId(target);
+  if (!postId) {
+    res.status(404).json({ error: 'ノートが見つかりません。', code: 'NO_SUCH_NOTE' });
+    return;
+  }
+
+  const limit = readLimit(req.body?.limit, 10, 100);
+  const cursor = await resolveTimeCursor(req.body);
+  if (cursor.error) {
+    res.status(400).json({ error: cursor.error });
+    return;
+  }
+
+  // DM（visibility = 'direct'）は返信一覧にも出さない（notes/conversation と同じ扱い）
+  const conds = ["in_reply_to = ?", "COALESCE(visibility, 'public') != 'direct'"];
+  const params: any[] = [postId];
+  if (cursor.untilAt) {
+    conds.push('published_at < ?');
+    params.push(cursor.untilAt);
+  }
+  if (cursor.sinceAt) {
+    conds.push('published_at > ?');
+    params.push(cursor.sinceAt);
+  }
+
+  const rows = (await db.prepare(
+    `SELECT * FROM posts WHERE ${conds.join(' AND ')} ORDER BY published_at ASC, id ASC LIMIT ?`,
+  ).all(...params, limit)) as any[];
+
+  const actorUrl = viewer ? `${config.origin}/users/${viewer.id}` : null;
+  const enriched = await enrichAndFilterPosts(rows, actorUrl, viewer?.id || null);
+  res.json(await toMisskeyNotes(enriched));
+}
+
+misskeyRouter.post('/notes/children', asyncHandler((req, res) => respondWithReplies(req, res)));
+misskeyRouter.post('/notes/replies', asyncHandler((req, res) => respondWithReplies(req, res)));
+
+/** 自分宛のメンション・返信（`notes/mentions`） */
+misskeyRouter.post('/notes/mentions', asyncHandler(async (req: Request, res: Response) => {
+  const viewer = await attachUser(req);
+  if (!requireUser(viewer, res)) return;
+
+  const limit = readLimit(req.body?.limit, 10, 100);
+  const cursor = await resolveTimeCursor(req.body);
+  if (cursor.error) {
+    return res.status(400).json({ error: cursor.error });
+  }
+
+  // Spica はメンション・返信で通知を作る。**自分の通知**を辿れば
+  // 「自分宛のメンション」も「自分のノートへの返信」も漏れなく取れる（本文の全走査は要らない）
+  const conds = ["user_id = ?", 'post_id IS NOT NULL', "type IN ('mention', 'reply')"];
+  const params: any[] = [viewer.id];
+  if (cursor.untilAt) {
+    conds.push('created_at < ?');
+    params.push(cursor.untilAt);
+  }
+  if (cursor.sinceAt) {
+    conds.push('created_at > ?');
+    params.push(cursor.sinceAt);
+  }
+  const notices = (await db.prepare(
+    `SELECT post_id FROM notifications WHERE ${conds.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT ?`,
+  ).all(...params, limit)) as { post_id: string }[];
+  if (notices.length === 0) {
+    return res.json([]);
+  }
+
+  const ids = notices.map((n) => n.post_id);
+  const rows = (await db.prepare(
+    `SELECT * FROM posts WHERE id IN (${ids.map(() => '?').join(', ')})`,
+  ).all(...ids)) as any[];
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+  const enriched = await enrichAndFilterPosts(ordered, `${config.origin}/users/${viewer.id}`, viewer.id);
+  res.json(await toMisskeyNotes(enriched));
+}));
+
+/** ブーストした人（`notes/renotes`） */
+misskeyRouter.post('/notes/renotes', asyncHandler(async (req: Request, res: Response) => {
+  const viewer = await attachUser(req);
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''));
+  if (!target) {
+    return res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+  }
+  const postId = await targetPostId(target);
+  if (!postId) {
+    return res.status(404).json({ error: 'ノートが見つかりません。', code: 'NO_SUCH_NOTE' });
+  }
+
+  const limit = readLimit(req.body?.limit, 10, 100);
+  const cursor = await resolveTimeCursor(req.body);
+  if (cursor.error) {
+    return res.status(400).json({ error: cursor.error });
+  }
+  const conds = ['post_id = ?'];
+  const params: any[] = [postId];
+  if (cursor.untilAt) {
+    conds.push('created_at < ?');
+    params.push(cursor.untilAt);
+  }
+  if (cursor.sinceAt) {
+    conds.push('created_at > ?');
+    params.push(cursor.sinceAt);
+  }
+  const rows = (await db.prepare(
+    `SELECT * FROM announces WHERE ${conds.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+  ).all(...params, limit)) as unknown as AnnounceRow[];
+
+  const notes = (await Promise.all(rows.map((row) => noteFromAnnounce(row, viewer)))).filter(Boolean);
+  res.json(notes);
+}));
+
+/** プロフィールのピン留め（`notes/featured` / `users/featured-notes`） */
+async function respondFeaturedNotes(req: Request, res: Response): Promise<void> {
+  const viewer = await attachUser(req);
+  const found = await findUser(String(req.body?.userId || req.body?.username || ''));
+  // ピン留めは Spica の手元にある分だけ（他のサーバーの人のピンは持っていない）
+  if (!found || !found.user) {
+    res.json([]);
+    return;
+  }
+  const limit = readLimit(req.body?.limit, 10, 100);
+  const rows = (await db.prepare(`
+    SELECT
+      p.*,
+      p.id AS post_id,
+      COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
+      p.published_at AS timeline_at
+    FROM pinned_posts pin
+    JOIN posts p ON p.id = pin.post_id
+    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+    WHERE pin.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'
+    ORDER BY pin.created_at DESC
+    LIMIT ?
+  `).all(found.user.id, limit)) as any[];
+
+  const actorUrl = viewer ? `${config.origin}/users/${viewer.id}` : null;
+  const enriched = await enrichAndFilterPosts(rows, actorUrl, viewer?.id || null);
+  res.json(await toMisskeyNotes(enriched));
+}
+
+misskeyRouter.post('/notes/featured', asyncHandler((req, res) => respondFeaturedNotes(req, res)));
+misskeyRouter.post('/users/featured-notes', asyncHandler((req, res) => respondFeaturedNotes(req, res)));
+
+/** フォロー状態（`users/relation`）。クライアントはフォローボタンの表示に使う */
+misskeyRouter.post('/users/relation', asyncHandler(async (req: Request, res: Response) => {
+  const viewer = await attachUser(req);
+  if (!requireUser(viewer, res)) return;
+
+  const requested: string[] = (Array.isArray(req.body?.userId) ? req.body.userId : [req.body?.userId])
+    .map((id: unknown) => String(id || '').trim())
+    .filter(Boolean);
+  if (requested.length === 0) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+
+  const myActorUrl = `${config.origin}/users/${viewer.id}`;
+  // 依頼された ID を actor URL に直す（ローカルのユーザー名 / user@host / URL）
+  const actorByRequest = new Map<string, string>();
+  for (const id of requested) {
+    const found = await findUser(id);
+    if (found?.user) actorByRequest.set(id, `${config.origin}/users/${found.user.id}`);
+    else if (found?.remote) actorByRequest.set(id, found.remote.id);
+  }
+  const actorUrls = Array.from(new Set(actorByRequest.values()));
+
+  const following = new Map<string, string>();
+  const followedBy = new Map<string, string>();
+  const blocked = new Set<string>();
+  const muted = new Set<string>();
+  if (actorUrls.length > 0) {
+    const placeholders = actorUrls.map(() => '?').join(', ');
+    for (const row of (await db.prepare(
+      `SELECT following_url, status FROM follows WHERE follower_url = ? AND following_url IN (${placeholders})`,
+    ).all(myActorUrl, ...actorUrls)) as { following_url: string; status: string }[]) {
+      following.set(row.following_url, row.status);
+    }
+    for (const row of (await db.prepare(
+      `SELECT follower_url, status FROM follows WHERE following_url = ? AND follower_url IN (${placeholders})`,
+    ).all(myActorUrl, ...actorUrls)) as { follower_url: string; status: string }[]) {
+      followedBy.set(row.follower_url, row.status);
+    }
+    // ミュート・ブロックは**ローカルは利用者 ID、リモートは actor URL** で入っている
+    const keys = [...actorUrls, ...actorUrls.filter((u) => u.startsWith(`${config.origin}/users/`)).map((u) => u.split('/').pop() as string)];
+    const keyPlaceholders = keys.map(() => '?').join(', ');
+    for (const row of (await db.prepare(
+      `SELECT target_user_id FROM user_blocks WHERE user_id = ? AND target_user_id IN (${keyPlaceholders})`,
+    ).all(viewer.id, ...keys)) as { target_user_id: string }[]) {
+      blocked.add(row.target_user_id);
+    }
+    for (const row of (await db.prepare(
+      `SELECT target_user_id FROM user_mutes WHERE user_id = ? AND target_user_id IN (${keyPlaceholders})`,
+    ).all(viewer.id, ...keys)) as { target_user_id: string }[]) {
+      muted.add(row.target_user_id);
+    }
+  }
+
+  res.json(requested.map((id) => {
+    const actorUrl = actorByRequest.get(id);
+    const keys = actorUrl
+      ? [actorUrl, actorUrl.startsWith(`${config.origin}/users/`) ? actorUrl.split('/').pop() as string : actorUrl]
+      : [];
+    const outStatus = actorUrl ? following.get(actorUrl) : undefined;
+    const inStatus = actorUrl ? followedBy.get(actorUrl) : undefined;
+    return {
+      id,
+      isFollowing: outStatus === 'accepted',
+      isFollowed: inStatus === 'accepted',
+      hasPendingFollowRequestFromYou: outStatus === 'pending',
+      hasPendingFollowRequestToYou: inStatus === 'pending',
+      isBlocking: keys.some((key) => blocked.has(key)),
+      isBlocked: false,
+      isMuted: keys.some((key) => muted.has(key)),
+      isRenoteMuted: false,
+    };
+  }));
+}));
+
+// ===========================================================================
+// 絵文字・ドライブ・リスト・アンテナ・その他
+// ===========================================================================
+
+/** カスタム絵文字の一覧（`emojis`） */
+misskeyRouter.post('/emojis', asyncHandler(async (_req: Request, res: Response) => {
+  const rows = (await db.prepare('SELECT name, url, category, aliases FROM custom_emojis ORDER BY name ASC').all()) as
+    { name: string; url: string; category: string | null; aliases: string | null }[];
+  res.json(rows.map((row) => ({
+    name: row.name,
+    url: row.url,
+    category: row.category || null,
+    aliases: (() => {
+      try { return JSON.parse(row.aliases || '[]'); } catch { return []; }
+    })(),
+  })));
+}));
+
+/** ドライブの 1 ファイルを Misskey の形にする（アップロードと一覧で同じ形を使う） */
+function misskeyFile(media: { url: string; name?: string | null; mediaType?: string | null; size?: number | null; thumbnailUrl?: string | null; createdAt?: string | null }) {
+  return {
+    id: media.url,
+    createdAt: new Date(media.createdAt || Date.now()).toISOString(),
+    name: media.name || '',
+    type: media.mediaType || '',
+    size: media.size || 0,
+    url: media.url,
+    thumbnailUrl: media.thumbnailUrl || null,
+    isSensitive: false,
+    comment: null,
+  };
+}
+
+/** ドライブのファイル一覧（`drive/files`） */
+misskeyRouter.post('/drive/files', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const limit = readLimit(req.body?.limit, 40, 100);
+  // 続きは untilId（この API はファイル ID として URL を返すので URL が来る）
+  let cursor: { at: string; id: string } | null = null;
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const row = (await db.prepare('SELECT id, created_at FROM media WHERE user_id = ? AND (url = ? OR id = ?)')
+      .get(user.id, req.body.untilId, req.body.untilId)) as { id: string; created_at: string } | undefined;
+    if (!row) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    cursor = { at: row.created_at, id: row.id };
+  }
+
+  const items = await listMedia({ userId: user.id, limit: limit + 1, cursor });
+  res.json(items.slice(0, limit).map((row) => misskeyFile(toClientMedia(row))));
+}));
+
+/** ドライブのファイル削除（`drive/files/delete`） */
+misskeyRouter.post('/drive/files/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const fileId = String(req.body?.fileId || '').trim();
+  if (!fileId) {
+    return res.status(400).json({ error: 'fileId が必要です。' });
+  }
+  // この API はファイル ID として URL を返しているので、URL と台帳の ID の両方を受ける
+  const row = (await db.prepare('SELECT id FROM media WHERE user_id = ? AND (url = ? OR id = ?)')
+    .get(user.id, fileId, fileId)) as { id: string } | undefined;
+  if (!row) {
+    return res.status(404).json({ error: 'ファイルが見つかりません。' });
+  }
+  const result = await deleteMedia(user.id, row.id);
+  if (!result.ok) {
+    return res.status(result.inUse ? 409 : 404).json({ error: result.error });
+  }
+  res.status(204).end();
+}));
+
+/** 自分のリスト一覧（`users/lists/list`） */
+misskeyRouter.post('/users/lists/list', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const limit = readLimit(req.body?.limit, 30, 100);
+  const rows = (await db.prepare('SELECT id, name, created_at FROM lists WHERE user_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(user.id, limit)) as { id: string; name: string; created_at: string }[];
+  res.json(rows.map((row) => ({
+    id: row.id,
+    userId: user.id,
+    name: row.name,
+    createdAt: new Date(row.created_at).toISOString(),
+    isPublic: false,
+  })));
+}));
+
+/** リストのタイムライン（`notes/user-list-timeline`） */
+misskeyRouter.post('/notes/user-list-timeline', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const listId = String(req.body?.listId || '').trim();
+  if (!listId) {
+    return res.status(400).json({ error: 'listId が必要です。' });
+  }
+  const limit = readLimit(req.body?.limit, 20, 100);
+  const query: Record<string, string> = { limit: String(limit) };
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const pair = await misskeyCursorPair(req.body.untilId);
+    if (!pair) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    query.cursor = encodeCursor(pair.at, pair.id);
+  }
+
+  // 判定（公開範囲・ミュートワード・メンバーの解決）は Spica のリストのタイムラインをそのまま使う
+  req.params = { ...(req.params || {}), id: listId } as any;
+  req.query = query as any;
+  const result = await callHandler(handleListTimeline, req);
+  if (forwardError(res, result)) return;
+  res.json(await toMisskeyNotes((result.body?.posts || []) as any[]));
+}));
+
+/** 自分のアンテナ一覧（`antennas/list`） */
+misskeyRouter.post('/antennas/list', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const rows = (await db.prepare('SELECT * FROM antennas WHERE user_id = ? ORDER BY created_at DESC').all(user.id)) as any[];
+  res.json(rows.map(misskeyAntenna));
+}));
+
+/** アンテナのタイムライン（`antennas/notes`） */
+misskeyRouter.post('/antennas/notes', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const antennaId = String(req.body?.antennaId || '').trim();
+  if (!antennaId) {
+    return res.status(400).json({ error: 'antennaId が必要です。' });
+  }
+  const limit = readLimit(req.body?.limit, 20, 100);
+  const query: Record<string, string> = { limit: String(limit) };
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const pair = await misskeyCursorPair(req.body.untilId);
+    if (!pair) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    query.cursor = encodeCursor(pair.at, pair.id);
+  }
+
+  req.params = { ...(req.params || {}), id: antennaId } as any;
+  req.query = query as any;
+  const result = await callHandler(handleAntennaTimeline, req);
+  if (forwardError(res, result)) return;
+  res.json(await toMisskeyNotes((result.body?.posts || []) as any[]));
+}));
+
+/** タグのノート（`notes/search-by-tag`）。絞り込みは Spica のタグのタイムラインに任せる */
+misskeyRouter.post('/notes/search-by-tag', asyncHandler(async (req: Request, res: Response) => {
+  const tag = String(req.body?.tag || '').replace(/^#/, '').trim();
+  if (!tag) {
+    return res.json([]);
+  }
+  const limit = readLimit(req.body?.limit, 20, 100);
+  const query: Record<string, string> = { mode: 'tag', tag, limit: String(limit) };
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const pair = await misskeyCursorPair(req.body.untilId);
+    if (!pair) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    query.cursor = encodeCursor(pair.at, pair.id);
+  }
+  req.query = query as any;
+  const result = await callHandler(handleTimeline, req);
+  if (forwardError(res, result)) return;
+  const rows = Array.isArray(result.body) ? result.body : [];
+  res.json(await toMisskeyNotes(rows as any[]));
+}));
+
+/** いまつながっているクライアント数（`get-online-users-count`） */
+misskeyRouter.post('/get-online-users-count', asyncHandler(async (_req: Request, res: Response) => {
+  res.json({ count: getStreamClientCount() });
+}));
+
+/**
+ * URL からノート・ユーザーを引く（`ap/show`）。
+ * クライアントの「URL を貼って開く」操作がこれを使う。
+ */
+misskeyRouter.post('/ap/show', asyncHandler(async (req: Request, res: Response) => {
+  const viewer = await attachUser(req);
+  const uri = String(req.body?.uri || '').trim();
+  if (!uri) {
+    return res.status(400).json({ error: 'uri が必要です。' });
+  }
+
+  // 投稿（正規 ID。末尾スラッシュ付きでも引く）
+  const post = (await db.prepare('SELECT id FROM posts WHERE id = ? OR id = ?')
+    .get(uri, uri.replace(/\/+$/, ''))) as { id: string } | undefined;
+  if (post) {
+    const note = await loadNote(post.id, viewer);
+    if (note) {
+      return res.json({ type: 'Note', object: note });
+    }
+  }
+
+  // ユーザー（ローカル・リモートとも。リモートはキャッシュに無ければ取りに行く）
+  const user = await userObject(uri);
+  if (user) {
+    return res.json({ type: 'User', object: user });
+  }
+
+  res.status(404).json({ error: 'この URL は解決できませんでした。', code: 'NO_SUCH_OBJECT' });
+}));
+
+/** 通知を 1 件だけ既読にする（`i/read-notification`） */
+misskeyRouter.post('/i/read-notification', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const target = await resolveMisskeyId(String(req.body?.notificationId || ''), ['notification']);
+  if (!target) {
+    return res.status(400).json({ error: 'notificationId を解決できません。', code: 'NO_SUCH_NOTIFICATION' });
+  }
+  req.params = { ...(req.params || {}), id: target.id } as any;
+  const result = await callHandler(handleReadNotification, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** 自分のプロフィール更新（`i/update`）。項目名を Spica の形へ読み替えて既存のハンドラに渡す */
+misskeyRouter.post('/i/update', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const body = req.body || {};
+
+  // アバター・バナーは drive のファイル ID（この API では URL）で指定される
+  const avatar = typeof body.avatarId === 'string' ? body.avatarId : (typeof body.avatarUrl === 'string' ? body.avatarUrl : undefined);
+  const banner = typeof body.bannerId === 'string' ? body.bannerId : (typeof body.bannerUrl === 'string' ? body.bannerUrl : undefined);
+
+  req.body = {
+    ...(typeof body.name === 'string' ? { name: body.name } : {}),
+    ...(typeof body.description === 'string' ? { summary: body.description } : {}),
+    ...(typeof body.isLocked === 'boolean' ? { is_locked: body.isLocked } : {}),
+    ...(typeof body.isExplorable === 'boolean' ? { discoverable: body.isExplorable } : {}),
+    ...(avatar !== undefined ? { icon_url: avatar } : {}),
+    ...(banner !== undefined ? { banner_url: banner } : {}),
+    ...(Array.isArray(body.fields) ? { fields: body.fields } : {}),
+  };
+  const result = await callHandler(handleUpdateProfile, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** ピン留め（`i/pin` / `i/unpin`）。トグルではないので**指定した状態に**する */
+async function pinNote(req: Request, res: Response, pinned: boolean): Promise<void> {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''), ['post']);
+  if (!target) {
+    return void res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+  }
+  const result = await setPinnedPost(user.id, target.id, pinned);
+  if (!result.success) {
+    return void res.status(result.status || 400).json({ error: result.error });
+  }
+  res.status(204).end();
+}
+misskeyRouter.post('/i/pin', asyncHandler((req, res) => pinNote(req, res, true)));
+misskeyRouter.post('/i/unpin', asyncHandler((req, res) => pinNote(req, res, false)));
+
+/** ノートの編集（`notes/update`）。編集の連合（Update）は Spica のハンドラが行う */
+misskeyRouter.post('/notes/update', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''), ['post']);
+  if (!target) {
+    return res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+  }
+  const body = req.body || {};
+  const result = await executeUpdatePost({
+    user: req.rawUser!,
+    postId: target.id,
+    content: typeof body.text === 'string' ? body.text : undefined,
+    cw: body.cw === null ? null : (typeof body.cw === 'string' ? body.cw : undefined),
+  });
+  if (!result.ok) {
+    return res.status(result.status).json({ error: result.error });
+  }
+  res.status(204).end();
+}));
+
+/** ミュート / ブロック（`mute/*` `blocking/*`）。判定と連合は Spica のハンドラに任せる */
+async function delegateByIdentifier(
+  handler: RequestHandler,
+  identifier: string,
+  req: Request,
+): Promise<{ status: number; body: any }> {
+  req.params = { ...(req.params || {}), identifier } as any;
+  return await callHandler(handler, req);
+}
+
+misskeyRouter.post('/mute/create', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const identifier = String(req.body?.userId || '').trim();
+  if (!identifier) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+  const result = await delegateByIdentifier(handleMuteUser, identifier, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/mute/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const identifier = String(req.body?.userId || '').trim();
+  if (!identifier) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+  const result = await delegateByIdentifier(handleUnmuteUser, identifier, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/mute/list', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const limit = readLimit(req.body?.limit, 30, 100);
+  const rows = (await db.prepare('SELECT target_user_id FROM user_mutes WHERE user_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(user.id, limit)) as { target_user_id: string }[];
+  const users = (await Promise.all(rows.map((row) => userObject(row.target_user_id)))).filter(Boolean);
+  res.json(users);
+}));
+
+misskeyRouter.post('/blocking/create', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const identifier = String(req.body?.userId || '').trim();
+  if (!identifier) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+  const result = await delegateByIdentifier(handleBlockUser, identifier, req);
+  if (forwardError(res, result)) return;
+  // Misskey はブロックした相手を返す
+  const blocked = await userObject(identifier);
+  if (!blocked) {
+    return res.status(204).end();
+  }
+  res.json(blocked);
+}));
+
+misskeyRouter.post('/blocking/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const identifier = String(req.body?.userId || '').trim();
+  if (!identifier) {
+    return res.status(400).json({ error: 'userId が必要です。' });
+  }
+  const result = await delegateByIdentifier(handleUnblockUser, identifier, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/blocking/list', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const limit = readLimit(req.body?.limit, 30, 100);
+  const rows = (await db.prepare('SELECT target_user_id FROM user_blocks WHERE user_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(user.id, limit)) as { target_user_id: string }[];
+  const users = (await Promise.all(rows.map((row) => userObject(row.target_user_id)))).filter(Boolean);
+  res.json(users);
+}));
+
+/** 受け取ったフォローリクエスト（`following/requests/list`。旧い名前の `i/following/requests/list` も同じ） */
+async function respondFollowRequests(req: Request, res: Response): Promise<void> {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const limit = readLimit(req.body?.limit, 30, 100);
+  const myActorUrl = `${config.origin}/users/${user.id}`;
+  const rows = (await db.prepare(
+    "SELECT follower_url FROM follows WHERE following_url = ? AND status = 'pending' ORDER BY created_at DESC LIMIT ?",
+  ).all(myActorUrl, limit)) as { follower_url: string }[];
+  const users = (await Promise.all(rows.map((row) => userObject(row.follower_url)))).filter(Boolean);
+  res.json(users);
+}
+
+misskeyRouter.post('/following/requests/list', asyncHandler((req, res) => respondFollowRequests(req, res)));
+misskeyRouter.post('/i/following/requests/list', asyncHandler((req, res) => respondFollowRequests(req, res)));
+
+/** フォローリクエストの承認 / 拒否 / 取り消し（`following/requests/*`） */
+async function respondFollowRequestAction(
+  req: Request,
+  res: Response,
+  action: 'accept' | 'reject' | 'cancel',
+): Promise<void> {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const found = await findUser(String(req.body?.userId || ''));
+  const actorUrl = found?.user ? `${config.origin}/users/${found.user.id}` : found?.remote?.id;
+  if (!actorUrl) {
+    return void res.status(404).json({ error: 'ユーザーが見つかりません。', code: 'NO_SUCH_USER' });
+  }
+
+  if (action === 'cancel') {
+    // 自分が送ったリクエストの取り消し（Undo(Follow) の配送込み）
+    req.body = { targetActorUrl: actorUrl };
+    const result = await callHandler(handleUnfollow, req);
+    if (forwardError(res, result)) return;
+    return void res.status(204).end();
+  }
+
+  req.body = { actorUrl, action };
+  const result = await callHandler(handleRespondFollowRequest, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}
+
+misskeyRouter.post('/following/requests/accept', asyncHandler((req, res) => respondFollowRequestAction(req, res, 'accept')));
+misskeyRouter.post('/following/requests/reject', asyncHandler((req, res) => respondFollowRequestAction(req, res, 'reject')));
+misskeyRouter.post('/following/requests/cancel', asyncHandler((req, res) => respondFollowRequestAction(req, res, 'cancel')));
+
+/** お気に入り（ブックマーク）の一覧（`i/favorites`） */
+misskeyRouter.post('/i/favorites', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+
+  const limit = readLimit(req.body?.limit, 20, 100);
+  const query: Record<string, string> = { limit: String(limit) };
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const target = await resolveMisskeyId(req.body.untilId);
+    const postId = target ? await targetPostId(target) : null;
+    // 一覧は「登録した時刻」で並ぶので、カーソルもブックマーク側の時刻で組む
+    const row = postId
+      ? (await db.prepare('SELECT created_at FROM bookmarks WHERE user_id = ? AND post_id = ?').get(user.id, postId)) as
+        | { created_at: string }
+        | undefined
+      : undefined;
+    if (!postId || !row) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    query.cursor = encodeCursor(row.created_at, postId);
+  }
+
+  req.query = query as any;
+  const result = await callHandler(handleListBookmarks, req);
+  if (forwardError(res, result)) return;
+  const rows = Array.isArray(result.body) ? result.body : [];
+  res.json(await toMisskeyNotes(rows as any[]));
+}));
+
+// ===========================================================================
+// リスト・アンテナの作成・更新・削除（`users/lists/*` `antennas/*`）
+// ===========================================================================
+
+/** リストの作成 → 作ったリストを Misskey の形で返す */
+misskeyRouter.post('/users/lists/create', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  req.body = { name: req.body?.name };
+  const result = await callHandler(handleCreateList, req);
+  if (forwardError(res, result)) return;
+  const id = String(result.body?.id || '');
+  const name = String(result.body?.name || '');
+  res.json({ id, userId: user.id, name, createdAt: new Date().toISOString(), isPublic: false });
+}));
+
+misskeyRouter.post('/users/lists/update', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const listId = String(req.body?.listId || '').trim();
+  if (!listId) {
+    return res.status(400).json({ error: 'listId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: listId } as any;
+  req.body = { name: req.body?.name };
+  const result = await callHandler(handleUpdateList, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/users/lists/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const listId = String(req.body?.listId || '').trim();
+  if (!listId) {
+    return res.status(400).json({ error: 'listId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: listId } as any;
+  const result = await callHandler(handleDeleteList, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** リストへ追加（`users/lists/push`）。Misskey は userId で渡す */
+misskeyRouter.post('/users/lists/push', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const listId = String(req.body?.listId || '').trim();
+  const found = await findUser(String(req.body?.userId || ''));
+  if (!listId) {
+    return res.status(400).json({ error: 'listId が必要です。' });
+  }
+  if (!found) {
+    return res.status(404).json({ error: 'ユーザーが見つかりません。', code: 'NO_SUCH_USER' });
+  }
+  // Spica のメンバー追加はハンドル / actor URL / 利用者 ID を受ける
+  req.params = { ...(req.params || {}), id: listId } as any;
+  req.body = { member: found.user ? found.user.id : found.remote.id };
+  const result = await callHandler(handleAddListMember, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** リストから外す（`users/lists/pull`） */
+misskeyRouter.post('/users/lists/pull', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const listId = String(req.body?.listId || '').trim();
+  const found = await findUser(String(req.body?.userId || ''));
+  if (!listId) {
+    return res.status(400).json({ error: 'listId が必要です。' });
+  }
+  if (!found) {
+    return res.status(404).json({ error: 'ユーザーが見つかりません。', code: 'NO_SUCH_USER' });
+  }
+  const memberValue = found.user ? found.user.id : found.remote.id;
+  // Spica のメンバー削除は行 ID を取るので、先に引く
+  const row = (await db.prepare(
+    'SELECT id FROM list_members WHERE list_id = ? AND (member = ? OR member = ? OR display_name = ?)',
+  ).get(listId, memberValue, `${config.origin}/users/${memberValue}`, String(req.body?.userId || ''))) as { id: string } | undefined;
+  if (!row) {
+    return res.status(404).json({ error: 'リストのメンバーではありません。' });
+  }
+  req.params = { ...(req.params || {}), id: listId, memberId: row.id } as any;
+  const result = await callHandler(handleRemoveListMember, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** アンテナの 1 件を Misskey の形にする */
+function misskeyAntenna(row: any) {
+  const split = (value: unknown) => String(value || '').split(/[,、\n\s]+/).map((k) => k.trim()).filter(Boolean);
+  return {
+    id: row.id,
+    createdAt: new Date(row.created_at).toISOString(),
+    name: row.name,
+    keywords: split(row.keywords),
+    excludeKeywords: split(row.exclude_keywords),
+    src: ['home', 'all', 'users'].includes(row.src) ? row.src : 'all',
+    userListId: null,
+    users: split(row.user_list).map((u) => u.replace(/^@/, '')),
+    caseSensitive: Boolean(row.case_sensitive),
+    notify: Boolean(row.notify),
+    withReplies: false,
+    withFile: Boolean(row.with_file),
+  };
+}
+
+/** Misskey のアンテナ条件 → Spica の形（キーワードは配列で来る） */
+function antennaBodyFromMisskey(body: any): Record<string, unknown> {
+  const keywords: string[] = Array.isArray(body?.keywords) ? body.keywords.map((k: unknown) => String(k)).filter(Boolean) : [];
+  const exclude: string[] = Array.isArray(body?.excludeKeywords)
+    ? body.excludeKeywords.map((k: unknown) => String(k)).filter(Boolean)
+    : [];
+  const users: string[] = Array.isArray(body?.users) ? body.users.map((u: unknown) => String(u)).filter(Boolean) : [];
+  // Misskey の src は home / all / users / list。Spica に list は無いので users として受ける
+  const rawSrc = String(body?.src || 'all');
+  const src = users.length > 0 ? 'users' : (['home', 'all'].includes(rawSrc) ? rawSrc : 'all');
+  return {
+    name: body?.name,
+    src,
+    user_list: users.join(','),
+    keywords: keywords.join(' '),
+    exclude_keywords: exclude.join(' '),
+    case_sensitive: Boolean(body?.caseSensitive),
+    with_file: Boolean(body?.withFile),
+    notify: Boolean(body?.notify),
+  };
+}
+
+misskeyRouter.post('/antennas/show', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const antennaId = String(req.body?.antennaId || '').trim();
+  if (!antennaId) {
+    return res.status(400).json({ error: 'antennaId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: antennaId } as any;
+  const result = await callHandler(handleShowAntenna, req);
+  if (forwardError(res, result)) return;
+  res.json(misskeyAntenna(result.body));
+}));
+
+misskeyRouter.post('/antennas/create', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  req.body = antennaBodyFromMisskey(req.body);
+  const result = await callHandler(handleCreateAntenna, req);
+  if (forwardError(res, result)) return;
+  res.json(misskeyAntenna(result.body));
+}));
+
+misskeyRouter.post('/antennas/update', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const antennaId = String(req.body?.antennaId || '').trim();
+  if (!antennaId) {
+    return res.status(400).json({ error: 'antennaId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: antennaId } as any;
+  req.body = antennaBodyFromMisskey(req.body);
+  const result = await callHandler(handleUpdateAntenna, req);
+  if (forwardError(res, result)) return;
+  res.json(misskeyAntenna(result.body));
+}));
+
+misskeyRouter.post('/antennas/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const antennaId = String(req.body?.antennaId || '').trim();
+  if (!antennaId) {
+    return res.status(400).json({ error: 'antennaId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: antennaId } as any;
+  const result = await callHandler(handleDeleteAntenna, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
 
 // ===========================================================================
 // MiAuth（ブラウザで承認してトークンを受け取る Misskey 標準のログイン）

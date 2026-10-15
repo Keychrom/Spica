@@ -137,12 +137,18 @@ export async function resolveMisskeyId(
   return null;
 }
 
-/** ノート ID（ブーストは専用の ID にする） */
-export function noteMisskeyId(item: { id: string; feed_id?: string; renote?: { id: string } | null; timeline_at?: string }): string {
+/**
+ * ノート ID（ブーストは専用の ID にする）。
+ *
+ * 投稿の ID は**その投稿の公開時刻**から作る（`timeline_at` は一覧ごとに違う——
+ * ブックマーク一覧では「登録した時刻」が入る——ので、そこから作ると**同じ投稿が一覧ごとに
+ * 別の ID になり、その ID で `notes/show` を引いても解決できない**）。
+ */
+export function noteMisskeyId(item: { id: string; feed_id?: string; renote?: { id: string } | null; timeline_at?: string; published_at?: string }): string {
   if (item.renote?.id) {
-    return encodeMisskeyId('announce', item.renote.id, item.timeline_at || new Date().toISOString());
+    return encodeMisskeyId('announce', item.renote.id, item.timeline_at || item.published_at || new Date().toISOString());
   }
-  return encodeMisskeyId('post', item.id, item.timeline_at || new Date().toISOString());
+  return encodeMisskeyId('post', item.id, item.published_at || item.timeline_at || new Date().toISOString());
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +324,10 @@ export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map
 
   const note: any = {
     id: noteMisskeyId(item),
-    createdAt: new Date(item.timeline_at || item.published_at).toISOString(),
+    // ふつうのノートの時刻は公開時刻（ブーストは「ブーストした時刻」）
+    createdAt: new Date((isBoost ? (item.timeline_at || item.published_at) : (item.published_at || item.timeline_at)) || Date.now()).toISOString(),
+    // Misskey の updatedAt（Spica の「編集済み」。未編集なら null）
+    updatedAt: item.edited_at ? new Date(item.edited_at).toISOString() : null,
     userId: String(item.user_id || ''),
     user: buildMisskeyUser({
       id: item.user_id,
@@ -350,8 +359,10 @@ export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map
     })),
     replyId: referenceId(item.in_reply_to),
     renoteId: null,
+    // Misskey では `url` は「そのノートの元サーバーでの URL」、`uri` は連合での URI（ローカルは null）。
+    // ローカルの正規 ID は共有 URL そのもの（サーバーが OGP 付きの HTML を返す）
     uri: item.is_local ? null : item.id,
-    url: null,
+    url: item.id || null,
     isHidden: false,
     myReaction: ((item.reactions || []).find((r: any) => r.me) || {}).reaction || null,
     isFavorited: Boolean(item.bookmarked),

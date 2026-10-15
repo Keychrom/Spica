@@ -361,6 +361,156 @@ async function run() {
     const deniedCheck = await mk(`/miauth/${denied}/check`);
     check('拒否すると ok: false のまま', deniedCheck.body.ok, false);
 
+    // ------------------------------------------------------------------
+    console.log('\n🧵 [9] スレッド・メンション・ブーストした人・ピン留め');
+    const parent = await mk('/notes/create', { text: 'スレッドの親です' }, alice.token);
+    const parentId = parent.body.createdNote.id as string;
+    const child = await mk('/notes/create', { text: '子の返信です', replyId: parentId }, bob.token);
+    check('返信できる', child.status, 200);
+
+    const children = await mk('/notes/children', { noteId: parentId });
+    check('notes/children に返信が入る', children.body.length, 1);
+    check('返信の本文', children.body[0].text, '子の返信です');
+    check('返信の replyId が親', children.body[0].replyId, parentId);
+    check('notes/replies も同じ', (await mk('/notes/replies', { noteId: parentId })).body.length, 1);
+
+    await mk('/notes/create', { text: '@alice こんにちは' }, bob.token);
+    const mentions = await mk('/notes/mentions', {}, alice.token);
+    check('notes/mentions が返る', Array.isArray(mentions.body), true);
+    const mentionTexts = mentions.body.map((n: any) => n.text);
+    check('メンションが入る', mentionTexts.includes('@alice こんにちは'), true);
+    check('自分への返信も入る', mentionTexts.includes('子の返信です'), true);
+    check('関係ないノートは入らない', mentionTexts.includes('スレッドの親です'), false);
+
+    await mk('/notes/create', { renoteId: parentId }, bob.token);
+    const renotes = await mk('/notes/renotes', { noteId: parentId });
+    check('notes/renotes に 1 件', renotes.body.length, 1);
+    check('ブーストした人が投稿者', renotes.body[0].user.username, 'bob');
+    check('中身は元ノート', renotes.body[0].renoteId, parentId);
+
+    const feature = async () => (await mk('/notes/featured', { userId: 'alice' })).body.map((n: any) => n.id);
+    check('i/pin で 204', (await mk('/i/pin', { noteId: parentId }, alice.token)).status, 204);
+    check('notes/featured に入る', await feature(), [parentId]);
+    check('users/featured-notes も同じ', (await mk('/users/featured-notes', { username: 'alice' })).body.length, 1);
+    check('i/pin を重ねても増えない', (await mk('/i/pin', { noteId: parentId }, alice.token)).status, 204);
+    check('増えていない', (await feature()).length, 1);
+    check('i/unpin で 204', (await mk('/i/unpin', { noteId: parentId }, alice.token)).status, 204);
+    check('外れる', await feature(), []);
+    check('他人のノートはピンできない', (await mk('/i/pin', { noteId: child.body.createdNote.id }, alice.token)).status, 403);
+
+    // ------------------------------------------------------------------
+    console.log('\n👥 [10] フォロー状態・ミュート・ブロック');
+    const relation = async () => (await mk('/users/relation', { userId: 'bob' }, alice.token)).body[0];
+    const relBefore = await relation();
+    check('users/relation が返る', relBefore.id, 'bob');
+    check('まだフォローしていない', relBefore.isFollowing, false);
+    check('フォローできる', (await mk('/following/create', { userId: 'bob' }, alice.token)).status, 200);
+    check('relation に isFollowing が立つ', (await relation()).isFollowing, true);
+
+    check('mute/create で 204', (await mk('/mute/create', { userId: 'bob' }, alice.token)).status, 204);
+    check('mute/list に入る', (await mk('/mute/list', {}, alice.token)).body.map((u: any) => u.username), ['bob']);
+    check('relation に isMuted が立つ', (await relation()).isMuted, true);
+    check('mute/delete で 204', (await mk('/mute/delete', { userId: 'bob' }, alice.token)).status, 204);
+    check('mute/list が空', (await mk('/mute/list', {}, alice.token)).body.length, 0);
+
+    const blocked = await mk('/blocking/create', { userId: 'bob' }, alice.token);
+    check('blocking/create は相手を返す', blocked.body.username, 'bob');
+    check('blocking/list に入る', (await mk('/blocking/list', {}, alice.token)).body.map((u: any) => u.username), ['bob']);
+    check('relation に isBlocking が立つ', (await relation()).isBlocking, true);
+    check('blocking/delete で 204', (await mk('/blocking/delete', { userId: 'bob' }, alice.token)).status, 204);
+    check('blocking/list が空', (await mk('/blocking/list', {}, alice.token)).body.length, 0);
+
+    // ------------------------------------------------------------------
+    console.log('\n👤 [11] プロフィール更新・ノートの編集・通知の既読');
+    check('i/update で 204', (await mk('/i/update', { name: 'アリス改', description: '新しい自己紹介', isLocked: true }, alice.token)).status, 204);
+    const meUpdated = await mk('/i', {}, alice.token);
+    check('名前が変わる', meUpdated.body.name, 'アリス改');
+    check('自己紹介が変わる', meUpdated.body.description, '新しい自己紹介');
+    check('鍵アカウントになる', meUpdated.body.isLocked, true);
+    // 後続に影響しないよう戻す
+    await mk('/i/update', { name: 'alice さん', description: '', isLocked: false }, alice.token);
+
+    check('notes/update で 204', (await mk('/notes/update', { noteId: parentId, text: '編集した本文です' }, alice.token)).status, 204);
+    const editedNote = (await mk('/notes/show', { noteId: parentId })).body;
+    check('本文が変わる', editedNote.text, '編集した本文です');
+    check('編集済みの時刻が入る', typeof editedNote.updatedAt, 'string');
+    check('作者以外は編集できない', (await mk('/notes/update', { noteId: parentId, text: '乗っ取り' }, bob.token)).status, 403);
+
+    const notices = await mk('/i/notifications', { limit: 20 }, alice.token);
+    const unread = (notices.body as any[]).find((n) => n.isRead === false);
+    check('未読の通知がある', Boolean(unread), true);
+    check('i/read-notification で 204', (await mk('/i/read-notification', { notificationId: unread.id }, alice.token)).status, 204);
+    const noticesAfter = await mk('/i/notifications', { limit: 20 }, alice.token);
+    check('その通知だけ既読になる', (noticesAfter.body as any[]).find((n) => n.id === unread.id)?.isRead, true);
+
+    // ------------------------------------------------------------------
+    console.log('\n📋 [12] リスト・アンテナ・タグ・ドライブ・絵文字・その他');
+    const list = await mk('/users/lists/create', { name: '親しい人' }, alice.token);
+    check('リストを作れる', list.status, 200);
+    const listId = list.body.id as string;
+    check('users/lists/list に入る', (await mk('/users/lists/list', {}, alice.token)).body.map((l: any) => l.name), ['親しい人']);
+    check('メンバーを追加できる', (await mk('/users/lists/push', { listId, userId: 'bob' }, alice.token)).status, 204);
+    await mk('/notes/create', { text: 'リスト用のノート', visibility: 'public' }, bob.token);
+    const listTimeline = await mk('/notes/user-list-timeline', { listId, limit: 10 }, alice.token);
+    check('リストのタイムラインが返る', Array.isArray(listTimeline.body), true);
+    check('メンバーのノートが入る', listTimeline.body.some((n: any) => n.text === 'リスト用のノート'), true);
+    check('メンバーを外せる', (await mk('/users/lists/pull', { listId, userId: 'bob' }, alice.token)).status, 204);
+    check('リストを改名できる', (await mk('/users/lists/update', { listId, name: '仲間' }, alice.token)).status, 204);
+    check('リストを消せる', (await mk('/users/lists/delete', { listId }, alice.token)).status, 204);
+    check('消えた', (await mk('/users/lists/list', {}, alice.token)).body.length, 0);
+
+    const antenna = await mk('/antennas/create', { name: 'テスト', src: 'all', keywords: ['リスト用'], excludeKeywords: ['除外'] }, alice.token);
+    check('アンテナを作れる', antenna.status, 200);
+    check('キーワードは配列で返る', antenna.body.keywords, ['リスト用']);
+    check('除外キーワードも配列', antenna.body.excludeKeywords, ['除外']);
+    const antennaId = antenna.body.id as string;
+    const antennaNotes = await mk('/antennas/notes', { antennaId, limit: 10 }, alice.token);
+    check('アンテナのタイムラインが返る', antennaNotes.body.some((n: any) => n.text === 'リスト用のノート'), true);
+    check('antennas/list に入る', (await mk('/antennas/list', {}, alice.token)).body.map((a: any) => a.name), ['テスト']);
+    check('antennas/show が返る', (await mk('/antennas/show', { antennaId }, alice.token)).body.id, antennaId);
+    check('antennas/update できる', (await mk('/antennas/update', { antennaId, name: 'テスト2', keywords: ['リスト用'] }, alice.token)).body.name, 'テスト2');
+    check('antennas/delete で 204', (await mk('/antennas/delete', { antennaId }, alice.token)).status, 204);
+    check('消えた', (await mk('/antennas/list', {}, alice.token)).body.length, 0);
+
+    await mk('/notes/create', { text: 'タグのテスト #spicatest' }, alice.token);
+    const byTag = await mk('/notes/search-by-tag', { tag: 'spicatest', limit: 10 });
+    check('notes/search-by-tag が返る', Array.isArray(byTag.body), true);
+    check('タグのノートが入る', byTag.body.some((n: any) => (n.text || '').includes('#spicatest')), true);
+
+    const files = await mk('/drive/files', { limit: 10 }, alice.token);
+    check('drive/files にさっきのファイルが入る', files.body.some((f: any) => f.url === uploaded.id), true);
+    const form2 = new FormData();
+    form2.append('file', new Blob([pngBytes], { type: 'image/png' }), 'delete-me.png');
+    const uploaded2 = await (await fetch(`${BASE}/api/drive/files/create`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${alice.token}` },
+      body: form2,
+    })).json();
+    check('drive/files/delete で 204', (await mk('/drive/files/delete', { fileId: uploaded2.id }, alice.token)).status, 204);
+    check('一覧から消える', (await mk('/drive/files', { limit: 20 }, alice.token)).body.some((f: any) => f.id === uploaded2.id), false);
+
+    const emojis = await mk('/emojis');
+    check('emojis は配列で返る', Array.isArray(emojis.body), true);
+
+    // お気に入り（ブックマーク）の一覧
+    await mk('/notes/favorites/create', { noteId: parentId }, alice.token);
+    const favorites = await mk('/i/favorites', { limit: 10 }, alice.token);
+    check('i/favorites に 1 件', favorites.body.length, 1);
+    check('お気に入りのノート', favorites.body[0].id, parentId);
+    check('isFavorited が立つ', favorites.body[0].isFavorited, true);
+    await mk('/notes/favorites/delete', { noteId: parentId }, alice.token);
+
+    const shownNote = await mk('/ap/show', { uri: editedNote.url });
+    check('ap/show でノートが引ける（url は正規 ID）', shownNote.body.type, 'Note');
+    check('そのノート', shownNote.body.object.id, parentId);
+    const shownUser = await mk('/ap/show', { uri: `${BASE}/users/alice` });
+    check('ap/show でユーザーが引ける', shownUser.body.type, 'User');
+    check('そのユーザー', shownUser.body.object.username, 'alice');
+    check('知らない URL は 404', (await mk('/ap/show', { uri: 'https://remotetest.invalid/objects/1' })).status, 404);
+
+    const online = await mk('/get-online-users-count');
+    check('get-online-users-count が返る', typeof online.body.count, 'number');
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Misskey 互換 API の検証: すべて成功');

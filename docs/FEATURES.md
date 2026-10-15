@@ -174,15 +174,18 @@
 | 機能 | 説明 |
 | :--- | :--- |
 | **ログイン（MiAuth）** | Misskey 標準の MiAuth に対応。クライアントがブラウザで `https://<ホスト>/miauth/<session>` を開くと承認画面が出て、許可するとトークンが渡ります。**要求された権限は画面に表示します**が、Spica はアプリごとに権限を分けていないので、承認するとアカウントでできること全部を許可します（不要になったら「設定 → セッション・ログアウト」で切れます）。本文の `i` でもトークンを渡せます。 |
-| **読み取り** | ホーム / ローカル / 連合タイムライン、ノート単体、会話（親 + 返信）、ユーザー情報・ユーザーのノート、フォロワー / フォロー中、通知、ハッシュタグのトレンド、ノート検索。`untilId` / `sinceId` でのページングに対応します。 |
-| **書き込み** | 投稿（本文・CW・公開範囲・返信・引用・ブースト・アンケート・メディア添付）、削除、リアクション、お気に入り（ブックマーク）、フォロー / 解除、アンケート投票、ドライブへのアップロード。 |
-| **ID の扱い** | Misskey のクライアントは ID を**文字列として並べると時刻順**になる前提でページングします。Spica の投稿 ID は URI なので、外には `<時刻(base36)><ハッシュ>` という Misskey 風の ID を出し、受け取ったときは時刻の前後を索引で引いて照合します（テーブルは増やしていません）。 |
+| **読み取り** | `meta` / `i` / `emojis`。タイムラインはホーム / ローカル / 連合（`notes/timeline`・`hybrid-timeline`・`local-timeline`・`global-timeline`）、ノート単体（`notes/show`）、**会話（`notes/conversation`）と返信一覧（`notes/children`・`notes/replies`）**、**メンション（`notes/mentions`）**、検索（`notes/search`）、**タグ（`notes/search-by-tag`）**、**ブーストした人（`notes/renotes`）**、ユーザー（`users/show`・`users/notes`・`users/search`・`users/followers`・`users/following`）、**フォロー状態（`users/relation`）**、通知（`i/notifications`）、**お気に入り（`i/favorites`）**、**ピン留め（`notes/featured`・`users/featured-notes`）**、ハッシュタグのトレンド（`hashtags/trend`）、**リスト（`users/lists/list`・`notes/user-list-timeline`）**、**アンテナ（`antennas/list`・`antennas/show`・`antennas/notes`）**、**ドライブ（`drive/files`）**、**URL からノート・ユーザーを引く `ap/show`**。`untilId` / `sinceId` でのページングに対応します。 |
+| **書き込み** | 投稿（本文・CW・公開範囲・返信・引用・ブースト・アンケート・メディア添付）、削除、**編集（`notes/update`）**、リアクション、お気に入り（ブックマーク）、フォロー / 解除、**フォローリクエストの承認・拒否・取り消し（`following/requests/*`）**、アンケート投票、**プロフィール更新（`i/update`）**、**ピン留め（`i/pin`・`i/unpin`）**、**ミュート（`mute/create`・`mute/delete`・`mute/list`）**、**ブロック（`blocking/create`・`blocking/delete`・`blocking/list`）**、**リストの作成・改名・削除とメンバー追加（`users/lists/*`）**、**アンテナの作成・更新・削除（`antennas/*`）**、ドライブへのアップロードと削除（`drive/files/create`・`drive/files/delete`）、通知の既読（`i/read-notification`・`i/read-all-notifications`）。 |
+| **ID の扱い** | Misskey のクライアントは ID を**文字列として並べると時刻順**になる前提でページングします。Spica の投稿 ID は URI なので、外には `<時刻(base36)><ハッシュ>` という Misskey 風の ID を出し、受け取ったときは時刻の前後を索引で引いて照合します（テーブルは増やしていません）。ID は**投稿の公開時刻**から作るので、どの一覧（タイムライン・お気に入り・リスト…）で見ても同じノートは同じ ID になります。 |
+| **実装のしかた** | ロジックは持たず、**Spica の API を別名で包む**だけにしています（判定・連合・通知は既存のハンドラをそのまま呼ぶ）。二重実装すると片方だけ直る事故が起きるためです。 |
 
 **未対応（方針・制限）**:
 
 - **ストリーミング（WebSocket）**: **対応しました**（`wss://<host>/streaming?i=<トークン>`）。`localTimeline` / `globalTimeline` / `homeTimeline` / `hybridTimeline` / `main`（自分の通知）を購読でき、ノートと通知が Misskey の形式で流れます。匿名接続は公開タイムラインのみ、30 秒間隔の ping で無通信の接続は閉じます。Spica 自身の画面は従来どおり SSE です。
 - **`visibility: specified`（DM）**: **送信は `/api/dm/messages` から**行います（DM が有効なときだけ）。受信は DM が有効なときだけ受け付けます（無効のときは保存せず 202 を返します）。詳細は [README の「DM について」](../README.md#-dm1対1のメッセージについて) を参照してください。
 - **権限の細分化**: 上に書いたとおり、MiAuth の権限は表示だけで、トークンはアカウント相当です。
+- **チャット（`chat/*`）・ページ・Play・クリップ・ギャラリー・Webhook・管理 API**: 未実装です（Spica に無い機能なので、包む先がありません）。
+- **クライアントが期待する形と違うところ**: アンテナの `src: 'list'`（リストを購読する形）は Spica に無いので `users` として受けます。`users/relation` の `isBlocked` は常に false です（Spica は「相手が自分をブロックしているか」を保持していません）。
 - **Mastodon 互換 `/api/v1/*`**: 未実装です（Spica 独自の REST API と Misskey 互換 API を使います）。
 
 ## 10. 実装していないもの（方針）

@@ -18,7 +18,7 @@ Spica を Misskey / Mastodon / Akkoma / Iceshrimp.NET と並べて、
 | 生まれ | 2026・日本・1人開発 | 2014・日本 | 2016・ドイツ | Pleroma の派生（2022〜） | Iceshrimp の .NET 書き直し |
 | 想定規模 | 小〜中（1人運用） | 中〜大 | 大 | 小〜中 | 中 |
 | 公式クライアント | **PWA のみ**（自前 SPA） | 自前 Web + 多数のサードパーティ | 公式 Web / アプリ | 自前 FE + Mastodon 系 | 自前 FE + API 互換 |
-| 主な API | 自前 REST + **Misskey 互換の一部** | Misskey API | Mastodon API | Mastodon + Pleroma API | **Misskey + Mastodon 両対応** |
+| 主な API | 自前 REST + **Misskey 互換**（MiAuth・タイムライン・ノートの読み書きと編集・通知・リスト・アンテナ・ドライブ・WebSocket） | Misskey API | Mastodon API | Mastodon + Pleroma API | **Misskey + Mastodon 両対応** |
 | 文字数 | 実質無制限（サーバー設定） | 既定 3000 | 既定 500 | 既定 5000 | Misskey 相当 |
 
 ---
