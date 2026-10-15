@@ -298,6 +298,19 @@ check('画面は「端末に合わせる」を持っている', themeClient.incl
 check('サーバーの検証も system を受け取る', themeServer.includes("'light', 'system'"));
 check('サーバーの既定も system（画面の既定と一致）', themeServer.includes("themeMode: 'system'"));
 
+// アクセントを選んでいるときもダーク用の「淡い面」があるか
+// （ライトのパステルのままだと、ダークでカードやカレンダーのマスが白く浮く）
+const tokensCss = readFileSync('client/src/styles/tokens.css', 'utf8');
+for (const accent of ['cyan', 'emerald', 'purple', 'rose', 'amber']) {
+  check(
+    `ダークの ${accent} に淡い面（--accent-soft）がある`,
+    tokensCss.includes(`[data-theme='dark'][data-accent='${accent}']`) &&
+      new RegExp(`\\[data-theme='dark'\\]\\[data-accent='${accent}'\\] \\{[^}]*--accent-soft`, 's').test(tokensCss),
+  );
+}
+check('ライトのパステルをそのまま使っていない（ダークの上書きが後ろにある）',
+  tokensCss.lastIndexOf("[data-theme='dark'][data-accent='amber']") > tokensCss.lastIndexOf("html[data-accent='amber']"));
+
 // ======================================================================
 console.log('\n📡 申告するストリームは「いま見ているタイムライン」に合わせる');
 // 申告しないとサーバーは全部を送る＝ホームを開いていても連合の受信で通知音が鳴る（直した不具合）

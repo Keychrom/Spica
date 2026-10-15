@@ -98,3 +98,25 @@ html[data-accent='amber'] {
   --accent-hover: #9c6307;
   --accent-soft: #fdf3e2;
 }
+
+/* アクセントを選んでいるときのダーク。
+   ⚠️ **上のパステル（`--accent-soft`）は明るい背景のための色**で、ダークでは「めっちゃ明るい面」になる
+   （自分カード・カレンダーの投稿のある日・新着ピルなどが白っぽく浮く）。
+   ダークではアクセントの透明版に差し替える（既定のアクセントと同じ考え方）。
+   `--accent` 自体はそのまま — 塗りの上に白文字を乗せる場所（FAB・カレンダーの多い日）があり、
+   薄くすると文字が読めなくなるため。 */
+[data-theme='dark'][data-accent='cyan'] {
+  --accent-soft: rgba(14, 147, 173, 0.22);
+}
+[data-theme='dark'][data-accent='emerald'] {
+  --accent-soft: rgba(15, 157, 111, 0.22);
+}
+[data-theme='dark'][data-accent='purple'] {
+  --accent-soft: rgba(141, 62, 224, 0.22);
+}
+[data-theme='dark'][data-accent='rose'] {
+  --accent-soft: rgba(214, 58, 92, 0.22);
+}
+[data-theme='dark'][data-accent='amber'] {
+  --accent-soft: rgba(185, 118, 10, 0.28);
+}
