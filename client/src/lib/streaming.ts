@@ -3,8 +3,11 @@
  *  ・EventSource はヘッダを付けられないので、ワンタイムチケットを取ってから張る
  *  ・チケットは 60 秒・1 回きりなので、切れたら取り直して張り直す
  *  ・受け取った出来事は窓の合図（spica:stream-*）に流し、画面側が拾う
+ *  ・**見たいストリームを申告する**（`streams=`）。申告しないと「全部」とみなされ、
+ *    表示していないタイムラインの新着まで届く（通知音が鳴り、読み直しも走る）
  */
 import { api } from './api';
+import { streamQuery } from './streamScope';
 
 const EVENTS = ['connected', 'note', 'reaction', 'renote', 'poll_updated', 'delete_post', 'notification'];
 
@@ -69,12 +72,14 @@ function fanOut(type: string, data: unknown): void {
 /**
  * つなぐ。戻り値を呼ぶと切る。
  * onStatus は接続できたかどうかを画面に伝えるため（接続中 / 切れている）。
+ * streams は申告するストリーム（`streamScope.streamsFor`）。変わったら張り直すこと。
  */
-export function openStream(onStatus?: (live: boolean) => void): () => void {
+export function openStream(onStatus?: (live: boolean) => void, streams: string[] = []): () => void {
   let source: EventSource | null = null;
   let closed = false;
   let timer = 0;
   let wait = 2000;
+  const query = streamQuery(streams);
 
   function later() {
     if (closed || timer) return;
@@ -94,7 +99,9 @@ export function openStream(onStatus?: (live: boolean) => void): () => void {
       later();
       return;
     }
-    const next = new EventSource('/api/streaming?ticket=' + encodeURIComponent(value));
+    const next = new EventSource(
+      '/api/streaming?ticket=' + encodeURIComponent(value) + '&streams=' + encodeURIComponent(query),
+    );
     source = next;
     next.addEventListener('open', () => {
       wait = 2000;

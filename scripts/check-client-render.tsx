@@ -47,6 +47,7 @@ import {
   playSound,
 } from '../client/src/lib/sounds.js';
 import SoundSection from '../client/src/components/settings/SoundSection.js';
+import { NO_STREAMS, streamQuery, streamsFor } from '../client/src/lib/streamScope.js';
 
 let checks = 0;
 let failures = 0;
@@ -287,6 +288,27 @@ try {
   playCrashed = true;
 }
 check('再生できない環境でも落ちない', !playCrashed);
+
+// ======================================================================
+console.log('\n📡 申告するストリームは「いま見ているタイムライン」に合わせる');
+// 申告しないとサーバーは全部を送る＝ホームを開いていても連合の受信で通知音が鳴る（直した不具合）
+const scope = (path: string, def?: string) => streamsFor(path, def).join(',');
+check('?mode=home はホーム', scope('/?mode=home'), 'home');
+check('?mode=local はローカル', scope('/?mode=local'), 'local');
+check('?mode=all は連合', scope('/?mode=all'), 'all');
+check('?mode= が無ければ設定の既定タブ', scope('/', 'local'), 'local');
+check('既定も無ければホーム', scope('/'), 'home');
+check('変な mode はホーム', scope('/?mode=bogus'), 'home');
+check('タグの画面はそのタグ', scope('/tags/Spica'), 'tag:spica');
+check('チャンネルの画面はそのチャンネル', scope('/channels/Ch_1'), 'channel:Ch_1');
+check('1 つのノートを開いているときは何も受け取らない', scope('/?post=https%3A%2F%2Fexample.com%2Fnotes%2F1'), 'none');
+check('設定は何も受け取らない', scope('/settings'), 'none');
+check('通知の画面も何も受け取らない', scope('/notifications'), 'none');
+check('プロフィールも何も受け取らない', scope('/users/alice'), 'none');
+check('チャンネル一覧（1 つも開いていない）も何も受け取らない', scope('/channels'), 'none');
+check('申告はクエリに載る（未申告は「全部」と見なされる）', streamQuery(['none']), 'none');
+check('申告はカンマで並べる', streamQuery(['home', 'tag:foo']), 'home,tag:foo');
+check('クライアントとサーバーの none が同じ文字列', /NO_STREAMS = 'none'/.test(readFileSync('server/src/streamRouting.ts', 'utf8')) && NO_STREAMS === 'none');
 
 // ======================================================================
 // 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）

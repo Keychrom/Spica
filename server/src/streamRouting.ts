@@ -14,7 +14,11 @@ import { db } from './db.js';
  *   - `all`     … 連合タイムライン（全件）
  *   - `tag:<名前>`     … そのハッシュタグを含む投稿
  *   - `channel:<ID>`  … そのチャンネルの投稿
+ *   - `none`    … **新着は 1 件も受け取らない**（タイムラインを表示していない画面。
+ *                通知（reaction / notification）は note ではないので、これでも届く）
  *   - `*`       … 全部（未指定のときの既定。古いクライアントは今までどおり全部受け取る）
+ *
+ * `none` は他の指定に優先する（`none,home` なら何も来ない）。
  *
  * 判定は**投稿ごとに 1 回**材料（`NoteRouting`）を作ってから行う。リモート投稿のときだけ
  * 「作者をフォローしているローカルユーザー」を引く（60 秒キャッシュ・`follows(following_url)` の索引が効く）。
@@ -23,6 +27,9 @@ import { db } from './db.js';
 
 /** 全イベントを受け取るストリーム（`streams` 未指定のときの既定） */
 export const ALL_STREAMS = '*';
+
+/** 新着を 1 件も受け取らない申告（`streams=none`。画面がタイムラインを出していないとき） */
+export const NO_STREAMS = 'none';
 
 /** 投稿 1 件を誰に配るかの材料。Redis では他のプロセスにもこの形で渡す */
 export interface NoteRouting {
@@ -58,6 +65,11 @@ export function parseStreams(raw: unknown): Set<string> {
       if (!name) continue;
       if (name === ALL_STREAMS) {
         out.add(ALL_STREAMS);
+        continue;
+      }
+      // タイムラインを出していない画面からの申告。他を並べていても「何も受け取らない」が勝つ
+      if (name === NO_STREAMS) {
+        out.add(NO_STREAMS);
         continue;
       }
       // 種類は英小文字、値はそのまま（チャンネル ID は大文字小文字を区別しうる）
@@ -131,6 +143,9 @@ export async function buildNoteRouting(note: RoutableNote): Promise<NoteRouting>
 /** この投稿をこのクライアントへ配るべきか */
 export function shouldDeliverNote(client: StreamTarget, note: RoutableNote, routing: NoteRouting): boolean {
   const streams = client.streams;
+  // タイムラインを表示していないクライアント（設定・通知・プロフィールなど）へは新着を配らない。
+  // 自分の投稿も要らない（投稿した画面は `spica:posted` の合図で自分で読み直す）
+  if (streams.has(NO_STREAMS)) return false;
   if (streams.has(ALL_STREAMS)) return true;
 
   // 自分の投稿（自分のクライアントには必ず届ける）

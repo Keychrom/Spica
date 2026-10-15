@@ -17,7 +17,7 @@ import OnboardingView from './views/OnboardingView';
 import DraftsView from './views/DraftsView';
 import AdminView from './views/AdminView';
 import PlaceholderView from './views/PlaceholderView';
-import { navigate } from './lib/router';
+import { decodePart, navigate, queryValue } from './lib/router';
 import { canModerate } from './lib/nav';
 import type { Post, ServerInfo, SessionUser } from './lib/format';
 import type { Prefs } from './lib/settings';
@@ -28,22 +28,6 @@ const PLACEHOLDERS: Record<string, { title: string; phase: string; note: string 
 
 /** 「集めたノートを読む」画面（1 つの画面で兼ねる） */
 const COLLECTIONS: CollectionKind[] = ['bookmarks', 'lists', 'antennas', 'channels'];
-
-function decodePart(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-/** ?key=value を 1 つ取り出す */
-function queryValue(path: string, key: string): string | undefined {
-  const query = path.split('?')[1];
-  if (!query) return undefined;
-  const value = new URLSearchParams(query).get(key);
-  return value || undefined;
-}
 
 interface RoutesProps {
   path: string;

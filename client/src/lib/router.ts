@@ -11,6 +11,23 @@ export function currentPath(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
+/** URL の一部を安全にデコードする（壊れた `%` でも投げない） */
+export function decodePart(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** `?key=value` を 1 つ取り出す（無ければ undefined） */
+export function queryValue(path: string, key: string): string | undefined {
+  const query = path.split('?')[1];
+  if (!query) return undefined;
+  const value = new URLSearchParams(query).get(key);
+  return value || undefined;
+}
+
 export function navigate(to: string, options: { replace?: boolean; keepScroll?: boolean } = {}): void {
   if (options.replace) window.history.replaceState(null, '', to);
   else window.history.pushState(null, '', to);

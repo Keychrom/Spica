@@ -87,6 +87,7 @@ try {
   check('チャンネルは大文字小文字を保つ', setOf('channel:Ch_1'), ['channel:Ch_1']);
   check('知らない種類は捨てる', setOf('bogus,local'), ['local']);
   check('長すぎる値は捨てる', setOf(`tag:${'x'.repeat(200)}`), ['*']);
+  check('none はそのまま残る（全部に落とさない）', setOf('none'), ['none']);
 
   // ── 2. 配信可否の判定 ──────────────────────────────────────
   console.log('\n── 2. 配信可否（クライアントごと）──────────');
@@ -109,6 +110,12 @@ try {
   check('タグリンク（/tags/）でも届く', routing.shouldDeliverNote(target(null, ['tag:spica']), { ...localNote, content: 'リンク /tags/spica' }, localRouting), true);
   check('チャンネルが一致すれば届く', routing.shouldDeliverNote(target(null, ['channel:ch1']), { ...localNote, channel_id: 'ch1' }, localRouting), true);
   check('チャンネルが違えば届かない', routing.shouldDeliverNote(target(null, ['channel:ch2']), { ...localNote, channel_id: 'ch1' }, localRouting), false);
+
+  // none（タイムラインを出していない画面）: 何も届けない。通知は note ではないので別経路で届く
+  check('none には新着が届かない（ローカル）', routing.shouldDeliverNote(target(null, ['none']), localNote, localRouting), false);
+  check('none には新着が届かない（連合）', routing.shouldDeliverNote(target(null, ['none']), remoteNote, remoteRouting), false);
+  check('none なら自分の投稿も配らない（画面が読み直す）', routing.shouldDeliverNote(target('alice', ['none']), localNote, localRouting), false);
+  check('none が混ざっていれば他を並べても届かない', routing.shouldDeliverNote(target('alice', ['home', 'none']), localNote, localRouting), false);
 
   // ── 3. フォロワーの引き当て（実 DB）────────────────────────
   console.log('\n── 3. フォロワーの引き当て ──────────');
@@ -276,6 +283,13 @@ try {
   await sleep(500);
   await createPost('配信範囲の検証用ローカル投稿 その 4');
   check('申告が無いクライアントは今までどおり受け取る', await legacyWatcher, true);
+
+  // タイムラインを出していない画面（設定・通知などは `none` を申告する）。
+  // ここに新着が届くと、開いていないタイムラインの音が鳴ってしまう
+  const quietWatcher = waitForNote('streams=none', 2500);
+  await sleep(500);
+  await createPost('配信範囲の検証用ローカル投稿 その 5');
+  check('none を申告したクライアントには新着が届かない', await quietWatcher, false);
 } catch (err: any) {
   console.error('\n❌ 検査中にエラー:', err?.message || err);
   failed++;

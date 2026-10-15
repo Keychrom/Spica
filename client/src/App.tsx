@@ -28,6 +28,7 @@ import ShortcutHelp from './components/ShortcutHelp';
 import MenuButton from './components/MenuButton';
 import { useLiveUpdates } from './lib/useLiveUpdates';
 import { useSounds } from './lib/sounds';
+import { streamsFor } from './lib/streamScope';
 import type { DirectoryUser, Post, SessionUser } from './lib/format';
 
 interface ComposerTarget {
@@ -105,8 +106,10 @@ export default function App() {
     })();
   }, [user]);
 
-  // リアルタイム更新（SSE）: ログイン中はつなぎっぱなし。通知は未読に反映する
-  const live = useLiveUpdates(Boolean(user), () => void refreshUnread());
+  // リアルタイム更新（SSE）: ログイン中はつなぎっぱなし。通知は未読に反映する。
+  // 申告するストリームは**いま表示しているタイムライン**（通知音と読み直しの対象をそれに合わせる）
+  const streams = useMemo(() => streamsFor(path, prefs.defaultTimeline), [path, prefs.defaultTimeline]);
+  const live = useLiveUpdates(Boolean(user), () => void refreshUnread(), streams);
 
   // 通知音（新着ノート・自分の投稿）
   useSounds(Boolean(user), user?.id ?? null);
