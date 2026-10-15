@@ -18,7 +18,14 @@ import { db } from './db.js';
 
 export interface UserPrefs {
   // 🎨 表示
-  themeMode: 'dark' | 'pure_black' | 'light';
+  /**
+   * `system` は「端末に合わせる」（`prefers-color-scheme` に追従）。
+   * ⚠️ **画面側の選択肢（`client/src/lib/theme.ts` の `ThemeChoice`）と揃えること。**
+   *    ここに無い値は既定に矯正されるので、`system` を足し忘れると
+   *    「端末に合わせる」を選んでも保存されず、開き直すと既定（ダーク）に戻る。
+   *    `pure_black` は旧画面の値（受け取れるが、新しい画面では `dark` として扱う）
+   */
+  themeMode: 'dark' | 'pure_black' | 'light' | 'system';
   accentColor: 'indigo' | 'cyan' | 'emerald' | 'purple' | 'rose' | 'amber';
   fontSize: 'small' | 'normal' | 'large';
   density: 'comfortable' | 'compact';
@@ -67,7 +74,8 @@ export interface UserPrefs {
 }
 
 export const USER_PREFS_DEFAULTS: UserPrefs = {
-  themeMode: 'dark',
+  // 既定は「端末に合わせる」（画面側の既定と揃える。暗い部屋で白い画面が出ないように）
+  themeMode: 'system',
   accentColor: 'indigo',
   fontSize: 'normal',
   density: 'comfortable',
@@ -250,7 +258,7 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
   const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   const d = USER_PREFS_DEFAULTS;
   return {
-    themeMode: pickEnum(source.themeMode, ['dark', 'pure_black', 'light'] as const, d.themeMode),
+    themeMode: pickEnum(source.themeMode, ['dark', 'pure_black', 'light', 'system'] as const, d.themeMode),
     accentColor: pickEnum(source.accentColor, ['indigo', 'cyan', 'emerald', 'purple', 'rose', 'amber'] as const, d.accentColor),
     fontSize: pickEnum(source.fontSize, ['small', 'normal', 'large'] as const, d.fontSize),
     density: pickEnum(source.density, ['comfortable', 'compact'] as const, d.density),

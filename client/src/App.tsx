@@ -136,10 +136,12 @@ export default function App() {
         publishPrefs(loaded);
         applyDisplayPrefs(loaded);
         // 見た目（テーマとアクセント）はサーバーの値が正。端末をまたいで同じになる
-        if (loaded.themeMode === 'light' || loaded.themeMode === 'dark' || loaded.themeMode === 'system') {
-          setTheme(loaded.themeMode);
-          setThemeChoice(loaded.themeMode);
-          applyTheme(loaded.themeMode);
+        // （旧画面の `pure_black` は新しい画面では「ダーク」として扱う）
+        const savedTheme = loaded.themeMode === 'pure_black' ? 'dark' : loaded.themeMode;
+        if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
+          setTheme(savedTheme);
+          setThemeChoice(savedTheme);
+          applyTheme(savedTheme);
         }
         applyAccent(typeof loaded.accentColor === 'string' ? loaded.accentColor : undefined);
       }

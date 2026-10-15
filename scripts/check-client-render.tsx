@@ -290,6 +290,15 @@ try {
 check('再生できない環境でも落ちない', !playCrashed);
 
 // ======================================================================
+console.log('\n🎨 テーマの選択肢がクライアントとサーバーで揃っている');
+// 「端末に合わせる」がサーバーの検証に無いと、選んでも既定に矯正されて開き直すと戻る（直した不具合）
+const themeClient = readFileSync('client/src/lib/theme.ts', 'utf8');
+const themeServer = readFileSync('server/src/userPrefs.ts', 'utf8');
+check('画面は「端末に合わせる」を持っている', themeClient.includes("'light' | 'dark' | 'system'"));
+check('サーバーの検証も system を受け取る', themeServer.includes("'light', 'system'"));
+check('サーバーの既定も system（画面の既定と一致）', themeServer.includes("themeMode: 'system'"));
+
+// ======================================================================
 console.log('\n📡 申告するストリームは「いま見ているタイムライン」に合わせる');
 // 申告しないとサーバーは全部を送る＝ホームを開いていても連合の受信で通知音が鳴る（直した不具合）
 const scope = (path: string, def?: string) => streamsFor(path, def).join(',');

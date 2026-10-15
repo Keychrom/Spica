@@ -128,7 +128,7 @@ async function run() {
     // ------------------------------------------------------------------
     console.log('📖 [1] 既定値と保存');
     const initial = await getPrefs(alice.sessionToken);
-    check('既定のテーマ', initial.themeMode, 'dark');
+    check('既定のテーマ', initial.themeMode, 'system');
     check('既定の新着の扱い', initial.newPostsBehavior, 'badge');
     check('既定の通知のまとめ', initial.notificationGrouping, 'group');
     check('既定のドメインミュート', initial.mutedDomains.length, 0);
@@ -148,6 +148,14 @@ async function run() {
     check('次に読んでも残っている', reloaded.fontSize, 'large');
     check('触っていない項目は既定のまま', reloaded.density, 'comfortable');
 
+    // 「端末に合わせる」が保存できないと、開き直すたびに既定（ダーク）へ戻ってしまう
+    const systemTheme = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      themeMode: 'system',
+    })).json()).prefs;
+    check('「端末に合わせる」を保存できる', systemTheme.themeMode, 'system');
+    const systemReloaded = await getPrefs(alice.sessionToken);
+    check('読み直しても「端末に合わせる」のまま', systemReloaded.themeMode, 'system');
+
     // ------------------------------------------------------------------
     console.log('\n🛡️ [2] 不正な値・知らないキーは捨てる');
     const dirty = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
@@ -158,7 +166,7 @@ async function run() {
       evilKey: 'should not be stored',
       defaultCwText: 'x'.repeat(500),
     })).json()).prefs;
-    check('不正なテーマは既定へ', dirty.themeMode, 'dark');
+    check('不正なテーマは既定へ', dirty.themeMode, 'system');
     check('不正な文字サイズは既定へ', dirty.fontSize, 'normal');
     check('不正な新着の扱いは既定へ', dirty.newPostsBehavior, 'badge');
     check('配列でない mutedDomains は既定へ', Array.isArray(dirty.mutedDomains) && dirty.mutedDomains.length, 0);
