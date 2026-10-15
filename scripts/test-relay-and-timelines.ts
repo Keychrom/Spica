@@ -48,7 +48,9 @@ async function assertPortFree(port: number): Promise<void> {
   }
 }
 
-async function waitForServer(url: string, maxRetries = 30): Promise<boolean> {
+// `npx` 越しの起動は環境によって 12 秒では足りないことがある（通しで回すと落ちた）。
+// 他のスイートと同じ 60 回（24 秒）まで待つ
+async function waitForServer(url: string, maxRetries = 60): Promise<boolean> {
   for (let i = 0; i < maxRetries; i++) {
     try {
       const res = await fetch(url);

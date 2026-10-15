@@ -8,6 +8,7 @@ import PostCard from '../components/PostCard';
 import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { reactToPost, renotePost, sharePost, toggleBookmark } from '../lib/postActions';
+import { withPostPatch } from '../lib/postPatch';
 import type { Post } from '../lib/format';
 
 interface Thread {
@@ -89,7 +90,7 @@ export default function PostDetailView({
   function patch(postIdToFix: string, patchData: Partial<Post>) {
     setThread((current) => {
       if (!current) return current;
-      const fix = (p: Post) => (p.id === postIdToFix ? { ...p, ...patchData } : p);
+      const fix = (p: Post) => (p.id === postIdToFix ? withPostPatch(p, patchData) : p);
       return {
         post: current.post ? fix(current.post) : null,
         parent: current.parent ? fix(current.parent) : null,

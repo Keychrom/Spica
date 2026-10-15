@@ -12,6 +12,7 @@ import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { formatCount, type DirectoryUser, type Post, type TagCount } from '../lib/format';
 import { reactToPost, sharePost, toggleBookmark } from '../lib/postActions';
+import { withPostPatch } from '../lib/postPatch';
 
 interface SearchViewProps {
   menuButton: ReactNode;
@@ -90,7 +91,7 @@ export default function SearchView({
   );
 
   function patchPost(id: string, patch: Partial<Post>) {
-    setPosts((current) => current.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+    setPosts((current) => current.map((p) => (p.id === id ? withPostPatch(p, patch) : p)));
   }
 
   // 1 枚だけ直った / 消えたときの合図

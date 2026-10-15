@@ -48,6 +48,7 @@ import {
 } from '../client/src/lib/sounds.js';
 import SoundSection from '../client/src/components/settings/SoundSection.js';
 import { NO_STREAMS, streamQuery, streamsFor } from '../client/src/lib/streamScope.js';
+import { withPostPatch } from '../client/src/lib/postPatch.js';
 
 let checks = 0;
 let failures = 0;
@@ -455,6 +456,44 @@ check('連合タブでもナビのホームは点く', isActive('/?mode=all', na
 check('ログイン直後（`/`）でも点く', isActive('/', navHome));
 check('見つけるはホームでは点かない', isActive('/?mode=home', navFind) === false);
 check('下部バーのホームも `/?mode=home`', layout('/?mode=all').includes('href="/?mode=home"'));
+
+// 他のサーバーの票で届いたアンケート更新を被せても、自分の印（me）は消えない
+console.log('\n🗳 アンケートの更新を被せても自分の票の印は残る');
+const votedPoll: Post = {
+  id: 'p1',
+  content: 'アンケート',
+  poll: {
+    total_votes: 2,
+    my_voted: true,
+    choices: [
+      { text: 'りんご', votes_count: 1, me: true },
+      { text: 'みかん', votes_count: 1, me: false },
+    ],
+  },
+} as never as Post;
+const merged = withPostPatch(votedPoll, {
+  poll: {
+    total_votes: 9,
+    my_voted: false,
+    choices: [
+      { text: 'りんご', votes_count: 7, me: false },
+      { text: 'みかん', votes_count: 2, me: false },
+    ],
+  },
+} as never as Partial<Post>);
+check('票数は新しい方を採る', merged.poll?.total_votes, 9);
+check('選択肢の票数も新しい方', merged.poll?.choices?.map((c) => c.votes_count), [7, 2]);
+check('投票済みのまま', merged.poll?.my_voted, true);
+check('入れた選択肢の印が残る（テキストで引き継ぐ）', merged.poll?.choices?.map((c) => Boolean(c.me)), [true, false]);
+const plain = withPostPatch(votedPoll, { bookmarked: true } as never as Partial<Post>);
+check('アンケート以外の更新はそのまま重なる', [plain.bookmarked, plain.poll?.total_votes], [true, 2]);
+check('アンケートが無い投稿でも落ちない', withPostPatch({ id: 'p2', content: 'x' } as never as Post, { bookmarked: true } as never as Partial<Post>).bookmarked, true);
+// 自分の票が無い人（他のサーバーの更新だけを見た人）は my_voted を尊重する
+const untouched = withPostPatch(
+  { id: 'p3', content: 'x', poll: { total_votes: 1, choices: [{ text: 'a', votes_count: 1 }] } } as never as Post,
+  { poll: { total_votes: 5, my_voted: true, choices: [{ text: 'a', votes_count: 5, me: true }] } } as never as Partial<Post>,
+);
+check('自分の票が無ければ届いた内容のまま', [untouched.poll?.my_voted, untouched.poll?.choices?.[0]?.me], [true, true]);
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

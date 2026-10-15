@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { renotePost, reactToPost, sharePost, toggleBookmark } from './postActions';
+import { withPostPatch } from './postPatch';
 import type { Post } from './format';
 
 /**
@@ -141,7 +142,7 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
     const onUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ postId: string; patch: Partial<Post> }>).detail;
       if (!detail) return;
-      setPosts((current) => current.map((p) => (p.id === detail.postId ? { ...p, ...detail.patch } : p)));
+      setPosts((current) => current.map((p) => (p.id === detail.postId ? withPostPatch(p, detail.patch) : p)));
     };
     const onRemoved = (event: Event) => {
       const detail = (event as CustomEvent<{ postId: string }>).detail;
@@ -178,7 +179,7 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
   }
 
   const applyPatch = useCallback((postId: string, patch: Partial<Post>) => {
-    setPosts((current) => current.map((p) => (p.id === postId ? { ...p, ...patch } : p)));
+    setPosts((current) => current.map((p) => (p.id === postId ? withPostPatch(p, patch) : p)));
   }, []);
 
   return {

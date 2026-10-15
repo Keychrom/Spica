@@ -20,7 +20,7 @@ import { isPublicPost } from '../postVisibility.js';
 import { isDmEnabled, localRecipientUserIds, localUserIdFromActorUrl, isDmReceptionAllowed } from '../dm.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll, broadcastEvent } from '../streaming.js';
-import { getPollDataForPost } from './api.js';
+import { applyPollCountsFromQuestion, getPollDataForPost } from './api.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 import { invalidateTimelineCache } from '../timelineCache.js';
 import {
@@ -1052,12 +1052,32 @@ export async function processActivity(
 
       // ✏️ 編集の受信: 手元にある同じ ID の投稿を差し替える（無ければ何もしない）。
       //    差し替えるのは本文・CW・センシティブだけ（票や添付は触らない）
+      //    プロフィール（Person）とアンケートの得票数（Question）もこの種別で届く
       case 'Update': {
         const object = activity.object;
         const objectId = typeof object === 'string' ? object : object?.id;
         if (!objectId || typeof object === 'string') {
           return res.status(200).json({ status: 'Update ignored' });
         }
+        const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
+
+        // 👤 プロフィールの更新（表示名・自己紹介）。投稿ではないので posts を引く前に片付ける。
+        //    ここで見ないと下の posts 検索で「知らないオブジェクト」として捨てられる
+        if (object.type === 'Person') {
+          if (!actorUrl || actorUrl !== objectId) {
+            console.warn(`[Inbox Update] ⚠️ 本人以外からのプロフィール更新を無視しました: ${objectId} (actor=${actorUrl})`);
+            return res.status(200).json({ status: 'Update rejected (actor mismatch)' });
+          }
+          const name = object.name || object.preferredUsername;
+          const summary = object.summary || '';
+          await db.prepare(`
+            UPDATE remote_actors SET name = COALESCE(?, name), summary = COALESCE(?, summary), updated_at = ?
+            WHERE id = ?
+          `).run(name, summary, new Date().toISOString(), objectId);
+          console.log(`[Inbox Update] 🔄 プロフィールを更新しました: ${objectId}`);
+          return res.status(200).json({ status: 'Update processed (profile)' });
+        }
+
         const existing = (await db.prepare('SELECT id, user_id, author_url FROM posts WHERE id = ?').get(objectId)) as
           | { id: string; user_id: string; author_url: string }
           | undefined;
@@ -1066,10 +1086,24 @@ export async function processActivity(
           return res.status(200).json({ status: 'Update ignored (unknown object)' });
         }
         // 差し替えてよいのは、その投稿の作者本人からの Update だけ
-        const actorUrl = typeof activity.actor === 'string' ? activity.actor : activity.actor?.id;
         if (!actorUrl || actorUrl !== existing.author_url) {
           console.warn(`[Inbox Update] ⚠️ 作者が一致しない Update を無視しました: ${objectId} (actor=${actorUrl})`);
           return res.status(200).json({ status: 'Update rejected (actor mismatch)' });
+        }
+
+        // 🗳️ アンケート（Question）の Update は得票数を取り込んで終わる。
+        //    原典（アンケートを作ったサーバー）は票が入るたびにこれを送ってくるので、
+        //    取り込まないと**他のサーバーで入った票が手元に反映されない**（Spica 同士でも同期しない）。
+        //    本文は変わらないため、ここで返して edited_at は付けない（「編集済み」にならないように）
+        if (object.type === 'Question' || object.oneOf || object.anyOf) {
+          const pollChanged = await applyPollCountsFromQuestion(objectId, object);
+          const updatedPoll = await getPollDataForPost(objectId, null);
+          if (pollChanged && updatedPoll && (await isPublicPost(objectId))) {
+            // 開いている画面のアンケート表示をその場で更新（ローカルの投票と同じ扱い）
+            broadcastPoll({ postId: objectId, poll: updatedPoll });
+          }
+          console.log(`[Inbox Update] 🗳️ アンケートの得票数を取り込みました: ${objectId}（変化 ${pollChanged ? 'あり' : 'なし'}）`);
+          return res.status(200).json({ status: 'Update processed (poll)' });
         }
 
         const newContent = typeof object.content === 'string' ? object.content.trim() : null;
@@ -1216,28 +1250,6 @@ export async function processActivity(
           }
         }
         return res.status(200).json({ status: 'Undo processed' });
-      }
-
-      case 'Update': {
-        const object = activity.object;
-        if (object && typeof object === 'object') {
-          if (object.type === 'Person' && object.id) {
-            const name = object.name || object.preferredUsername;
-            const summary = object.summary || '';
-            await db.prepare(`
-              UPDATE remote_actors SET name = COALESCE(?, name), summary = COALESCE(?, summary), updated_at = ?
-              WHERE id = ?
-            `).run(name, summary, new Date().toISOString(), object.id);
-            console.log(`[Inbox Update] 🔄 Profile updated for ${object.id}`);
-          } else if (object.type === 'Note' && object.id) {
-            const content = object.content || '';
-            await db.prepare(`
-              UPDATE posts SET content = ? WHERE id = ?
-            `).run(content, object.id);
-            console.log(`[Inbox Update] 📝 Note updated: ${object.id}`);
-          }
-        }
-        return res.status(200).json({ status: 'Update processed' });
       }
 
       case 'Delete': {

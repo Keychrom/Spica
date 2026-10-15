@@ -976,6 +976,76 @@ export function replaceCustomEmojis(content: string, emojis: CustomEmoji[]): str
 }
 
 /**
+ * 🗳️ 投票（ローカルユーザーが**他のサーバーの**アンケートに入れた票）を原典へ送る。
+ *
+ * 得票数の配信は原典（アンケートを作ったサーバー）の仕事なので、投票した側は
+ * 「どの選択肢に入れたか」だけを届ける。形は Misskey と同じ `Create(Note)`:
+ * `inReplyTo` にアンケートの投稿 ID、`name` に選んだ選択肢のテキスト、id に `#votes/` を含める
+ * （Spica 自身も受信側でこの形を解釈する。`routes/inbox.ts` の「アンケートへの投票（Vote）受信判定」）。
+ *
+ * これが無いと、**原典の得票数に手元の票が入らず**、他のサーバーの表示もずれたままになる。
+ */
+export async function federatePollVote(params: {
+  /** アンケートの投稿（原典のノート ID） */
+  postId: string;
+  /** 投票したローカルユーザー */
+  voter: UserRow;
+  /** 選んだ選択肢のテキスト（複数選択なら複数） */
+  choiceTexts: string[];
+}): Promise<void> {
+  // 呼び出し側は待たない（投票の応答を配信で待たせない）。例外はここで全部受ける
+  try {
+    const post = (await db.prepare('SELECT author_url, is_local FROM posts WHERE id = ?').get(params.postId)) as
+      | { author_url: string; is_local: number }
+      | undefined;
+    // 原典（他のサーバー）のアンケートのときだけ送る。自サーバーのアンケートは
+    // 得票数の Update を federatePollUpdate が配るので、票そのものを送る必要はない
+    if (!post || post.is_local === 1 || !post.author_url) return;
+    if (params.choiceTexts.length === 0) return;
+
+    const voterUrl = `${config.origin}/users/${params.voter.id}`;
+    const now = new Date().toISOString();
+    const authorActor = await (async () => {
+      try {
+        return await fetchRemoteActor(post.author_url);
+      } catch {
+        return null;
+      }
+    })();
+    const inboxUrl = authorActor?.inbox_url;
+    if (!inboxUrl) {
+      console.warn(`[Poll Vote Federation] ⚠️ 投票先の inbox が分かりません: ${post.author_url}`);
+      return;
+    }
+
+    // 1 票 1 アクティビティ（複数選択でも、相手は name ごとに数える）
+    for (const text of params.choiceTexts) {
+      const voteId = `${params.postId}#votes/${crypto.randomUUID()}`;
+      const activity = {
+        '@context': ACTIVITYSTREAMS_CONTEXT,
+        id: `${voteId}/activity`,
+        type: 'Create',
+        actor: voterUrl,
+        to: [post.author_url],
+        object: {
+          id: voteId,
+          type: 'Note',
+          attributedTo: voterUrl,
+          inReplyTo: params.postId,
+          name: text,
+          to: [post.author_url],
+          published: now,
+        },
+      };
+      const ok = await deliverActivity({ inboxUrl, activity, senderUser: params.voter });
+      console.log(`[Poll Vote Federation] 🗳️ 票を原典へ送りました: "${text}" → ${post.author_url} (${ok ? 'ok' : '失敗（再送キューへ）'})`);
+    }
+  } catch (err: any) {
+    console.warn('[Poll Vote Federation] 送信に失敗:', err?.message || err);
+  }
+}
+
+/**
  * 📊 アンケート更新 (Update Question) Activity を構築
  * Misskey (_misskey_votes) & Mastodon (replies.totalItems, votersCount) 両対応
  */

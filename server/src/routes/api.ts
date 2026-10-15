@@ -98,6 +98,7 @@ import {
   fetchActorAliases,
   buildMoveActivity,
   federatePollUpdate,
+  federatePollVote,
 } from '../activitypub.js';
 
 export const apiRouter = Router();
@@ -704,6 +705,56 @@ apiRouter.post('/streaming/ticket', asyncHandler(async (req: Request, res: Respo
 
 /**
  * 単一投稿用のアンケート情報を取得するヘルパー
+ */
+/**
+ * ActivityPub の Question（`oneOf` / `anyOf`）から**得票数だけ**を取り込む。
+ *
+ * 原典（アンケートを作ったサーバー）は票が入るたびに `Update{Question}` をフォロワーへ送る。
+ * これを受け取らないと、**他のサーバーで入った票が手元の表示に反映されない**
+ * （Spica 同士でも同期が取れない）。作者本人からの Update であることは呼び出し側で確認済み。
+ *
+ * ・票数は `_misskey_votes`（Misskey）か `replies.totalItems`（Mastodon）に入っている
+ * ・選択肢はまず**テキスト一致**、合わなければ**並び順**で対応させる
+ * ・**多い方を採用する**（原典がまだ知らない自分の票を、古い Update で消さないため）
+ */
+export async function applyPollCountsFromQuestion(postId: string, question: any): Promise<boolean> {
+  const poll = (await db.prepare('SELECT id FROM polls WHERE post_id = ?').get(postId)) as { id: string } | undefined;
+  if (!poll) return false;
+  const list = Array.isArray(question?.oneOf)
+    ? question.oneOf
+    : Array.isArray(question?.anyOf)
+      ? question.anyOf
+      : null;
+  if (!list || list.length === 0) return false;
+
+  const choices = (await db
+    .prepare('SELECT choice_index, text, votes_count FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC')
+    .all(poll.id)) as { choice_index: number; text: string; votes_count: number }[];
+
+  const taken = new Set<number>();
+  let changed = false;
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    const raw = item?._misskey_votes ?? item?.replies?.totalItems;
+    const count = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
+    if (!Number.isFinite(count) || count < 0) continue;
+    const name = typeof item?.name === 'string' ? item.name.trim() : '';
+    const byText = name ? choices.find((c) => !taken.has(c.choice_index) && c.text.trim() === name) : undefined;
+    const target = byText ?? choices[i];
+    if (!target || taken.has(target.choice_index)) continue;
+    taken.add(target.choice_index);
+    if (count > (target.votes_count || 0)) {
+      await db
+        .prepare('UPDATE poll_choices SET votes_count = ? WHERE poll_id = ? AND choice_index = ?')
+        .run(count, poll.id, target.choice_index);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * 投稿のアンケート（自分の投票状態つき）を取る。
  */
 export async function getPollDataForPost(postId: string, currentUserId?: string | null) {
   try {
@@ -1917,8 +1968,8 @@ export const handleVotePoll = asyncHandler(async (req: Request, res: Response) =
   }
 
   // 閲覧できない投稿（フォロワー限定など）には投票できない
-  const voteTarget = await db.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
-    | { author_url: string; visibility: string | null }
+  const voteTarget = await db.prepare('SELECT author_url, visibility, is_local FROM posts WHERE id = ?').get(postId) as
+    | { author_url: string; visibility: string | null; is_local: number }
     | undefined;
   if (voteTarget && !(await canViewPost(voteTarget, `${config.origin}/users/${user.id}`))) {
     return res.status(403).json({ error: 'このアンケートには投票できません。' });
@@ -1940,8 +1991,10 @@ export const handleVotePoll = asyncHandler(async (req: Request, res: Response) =
     return res.status(400).json({ error: '既にこのアンケートには投票済みです。' });
   }
 
-  // 選択肢の存在検証
-  const pollChoices = await db.prepare('SELECT choice_index FROM poll_choices WHERE poll_id = ?').all(poll.id) as { choice_index: number }[];
+  // 選択肢の存在検証（テキストも取る。リモートのアンケートには
+  // 「どの選択肢か」を text で送る必要がある — 連合先の choice_index は当てにならない）
+  const pollChoices = await db.prepare('SELECT choice_index, text FROM poll_choices WHERE poll_id = ?').all(poll.id) as { choice_index: number; text: string }[];
+  const choiceTextByIndex = new Map(pollChoices.map((c) => [c.choice_index, c.text]));
   const validIndices = new Set(pollChoices.map((c) => c.choice_index));
   for (const c of choices) {
     if (typeof c !== 'number' || !validIndices.has(c)) {
@@ -1976,8 +2029,19 @@ export const handleVotePoll = asyncHandler(async (req: Request, res: Response) =
     });
   }
 
-  // 🌐 リモート連合（Misskey / Mastodon）へ Update(Question) を非同期配信
-  federatePollUpdate({ postId });
+  // 🌐 リモート連合（Misskey / Mastodon）へ配信
+  //  - 自分のサーバーのアンケート: 更新後の得票数を Update(Question) で配る
+  //  - 他のサーバーのアンケート: 「どの選択肢に入れたか」を原典へ送る
+  //    （得票数の集計は原典の仕事。送らないと原典の票数に入らず、ずっと食い違う）
+  if (voteTarget?.is_local === 1) {
+    federatePollUpdate({ postId });
+  } else if (req.rawUser) {
+    // 署名には端末の秘密鍵が要るので、切り詰めていない行（rawUser）を使う
+    const choiceTexts = choices
+      .map((idx: number) => choiceTextByIndex.get(idx))
+      .filter((t): t is string => typeof t === 'string' && t.length > 0);
+    federatePollVote({ postId, voter: req.rawUser, choiceTexts });
+  }
 
   res.json({ success: true, poll: updatedPoll });
 });
