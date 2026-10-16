@@ -374,6 +374,27 @@ async function run(): Promise<void> {
     check('2段階認証なしのパスキーログインはコード不要', bobLogin.verify.status, 200);
     check('セッションが発行される（bob）', typeof bobLogin.verify.data?.token, 'string');
 
+    // ======================================================================
+    console.log('\n🌐 [7] オリジンの束縛（リクエストが名乗った Origin を信じない）');
+
+    const evilRes = await fetch(`${BASE}/api/webauthn/authenticate/options`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      body: JSON.stringify({}),
+    });
+    check('詐称された Origin は断る（403）', evilRes.status, 403);
+    const evilBody: any = await evilRes.json().catch(() => null);
+    check('原因がオリジンだと分かる', String(evilBody?.error || '').includes('オリジン'), true);
+
+    const okOrigin = await fetch(`${BASE}/api/webauthn/authenticate/options`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: BASE },
+      body: JSON.stringify({ user_id: 'bob' }),
+    });
+    check('設定のオリジンは通る', okOrigin.status, 200);
+    const okOriginBody: any = await okOrigin.json().catch(() => null);
+    check('rpId はポートを含まないホスト名', okOriginBody?.rpId, new URL(BASE).hostname);
+
     completed = true;
   } finally {
     console.log('');

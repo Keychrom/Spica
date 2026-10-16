@@ -21,6 +21,16 @@ export function allowedWebAuthnOrigins(): string[] {
 }
 
 /**
+ * クライアント側の事情で断るエラー（サーバーの不具合ではない）。
+ * ルートは `statusCode` を見て 403 を返す（500 で「内部エラー」に化けないように）
+ */
+function forbidden(message: string): Error {
+  const error: any = new Error(message);
+  error.statusCode = 403;
+  return error;
+}
+
+/**
  * リクエストの Origin を検証する。
  *
  * **WebAuthn の安全性は「オリジンに束縛されていること」そのもの**なので、リクエストが名乗った
@@ -33,7 +43,7 @@ export function assertWebAuthnOrigin(requestOrigin?: string): void {
   const value = normalizeOrigin(requestOrigin);
   if (!value) return;
   if (!allowedWebAuthnOrigins().includes(value)) {
-    throw new Error(
+    throw forbidden(
       `このオリジン（${value}）からのパスキー操作は許可されていません。設定の DOMAIN / PROTOCOL（${config.origin}）から開いてください。`,
     );
   }

@@ -5728,7 +5728,8 @@ apiRouter.post('/webauthn/register/options', requireAuth, async (req: Request, r
     res.json(options);
   } catch (e: any) {
     console.error('[WebAuthn] register/options error:', e);
-    res.status(500).json({ error: e.message || 'パスキー登録オプションの生成に失敗しました。' });
+    // 許可されていないオリジンからの操作は 403（サーバーの不具合ではない）
+    res.status(Number(e?.statusCode) || 500).json({ error: e.message || 'パスキー登録オプションの生成に失敗しました。' });
   }
 });
 
@@ -5742,7 +5743,7 @@ apiRouter.post('/webauthn/register/verify', requireAuth, async (req: Request, re
     res.json({ success: true, credential: result });
   } catch (e: any) {
     console.error('[WebAuthn] register/verify error:', e);
-    res.status(400).json({ error: e.message || 'パスキー登録の検証に失敗しました。' });
+    res.status(Number(e?.statusCode) || 400).json({ error: e.message || 'パスキー登録の検証に失敗しました。' });
   }
 });
 
@@ -5764,7 +5765,7 @@ apiRouter.post('/webauthn/authenticate/options', async (req: Request, res: Respo
     res.json({ ...options, totp_required });
   } catch (e: any) {
     console.error('[WebAuthn] authenticate/options error:', e);
-    res.status(500).json({ error: e.message || '認証オプションの生成に失敗しました。' });
+    res.status(Number(e?.statusCode) || 500).json({ error: e.message || '認証オプションの生成に失敗しました。' });
   }
 });
 
@@ -5813,7 +5814,7 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
     }
   } catch (e: any) {
     console.error('[WebAuthn] authenticate/verify error:', e);
-    res.status(401).json({ error: e.message || 'パスキー認証に失敗しました。' });
+    res.status(Number(e?.statusCode) || 401).json({ error: e.message || 'パスキー認証に失敗しました。' });
   }
 });
 
@@ -5870,7 +5871,7 @@ apiRouter.post('/webauthn/authenticate/totp', async (req: Request, res: Response
     });
   } catch (e: any) {
     console.error('[WebAuthn] authenticate/totp error:', e);
-    res.status(401).json({ error: e.message || '2段階認証に失敗しました。' });
+    res.status(Number(e?.statusCode) || 401).json({ error: e.message || '2段階認証に失敗しました。' });
   }
 });
 
