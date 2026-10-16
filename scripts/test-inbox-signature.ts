@@ -576,6 +576,195 @@ async function run() {
     const stillHasTimeline = await fetch(`${ORIGIN}/api/timeline?mode=all`).catch(() => null);
     check('受信以外の機能も動いている', stillHasTimeline?.status, 200);
 
+    // ------------------------------------------------------------------
+    // 11. 所有権の検証（Delete / Create の著者 / 埋め込みノート / Accept）
+    //     2026-10-16: 受信箱が actor を見ずに投稿を消していた（任意の投稿を消せる）。
+    //     Create の attributedTo・Announce の埋め込みノートも鵜呑みにしていた（なりすまし）。
+    // ------------------------------------------------------------------
+    console.log('\n🔐 [11] 所有権の検証（Delete・Create・埋め込みノート・Accept）');
+    const OTHER_REMOTE = 'https://other.test/users/bob';
+    const STRANGER = 'https://stranger.test/users/zoe';
+    const otherKeys = generateTestKeyPair();
+    const strangerKeys = generateTestKeyPair();
+    const spooferKeys = generateTestKeyPair();
+    // なりすまし役。ATTACKER_ACTOR は「鍵が引けない actor」の検査で使っていて失敗が
+    // キャッシュされる（＝署名が 401 になる）ため、署名が通る別の actor を用意する
+    const SPOOFER_ACTOR = 'https://spoofer.test/users/mallory';
+    await seedActor(OTHER_REMOTE, otherKeys.publicKeyPem);
+    await seedActor(STRANGER, strangerKeys.publicKeyPem);
+    await seedActor(SPOOFER_ACTOR, spooferKeys.publicKeyPem);
+
+    const signAndPost = (body: string, keyId: string, pem: string) =>
+      postInbox(body, signInboxRequest({ body, keyId, privateKeyPem: pem }));
+    const noteBody = (actor: string, id: string, attributedTo: string, content: string) =>
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${actor}/activities/${encodeURIComponent(id)}`,
+        type: 'Create',
+        actor,
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        object: {
+          id,
+          type: 'Note',
+          attributedTo,
+          content,
+          published: new Date().toISOString(),
+          to: ['https://www.w3.org/ns/activitystreams#Public'],
+        },
+      });
+    const postRow = (id: string) =>
+      testDb.prepare('SELECT content, is_local FROM posts WHERE id = ?').get(id) as { content: string; is_local: number } | undefined;
+
+    // ローカル投稿（管理者）を 1 件作る
+    const localPostRes = await fetch(`${ORIGIN}/api/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admin.sessionToken}` },
+      body: JSON.stringify({ content: '所有権テスト用のローカル投稿', visibility: 'public' }),
+    });
+    const localPost = await localPostRes.json();
+    check('ローカル投稿を用意', typeof localPost?.id, 'string');
+
+    // リモート投稿（bob の投稿）を DB に用意する
+    const remotePostId = `${OTHER_REMOTE}/notes/own-1`;
+    testDb.prepare(`
+      INSERT INTO posts (id, user_id, author_name, author_url, author_handle, content, is_local, visibility, published_at)
+      VALUES (?, ?, 'Bob', ?, '@bob@other.test', 'bob の投稿', 0, 'public', ?)
+      ON CONFLICT(id) DO NOTHING
+    `).run(remotePostId, OTHER_REMOTE, OTHER_REMOTE, new Date().toISOString());
+
+    // (a) 第三者がローカル投稿を消そうとする → 消えない
+    const delLocal = await signAndPost(
+      JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', id: `${SPOOFER_ACTOR}/activities/del-1`, type: 'Delete', actor: SPOOFER_ACTOR, object: localPost.id }),
+      `${SPOOFER_ACTOR}#main-key`,
+      spooferKeys.privateKeyPem,
+    );
+    check('第三者の Delete（ローカル投稿）は 200 で無視', delLocal.status, 200);
+    check('ローカル投稿は消えない', Boolean(postRow(localPost.id)), true);
+
+    // (b) 第三者が他人のリモート投稿を消そうとする → 消えない
+    await signAndPost(
+      JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', id: `${SPOOFER_ACTOR}/activities/del-2`, type: 'Delete', actor: SPOOFER_ACTOR, object: remotePostId }),
+      `${SPOOFER_ACTOR}#main-key`,
+      spooferKeys.privateKeyPem,
+    );
+    check('第三者の Delete（他人のリモート投稿）は消えない', Boolean(postRow(remotePostId)), true);
+
+    // (c) 作者本人の Delete は通る（＋墓標が立つ）
+    await signAndPost(
+      JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', id: `${OTHER_REMOTE}/activities/del-3`, type: 'Delete', actor: OTHER_REMOTE, object: remotePostId }),
+      `${OTHER_REMOTE}#main-key`,
+      otherKeys.privateKeyPem,
+    );
+    check('作者本人の Delete は通る', Boolean(postRow(remotePostId)), false);
+    // 墓標があるので、同じ ID の Create が再送されても復活しない
+    await signAndPost(noteBody(OTHER_REMOTE, remotePostId, OTHER_REMOTE, 'bob の投稿（再送）'), `${OTHER_REMOTE}#main-key`, otherKeys.privateKeyPem);
+    check('削除済みの投稿は再送されても復活しない', Boolean(postRow(remotePostId)), false);
+
+    // (d) 手元に無い他人のサーバーの ID に Delete を送っても墓標は立たない（あとから来る本物を取り込める）
+    const futureId = `${OTHER_REMOTE}/notes/future-1`;
+    await signAndPost(
+      JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', id: `${SPOOFER_ACTOR}/activities/del-4`, type: 'Delete', actor: SPOOFER_ACTOR, object: futureId }),
+      `${SPOOFER_ACTOR}#main-key`,
+      spooferKeys.privateKeyPem,
+    );
+    await signAndPost(noteBody(OTHER_REMOTE, futureId, OTHER_REMOTE, 'あとから届く本物の投稿'), `${OTHER_REMOTE}#main-key`, otherKeys.privateKeyPem);
+    check('他人の ID への空振り Delete で本物を黙らせられない', postRow(futureId)?.content, 'あとから届く本物の投稿');
+
+    // (e) Create の attributedTo が actor と違う → 取り込まない（なりすまし）
+    const spoofCreate = await signAndPost(
+      noteBody(SPOOFER_ACTOR, `${SPOOFER_ACTOR}/notes/spoof-1`, localActor, '管理者が書いたことにする投稿'),
+      `${SPOOFER_ACTOR}#main-key`,
+      spooferKeys.privateKeyPem,
+    );
+    check('著者が actor と違う Create は 200 で無視', spoofCreate.status, 200);
+    check('なりすまし投稿は保存されない', Boolean(postRow(`${SPOOFER_ACTOR}/notes/spoof-1`)), false);
+    // 正しい Create は通る（回帰）
+    const okCreate = await signAndPost(
+      noteBody(SPOOFER_ACTOR, `${SPOOFER_ACTOR}/notes/ok-1`, SPOOFER_ACTOR, '正しい著者の投稿'),
+      `${SPOOFER_ACTOR}#main-key`,
+      spooferKeys.privateKeyPem,
+    );
+    check('著者と actor が一致する Create は通る', okCreate.status, 201);
+    check('その投稿は保存される', Boolean(postRow(`${SPOOFER_ACTOR}/notes/ok-1`)), true);
+
+    // (f) Announce に埋め込まれたノート: フォロー外の相手からのものは取り込まない
+    const strangerEmbedded = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${STRANGER}/activities/ann-1`,
+      type: 'Announce',
+      actor: STRANGER,
+      to: ['https://www.w3.org/ns/activitystreams#Public'],
+      object: {
+        id: 'https://mastodon.example/notes/stranger-1',
+        type: 'Note',
+        attributedTo: 'https://mastodon.example/users/someone',
+        content: 'フォロー外の告知に埋め込まれた本文',
+        published: new Date().toISOString(),
+      },
+    });
+    await signAndPost(strangerEmbedded, `${STRANGER}#main-key`, strangerKeys.privateKeyPem);
+    check('フォロー外の埋め込みノートは取り込まない', Boolean(postRow('https://mastodon.example/notes/stranger-1')), false);
+
+    // (g) 承認済みリレーからの埋め込みノートは取り込む（正規の経路）
+    const relayEmbedded = (id: string, content: string) =>
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${FORWARDER_RELAY}/activities/${encodeURIComponent(id)}`,
+        type: 'Announce',
+        actor: FORWARDER_RELAY,
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        object: {
+          id,
+          type: 'Note',
+          attributedTo: 'https://mastodon.example/users/someone',
+          content,
+          published: new Date().toISOString(),
+        },
+      });
+    const relayNoteId = 'https://mastodon.example/notes/relay-ok-1';
+    await signAndPost(relayEmbedded(relayNoteId, 'リレーが転送した本文'), `${FORWARDER_RELAY}#main-key`, forwarderKeys.privateKeyPem);
+    check('リレーの埋め込みノートは取り込む', postRow(relayNoteId)?.content, 'リレーが転送した本文');
+    // 既にある投稿は転送で上書きされない
+    await signAndPost(relayEmbedded(relayNoteId, '転送で上書きされた本文'), `${FORWARDER_RELAY}#main-key`, forwarderKeys.privateKeyPem);
+    check('既にある投稿は転送で上書きされない', postRow(relayNoteId)?.content, 'リレーが転送した本文');
+    // ローカル利用者を名乗る埋め込みノートは受け付けない
+    const relayClaimingLocal = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${FORWARDER_RELAY}/activities/local-claim-1`,
+      type: 'Announce',
+      actor: FORWARDER_RELAY,
+      to: ['https://www.w3.org/ns/activitystreams#Public'],
+      object: {
+        id: `${localActor}/posts/fake-local-1`,
+        type: 'Note',
+        attributedTo: localActor,
+        content: 'ローカル利用者が書いたことにする投稿',
+        published: new Date().toISOString(),
+      },
+    });
+    await signAndPost(relayClaimingLocal, `${FORWARDER_RELAY}#main-key`, forwarderKeys.privateKeyPem);
+    check('ローカル利用者を名乗る埋め込みノートは取り込まない', Boolean(postRow(`${localActor}/posts/fake-local-1`)), false);
+
+    // (h) Accept は本人からだけ
+    testDb.prepare(`
+      INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+      VALUES ('follow-pending-1', ?, ?, ?, 1, 'pending', ?)
+    `).run(localActor, VICTIM_ACTOR, VICTIM_INBOX, new Date().toISOString());
+    const acceptBody = (actor: string) =>
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${actor}/activities/accept-1`,
+        type: 'Accept',
+        actor,
+        object: { id: `${PUBLIC_ORIGIN}/users/admin#follows/1`, type: 'Follow', actor: localActor, object: VICTIM_ACTOR },
+      });
+    const followStatus = () =>
+      (testDb.prepare("SELECT status FROM follows WHERE follower_url = ? AND following_url = ?").get(localActor, VICTIM_ACTOR) as { status: string } | undefined)?.status;
+    await signAndPost(acceptBody(SPOOFER_ACTOR), `${SPOOFER_ACTOR}#main-key`, spooferKeys.privateKeyPem);
+    check('第三者からの Accept では承認されない', followStatus(), 'pending');
+    await signAndPost(acceptBody(VICTIM_ACTOR), `${VICTIM_ACTOR}#main-key`, victimKeys.privateKeyPem);
+    check('本人からの Accept で承認される', followStatus(), 'accepted');
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Inbox 署名強制テスト: すべて成功');

@@ -293,7 +293,7 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 | :--- | :--- |
 | `scripts/test-process-roles.ts` | `web` は定期処理を動かさない / `worker` はポートを開かない / 既定（`all`）は今までどおり / **2 ワーカーで同じ仕事を二重に実行しない** / 同時起動でもインスタンス鍵が 1 つ / **助言ロックは同じ接続で取って解放する**（PostgreSQL） |
 | `scripts/test-hardening.ts` | **タイムラインの読み取りキャッシュ**（1 回目は MISS・2 回目は HIT・投稿したら捨てる・`0` で無効・利用者ごとに別）/ **SQLite のトランザクションが他のリクエストを巻き込まない** / Redis 無しでもロックが効く / 予約投稿は 1 回だけ公開される / 外向き fetch は 1 ホップずつ検証して必ず打ち切る / SSE は上限で断る / **同じサーバーのフォロワーは 1 本に集約され、同時実行数は設定値以下**（アンケート更新も同じ形）/ 受信の受け入れ制御（**待ち時間 0 は待たずに 503**） |
-| `scripts/test-inbox-signature.ts` | 署名の強制（なりすまし・改ざん・古い Date・未知の actor を拒否）/ **壊れた入力でもプロセスが落ちない** |
+| `scripts/test-inbox-signature.ts` | 署名の強制（なりすまし・改ざん・古い Date・未知の actor を拒否）/ **受信した操作の所有権**（他人の投稿への `Delete`・`Create` の `attributedTo` 不一致・`Announce` の埋め込みノート・第三者からの `Accept` をすべて拒否）/ **壊れた入力でもプロセスが落ちない** |
 | `scripts/test-post-edit.ts` / `test-polls.ts` | `Update` の受信（**作者本人のぶんだけ**反映・知らない投稿は無視）/ 編集のたびに activity id が変わる / **アンケートの得票数**（自分のアンケートは `Update(Question)` で配り、他のサーバーのアンケートには選択肢をテキストで送る・取り込みは多い方を採用・再送で二重に数えない・`Update(Person)` も反映） |
 | `scripts/check-route-errors.ts`（`npm run check:routes`） | **ルートハンドラの未処理の Promise 拒否**（`try` の外の await を `asyncHandler` で包んでいるか。構文木で見る） |
 | `scripts/check-await.ts`（`npm run check:await`） / `check-secrets.ts`（`npm run check:secrets`） | **`await` の付け忘れ**（文を `await` せずに使うと、トランザクションの外で書いたり集計がずれる。実際に何度か踏んでいる） / **秘密情報の混入**（`.env`・DB・鍵・トークン。`npm install` 後に有効になる git フックからも同じ検査が走る） |

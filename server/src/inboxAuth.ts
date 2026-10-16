@@ -67,9 +67,10 @@ export function normalizeActorUrl(rawUrl: string): string | null {
 }
 
 /**
- * 管理画面で accepted 済みのリレー（またはその inbox）かどうかを判定する
+ * 管理画面で accepted 済みのリレー（またはその inbox）かどうかを判定する。
+ * 受信箱の処理（`routes/inbox.ts`）からも使う（転送されてきた投稿を取り込んでよい相手かの判定）
  */
-async function isAcceptedRelayActor(keyActorUrl: string): Promise<boolean> {
+export async function isAcceptedRelayActor(keyActorUrl: string): Promise<boolean> {
   const normalized = normalizeActorUrl(keyActorUrl);
   if (!normalized) {
     return false;

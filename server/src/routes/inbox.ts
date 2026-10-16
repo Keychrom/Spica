@@ -12,7 +12,7 @@ import {
   replaceCustomEmojis,
   federatePollUpdate,
 } from '../activitypub.js';
-import { verifyInboxSignature } from '../inboxAuth.js';
+import { verifyInboxSignature, isAcceptedRelayActor } from '../inboxAuth.js';
 import { asyncHandler } from '../asyncHandler.js';
 import { inboxGate } from '../inboxGate.js';
 import { shouldIndexRemotePost, shouldStoreRemoteAnnounce } from '../searchPolicy.js';
@@ -199,7 +199,13 @@ export async function processActivity(
         // 1. follows テーブルの更新 (個人アカウントのフォロー承認)
         //    ※ 宛先 (following_url) だけでは「同じ相手をフォローしている他のローカルユーザー」
         //      まで承認してしまうため、フォロー元 (follower_url) も必ず特定する
-        if (targetUrl) {
+        //    ※ Accept を送れるのは**承認した本人**（または承認済みのリレー）だけ。第三者からの
+        //      Accept でフォローを accepted にすると、承認状態が実態とずれる（2026-10-16 に追加）
+        const acceptFromTarget = Boolean(targetUrl) && actorUrl === targetUrl;
+        const acceptFromRelay = acceptFromTarget ? false : await isAcceptedRelayActor(actorUrl);
+        if (targetUrl && !acceptFromTarget && !acceptFromRelay) {
+          console.warn(`[Inbox Accept] ⚠️ 本人以外からの Accept を無視しました: actor=${actorUrl} target=${targetUrl}`);
+        } else if (targetUrl) {
           if (targetUsername) {
             const followerActor = `${config.origin}/users/${targetUsername.toLowerCase()}`;
             const result = await db.prepare('UPDATE follows SET status = ? WHERE following_url = ? AND follower_url = ?')
@@ -288,7 +294,21 @@ export async function processActivity(
           return res.status(200).json({ status: 'Ignored non-Note/Question object' });
         }
 
-        const noteAuthor = typeof note.attributedTo === 'string' ? note.attributedTo : (note.attributedTo?.id || actorUrl);
+        // 著者は**署名した actor 本人**でなければならない。埋め込みの `attributedTo` をそのまま信じると、
+        // 任意のサーバーが「任意の相手（ローカル利用者を含む）が書いた投稿」を差し込める（2026-10-16 に修正）。
+        // リレーが転送してくる Create も actor は元の著者のままなので、この判定で弾かれない
+        const claimedAuthors: string[] = typeof note.attributedTo === 'string'
+          ? [note.attributedTo]
+          : Array.isArray(note.attributedTo)
+            ? note.attributedTo.map((a: any) => (typeof a === 'string' ? a : a?.id)).filter((a: any): a is string => typeof a === 'string' && !!a)
+            : [];
+        if (claimedAuthors.length > 0 && !claimedAuthors.includes(actorUrl)) {
+          console.warn(
+            `[Inbox Create] ⚠️ 著者が actor と一致しない Create を無視しました: ${note.id || '(id なし)'} (actor=${actorUrl}, attributedTo=${claimedAuthors.join(', ')})`,
+          );
+          return res.status(200).json({ status: 'Create rejected (author mismatch)' });
+        }
+        const noteAuthor = claimedAuthors[0] || actorUrl;
         if (await isDomainBlocked(noteAuthor) || (note.id && await isDomainBlocked(note.id))) {
           console.log(`[Inbox Blocked] 🚫 Ignored Note from blocked domain author: ${noteAuthor}`);
           return res.status(200).json({ status: 'Ignored blocked domain author' });
@@ -765,6 +785,25 @@ export async function processActivity(
             return res.status(200).json({ status: 'Ignored blocked domain note' });
           }
 
+          // 埋め込みのノートを取り込んでよいかの判定（2026-10-16 に追加）。
+          // 以前はここを素通りしていたため、**任意のサーバーが任意の著者の投稿を差し込めた**
+          // （本文は既存の投稿にも上書きされた）。取り込む条件:
+          //   ・actor 自身の投稿（自分の投稿を本文つきで告知している形）
+          //   ・ブーストの保存方針を通る相手（フォロー中のアクター・方針 all）か、承認済みのリレー
+          // それ以外はこの告知を丸ごと無視する（ブーストの記録も行わない）
+          const isSelfAuthored = noteAuthorUrl === actorUrl;
+          const storePolicyAllows = await shouldStoreRemoteAnnounce(actorUrl);
+          const fromAcceptedRelay = storePolicyAllows ? false : await isAcceptedRelayActor(actorUrl);
+          if (!isSelfAuthored && !storePolicyAllows && !fromAcceptedRelay) {
+            console.log(`[Inbox] 🔇 フォロー外の告知（埋め込みノート）を取り込みません: ${actorUrl}`);
+            return res.status(202).json({ status: 'ignored', reason: 'remote boost policy' });
+          }
+          // ローカル利用者を名乗る埋め込みノートは受け付けない（本人はこの経路からは来ない）
+          if (localUsernameFromActorUrl(noteAuthorUrl)) {
+            console.warn(`[Inbox Announce] ⚠️ ローカル利用者を名乗る告知を無視しました: ${noteAuthorUrl} (actor=${actorUrl})`);
+            return res.status(200).json({ status: 'Ignore local-author announce' });
+          }
+
           let authorUsername = 'user';
           let authorDomain = 'relay';
           try {
@@ -800,18 +839,12 @@ export async function processActivity(
           // リレー経由の投稿は既定では索引しない（索引の肥大化を防ぐ）
           const relayFtsIndexed = await shouldIndexRemotePost({ authorUrl: noteAuthorUrl, inReplyTo: inReplyTo || null }) ? 1 : 0;
 
+          // 既にある投稿は**上書きしない**（転送されてきた本文で書き換えられないようにする）。
+          // 正規の経路（Create）で入った本文のほうが信頼できる（2026-10-16 に DO NOTHING へ変更）
           await db.prepare(`
             INSERT INTO posts (id, user_id, author_name, author_url, author_handle, author_icon, content, is_local, emojis, cw, in_reply_to, quote_id, is_sensitive, media_attachments, published_at, fts_indexed)
             VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              content = excluded.content,
-              author_icon = CASE WHEN excluded.author_icon != '' THEN excluded.author_icon ELSE posts.author_icon END,
-              emojis = excluded.emojis,
-              cw = excluded.cw,
-              quote_id = excluded.quote_id,
-              is_sensitive = excluded.is_sensitive,
-              media_attachments = excluded.media_attachments,
-              published_at = excluded.published_at
+            ON CONFLICT(id) DO NOTHING
           `).run(
             noteId,
             noteAuthorUrl,
@@ -1255,17 +1288,51 @@ export async function processActivity(
       case 'Delete': {
         const object = activity.object;
         const targetId = typeof object === 'string' ? object : object?.id;
-        if (targetId) {
-          await db.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
-          await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
-          await db.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
-          // DM の既読記録も一緒に消す（孤児を残さない）
-          await db.prepare('DELETE FROM dm_reads WHERE post_id = ?').run(targetId).catch(() => undefined);
-          // 墓標を立てる。連合では Delete の後に同じ投稿が再送されてくることがあり、
-          // 記録が無いと**消したはずの投稿が復活する**（非同期で処理するときは特に）
-          await addDeletedRemotePost(targetId);
-          console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId}`);
+        if (!targetId) {
+          return res.status(200).json({ status: 'Delete ignored (no object)' });
         }
+
+        // 消してよいのは**その投稿の作者本人**だけ。第三者の Delete で他人の投稿を消せないようにする
+        // （2026-10-16: 以前は actor を見ずに消していたため、任意のサーバーから任意の投稿を消せた）
+        const existing = (await db.prepare('SELECT id, user_id, author_url, is_local FROM posts WHERE id = ?').get(targetId)) as
+          | { id: string; user_id: string; author_url: string; is_local: number }
+          | undefined;
+
+        if (existing) {
+          // ローカル投稿は連合の Delete では消さない（持ち主は自分の API から消す）。
+          // リモート投稿も作者本人（署名した actor）以外からの Delete は受け付けない
+          if (existing.is_local === 1 || existing.author_url !== actorUrl) {
+            console.warn(
+              `[Inbox Delete] ⚠️ 作者が一致しない Delete を無視しました: ${targetId} (actor=${actorUrl}, author=${existing.author_url}, is_local=${existing.is_local})`,
+            );
+            return res.status(200).json({ status: 'Delete rejected (actor mismatch)' });
+          }
+        } else {
+          // 手元に無い投稿への Delete は、**同じサーバーの ID** のときだけ墓標を立てる。
+          // 他人のサーバーの ID に墓標を立てられると、あとから届く本物の投稿を
+          // 取り込めなくできる（消せないが黙らせられる）。自分のサーバーの ID なら害が無い
+          const sameHost = (() => {
+            try {
+              return new URL(targetId).host === new URL(actorUrl).host;
+            } catch {
+              return false;
+            }
+          })();
+          if (!sameHost) {
+            console.warn(`[Inbox Delete] ⚠️ 手元に無い投稿への Delete を無視しました: ${targetId} (actor=${actorUrl})`);
+            return res.status(200).json({ status: 'Delete ignored (unknown object on another host)' });
+          }
+        }
+
+        await db.prepare('DELETE FROM posts WHERE id = ?').run(targetId);
+        await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(targetId);
+        await db.prepare('DELETE FROM announces WHERE post_id = ?').run(targetId);
+        // DM の既読記録も一緒に消す（孤児を残さない）
+        await db.prepare('DELETE FROM dm_reads WHERE post_id = ?').run(targetId).catch(() => undefined);
+        // 墓標を立てる。連合では Delete の後に同じ投稿が再送されてくることがあり、
+        // 記録が無いと**消したはずの投稿が復活する**（非同期で処理するときは特に）
+        await addDeletedRemotePost(targetId);
+        console.log(`[Inbox Delete] 🗑️ Note deleted: ${targetId} (by ${actorUrl})`);
         return res.status(200).json({ status: 'Delete processed' });
       }
 
