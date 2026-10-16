@@ -4,7 +4,7 @@
 
 **この構成は「大人数（数百人〜）」を狙う場合の手順です。** ただし作者はこの規模で運用した経験がなく、
 **実際に多数の利用者を抱えて運用した実績はありません**（負荷試験は 2026-09 に実施済みで、
-この構成で読み取り 毎秒 600〜1,200 リクエストまで確認しています → [規模と安定性について (SCALE.md)](SCALE.md)）。
+この構成で読み取り 毎秒 500〜1,200 リクエストまで確認しています → [規模と安定性について (SCALE.md)](SCALE.md)）。
 **まずは [通常構成 (SETUP_Normal.md)](SETUP_Normal.md) で始めて、必要になってから移すのがおすすめです。**
 
 | | 通常構成 | この構成（PostgreSQL + Redis） |
@@ -79,8 +79,9 @@ npm run db:pg:schema
 export DATABASE_URL='postgres://spica:パスワード@127.0.0.1:5432/spica'
 npm run db:pg:init -- --dsn "$DATABASE_URL"
 
-# データを移送して、行数と内容を突き合わせる
-npm run db:pg:migrate -- --from data_spica.sqlite --dsn "$DATABASE_URL" --truncate --verify
+# データを移送して、行数と内容を突き合わせる（--from は作業ディレクトリ基準。
+# 既定の DB の場所は server/data_spica.sqlite。省略したときもそこを読みます）
+npm run db:pg:migrate -- --from server/data_spica.sqlite --dsn "$DATABASE_URL" --truncate --verify
 ```
 
 - `--verify` は**行数と内容の要約（チェックサム）を突き合わせます**。合わない行があれば失敗として出ます。
@@ -200,7 +201,10 @@ DB と Redis が繋がっていることを確認できたら、プロセスを�
 
 ```bash
 pm2 delete spica
-pm2 start npm --name "spica" -i 2 -- run start    # -i 2 = 2 プロセス
+# npm 経由の `-i 2` はポート共有が働かず、2 つ目が EADDRINUSE で再起動を繰り返します。
+# node で直接起動し、--cwd は **server/** にしてください（リポジトリ直下にすると
+# DB_PATH（`data_spica.sqlite`）と uploads の場所が変わり、既存データが見えなくなります）。
+pm2 start /var/www/spica/server/dist/index.js --name spica --cwd /var/www/spica/server -i 2
 pm2 save
 ```
 
@@ -209,20 +213,40 @@ PM2 が 1 つのポートで受け持つので、**nginx の設定はそのま�
 ### 方法 2: 役割を分ける（Web だけ増やす / 定期処理を 1 枚にまとめる）
 
 1 台の中で役割を分ける例です（詳しくは [ARCHITECTURE.md](ARCHITECTURE.md)）。
+`[Unit]` / `[Install]` と `WorkingDirectory`（**必ず `server/`**）まで含めた完全な形は
+[ARCHITECTURE.md のユニット例](ARCHITECTURE.md) にあります（抜粋すると下の形です）。
 
 ```ini
 # /etc/systemd/system/spica-web@.service … Web（%i をポートにする）
+[Unit]
+Description=Spica web (%i)
+After=network.target
+
 [Service]
+WorkingDirectory=/var/www/spica/server
 EnvironmentFile=/var/www/spica/.env
 Environment=PROCESS_ROLE=web
 Environment=PORT=300%i
 ExecStart=/usr/bin/npm run start
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 
 # /etc/systemd/system/spica-worker.service … 定期処理だけ（HTTP を開かない）
+[Unit]
+Description=Spica worker
+After=network.target
+
 [Service]
+WorkingDirectory=/var/www/spica/server
 EnvironmentFile=/var/www/spica/.env
 Environment=PROCESS_ROLE=worker
 ExecStart=/usr/bin/npm run start
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 `systemctl enable --now spica-web@0 spica-web@1 spica-worker` で、Web 2 枚 + worker 1 枚になります。
@@ -327,12 +351,12 @@ server {
 | **pg_dump が無い環境** | - | 警告してスキップします（`PG_BIN_DIR` で場所を指定できます） |
 
 ```bash
-# 手動でバックアップ（既定: server/data/backups、3 世代）
+# 手動でバックアップ（既定: <リポジトリ直下>/data/backups、3 世代。--out で変更できます）
 npm run db:pg:backup
 npm run db:pg:backup -- --out /backup --keep 5
 
 # 復元
-pg_restore --clean --if-exists -d "$DATABASE_URL" server/data/backups/spica-YYYYMMDD-HHMMSSmmm.dump
+pg_restore --clean --if-exists -d "$DATABASE_URL" data/backups/spica-YYYYMMDD-HHMMSSmmm.dump
 ```
 
 監視は通常構成と同じです（`/health`。認証ヘッダーを付けると配送キューの滞留なども見えます）。

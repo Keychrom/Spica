@@ -242,7 +242,7 @@ npm run db:pg:schema -- --check   # 生成物が最新かを確認（CI 向け�
    # 例: 接続中のバックエンドを落としても、次のリクエストは成功する
    SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'spica' AND pid <> pg_backend_pid();
    ```
-   ログには `[DB] PostgreSQL との接続が切れました（n 回目）。次のクエリで再接続します:` が出ます。
+   ログには `[DB] PostgreSQL の接続が切れました（n 回目）。プールが張り直します:` が出ます。
    なお **実行中だったクエリは再実行しません**（書き込みが二重になる可能性があるため）。
    呼び出し元はエラーを 1 回受け取り、次のクエリから復帰します。
 7. バックアップは `pg_dump` を呼ぶ。SQLite の `db:maintenance` に相当するものを用意してあり、
@@ -333,7 +333,7 @@ npm run db:pg:migrate -- --from data_spica.sqlite --dsn "$DATABASE_URL" --trunca
 - **手動の一巡**: 登録 → ログイン → 投稿 → タイムライン → 検索（日本語の部分一致）→ 通知 → 管理画面。
 - **ビルド成果物でも起動**: `npm run build` 後の `dist` で PG 起動を確認。
 - **実データ**: ライブノードの 187,072 行を移送した DB で起動し、タイムラインと検索が返ること。
-- **SQL 翻訳**: `npm run test:pg-translate`（28 項目、PG 不要）。
+- **SQL 翻訳**: `npm run test:pg-translate`（37 項目、PG 不要）。
 
 ### 制約（把握したうえで使う）
 
@@ -371,11 +371,15 @@ npm run db:pg:init -- --dsn "$TEST_DATABASE_URL" --reset
 DB_DRIVER=postgres DATABASE_URL="$TEST_DATABASE_URL" npm run test:pagination
 ```
 
-**いま PG でも緑になるスイート（39 本。`scripts/run-suites-pg.sh` の一覧が正）**: `pg-port`（27 項目）/ `pg-backup`（20）/
-`pg-translate`（28）/ `db-async`（60。SQLite ぶんと PG ぶんの合計）/ `admin-audit` / `email-notify` / `image-proxy` /
+**いま PG でも緑になるスイート（39 本。`scripts/run-suites-pg.sh` の `DEFAULT_SUITES` が正）**: `pg-port`（27 項目）/ `pg-backup`（20）/
+`pg-translate`（37）/ `db-async`（60。SQLite ぶんと PG ぶんの合計）/ `admin-audit` / `email-notify` / `image-proxy` /
 `ops-automation` / `reports` / `silence-featured` / `pagination` / `announcements` /
 `antennas-and-scheduler` / `account-deletion` / `fts-push` / `export-and-rules` /
-`theme-channels-webauthn` / `password-auth` / `federation` / `search-policy`
+`theme-channels-webauthn` / `password-auth` / `federation` / `search-policy` /
+`redis` / `stream-scope` / `job-queue` / `multiprocess` / `discovery` / `profile-lists` /
+`misskey`（170）/ `misskey-streaming` / `process-roles` / `hardening` / `inbox-async` /
+`inbox-reactions` / `user-prefs` / `dm` / `registration-approval` / `onboarding` / `totp` /
+`post-edit`（45）/ `polls`（48）
 
 `test-federation` はノードごとに**別のデータベース**（`<db>_node_a` / `<db>_node_b`）を作って
 2 ノードを立てます。作る権限が無い場合は理由を出してスキップします

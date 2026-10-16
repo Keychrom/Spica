@@ -20,7 +20,7 @@ Spica の設置手順は、**2 つの構成**に分かれています。どち�
 
 **[SETUP_PostgreSQL_Redis.md](SETUP_PostgreSQL_Redis.md)** — DB を PostgreSQL にし、Redis を足して複数プロセスで動かします。
 
-- **向いている規模**: 数百人〜（**ただし作者はこの規模で運用した経験がなく、負荷の検証もしていません**）
+- **向いている規模**: 数百人〜（**作者はこの規模での実運用経験はありません。負荷試験は 2026-09 に実施済みで、読み取り 毎秒 500〜1,200 リクエストまで確認しています** → [SCALE.md](SCALE.md)）
 - **必要なもの**: Node.js に加えて PostgreSQL と Redis、メディアは R2 / S3
 - **内容**: PostgreSQL の用意 / SQLite からのデータ移送（`--verify` つき）/ Redis の用意 / `.env` の切り替え / 起動確認 / プロセスを増やす（PM2 cluster・systemd + nginx）/ `pg_dump` でのバックアップ / 通常構成への切り戻し
 

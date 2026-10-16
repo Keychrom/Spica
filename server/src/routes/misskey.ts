@@ -428,9 +428,12 @@ async function respondWithTimeline(
   res.json(await toMisskeyNotes(enriched));
 }
 
-/** ホーム（フォロー + ローカル） */
+/** ホーム（自分 + フォロー中。`/api/timeline?mode=home` と同じ定義） */
 misskeyRouter.post('/notes/timeline', asyncHandler((req, res) => respondWithTimeline(req, res, 'home')));
-/** Misskey の hybrid = ローカル + フォロー。Spica のホームと同じ */
+/**
+ * Misskey の hybrid は「ローカル + フォロー」だが、Spica のホームは**自分 + フォロー中**なので
+ * ローカルの全員は含まない（ローカル全体は `notes/local-timeline`。docs/FEATURES.md に明記）。
+ */
 misskeyRouter.post('/notes/hybrid-timeline', asyncHandler((req, res) => respondWithTimeline(req, res, 'home')));
 /** ローカル */
 misskeyRouter.post('/notes/local-timeline', asyncHandler((req, res) => respondWithTimeline(req, res, 'local')));

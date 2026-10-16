@@ -49,6 +49,10 @@ FILES=(
   # 「配送は並列になりません」などと書かれていた）。以後は丸ごとコピーで揃える
   docs/SETUP_Normal.md
   docs/SETUP_PostgreSQL_Redis.md
+  # SETUP.md は 2026-10-16 から丸ごとコピーにした。開発ツリー側に古い 364 行の版が残っていて、
+  # 「Node.js v20 以上」など現行と食い違う案内をそのまま読ませかねなかった（公開側が正だった）。
+  # 以後は両ツリーで同じ索引ページにする
+  docs/SETUP.md
   package.json
   # 依存は server ワークスペース側にある（redis のように追加したものが公開ツリーへ入らないと
   # `npm ci` が失敗する）。ロックも一緒に運んで、両方のツリーで同じ依存にする
@@ -114,8 +118,7 @@ done
 echo ""
 echo "■ 手で当てるファイル（丸ごとコピーしない）"
 echo "  README.md … 公開ツリーの Beta 警告を残したまま、差分だけを手で当てる"
-echo "  docs/SETUP.md … 公開ツリー側が本番向けの別版"
-echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 同上"
+echo "  docs/UPGRADE.md / docs/ABOUT_SPICA.md … 公開ツリー側が本番向けの別版（SETUP.md は 2026-10-16 から同期対象）"
 
 echo ""
 echo "■ 公開ツリーにしかないファイル（削除の確認）"

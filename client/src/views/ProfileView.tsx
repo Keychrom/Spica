@@ -171,6 +171,9 @@ export default function ProfileView({
             onRelation={(action) => void onRelation(action)}
             onOpenPeople={(kind) => setTab(kind)}
             onEdit={onOpenSettings}
+            // メッセージ（DM）は `/messages?to=<ハンドル>` で相手を指定して開く。
+            // サーバーで DM が無効なときは画面側が「いま使えません」と案内する
+            onMessage={() => navigate('/messages?to=' + encodeURIComponent(profile.handle || profile.id))}
           />
 
           {isMe && tab === 'posts' && <PostCalendar />}

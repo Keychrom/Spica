@@ -224,7 +224,7 @@ location / { proxy_pass http://spica; }
 | 前提 | 理由 |
 | :--- | :--- |
 | PostgreSQL（`DB_DRIVER=postgres`） | SQLite のファイルは複数ホストで共有できない |
-| Redis（`REDIS_URL`） | レート制限・SSE・設定・予約投稿のロックがプロセスをまたぐ |
+| Redis（`REDIS_URL`） | レート制限・SSE（Misskey 互換 WebSocket も）・設定の変更反映・タイムラインキャッシュがプロセスをまたぐ（予約投稿と自動メンテナンスのロックは DB の `app_locks` でもプロセスをまたげるが、TTL 方式で Redis より一段弱い） |
 | メディアを R2 / S3 に | ローカルディスクは共有できない |
 | `DATABASE_POOL_MAX` × プロセス数 ≤ PostgreSQL の `max_connections` | 既定は 5。プロセスを増やすなら PgBouncer を前段に |
 | 定期処理は 1 プロセスだけ | `PROCESS_ROLE=worker` は 1 つで足ります（増やすとロックの取り合いになるだけ） |
@@ -296,6 +296,8 @@ SQLite と PostgreSQL は同じコードで動きますが、**SQL の意味が 
 | `scripts/test-inbox-signature.ts` | 署名の強制（なりすまし・改ざん・古い Date・未知の actor を拒否）/ **壊れた入力でもプロセスが落ちない** |
 | `scripts/test-post-edit.ts` / `test-polls.ts` | `Update` の受信（**作者本人のぶんだけ**反映・知らない投稿は無視）/ 編集のたびに activity id が変わる / **アンケートの得票数**（自分のアンケートは `Update(Question)` で配り、他のサーバーのアンケートには選択肢をテキストで送る・取り込みは多い方を採用・再送で二重に数えない・`Update(Person)` も反映） |
 | `scripts/check-route-errors.ts`（`npm run check:routes`） | **ルートハンドラの未処理の Promise 拒否**（`try` の外の await を `asyncHandler` で包んでいるか。構文木で見る） |
+| `scripts/check-await.ts`（`npm run check:await`） / `check-secrets.ts`（`npm run check:secrets`） | **`await` の付け忘れ**（文を `await` せずに使うと、トランザクションの外で書いたり集計がずれる。実際に何度か踏んでいる） / **秘密情報の混入**（`.env`・DB・鍵・トークン。`npm install` 後に有効になる git フックからも同じ検査が走る） |
+| `scripts/check-client-render.tsx`（`npm run check:client-render`） / `check-size.mjs`（`npm run check:size`） | **画面の骨格をサーバー側で描画して確かめる**（127 項目。ナビの並び・添付の上限・通知音・ストリームの申告・テーマの選択肢が、クライアントとサーバー・文書で揃っているか） / **1 ファイル 300 行の上限**（フロントエンドだけ。超えたら分割する） |
 | `scripts/test-multiprocess.ts` | 2 プロセスでレート制限・SSE・設定が共有される / 予約投稿が二重に公開されない / 配送が二重に送られない |
 | `scripts/test-job-queue.ts` | 一覧→宣言の競合（バックオフ中の仕事を掴まない）/ 並列実行でも 1 件ずつ |
 | `scripts/test-redis.ts` / `test-stream-scope.ts` | ロック・Pub/Sub・配信先の絞り込み |
@@ -324,4 +326,4 @@ npx tsx scripts/test-redis.ts           # 個別に走らせる場合（一部�
   Redis の役割は [REDIS.md](REDIS.md)、設定は [CONFIGURATION.md](CONFIGURATION.md) にあります。
 - ここに書いた構成は**すべて任意**です。`PROCESS_ROLE` も `REDIS_URL` も `DB_DRIVER` も設定しなければ、
   今までどおり「1 プロセス・追加ミドルウェアなし」で動きます。
-- 実装が変われば更新します（最終更新: 2026-10-01。受信ルートの例外処理（`asyncHandler` と `check:routes`）、助言ロックの接続固定、Redis ロックの延長の持ち主確認、`INBOX_QUEUE_WAIT_MS=0` の扱い、アンケート更新の連合の集約、**タイムラインの読み取りキャッシュ（既定 15 秒 + 書き込みでの無効化）**、**受信の非同期処理（`INBOX_ASYNC`）と束ごとの FIFO claim・墓標**、PostgreSQL の**列の差分適用**を反映）。
+- 実装が変われば更新します（最終更新: 2026-10-16。ホームの定義変更（**自分 + フォロー中**）・アンケートの得票数の連合（`Update(Question)` の取り込みと票のテキスト送信・多い方採用）・`Update` での `Person` / `Question` の受信と作者確認・Misskey 互換 API の拡張（スレッド・メンション・リスト・アンテナ・ドライブ・編集ほか。`864d499`）・通知音とストリームの申告（`none`）・テーマ「端末に合わせる」を反映）。

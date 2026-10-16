@@ -31,9 +31,13 @@
 ```bash
 cd /var/www/spica
 
-# 予約投稿の整理・古いリモート投稿の削除・VACUUM もまとめて実行されます（既定はドライラン）
-#   まず内容を確認したいときは --apply を外して実行してください
-npm run db:maintenance -- --apply
+# バックアップだけを取る（稼働中のまま。これが更新前の 1 手として推奨）
+npm run db:maintenance -- --backup-only
+
+# 削除と整理まで行いたいとき（古いリモート投稿の削除・孤立メディアの掃除・FTS マージ）
+#   既定はドライラン。実行は --apply。**稼働中は VACUUM を外す**（排他ロックが取れず、VACUUM だけ失敗して終了コード 2）
+npm run db:maintenance -- --apply --no-vacuum
+#   空いた領域を実際にファイルへ返すには VACUUM が要ります（サーバーを止めて `--apply`。上の NOTE 参照）
 
 # 書き出されたバックアップ（既定 3 世代を保持）
 ls -lt server/data/backups/ | head -3
@@ -41,6 +45,8 @@ ls -lt server/data/backups/ | head -3
 # 環境設定ファイルのバックアップ
 cp .env .env.bak_$(date +%Y%m%d_%H%M%S)
 ```
+
+### 方法 B: 3 点セット（本体・`-wal`・`-shm`）を手でコピーする（SQLite）
 
 `db:maintenance` を使いたくない場合は 3 点セットでコピーします（**本体・`-wal`・`-shm` の 3 つ**）。
 
@@ -133,11 +139,13 @@ pm2 logs spica --lines 30
 > ```bash
 > pm2 scale spica 1 && pm2 save     # いちばん安全（1 インスタンスにする）
 > # もしくは script を npm ではなく node にする（Redis があるなら複数でも可）
-> pm2 delete spica && pm2 start /var/www/spica/server/dist/index.js --name spica --cwd /var/www/spica -i 2 && pm2 save
+> pm2 delete spica && pm2 start /var/www/spica/server/dist/index.js --name spica --cwd /var/www/spica/server -i 2 && pm2 save
 > ```
 >
-> `.env` はアプリ自身（`config.ts`）が読み込むので、`--cwd` をアプリのルートに合わせておけば
-> 環境変数の指定は要りません。
+> `.env` はアプリ自身（`config.ts`）が読み込むので、`--cwd` を**アプリの作業ディレクトリ**に
+> 合わせておけば環境変数の指定は要りません。**`--cwd` は必ず `server/` にしてください**
+> （npm 経由なら `server/` になります）。リポジトリ直下にすると `DB_PATH`（`data_spica.sqlite`）と
+> `data/uploads` の解決先が変わり、**別の（空の）DB を見に行ってデータが消えたように見えます**。
 
 #### systemd を利用している場合:
 ```bash
@@ -238,7 +246,6 @@ diff -u .env .env.example
 > [!TIP]
 > **差分の確認は `diff -u .env .env.example` が確実です。** 上の表は主なものだけで、
 > すべてのキーと既定値は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) にあります。
-詳細は [設定リファレンス (CONFIGURATION.md)](CONFIGURATION.md) を参照してください。
 
 > [!NOTE]
 > `DOMAIN` は署名検証の `host` 候補としても使われます。実際の公開ホスト名と一致していない場合、すべての受信 Activity が署名検証に失敗し連合が停止します。
@@ -272,9 +279,14 @@ npm run build
 # プロセスを止めてから、バックアップしたデータベースを復元する
 pm2 stop spica
 rm -f server/data_spica.sqlite-wal server/data_spica.sqlite-shm   # ← 重要
-cp ~/spica-backups/data_spica.sqlite server/data_spica.sqlite     # 方法 A で取った 1 ファイル
-# 3 点セットで取った場合は -wal / -shm も一緒に戻す（古い -wal だけを残さない）
-#   cp ~/spica-backups/data_spica.sqlite-wal server/data_spica.sqlite-wal
+
+# 方法 A（db:maintenance）のバックアップから戻す場合は server/data/backups/ にある最新世代
+ls -lt server/data/backups/ | head -3
+cp server/data/backups/data_spica-YYYYMMDD-HHMMSSmmm.sqlite server/data_spica.sqlite
+
+# 方法 B（3 点セット）で ~/spica-backups/ に控えた場合はこちら
+#   cp ~/spica-backups/data_spica.sqlite server/data_spica.sqlite
+#   cp ~/spica-backups/data_spica.sqlite-wal server/data_spica.sqlite-wal   # 取ってある場合のみ
 
 pm2 restart spica
 ```

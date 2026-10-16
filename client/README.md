@@ -41,10 +41,12 @@ SPICA_API=http://localhost:3000 npm run dev:client
   タブを切り替えたら前のタイムラインは消す／読み込み中の「続き」は捨てる — 混ざると別のタブの投稿が並んで見える）
 - **プロフィール**（`/users/:id`。バナー・アイコン・自己紹介・項目・ノート / メディア / フォロー / フォロワー・ピン留め・フォロー / ミュート / ブロック）
 - **ノートの 1 枚**（`/users/:user/posts/:id`。返信先と返信の連なり。通知や検索から飛ぶ先）
-- **設定**（`/settings`。プロフィール / 表示 / 通知 / アカウント / つながり / データ の 6 節）
-  - 表示: 文字の大きさ・行のつめ方・既定のタブ・返信やリノートの表示（アカウントに保存して次の訪問でも効く）
-  - アカウント: ログイン中の端末の一覧と解除・パスワードの設定 / 変更・メールアドレスの設定と確認
-  - つながり: 承認待ちのフォロー・ミュート / ブロックの一覧と解除
+- **設定**（`/settings`。プロフィール / 表示 / 投稿 / 通知 / アカウント / つながり / 安全 / データ の 8 節）
+  - 表示: 文字の大きさ・行のつめ方・既定のタブ・返信やリノートの表示・テーマ（ライト / ダーク / 端末に合わせる）と通知音（アカウントに保存して次の訪問でも効く）
+  - 投稿: 既定の公開範囲・メディアの扱いなどの投稿まわり
+  - アカウント: ログイン中の端末の一覧と解除・パスワードの設定 / 変更・メールアドレスの設定と確認・2段階認証（TOTP）
+  - つながり: 承認待ちのフォロー・ミュート / ブロックの一覧と解除・**メッセージ（DM）の受け取り**
+  - 安全: 送信した通報の状況（対応状況とメモ）
   - データ: 自分のノートの持ち出し（ZIP / JSON。できあがりを待ってダウンロード）
 - **メッセージ**（`/messages`。会話の一覧・やりとり・送信。サーバーで DM が有効なときだけ）
 - **新規登録**（`/register`。招待コード・承認制・規約同意・メール確認にも対応。登録直後にマスターキーを表示し、**ワンクリックでコピー**できます）
@@ -164,7 +166,8 @@ src/
 │   ├── AuthShell.tsx   入口（ログイン / 登録）の共通の枠
 │   ├── KeyBox.tsx      マスターキーの箱（折り返し＋コピー）
 │   ├── onboarding/     初回設定の各ステップ（StepWelcome / StepLook / StepProfile / StepKeys / StepPrivacy / StepFollow / StepDone）
-│   ├── settings/       設定の各節（ProfileSection / DisplaySection / NotifySection / AccountSection / RelationsSection / DataSection）
+│   ├── settings/       設定の各節（ProfileSection / DisplaySection / DisplayExtras / ComposeSection / NotifySection / SoundSection / AccountSection / PasskeySection / TotpSection / RelationsSection / DMReach / DomainMutes / SecuritySection / ReportHistory / DataSection / ReactionHistory）
+│   ├── admin/          管理パネルの各タブ（AdminOverview / AdminServer / AdminMaintenance / AdminReports / AdminUsers / AdminRegistrations / AdminRelays / AdminBlocks / AdminAssets / AdminRoles / AdminAnnouncements / AdminMail / AdminQueue / AdminStorage）
 │   ├── Composer.tsx    ノートを作成（本文・CW・公開範囲・返信・引用）
 │   └── Aside.tsx       欄外のカード 3 枚
 ├── views/
@@ -173,9 +176,12 @@ src/
 │   ├── SearchView.tsx  見つける（検索）
 │   ├── CollectionView.tsx     ブックマーク / リスト / アンテナ / チャンネル
 │   ├── DriveView.tsx   ドライブ（一覧・容量・削除）
+│   ├── DraftsView.tsx  下書きと予約投稿（`/drafts`）
 │   ├── ProfileView.tsx プロフィール（見出し + ノート / メディア / つながり）
 │   ├── PostDetailView.tsx ノートの 1 枚（返信の連なり）
-│   ├── SettingsView.tsx     設定（6 節の切り替え）
+│   ├── PostScreen.tsx  投稿の一枚画面（URL から開くとき・エラーのとき）
+│   ├── SettingsView.tsx     設定（8 節の切り替え）
+│   ├── AdminView.tsx        管理パネル（運営だけ。/admin）
 │   ├── MessagesView.tsx     メッセージ（会話とやりとり）
 │   ├── OnboardingView.tsx   はじめての設定（7 ステップの案内）
 │   ├── LoginView.tsx   ログイン
@@ -183,15 +189,17 @@ src/
 │   └── PlaceholderView.tsx  どの URL にも当たらないときの案内
 └── styles/
     tokens.css → layout.css → posts.css → post-parts.css
-      → components.css → modal.css → views.css → phase4.css
-      → profile.css → settings.css → mobile.css
+      → components.css → parts.css → modal.css → views.css → phase4.css
+      → profile.css → settings.css → onboarding.css → mobile.css
 ```
+（この読み込み順は `main.tsx` が唯一の定義です。順番を変えると上書き関係が変わります）
 
 **足すときの決めごと**
 
 - `App.tsx` に機能を足さない（画面は `views/`、部品は `components/`、ロジックは `lib/` へ）
 - 見た目の値は `styles/` にだけ書く（コンポーネントに色や px を書かない）
 - 投稿カードを 2 つ作らない（通知も検索も同じ `PostCard` を使う）
+- 通知音・ストリームの申告・端末のテーマ追従のように**ブラウザ側の機能は `lib/` の薄いモジュール**に置く（`pwa.ts` / `push.ts` / `sounds.ts` / `streamScope.ts` / `webauthn.ts` が実例）
 
 ## 開発サーバーの転送（まめ知識）
 
@@ -199,8 +207,8 @@ src/
 `/users/…` や `/tags/…` のような**画面のパスは入れない**でください。入れると開発サーバーがサーバーの `index.html` を返してしまい、
 画面が空になります（実際に一度これを踏みました）。
 
-## 既存クライアントとの関係
+## サーバーとの関係
 
-- トークンの保存先は同じ `localStorage` キー（`spica_token`）を使う。**同じオリジンで配信するようになれば、ログイン状態はそのまま引き継がれる**
-- サーバーの API は変えていない（`server/` には触っていない）
-- いまは別ポート（5174）で動くので、`3210` のアプリと見比べられる
+- トークンの保存先は `localStorage` の `spica_token`。**同じオリジンで配信しているので、この書き直しでログイン状態はそのまま**
+- サーバー側に手を入れたのは `server/src/routes/api.ts` の SELECT 修正などの最小限（上の「どこが変わったか」を参照）
+- `npm run dev:client` は **5174** で動き、API は既定で `http://localhost:3210`（本番相当のインスタンス）へ転送します（`SPICA_API` で変更）
