@@ -150,8 +150,8 @@ export async function runScheduledMaintenance(): Promise<{
   fts: { toUnindex: number; toIndex: number };
   announces: { toRemove: number };
   proxyCache: { removed: number; freedBytes: number };
-  /** 期限切れで消した行（セッション・読み終わった通知） */
-  expired: { sessions: number; notifications: number };
+  /** 期限切れで消した行（セッション・読み終わった通知・WebAuthn のチャレンジ） */
+  expired: { sessions: number; notifications: number; challenges: number };
 }> {
   const started = Date.now();
   const options = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionDays: config.remotePostRetentionDays, applyPolicy: true };
@@ -236,14 +236,14 @@ export async function runScheduledMaintenance(): Promise<{
     console.error('[Auto Maintenance] 画像プロキシの整理に失敗しました:', err?.message || err);
   }
 
-  // ⑤ 期限切れデータの掃除（セッション・読み終わった通知）
-  //    どちらも放っておくと際限なく増える（数週間で効いてくる種類のもの）
-  let expired = { sessions: 0, notifications: 0 };
+  // ⑤ 期限切れデータの掃除（セッション・読み終わった通知・WebAuthn のチャレンジ）
+  //    いずれも放っておくと際限なく増える（数週間で効いてくる種類のもの）
+  let expired = { sessions: 0, notifications: 0, challenges: 0 };
   try {
     expired = await pruneExpiredRows();
-    if (expired.sessions > 0 || expired.notifications > 0) {
+    if (expired.sessions > 0 || expired.notifications > 0 || expired.challenges > 0) {
       console.log(
-        `[Auto Maintenance] 🧽 期限切れの掃除: セッション ${expired.sessions} 件 / 読み終わった通知 ${expired.notifications} 件`,
+        `[Auto Maintenance] 🧽 期限切れの掃除: セッション ${expired.sessions} 件 / 読み終わった通知 ${expired.notifications} 件 / パスキーのチャレンジ ${expired.challenges} 件`,
       );
     }
   } catch (err: any) {
@@ -263,13 +263,16 @@ export async function runScheduledMaintenance(): Promise<{
  *
  * - 期限切れのセッション: ログアウト時にしか消していなかったので、放置すると永久に溜まる
  * - 読み終わった通知: `NOTIFICATION_RETENTION_DAYS` 日より古いものだけ（未読は消さない）
+ * - WebAuthn のチャレンジ / 一時トークン: 一度きりの使い捨て。パスキーの途中で投げた分は
+ *   期限が来ても誰も消さないので、ここで掃除する（`expires_at` はミリ秒の数値）
  *
  * 件数を区切って複数回に分ける（SQLite の書き込みを 1 回で長時間占有しないため）。
  */
-export async function pruneExpiredRows(): Promise<{ sessions: number; notifications: number }> {
+export async function pruneExpiredRows(): Promise<{ sessions: number; notifications: number; challenges: number }> {
   const batch = 2000;
   let sessions = 0;
   let notifications = 0;
+  let challenges = 0;
 
   while (true) {
     const result = await db
@@ -277,6 +280,15 @@ export async function pruneExpiredRows(): Promise<{ sessions: number; notificati
       .run(new Date().toISOString(), batch);
     const removed = Number(result.changes ?? 0);
     sessions += removed;
+    if (removed < batch) break;
+  }
+
+  while (true) {
+    const result = await db
+      .prepare('DELETE FROM webauthn_challenges WHERE challenge IN (SELECT challenge FROM webauthn_challenges WHERE expires_at <= ? LIMIT ?)')
+      .run(Date.now(), batch);
+    const removed = Number(result.changes ?? 0);
+    challenges += removed;
     if (removed < batch) break;
   }
 
@@ -293,7 +305,7 @@ export async function pruneExpiredRows(): Promise<{ sessions: number; notificati
     }
   }
 
-  return { sessions, notifications };
+  return { sessions, notifications, challenges };
 }
 
 /** 管理画面向け: 容量・件数・メンテナンス状況をまとめて返す */

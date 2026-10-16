@@ -32,6 +32,7 @@ import {
   verifyWebAuthnRegistration,
   createWebAuthnAuthenticationOptions,
   verifyWebAuthnAuthentication,
+  saveChallenge,
 } from '../webauthnService.js';
 import {
   generateMasterKey,
@@ -5777,13 +5778,19 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
       //    パスキーは 1 要素として数え、コード（またはリカバリーコード）を必ず求める
       if (Number((result.user as any).totp_enabled) === 1) {
         const totpCode = typeof req.body?.totpCode === 'string' ? req.body.totpCode.trim() : '';
-        if (!totpCode) {
-          return res.status(401).json({ error: '2段階認証コードを入力してください。', totp_required: true });
-        }
-        const okByCode = verifyTotpCode(String((result.user as any).totp_secret || ''), totpCode);
-        const okByRecovery = okByCode ? false : await consumeRecoveryCode(result.user.id, totpCode);
+        const okByCode = totpCode ? verifyTotpCode(String((result.user as any).totp_secret || ''), totpCode) : false;
+        const okByRecovery = okByCode ? false : (totpCode ? await consumeRecoveryCode(result.user.id, totpCode) : false);
         if (!okByCode && !okByRecovery) {
-          return res.status(401).json({ error: 'コードが正しくありません。', totp_required: true });
+          // パスキーのやり直し（端末の認証をもう一度）を求めずにコードだけ入れ直せるよう、
+          // 一時トークンを渡す。**パスキーの検証が通ったあと**にしか発行しないので、
+          // これだけではログインできない（コードが要る）。5 分で失効・1 回だけ使える
+          const pendingToken = crypto.randomBytes(32).toString('base64url');
+          await saveChallenge(pendingToken, 'totp', result.user.id);
+          return res.status(401).json({
+            error: totpCode ? 'コードが正しくありません。' : '2段階認証コードを入力してください。',
+            totp_required: true,
+            pendingToken,
+          });
         }
       }
       // ここは以前 await が抜けていて、Promise がそのまま JSON に化けて
@@ -5807,6 +5814,63 @@ apiRouter.post('/webauthn/authenticate/verify', async (req: Request, res: Respon
   } catch (e: any) {
     console.error('[WebAuthn] authenticate/verify error:', e);
     res.status(401).json({ error: e.message || 'パスキー認証に失敗しました。' });
+  }
+});
+
+/**
+ * パスキーのあとの 2段階認証コード（認証不要）
+ *
+ * `/webauthn/authenticate/verify` が `totp_required` と一緒に返した `pendingToken` を使う。
+ * パスキーをもう一度やり直さずにコードだけ送れるようにするための経路
+ * （以前はチャレンジを消費したあとに 401 を返していたため、コードを入れ直しても
+ *  「チャレンジが無効」で必ず失敗していた。2026-10-16 に修正）。
+ */
+apiRouter.post('/webauthn/authenticate/totp', async (req: Request, res: Response) => {
+  try {
+    const pendingToken = typeof req.body?.pendingToken === 'string' ? req.body.pendingToken.trim() : '';
+    const totpCode = typeof req.body?.totpCode === 'string' ? req.body.totpCode.trim() : '';
+    if (!pendingToken || !totpCode) {
+      return res.status(400).json({ error: '一時トークンとコードが必要です。', totp_required: true });
+    }
+
+    // トークンは「利用者に紐づく一時的なもの」。コードが違うだけなら**消費せずに**返す
+    // （コードの打ち間違いでパスキーをやり直さなくて済むように）
+    const row = (await db.prepare('SELECT user_id, expires_at FROM webauthn_challenges WHERE challenge = ? AND type = ?')
+      .get(pendingToken, 'totp')) as { user_id: string | null; expires_at: number } | undefined;
+    if (!row || !row.user_id || row.expires_at < Date.now()) {
+      return res.status(401).json({ error: '認証の続きができません。もう一度パスキーからやり直してください。', totp_required: true });
+    }
+
+    const user = (await db.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id)) as UserRow | undefined;
+    if (!user || user.is_frozen === 1 || Number((user as any).totp_enabled) !== 1) {
+      return res.status(401).json({ error: 'このアカウントでは続けられません。', totp_required: true });
+    }
+
+    const okByCode = verifyTotpCode(String((user as any).totp_secret || ''), totpCode);
+    const okByRecovery = okByCode ? false : await consumeRecoveryCode(user.id, totpCode);
+    if (!okByCode && !okByRecovery) {
+      return res.status(401).json({ error: 'コードが正しくありません。', totp_required: true });
+    }
+
+    // 使い終わったトークンは消す（1 回だけ）
+    await db.prepare('DELETE FROM webauthn_challenges WHERE challenge = ? AND type = ?').run(pendingToken, 'totp');
+
+    const session = await createSession(user.id, req.headers['user-agent']);
+    res.json({
+      success: true,
+      token: session.token,
+      user: {
+        id: user.id,
+        name: user.name,
+        icon_url: user.icon_url,
+        header_url: user.banner_url,
+        summary: user.summary,
+        is_admin: user.role === 'admin',
+      },
+    });
+  } catch (e: any) {
+    console.error('[WebAuthn] authenticate/totp error:', e);
+    res.status(401).json({ error: e.message || '2段階認証に失敗しました。' });
   }
 });
 

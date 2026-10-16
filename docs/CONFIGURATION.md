@@ -92,6 +92,7 @@ Spica の設定は **2 か所**に分かれています。
 | `SOAK_LOG_INTERVAL_MS` | `0`（無効） | 連続稼働の記録の間隔（ミリ秒、1000 以上）。設定すると RSS・DB/WAL・キューの滞留を 1 行だけログに残します（数時間〜数日動かしたときの増え方を見るため）。`journalctl -u spica | grep '`[Soak]`'` で推移を追え、直近 288 件（5 分間隔なら 24 時間）は `/health`（認証あり）の `soak` でも見られます |
 | `TRUST_PROXY` | `loopback` | リバースプロキシの信頼範囲（Express の `trust proxy`）。`loopback` は 127.0.0.1 からの `X-Forwarded-For` だけを信頼します。前段が別ホストならそのアドレス（`192.0.2.10`）か段数（`1`）を指定。**`true` にすると誰の `X-Forwarded-For` も信じてしまい、レート制限の IP 判定を詐称できます** |
 | `ALLOW_PRIVATE_REMOTE_FETCH` | `PROTOCOL` が `https` なら `false`、それ以外は `true` | プライベート IP・内部ホスト名への remote actor 取得を許可するか（SSRF 対策） |
+| `WEBAUTHN_EXTRA_ORIGINS` | （空） | パスキー（WebAuthn）で**追加で許可するオリジン**（カンマ区切り）。既定では `PROTOCOL` + `DOMAIN` のオリジンだけを許可し、リクエストの `Origin` ヘッダーが違えば拒否します。載せたオリジンは「管理者が明示したもの」として扱い、`origin` / `rpID` もそのオリジンに合わせます（ブラウザはページのオリジンでしか手続きをしないため）。開発サーバー（`npm run dev:next` → `http://localhost:5174`）のように**別のオリジンから開いて確認する**ときだけ設定してください（増やすと、そのオリジンからパスキーを作れるようになります） |
 
 ---
 
@@ -189,7 +190,7 @@ npx tsx scripts/test-relay-and-timelines.ts  # 署名付きリレー受信とタ
 
 | 環境変数名 | デフォルト | 説明 |
 | :--- | :--- | :--- |
-| `RATE_LIMIT_DISABLED` | `false` | `true` でレート制限を無効化（認証 20回/分、API 600回/分、Inbox 3000回/分 / IP単位）。テスト時のみ。 |
+| `RATE_LIMIT_DISABLED` | `false` | `true` でレート制限を無効化（認証 20回/分、パスキーのログイン 20回/分、API 600回/分、Inbox 3000回/分 / IP単位）。テスト時のみ。 |
 | `MEDIA_MAX_BYTES` | `52428800` (50MB) | 動画・音声のアップロード上限（バイト）。画像は別途 15MB まで。 |
 | `MEDIA_QUOTA_MB` | `0` (無制限) | ユーザーごとのドライブ容量上限（MB）。超過アップロードは 413 で拒否されます。 |
 

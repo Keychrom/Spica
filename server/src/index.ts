@@ -189,6 +189,15 @@ if (!config.rateLimitDisabled) {
     keyPrefix: 'auth',
     message: '認証リクエストが多すぎます。しばらく待ってからお試しください。',
   }));
+  // パスキーのログイン（チャレンジ取得・検証・2段階認証の続き）。
+  // 認証と同じ厳しさにする: パスキーを持っていても、**コードを総当たりされない**ようにするため
+  // （通常のログインは options + verify の 2 回なので 20 回/分でも十分）
+  app.use('/api/webauthn/authenticate', rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    keyPrefix: 'webauthn-auth',
+    message: '認証リクエストが多すぎます。しばらく待ってからお試しください。',
+  }));
   app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 600, keyPrefix: 'api' }));
   app.use('/inbox', rateLimit({ windowMs: 60 * 1000, max: 3000, keyPrefix: 'inbox' }));
 }

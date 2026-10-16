@@ -24,6 +24,8 @@ const TEST_DB = 'data_test_totp.sqlite';
 const PORT = process.env.TEST_PORT ? parseInt(process.env.TEST_PORT, 10) : 3646;
 const BASE = `http://localhost:${PORT}`;
 const DOMAIN = `localhost:${PORT}`;
+// WebAuthn の RP ID はポートを含まないホスト名（ブラウザもそう計算する）
+const RP_ID = new URL(BASE).hostname;
 
 [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((f) => {
   for (const p of [path.resolve(ROOT_DIR, f), path.resolve(ROOT_DIR, 'server', f)]) {
@@ -310,12 +312,12 @@ async function run(): Promise<void> {
     await insertCredential('alice', aliceCred);
     await insertCredential('bob', bobCred);
 
-    /** パスキーログインを 1 回試す（options → assertion → verify） */
-    const passkeyLogin = async (userId: string, cred: ReturnType<typeof makeCredential>, totpCode?: string) => {
-      const optionsRes = await api('POST', '/api/webauthn/authenticate/options', undefined, { user_id: userId });
+    /** パスキーログインを 1 回試す（options → assertion → verify）。userId を省くとユーザー名なしの経路 */
+    const passkeyLogin = async (userId: string | undefined, cred: ReturnType<typeof makeCredential>, totpCode?: string) => {
+      const optionsRes = await api('POST', '/api/webauthn/authenticate/options', undefined, userId ? { user_id: userId } : {});
       const options = optionsRes.data as any;
       cred.counter += 1;
-      const credential = buildAssertion(cred, String(options.challenge), BASE, DOMAIN, cred.counter);
+      const credential = buildAssertion(cred, String(options.challenge), BASE, RP_ID, cred.counter);
       const verify = await api('POST', '/api/webauthn/authenticate/verify', undefined, {
         credential,
         expectedChallenge: options.challenge,
@@ -341,6 +343,29 @@ async function run(): Promise<void> {
     const aliceRecovery = await passkeyLogin('alice', aliceCred, recovery2[0]);
     check('リカバリーコードでもパスキーで入れる', aliceRecovery.verify.status, 200);
     check('使った分だけ減る（パスキー経由）', (await api('GET', '/api/me/totp', aliceToken)).data?.remainingCodes, 9);
+
+    // ユーザー名を指定せずにパスキーを出す経路（クライアントの実際の導線）。
+    // 以前はコードを聞く前にチャレンジを消費していたため、コードを入れ直しても
+    // 「チャレンジが無効」で必ず失敗していた（2段階認証の人はパスキーで入れなかった）
+    const aliceAnon = await passkeyLogin(undefined, aliceCred);
+    check('ユーザー名なしでもコードを求められる', aliceAnon.verify.data?.totp_required, true);
+    const pending = String(aliceAnon.verify.data?.pendingToken || '');
+    check('続きのための一時トークンが返る', pending.length > 20, true);
+
+    const badPending = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: pending, totpCode: '000000' });
+    check('一時トークンでも誤ったコードは通らない', badPending.status, 401);
+    const stillOk = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: pending, totpCode: generateTotpCode(secret2) });
+    check('コードを入れ直せば通る（パスキーのやり直し不要）', stillOk.status, 200);
+    check('セッションが発行される（一時トークン経由）', typeof stillOk.data?.token, 'string');
+    check('そのセッションで /api/auth/me が読める', (await api('GET', '/api/auth/me', String(stillOk.data?.token || ''))).status, 200);
+
+    const reuse = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: pending, totpCode: generateTotpCode(secret2) });
+    check('一時トークンは 1 回だけ', reuse.status, 401);
+    check('使い終わったら消える', (await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: pending, totpCode: generateTotpCode(secret2) })).status, 401);
+
+    const regOptions = (await api('POST', '/api/webauthn/register/options', aliceToken)).data as any;
+    const misuse = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: String(regOptions?.challenge || ''), totpCode: generateTotpCode(secret2) });
+    check('登録用のチャレンジでは続けられない', misuse.status, 401);
 
     // 2段階認証を使っていない人のパスキーログインは今までどおり
     const bobOptions = (await api('POST', '/api/webauthn/authenticate/options', undefined, { user_id: 'bob' })).data as any;

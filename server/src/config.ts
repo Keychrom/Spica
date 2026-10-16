@@ -47,6 +47,12 @@ export interface AppConfig {
   domain: string;
   protocol: string;
   origin: string;
+  /**
+   * パスキー（WebAuthn）で `origin` に加えて許可するオリジン。
+   * WebAuthn はオリジンに束縛する仕組みなので **既定は空（`origin` だけ）**。
+   * 開発サーバー（例: http://localhost:5174）のように別オリジンから試すときだけ設定する
+   */
+  webauthnExtraOrigins: string[];
   dbPath: string;
   instanceName: string;
   instanceDescription: string;
@@ -454,6 +460,11 @@ export const config: AppConfig = {
   domain: DOMAIN,
   protocol: PROTOCOL,
   origin: ORIGIN,
+  // カンマ区切り。空要素は落とす（末尾のカンマや空白で壊れないように）
+  webauthnExtraOrigins: (process.env.WEBAUTHN_EXTRA_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim().replace(/\/+$/, ''))
+    .filter(Boolean),
   dbPath: DB_PATH,
   instanceName: INSTANCE_NAME,
   instanceDescription: INSTANCE_DESCRIPTION,

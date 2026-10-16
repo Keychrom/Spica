@@ -14,6 +14,8 @@ process.env.DB_PATH = TEST_DB_PATH;
 process.env.PORT = '3997';
 process.env.ORIGIN = 'https://spica.test';
 process.env.DOMAIN = 'spica.test';
+// 許可リストの検査用（開発サーバーの想定。ここに載っているオリジンだけ自己申告を認める）
+process.env.WEBAUTHN_EXTRA_ORIGINS = 'http://localhost:5174';
 
 async function runTest() {
   console.log('🧪 === 🎨 チャンネル機能 ＆ 🔐 WebAuthn / パスキー 総合検証テスト ===\n');
@@ -27,7 +29,8 @@ async function runTest() {
     verifyWebAuthnRegistration,
     createWebAuthnAuthenticationOptions,
     verifyWebAuthnAuthentication,
-    getRPInfo
+    getRPInfo,
+    assertWebAuthnOrigin
   } = await import('../server/src/webauthnService.js');
 
   // テスト用ユーザー作成
@@ -121,14 +124,59 @@ async function runTest() {
   // テスト 4: 🔐 WebAuthn RP情報およびオプション生成
   // ==========================================
   console.log('\n--- 4. 🔐 WebAuthn RP情報 & オプション生成の検証 ---');
-  const rpInfo = getRPInfo('localhost:3000');
-  if (rpInfo.rpID !== 'localhost') {
-    throw new Error(`❌ rpID のホスト名抽出に失敗しました: expected localhost, got ${rpInfo.rpID}`);
+  // RP 情報は設定（ORIGIN / DOMAIN）から作る。リクエストの自己申告は使わない
+  const rpInfo = getRPInfo();
+  if (rpInfo.rpID !== 'spica.test') {
+    throw new Error(`❌ rpID のホスト名抽出に失敗しました: expected spica.test, got ${rpInfo.rpID}`);
+  }
+  if (rpInfo.origin !== 'https://spica.test') {
+    throw new Error(`❌ origin が設定と一致しません: expected https://spica.test, got ${rpInfo.origin}`);
   }
   console.log(`✅ RP情報抽出成功: rpID = ${rpInfo.rpID}, origin = ${rpInfo.origin}`);
 
+  // 許可リストに**載っていない**オリジンを名乗っても、rpID / origin は設定のまま
+  const spoofedRp = getRPInfo('https://evil.example');
+  if (spoofedRp.origin !== 'https://spica.test' || spoofedRp.rpID !== 'spica.test') {
+    throw new Error(`❌ 名乗っただけのオリジンが RP 情報に反映されました: origin=${spoofedRp.origin}, rpID=${spoofedRp.rpID}`);
+  }
+  console.log('✅ 許可リストに無いオリジンは RP 情報に反映されない');
+
+  // 許可リスト（WEBAUTHN_EXTRA_ORIGINS）に載っているオリジンだけは、そのオリジンに合わせる
+  const extraRp = getRPInfo('http://localhost:5174');
+  if (extraRp.origin !== 'http://localhost:5174' || extraRp.rpID !== 'localhost') {
+    throw new Error(`❌ 許可リストのオリジンが反映されません: origin=${extraRp.origin}, rpID=${extraRp.rpID}`);
+  }
+  console.log('✅ 許可リストのオリジンはそれに合わせる（開発サーバー用）');
+
+  // Origin の検証: 設定したオリジンだけを通し、詐称はその場で拒否する
+  assertWebAuthnOrigin(undefined); // Origin 無し（テストや CLI）は通す
+  assertWebAuthnOrigin('https://spica.test');
+  assertWebAuthnOrigin('http://localhost:5174'); // 許可リストのオリジン
+  console.log('✅ 正しいオリジンは通る');
+  let spoofRejected = false;
+  try {
+    assertWebAuthnOrigin('https://evil.example');
+  } catch {
+    spoofRejected = true;
+  }
+  if (!spoofRejected) {
+    throw new Error('❌ 詐称された Origin が拒否されませんでした');
+  }
+  console.log('✅ 詐称された Origin は拒否される');
+
   // 登録オプション生成
   const userARow = await db.prepare('SELECT * FROM users WHERE id = ?').get(userA.id) as any;
+  let spoofOptionsRejected = false;
+  try {
+    await createWebAuthnRegistrationOptions(userARow, 'https://evil.example');
+  } catch {
+    spoofOptionsRejected = true;
+  }
+  if (!spoofOptionsRejected) {
+    throw new Error('❌ 詐称された Origin で登録オプションが作られてしまいました');
+  }
+  console.log('✅ 詐称された Origin では登録オプションを作らない');
+
   const regOptions = await createWebAuthnRegistrationOptions(userARow, 'https://spica.test');
   if (!regOptions.challenge || !regOptions.user || regOptions.user.name !== userA.name) {
     throw new Error('❌ WebAuthn 登録オプションの生成に失敗しました');
@@ -155,6 +203,76 @@ async function runTest() {
     throw new Error('❌ webauthn_challenges テーブルへの認証チャレンジ記録に失敗しました');
   }
   console.log(`✅ 認証チャレンジDB保存確認: type = ${storedAuthChallenge.type}`);
+
+  // ==========================================
+  // テスト 4b: 🔐 チャレンジの持ち主とクレデンシャルの持ち主の一致
+  // ==========================================
+  console.log('\n--- 4b. 🔐 チャレンジの取り違えが通らないことの検証 ---');
+
+  // (1) 登録: bob 宛のチャレンジで alice を登録しようとしても通らない
+  const bobRegOptions = await createWebAuthnRegistrationOptions(userB as any, 'https://spica.test');
+  let crossRegRejected = false;
+  try {
+    await verifyWebAuthnRegistration(
+      userARow,
+      { expectedChallenge: bobRegOptions.challenge, credential: { id: 'x', rawId: 'x', type: 'public-key', response: {} } },
+      '取り違え',
+      'https://spica.test',
+    );
+  } catch {
+    crossRegRejected = true;
+  }
+  if (!crossRegRejected) {
+    throw new Error('❌ 別の利用者に発行された登録チャレンジが通ってしまいました');
+  }
+  console.log('✅ 他の利用者に発行された登録チャレンジは拒否される');
+
+  // (2) 認証: alice 宛のチャレンジを bob のクレデンシャルで使っても通らない
+  const bobCredId = 'bob-credential-id-abc';
+  await db.prepare(`
+    INSERT INTO webauthn_credentials (id, user_id, public_key, counter, device_name, transports, created_at, last_used_at)
+    VALUES (?, ?, ?, 0, ?, ?, datetime('now'), datetime('now'))
+  `).run(bobCredId, userB.id, 'dummy_public_key_hex', 'Bob のパスキー', '["internal"]');
+
+  const aliceAuthOptions = await createWebAuthnAuthenticationOptions(userA.id, 'https://spica.test');
+  let crossAuthRejected = false;
+  try {
+    await verifyWebAuthnAuthentication(
+      { expectedChallenge: aliceAuthOptions.challenge, credential: { id: bobCredId, rawId: bobCredId, type: 'public-key', response: {} } },
+      'https://spica.test',
+    );
+  } catch {
+    crossAuthRejected = true;
+  }
+  if (!crossAuthRejected) {
+    throw new Error('❌ 別の利用者に発行された認証チャレンジが通ってしまいました');
+  }
+  console.log('✅ 他の利用者に発行された認証チャレンジは拒否される');
+
+  await db.prepare('DELETE FROM webauthn_credentials WHERE id = ?').run(bobCredId);
+
+  // ==========================================
+  // テスト 4c: 🧽 期限切れチャレンジは日次の掃除で消える
+  // ==========================================
+  console.log('\n--- 4c. 🧽 期限切れチャレンジの掃除の検証 ---');
+  const { pruneExpiredRows } = await import('../server/src/maintenanceService.js');
+  await db
+    .prepare('INSERT OR REPLACE INTO webauthn_challenges (challenge, user_id, type, expires_at) VALUES (?,?,?,?)')
+    .run('expired-challenge', userA.id, 'totp', Date.now() - 1000);
+  await db
+    .prepare('INSERT OR REPLACE INTO webauthn_challenges (challenge, user_id, type, expires_at) VALUES (?,?,?,?)')
+    .run('live-challenge', userA.id, 'totp', Date.now() + 60_000);
+
+  const pruned = await pruneExpiredRows();
+  const goneRow = await db.prepare('SELECT challenge FROM webauthn_challenges WHERE challenge = ?').get('expired-challenge');
+  const keptRow = await db.prepare('SELECT challenge FROM webauthn_challenges WHERE challenge = ?').get('live-challenge');
+  if (pruned.challenges < 1 || goneRow || !keptRow) {
+    throw new Error(
+      `❌ 期限切れチャレンジの掃除に失敗しました: 消した=${pruned.challenges} 期限切れの残り=${Boolean(goneRow)} 有効なもの=${Boolean(keptRow)}`,
+    );
+  }
+  console.log(`✅ 期限切れチャレンジの掃除成功: ${pruned.challenges} 件（有効なものは残る）`);
+  await db.prepare('DELETE FROM webauthn_challenges WHERE challenge = ?').run('live-challenge');
 
   // ==========================================
   // テスト 5: 🔐 クレデンシャル一覧・削除の検証
