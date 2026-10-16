@@ -4,6 +4,10 @@
 > 実装は [`client/`](../client/README.md) にあります（`npm run dev:client` → http://localhost:5174）。
 > 見た目の正（モックアップ）は [`k-miyabi-plus.html`](k-miyabi-plus.html) です。
 > この文書は「なぜそう決めたか」の記録として残します。
+>
+> ※ 本文の「現状の整理」は**書き直す前のフロントエンド**（`App.tsx` が 2 万行あった頃）の話です。
+>   技術方針の表のうち **Tailwind は採らず**、CSS 変数（`client/src/styles/tokens.css`）でテーマと
+>   アクセントを扱っています。いまの構成は [`client/README.md`](../client/README.md) が正です。
 
 ## 0. まず見るもの
 

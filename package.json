@@ -1,8 +1,29 @@
 {
   "name": "spica",
   "version": "0.2.0",
+  "description": "Spica — a lightweight, sovereign ActivityPub (Fediverse) node. Runs on Node.js + SQLite alone, speaks the Misskey-compatible API, and federates with Mastodon / Misskey. Currently in Beta.",
   "license": "AGPL-3.0-or-later",
   "private": true,
+  "homepage": "https://spicatec.studio-nosa.live/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Keychrom/Spica.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Keychrom/Spica/issues"
+  },
+  "keywords": [
+    "activitypub",
+    "fediverse",
+    "misskey",
+    "mastodon",
+    "sns",
+    "social-network",
+    "sqlite",
+    "typescript",
+    "self-hosted",
+    "pwa"
+  ],
   "type": "module",
   "workspaces": [
     "server",

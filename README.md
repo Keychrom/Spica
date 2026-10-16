@@ -3,10 +3,11 @@
 > **自律分散とデータ主権のための、次世代 ActivityPub ノード**  
 > Misskey や Mastodon とシームレスにつながる、軽量かつ堅牢な国産ソーシャルネットワークエンジン。
 >
-> ⚠️ **現在は Beta 版です。主要な機能は実装済みで、実際のノードで運用しながら育てています。** 仕様変更やデータの移行が起こることがあるので、大切なデータは[バックアップ](docs/UPGRADE.md)を取ってから使ってください。
+> ⚠️ **現在は Beta 版（v0.2.0）です。主要な機能は実装済みで、実際のノードで運用しながら育てています。** 仕様変更やデータの移行が起こることがあるので、大切なデータは[バックアップ](docs/UPGRADE.md)を取ってから使ってください。
 >
 > 🌱 **1 人の学生がメインで開発しているプロジェクトです。大人数でのテストができていないため、規模を大きくすると不安定になる可能性があります**（詳しくは [docs/SCALE.md](docs/SCALE.md)）。
 
+[![Version](https://img.shields.io/badge/version-0.2.0--beta-blue.svg)](https://github.com/Keychrom/Spica/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
 [![Node.js](https://img.shields.io/badge/Node.js-v22.13%2B-green.svg)](https://nodejs.org/)
@@ -103,7 +104,7 @@ Spicaの思想・アーキテクチャ、本番運用やサーバー設置に関
   - 既定では使いません（未設定なら今までどおりインメモリで動きます）
 - 🌱 **[規模と安定性について (docs/SCALE.md)](docs/SCALE.md)**
   - **このプロジェクトは 1 人の学生がメインで開発しています。大人数でのテストはできていません**
-  - なぜ大人数に向かないのか（単一プロセス・ジョブキューなし・SQLite 既定など）と、規模ごとの見通し
+  - なぜ大人数に向かないのか（既定は 1 プロセス・SQLite は 1 ライタ・整形のクエリ本数など）と、規模ごとの見通し
   - 大人数で使う場合の緩和策と、まだ実装されていないこと
 - 🏗 **[設計（プロセスと状態の置き場所） (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)**
   - 役割を分けて動かす（`PROCESS_ROLE=web` / `worker`）と、増やすときの前提
@@ -125,7 +126,7 @@ Spica/
 │   │   ├── pushService.ts# Web Push (VAPID) 通知サービス
 │   │   └── exportService.ts # データエクスポート (JSON / ZIP)
 │   └── package.json
-├── client/               # フロントエンド (React 19 / Vite / Tailwind CSS)
+├── client/               # フロントエンド (React 19 + Vite + 自前 CSS のデザイントークン)
 │   ├── src/              # SPA クライアント UI (タイムライン, 管理画面, PWA)
 │   └── public/           # PWA マニフェスト, サービスワーカー, ロゴアセット
 ├── docs/                 # 公式セットアップ・運用ドキュメント
