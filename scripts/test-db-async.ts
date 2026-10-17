@@ -102,6 +102,21 @@ async function inspect(label: string, async: AsyncSpicaDatabase): Promise<void> 
   await async.prepare('INSERT OR REPLACE INTO async_probe (id, num) VALUES (?, ?)').run('a', 42);
   check(`${label}: INSERT OR REPLACE は上書きする`, ((await async.prepare('SELECT num FROM async_probe WHERE id = ?').get('a')) as any).num, 42);
 
+  // 素の INSERT の重複は、SQLite / PostgreSQL のどちらでも例外になること
+  // （以前は PostgreSQL だけ `ON CONFLICT DO NOTHING` に翻訳され、黙って changes: 0 になっていた）
+  let duplicateInsertThrew = false;
+  try {
+    await async.prepare('INSERT INTO async_probe (id, num) VALUES (?, ?)').run('a', 100);
+  } catch {
+    duplicateInsertThrew = true;
+  }
+  check(`${label}: 素の INSERT の重複は例外になる（黙って通さない）`, duplicateInsertThrew, true);
+  check(
+    `${label}: 例外になった重複 INSERT は既存行を変えない`,
+    ((await async.prepare('SELECT num FROM async_probe WHERE id = ?').get('a')) as any).num,
+    42,
+  );
+
   // ── トランザクション ────────────────────────────────────
   // ここまでの行数: a / b / c / d の 4 行（INSERT OR REPLACE は a の上書きなので増えない）
   await withTransaction(async, async () => {

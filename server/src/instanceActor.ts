@@ -45,9 +45,8 @@ export async function loadInstanceActorKeyPair(): Promise<KeyPair> {
   // ここで自分の鍵を持ち続けると、インスタンス Actor の鍵が 2 つになり、
   // 片方で署名した Activity が相手側で検証に失敗する（プロセスを増やすときだけ起きる）。
   //
-  // 失敗の現れ方がドライバで違うので、両方を見る:
-  //   SQLite      … 重複は例外（UNIQUE 制約）
-  //   PostgreSQL  … 素の INSERT は `ON CONFLICT DO NOTHING` に翻訳され、例外ではなく changes=0
+  // 重複は SQLite / PostgreSQL とも UNIQUE 制約の例外になる。
+  // 例外を握って changes=0 と同じ扱い（「すでにある」）にし、下で保存済みの鍵を読み直す。
   let inserted = false;
   try {
     const result = await db.prepare(`

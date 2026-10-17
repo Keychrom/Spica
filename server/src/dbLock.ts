@@ -67,8 +67,8 @@ export async function acquireDbLock(key: string, ttlMs: number): Promise<DbLockH
     await ensureTable();
 
     // 1. 新規に行を作る。
-    //    PostgreSQL では素の INSERT が `ON CONFLICT DO NOTHING` に翻訳されるので changes=0、
-    //    SQLite では UNIQUE 制約で例外になる。**どちらも「すでにある」なので 2 へ進む**。
+    //    既存行があると UNIQUE 制約で例外になる（SQLite / PostgreSQL とも同じ）。
+    //    例外は「すでにある」なので、握って 2 へ進む。
     let inserted = false;
     try {
       const result = await db

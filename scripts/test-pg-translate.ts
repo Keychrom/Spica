@@ -90,6 +90,25 @@ check(
   translateSqlForPostgres('INSERT OR REPLACE INTO unknown_table (a, b) VALUES (?, ?)', [1, 2], resolvePrimaryKey),
   { sql: 'INSERT INTO unknown_table (a, b) VALUES ($1, $2) ON CONFLICT DO NOTHING', params: [1, 2] },
 );
+check(
+  '素の INSERT には ON CONFLICT を足さない（一意制約違反は両 DB で例外）',
+  translateSqlForPostgres('INSERT INTO users (id, name) VALUES (?, ?)', ['u1', 'x'], resolvePrimaryKey),
+  { sql: 'INSERT INTO users (id, name) VALUES ($1, $2)', params: ['u1', 'x'] },
+);
+check(
+  'INSERT ... SELECT にも ON CONFLICT を足さない',
+  translateSqlForPostgres(
+    'INSERT INTO posts_fts(post_id, content) SELECT id, content FROM posts WHERE fts_indexed = 1',
+    [],
+    resolvePrimaryKey,
+  ).sql,
+  'INSERT INTO posts_fts(post_id, content) SELECT id, content FROM posts WHERE fts_indexed = 1',
+);
+check(
+  '明示的な ON CONFLICT はそのまま残す',
+  translateSqlForPostgres('INSERT INTO users (id) VALUES (?) ON CONFLICT DO NOTHING', ['u1'], resolvePrimaryKey).sql,
+  'INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING',
+);
 
 // ── 方言の吸収 ───────────────────────────────────────────
 console.log('\n🔧 方言の吸収');
@@ -150,7 +169,7 @@ check(
 check(
   "datetime('now') は ISO 8601 の UTC 文字列にする（'now' という文字列を書かない）",
   translateSqlForPostgres("INSERT INTO sessions (token, created_at) VALUES (?, datetime('now'))", ['t1'], resolvePrimaryKey).sql,
-  `INSERT INTO sessions (token, created_at) VALUES ($1, TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ON CONFLICT DO NOTHING`,
+  `INSERT INTO sessions (token, created_at) VALUES ($1, TO_CHAR(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))`,
 );
 check(
   "datetime('now', '+30 days') は CURRENT_TIMESTAMP + INTERVAL にする（セッションの有効期限）",

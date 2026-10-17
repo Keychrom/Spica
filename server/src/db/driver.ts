@@ -117,6 +117,7 @@ export function wrapSqliteDatabase(inner: DatabaseSync): SpicaDatabase {
  * - `temp.x` → `pg_temp.x`
  * - `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`
  * - `INSERT OR REPLACE` → `ON CONFLICT (主キー) DO UPDATE SET ...`
+ * - 素の `INSERT` はそのまま（重複したときは SQLite と同じく例外にする）
  * - `datetime(x)` → `x`（ISO 8601 の TEXT 比較で等価）
  * - `posts_fts MATCH ?` → `f.content ILIKE $n`（語ごとの AND。FTS5 の trigram 相当）
  * - `bm25(posts_fts)` → `p.published_at`（順位は公開時刻で代替）
@@ -163,11 +164,10 @@ export function translateSqlForPostgres(
     }
   } else if (/INSERT\s+OR\s+IGNORE/i.test(text)) {
     text = text.replace(/INSERT\s+OR\s+IGNORE/i, 'INSERT').replace(/;?\s*$/, '') + ' ON CONFLICT DO NOTHING';
-  } else if (/^\s*INSERT\s+INTO/i.test(text) && !/ON\s+CONFLICT/i.test(text)) {
-    // 素の INSERT は重複でエラーになる。SQLite 側の想定（IGNORE 相当）に合わせて
-    // 競合時は何もしないようにしておく（アプリは重複挿入を前提にしていない）
-    text = text.replace(/;?\s*$/, '') + ' ON CONFLICT DO NOTHING';
   }
+  // 素の INSERT には何も足さない。SQLite と同じく、重複は PostgreSQL でも例外にする
+  // （以前はここで ON CONFLICT DO NOTHING を付けており、一意制約違反が PG だけで
+  //   changes: 0 の成功になっていた。呼び出し側の catch に頼るなら両方で例外が正しい）
 
   // datetime() は SQLite の関数なので PostgreSQL の式に置き換える。
   // 先に 'now' と修飾子付きを処理する（後段の「文字列リテラルをそのまま使う」規則より前）。
