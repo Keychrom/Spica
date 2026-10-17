@@ -321,6 +321,13 @@ async function run() {
     const channel = await chRes.json();
     const chId = channel.id ?? channel.channel?.id;
     if (!chId) throw new Error(`チャンネル作成に失敗: ${JSON.stringify(channel)}`);
+    // 一覧・詳細も（ゲストは myUserId が NULL になる。PostgreSQL で型が決まらず 500 になった回帰）
+    const chListAnon = await fetch(`${BASE}/api/channels`);
+    check('チャンネル一覧（未ログイン）', chListAnon.status, 200);
+    const chListAuth = await fetch(`${BASE}/api/channels`, { headers: auth(adminToken) });
+    check('チャンネル一覧（ログイン）', chListAuth.status, 200);
+    const chDetail = await fetch(`${BASE}/api/channels/${chId}`);
+    check('チャンネル詳細（未ログイン）', chDetail.status, 200);
     for (let i = 0; i < 3; i++) {
       await createPost(`チャンネル投稿 ${i + 1}`, { channel_id: chId });
     }

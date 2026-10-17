@@ -132,7 +132,7 @@ router.get('/channels', asyncHandler(async (req: Request, res: Response) => {
 
   const rows = await db.prepare(`
     SELECT c.*,
-      CASE WHEN ? IS NOT NULL AND EXISTS(
+      CASE WHEN CAST(? AS TEXT) IS NOT NULL AND EXISTS(
         SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
       ) THEN 1 ELSE 0 END AS is_following
     FROM channels c
@@ -200,7 +200,7 @@ router.get('/channels/:id', asyncHandler(async (req: Request, res: Response) => 
 
   const row = await db.prepare(`
     SELECT c.*,
-      CASE WHEN ? IS NOT NULL AND EXISTS(
+      CASE WHEN CAST(? AS TEXT) IS NOT NULL AND EXISTS(
         SELECT 1 FROM channel_follows cf WHERE cf.channel_id = c.id AND cf.user_id = ?
       ) THEN 1 ELSE 0 END AS is_following
     FROM channels c
