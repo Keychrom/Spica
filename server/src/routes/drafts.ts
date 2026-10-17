@@ -4,110 +4,11 @@
  * api.ts から切り出したルーター。マウント位置（api.ts）は元の登録順と同じ。
  */
 import { asyncHandler } from '../asyncHandler.js';
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import multer from 'multer';
-import { withTransaction } from '../db/asyncDriver.js';
-import { db, UserRow, PostRow, FollowRow, RemoteActorRow, ReactionRow, AnnounceRow, isDomainBlocked, matchesBlockedDomainRule, loadBlockedDomainRules, createNotification, NotificationRow, getInstanceInfo, InvitationCodeRow, CustomEmojiRow, AntennaRow, DraftRow, ScheduledPostRow, ChannelRow, WebAuthnCredentialRow, getServerSetting, setServerSetting, NOTIFICATION_TYPES, NOTIFICATION_TYPE_LABELS, getNotificationPrefs, saveNotificationPrefs, getDisabledNotificationTypes } from '../db.js';
-import { getEmailNotificationStatus, setEmailNotificationEnabled } from '../emailNotifier.js';
-import { getUserPermissions } from '../auth.js';
-import { config } from '../config.js';
-import { generateKeyPair } from '../crypto.js';
-import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
-import { applyPageHeaders, collectVisiblePage, cursorPredicate, parsePageQuery, type PageCursor } from '../pagination.js';
-import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } from '../postVisibility.js';
-import { createReport, logNewReport } from '../reportService.js';
-import { getMutedWords, postMatchesMutedWords, invalidateMutedWords } from '../wordFilter.js';
-import { extractFirstUrl, getCachedPreviews } from '../linkPreview.js';
-import { parseArchive, importNotes, buildSpicaBundle, buildSpicaBundleFromZip, importSpicaArchive, buildImportMessage } from '../importService.js';
-import { isZipBuffer, readZipEntries } from '../zipReader.js';
-import { parseProfileFields } from '../activitypub.js';
-import { isMailConfigured, sendMail, generateVerificationCode, issueVerificationCode, verifyCode, getMailConfig, saveMailConfig, verifyMailConnection } from '../mailService.js';
-
-import { uploadMediaFile } from '../storage.js';
-import { checkMediaQuota, deleteMedia, getMediaStats, listMedia, recordMedia, toClientMedia, unlinkMediaFromPost } from '../mediaService.js';
-import { executeCreatePost, executeUpdatePost, MAX_POST_ATTACHMENTS } from '../postService.js';
-import { isApprovedUser } from '../registration.js';
-import { buildOtpauthUri, generateRecoveryCodes, generateTotpSecret, verifyTotpCode } from '../totp.js';
-import { consumeRecoveryCode, disableTotp, enableTotp, getTotpState, setPendingTotpSecret } from '../totpService.js';
-import {
-  createWebAuthnRegistrationOptions,
-  verifyWebAuthnRegistration,
-  createWebAuthnAuthenticationOptions,
-  verifyWebAuthnAuthentication,
-  saveChallenge,
-} from '../webauthnService.js';
-import {
-  generateMasterKey,
-  hashMasterKey,
-  hashPassword,
-  verifyPassword,
-  createSession,
-  destroySession,
-  listUserSessions,
-  destroySessionById,
-  destroyOtherSessions,
-  sessionPublicId,
-  requireAuth,
-  getUserFromToken,
-  issueStreamTicket,
-  consumeStreamTicket,
-} from '../auth.js';
-import { deleteUserAccount, beginUserDeletion } from '../accountService.js';
-import { getUserPrefs, saveUserPrefs, isDomainMutedByPrefs } from '../userPrefs.js';
-import {
-  isDmEnabled,
-  dmFeatureFlags,
-  listDmConversations,
-  getDmConversationMessages,
-  markDmConversationRead,
-  sendDmMessage,
-  canViewDmMessage,
-} from '../dm.js';
-import { exportUserData, streamUserExportZip, buildUserExportFile } from '../exportService.js';
-import { enqueueJob, getJob } from '../jobs.js';
-import {
-  getVapidPublicKey,
-  savePushSubscription,
-  removePushSubscription,
-  isUserSubscribed,
-  sendPushToUser,
-} from '../pushService.js';
-import {
-  addStreamClient,
-  removeStreamClient,
-  broadcastNote,
-  broadcastReaction,
-  broadcastAnnounce,
-  broadcastPoll,
-  broadcastDeletePost,
-  isStreamAtCapacity,
-} from '../streaming.js';
-import { parseStreams } from '../streamRouting.js';
-import { cacheGet, cacheSet, isTimelineCacheEnabled, invalidateTimelineCache } from '../timelineCache.js';
-import {
-  buildNote,
-  buildCreateActivity,
-  buildFollowActivity,
-  buildEmojiReactActivity,
-  buildLikeActivity,
-  buildAnnounceActivity,
-  buildUndoActivity,
-  buildDeleteActivity,
-  buildAcceptActivity,
-  buildRejectActivity,
-  deliverActivity,
-  resolveWebFinger,
-  fetchRemoteActor,
-  fetchActorAliases,
-  buildMoveActivity,
-  federatePollUpdate,
-  federatePollVote,
-} from '../activitypub.js';
-import { applyPollCountsFromQuestion, enrichAndFilterPosts, getPollDataForPost } from '../postEnrichment.js';
-
+import { db, DraftRow, ScheduledPostRow } from '../db.js';
+import { normalizeVisibility } from '../postVisibility.js';
+import { requireAuth } from '../auth.js';
 
 const router = Router();
 
