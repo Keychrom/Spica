@@ -114,7 +114,7 @@ export default function PostCard(props: PostCardProps) {
       className={`post${thread?.railTop ? ' post--rail-t' : ''}${thread?.railBottom ? ' post--rail-b' : ''}`}
       onClick={openThread}
     >
-      <a className="av" href={`/users/${shown.user_id}`} aria-label={shown.author_name}>
+      <a className="av" href={actorPath(String(shown.user_id))} aria-label={shown.author_name}>
         {shown.author_icon ? <img src={shown.author_icon} alt="" /> : shown.author_name.slice(0, 1)}
       </a>
 
@@ -141,7 +141,7 @@ export default function PostCard(props: PostCardProps) {
         )}
 
         <div className="meta">
-          <a className="meta__name" href={`/users/${shown.user_id}`}>
+          <a className="meta__name" href={actorPath(String(shown.user_id))}>
             {shown.author_name}
           </a>
           <span className="meta__handle">{shown.author_handle}</span>

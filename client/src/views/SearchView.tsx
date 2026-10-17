@@ -11,6 +11,7 @@ import PostCard from '../components/PostCard';
 import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { formatCount, type DirectoryUser, type Post, type TagCount } from '../lib/format';
+import { actorPath } from '../lib/permalink';
 import { reactToPost, sharePost, toggleBookmark } from '../lib/postActions';
 import { withPostPatch } from '../lib/postPatch';
 
@@ -158,7 +159,7 @@ export default function SearchView({
           <section className="plain">
             <h2 className="plain__title">ユーザー</h2>
             {users.slice(0, 5).map((user) => (
-              <a className="card__who" key={user.id} href={`/users/${user.id}`}>
+              <a className="card__who" key={user.id} href={actorPath(String(user.id))}>
                 <span className="av av--s">
                   {user.icon_url ? <img src={user.icon_url} alt="" /> : user.name.slice(0, 1)}
                 </span>

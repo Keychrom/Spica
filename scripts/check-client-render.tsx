@@ -37,6 +37,7 @@ import PostMedia from '../client/src/components/PostMedia.js';
 import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
+import { actorPath } from '../client/src/lib/permalink.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
 import { MAX_ATTACHMENTS } from '../client/src/lib/media.js';
@@ -421,6 +422,18 @@ check('ブーストしても落ちない（中身が undefined にならない�
 check('ノートの作者はトップレベルを使う', boostHtml.includes('ブーストされた人'));
 check('「◯◯ がリノート」はブーストした人', boostHtml.includes('ブーストした人 がリノート'));
 check('押すとブーストした人を開ける', boostHtml.includes('href="/users/https%3A%2F%2Fmisskey.day%2Fusers%2Faqwvcgdilt"'));
+
+// リモート投稿の作者（user_id が Actor URL）へのリンクも、エンコードしたプロフィールへ
+const remoteAuthorHref = 'href="/users/https%3A%2F%2Fmisskey.day%2Fusers%2Faqwvcgdilt"';
+check(
+  'リモート作者のアイコンと名前は Actor URL をエンコードしたプロフィールへ',
+  (boostHtml.match(new RegExp(remoteAuthorHref, 'g')) || []).length,
+  2,
+);
+check('ローカル作者は素の ID のプロフィールへ', (card().match(/href="\/users\/alice"/g) || []).length, 2);
+check('ローカル ID はそのまま', actorPath('alice'), '/users/alice');
+check('ローカルの Actor URL は ID に直す', actorPath('http://spica.test/users/alice'), '/users/alice');
+check('リモートの Actor URL はエンコードする', actorPath('https://misskey.day/users/x'), '/users/https%3A%2F%2Fmisskey.day%2Fusers%2Fx');
 check('本文が無くても印だけ出る', !boostHtml.includes('class=ody'));
 
 // ======================================================================
