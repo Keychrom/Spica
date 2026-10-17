@@ -52,6 +52,19 @@ async function isLocalActorUrl(actorUrl: string): Promise<boolean> {
 }
 
 /**
+ * Accept / Reject に埋め込まれた Follow から、承認・拒否された**ローカルのフォロー元**を取り出す。
+ *
+ * 埋め込みの `Follow.actor` が最も確かなので優先し、無ければ個人 Inbox の宛先（`targetUsername`）を使う。
+ * どちらも無ければ「誰の承認か分からない」ので null（**同じ相手をフォローしている全員を巻き込まない**）。
+ */
+function localFollowerIdFromFollow(followObject: any, targetUsername?: string): string | null {
+  const followActor = followObject && typeof followObject === 'object' ? followObject.actor : undefined;
+  const fromObject = typeof followActor === 'string' ? localUsernameFromActorUrl(followActor) : null;
+  if (fromObject) return fromObject;
+  return targetUsername ? targetUsername.toLowerCase() : null;
+}
+
+/**
  * 共通の Activity 受信ハンドラ (User Inbox & Shared Inbox)
  */
 /**
@@ -97,13 +110,11 @@ export async function processActivity(
           targetUser = await db.prepare('SELECT * FROM users WHERE id = ?').get(targetUserId) as unknown as UserRow | undefined;
         }
 
-        // 見つからない場合は最初の管理者ユーザーにフォールバック
+        // 宛先が見つからない Follow を**管理者へ回さない**。以前は最初の admin にフォールバックして
+        // いたため、存在しない利用者宛て（または廃止した URL 宛て）の Follow が管理者への
+        // フォローとして成立してしまった（2026-10-17 に削除）
         if (!targetUser) {
-          targetUser = await db.prepare("SELECT * FROM users WHERE role = 'admin' LIMIT 1").get() as unknown as UserRow | undefined;
-        }
-
-        if (!targetUser) {
-          console.error(`[Inbox Follow Error] Target user not found for: ${targetActorUrl}`);
+          console.warn(`[Inbox Follow] ⚠️ 宛先のローカル利用者が見つからないため受理しません: ${targetActorUrl}`);
           return res.status(404).json({ error: 'フォロー対象ユーザーが見つかりません。' });
         }
 
@@ -198,25 +209,33 @@ export async function processActivity(
 
         // 1. follows テーブルの更新 (個人アカウントのフォロー承認)
         //    ※ 宛先 (following_url) だけでは「同じ相手をフォローしている他のローカルユーザー」
-        //      まで承認してしまうため、フォロー元 (follower_url) も必ず特定する
+        //      まで承認してしまうため、フォロー元 (follower_url) も必ず特定する。
+        //      フォロー元が特定できないときは**何もしない**（以前は following_url + is_local だけで
+        //      更新し、同じリモートをフォロー申請中の全ローカル利用者が一括で accepted になっていた。
+        //      2026-10-17 に修正）
         //    ※ Accept を送れるのは**承認した本人**（または承認済みのリレー）だけ。第三者からの
         //      Accept でフォローを accepted にすると、承認状態が実態とずれる（2026-10-16 に追加）
+        //    ※ リレーの Accept は object が `as:Public`（インスタンスアクターのフォロー）なので、
+        //      個人のフォローとしては扱わずリレーの更新（下の 2.）に任せる
+        const PUBLIC_ACTOR_URI = 'https://www.w3.org/ns/activitystreams#Public';
         const acceptFromTarget = Boolean(targetUrl) && actorUrl === targetUrl;
         const acceptFromRelay = acceptFromTarget ? false : await isAcceptedRelayActor(actorUrl);
-        if (targetUrl && !acceptFromTarget && !acceptFromRelay) {
+        const isPersonalFollowAccept = Boolean(targetUrl) && targetUrl !== PUBLIC_ACTOR_URI;
+        if (isPersonalFollowAccept && !acceptFromTarget && !acceptFromRelay) {
           console.warn(`[Inbox Accept] ⚠️ 本人以外からの Accept を無視しました: actor=${actorUrl} target=${targetUrl}`);
-        } else if (targetUrl) {
-          if (targetUsername) {
-            const followerActor = `${config.origin}/users/${targetUsername.toLowerCase()}`;
-            const result = await db.prepare('UPDATE follows SET status = ? WHERE following_url = ? AND follower_url = ?')
-              .run('accepted', targetUrl, followerActor);
-            if (result.changes === 0) {
-              // 個人Inbox宛でもフォロー元が一致しない場合に備え、自ノード発のフォローに限定して更新する
-              await db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
-            }
+        } else if (isPersonalFollowAccept) {
+          const followerId = localFollowerIdFromFollow(followObject, targetUsername);
+          if (!followerId) {
+            console.warn(
+              `[Inbox Accept] ⚠️ 承認された利用者を特定できないため、フォロー状態は更新しません: actor=${actorUrl} target=${targetUrl}`,
+            );
           } else {
-            // 共有Inbox: 自ノードのユーザーが行ったフォローに限定する
-            await db.prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND is_local = 1").run(targetUrl);
+            const result = await db
+              .prepare("UPDATE follows SET status = 'accepted' WHERE following_url = ? AND follower_url = ? AND is_local = 1")
+              .run(targetUrl, `${config.origin}/users/${followerId}`);
+            console.log(
+              `[Inbox Accept] ✅ ${followerId} の ${targetUrl} へのフォローを承認しました（${Number(result.changes ?? 0)} 件）`,
+            );
           }
         }
 
@@ -263,18 +282,34 @@ export async function processActivity(
       case 'Reject': {
         // こちらから送った Follow が相手に拒否された（鍵アカウントなど）。
         // 保留のままの行を消し、キャッシュも捨てる（見えないはずの投稿が残らないように）。
+        // ※ Accept と同じく、**拒否した本人**（または承認済みのリレー）からのものだけを扱い、
+        //   削除も「その利用者のフォロー」に限定する。以前は following_url だけで消していたため、
+        //   同じ相手へ申請中の他のローカル利用者の保留まで消えていた（2026-10-17 に修正）
         const rejected = activity.object;
         const rejectedType = typeof rejected === 'object' ? rejected?.type : null;
         if (rejectedType === 'Follow' || !rejectedType) {
           const targetUrl = typeof rejected?.object === 'string' ? rejected.object : rejected?.object?.id;
-          if (targetUrl) {
-            const result = await db
-              .prepare("DELETE FROM follows WHERE following_url = ? AND is_local = 1 AND status <> 'accepted'")
-              .run(targetUrl);
-            await invalidateTimelineCache();
-            console.log(
-              `[Inbox Reject] 🚫 Follow rejected by ${actorUrl} for ${targetUrl}（保留の行を ${Number(result.changes ?? 0)} 件削除）`,
-            );
+          const PUBLIC_ACTOR_URI = 'https://www.w3.org/ns/activitystreams#Public';
+          const rejectFromTarget = Boolean(targetUrl) && actorUrl === targetUrl;
+          const rejectFromRelay = rejectFromTarget ? false : await isAcceptedRelayActor(actorUrl);
+          const isPersonalFollowReject = Boolean(targetUrl) && targetUrl !== PUBLIC_ACTOR_URI;
+          if (targetUrl && isPersonalFollowReject && !rejectFromTarget && !rejectFromRelay) {
+            console.warn(`[Inbox Reject] ⚠️ 本人以外からの Reject を無視しました: actor=${actorUrl} target=${targetUrl}`);
+          } else if (targetUrl && isPersonalFollowReject) {
+            const followerId = localFollowerIdFromFollow(rejected, targetUsername);
+            if (!followerId) {
+              console.warn(
+                `[Inbox Reject] ⚠️ 拒否された利用者を特定できないため、保留の行は消しません: actor=${actorUrl} target=${targetUrl}`,
+              );
+            } else {
+              const result = await db
+                .prepare("DELETE FROM follows WHERE following_url = ? AND follower_url = ? AND is_local = 1 AND status <> 'accepted'")
+                .run(targetUrl, `${config.origin}/users/${followerId}`);
+              await invalidateTimelineCache();
+              console.log(
+                `[Inbox Reject] 🚫 Follow rejected by ${actorUrl} for ${targetUrl}（${followerId} の保留 ${Number(result.changes ?? 0)} 件を削除）`,
+              );
+            }
           }
         }
         return res.status(200).json({ status: 'Reject processed' });

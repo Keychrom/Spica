@@ -765,6 +765,130 @@ async function run() {
     await signAndPost(acceptBody(VICTIM_ACTOR), `${VICTIM_ACTOR}#main-key`, victimKeys.privateKeyPem);
     check('本人からの Accept で承認される', followStatus(), 'accepted');
 
+    // ------------------------------------------------------------------
+    // 12. Accept / Reject は「承認・拒否された本人」のフォローだけを変えるか
+    //     following_url だけで一括更新すると、同じ相手へ申請中の他のローカル利用者まで動く
+    // ------------------------------------------------------------------
+    console.log('\n🎯 [12] Accept / Reject の対象は本人のフォローだけか');
+    const nowIso = new Date().toISOString();
+    for (const [id, name] of [['alice', 'Alice'], ['bob', 'Bob']] as const) {
+      try {
+        testDb.prepare(`
+          INSERT INTO users (id, name, summary, master_key_hash, role, is_frozen, public_key_pem, private_key_pem, created_at)
+          VALUES (?, ?, '', ?, 'user', 0, 'k', 'k', ?)
+        `).run(id, name, `hash_${id}`, nowIso);
+      } catch {
+        // 既に居れば何もしない
+      }
+    }
+    const aliceFollow = `${PUBLIC_ORIGIN}/users/alice`;
+    const bobFollow = `${PUBLIC_ORIGIN}/users/bob`;
+    const seedPending = async (follower: string, following: string) => {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          testDb.prepare(`
+            INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+            VALUES (?, ?, ?, ?, 1, 'pending', ?)
+            ON CONFLICT(follower_url, following_url) DO UPDATE SET status = 'pending'
+          `).run(`${follower} -> ${following}`, follower, following, VICTIM_INBOX, nowIso);
+          return;
+        } catch (err) {
+          if (attempt === 9) throw err;
+          await sleep(200); // SQLite のロック競合をリトライ
+        }
+      }
+    };
+    const statusOf = (follower: string, following: string) =>
+      (testDb.prepare('SELECT status FROM follows WHERE follower_url = ? AND following_url = ?').get(follower, following) as
+        | { status: string }
+        | undefined)?.status ?? null;
+
+    await seedPending(aliceFollow, VICTIM_ACTOR);
+    await seedPending(bobFollow, VICTIM_ACTOR);
+
+    // (a) 誰宛てか分からない Accept（埋め込みなし・共有 Inbox）→ 誰も承認しない
+    const vagueAccept = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${VICTIM_ACTOR}/activities/accept-2`,
+      type: 'Accept',
+      actor: VICTIM_ACTOR,
+      object: VICTIM_ACTOR,
+    });
+    await signAndPost(vagueAccept, `${VICTIM_ACTOR}#main-key`, victimKeys.privateKeyPem);
+    check('曖昧な Accept では alice を承認しない', statusOf(aliceFollow, VICTIM_ACTOR), 'pending');
+    check('曖昧な Accept では bob を承認しない', statusOf(bobFollow, VICTIM_ACTOR), 'pending');
+
+    // (b) 埋め込み Follow が alice を指す Accept → alice だけ
+    const aliceAccept = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${VICTIM_ACTOR}/activities/accept-3`,
+      type: 'Accept',
+      actor: VICTIM_ACTOR,
+      object: { type: 'Follow', actor: aliceFollow, object: VICTIM_ACTOR },
+    });
+    await signAndPost(aliceAccept, `${VICTIM_ACTOR}#main-key`, victimKeys.privateKeyPem);
+    check('本人の Accept で alice は承認される', statusOf(aliceFollow, VICTIM_ACTOR), 'accepted');
+    check('同じ相手を申請中の bob は保留のまま', statusOf(bobFollow, VICTIM_ACTOR), 'pending');
+
+    // (c) 個人 Inbox 宛て（埋め込みなし）→ 宛先の bob だけを承認する
+    const bobPersonalAccept = JSON.stringify({
+      '@context': 'https://www.w3.org/ns/activitystreams',
+      id: `${VICTIM_ACTOR}/activities/accept-4`,
+      type: 'Accept',
+      actor: VICTIM_ACTOR,
+      object: VICTIM_ACTOR,
+    });
+    const bobInboxRes = await fetch(`${ORIGIN}/users/bob/inbox`, {
+      method: 'POST',
+      headers: signInboxRequest({
+        body: bobPersonalAccept,
+        keyId: `${VICTIM_ACTOR}#main-key`,
+        privateKeyPem: victimKeys.privateKeyPem,
+        inboxPath: '/users/bob/inbox',
+      }),
+      body: bobPersonalAccept,
+    });
+    check('個人 Inbox 宛ての Accept は受理される', bobInboxRes.status, 200);
+    check('宛先の bob は承認される', statusOf(bobFollow, VICTIM_ACTOR), 'accepted');
+
+    // (d) Reject も同じ: 第三者では消えず、本人からの分だけその利用者の保留が消える
+    await seedPending(aliceFollow, OTHER_REMOTE);
+    await seedPending(bobFollow, OTHER_REMOTE);
+    const rejectBody = (actor: string) =>
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${actor}/activities/reject-1`,
+        type: 'Reject',
+        actor,
+        object: { type: 'Follow', actor: aliceFollow, object: OTHER_REMOTE },
+      });
+    await signAndPost(rejectBody(SPOOFER_ACTOR), `${SPOOFER_ACTOR}#main-key`, spooferKeys.privateKeyPem);
+    check('第三者からの Reject では alice の保留は消えない', statusOf(aliceFollow, OTHER_REMOTE), 'pending');
+    check('第三者からの Reject では bob の保留は消えない', statusOf(bobFollow, OTHER_REMOTE), 'pending');
+    await signAndPost(rejectBody(OTHER_REMOTE), `${OTHER_REMOTE}#main-key`, otherKeys.privateKeyPem);
+    check('本人からの Reject で alice の保留は消える', statusOf(aliceFollow, OTHER_REMOTE), null);
+    check('同じ相手を申請中の bob は残る', statusOf(bobFollow, OTHER_REMOTE), 'pending');
+
+    // (e) 宛先の居ない Follow は 404（管理者へフォールバックしない）
+    const ghostFollow = await signAndPost(
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${STRANGER}/activities/follow-ghost`,
+        type: 'Follow',
+        actor: STRANGER,
+        object: `${PUBLIC_ORIGIN}/users/nobody`,
+      }),
+      `${STRANGER}#main-key`,
+      strangerKeys.privateKeyPem,
+    );
+    check('存在しない宛先の Follow は 404', ghostFollow.status, 404);
+    const adminFollowersNow = await (await fetch(`${ORIGIN}/api/followers?userId=admin`)).json();
+    check(
+      '管理者のフォロワーに追加されない',
+      Array.isArray(adminFollowersNow) && adminFollowersNow.some((f: any) => f.follower_url === STRANGER),
+      false,
+    );
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Inbox 署名強制テスト: すべて成功');
