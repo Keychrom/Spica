@@ -7,7 +7,7 @@ import { db, RelayRow, BlockedDomainRow, extractDomain, isDomainBlocked, purgeDo
 import { publishEvent } from '../redis.js';
 import { requireAdmin, hasPermission, getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
-import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
+import { assertFetchableRemoteUrl, safeFetch } from '../remoteFetchGuard.js';
 import { listReports, resolveReport, countOpenReports } from '../reportService.js';
 import { getMailConfig, saveMailConfig, isMailConfigured, verifyMailConnection } from '../mailService.js';
 import { getFtsIndexScope, setFtsIndexScope, getRemoteAnnouncePolicy, setRemoteAnnouncePolicy } from '../searchPolicy.js';
@@ -179,10 +179,10 @@ adminRouter.get('/users', asyncHandler(async (req: Request, res: Response) => {
       u.approval_note,
       u.created_at,
       (SELECT COUNT(*) FROM posts WHERE user_id = u.id) as post_count,
-      (SELECT COUNT(*) FROM follows WHERE following_url = '${config.origin}/users/' || u.id) as follower_count
+      (SELECT COUNT(*) FROM follows WHERE following_url = ? || u.id) as follower_count
     FROM users u
     ORDER BY u.created_at ASC
-  `).all() as any[];
+  `).all(`${config.origin}/users/`) as any[];
 
   // 各ユーザーに付与されているロールも返す（ロール管理UIで使用）
   const enriched = await Promise.all(
@@ -351,31 +351,27 @@ adminRouter.post('/relays', asyncHandler(async (req: Request, res: Response) => 
       candidateActorUrl = cleanUrl.replace(/\/inbox\/?$/, '/actor');
     }
 
+    // SSRF 対策: 内部アドレス等への取得を拒否する。
+    // candidateActorUrl と cleanUrl は同一ホストなので、この検証でフォールバック側も塞がる。
+    // 取得自体も safeFetch を使う（fetch の redirect: follow では 302 の先が検証されず、
+    // `Location: http://169.254.169.254/` のような抜け道ができる。2026-10-17 に修正）
+    const relaySafety = await assertFetchableRemoteUrl(candidateActorUrl);
+    if (!relaySafety.safe) {
+      return res.status(400).json({ error: `安全でないリレーの URL です: ${relaySafety.reason || candidateActorUrl}` });
+    }
+    const relayHeaders = {
+      Accept: 'application/activity+json, application/ld+json',
+      'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
+    };
     try {
-      // SSRF 対策: 内部アドレス等への取得を拒否する。
-      // candidateActorUrl と cleanUrl は同一ホストのため、この検証でフォールバック取得も防げる。
-      const relaySafety = await assertFetchableRemoteUrl(candidateActorUrl);
-      if (!relaySafety.safe) {
-        throw new Error(`安全でないリレー URL のため Actor 取得をスキップ: ${relaySafety.reason}`);
-      }
       console.log(`[Relay] Fetching relay actor: ${candidateActorUrl}`);
-      const fetchRes = await fetch(candidateActorUrl, {
-        headers: {
-          Accept: 'application/activity+json, application/ld+json',
-          'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
-        },
-      });
+      const fetchRes = await safeFetch(candidateActorUrl, { headers: relayHeaders });
       if (fetchRes.ok) {
         const actorJson = (await fetchRes.json()) as any;
         actorUrl = actorJson.id || candidateActorUrl;
         inboxUrl = actorJson.inbox || (cleanUrl.endsWith('/inbox') ? cleanUrl : `${cleanUrl}/inbox`);
       } else if (cleanUrl !== candidateActorUrl) {
-        const fallbackRes = await fetch(cleanUrl, {
-          headers: {
-            Accept: 'application/activity+json, application/ld+json',
-            'User-Agent': `Spica/${SERVER_VERSION} (+${config.origin})`,
-          },
-        });
+        const fallbackRes = await safeFetch(cleanUrl, { headers: relayHeaders });
         if (fallbackRes.ok) {
           const actorJson = (await fallbackRes.json()) as any;
           actorUrl = actorJson.id || cleanUrl;

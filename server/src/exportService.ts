@@ -5,6 +5,8 @@ import { createRequire } from 'node:module';
 import { db, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
 import { config } from './config.js';
 import { registerJobHandler, setJobResult } from './jobs.js';
+import { getStorageConfig } from './storage.js';
+import { safeFetch } from './remoteFetchGuard.js';
 
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
@@ -102,6 +104,35 @@ export interface UserExportData {
 }
 
 /**
+ * このノードが設定したストレージ（S3/R2）の URL か。
+ *
+ * 台帳の URL はアップロード時にこちらが組み立てたものなので、このオリジンだけは
+ * SSRF ガードを通さずに取得してよい（自前の MinIO がプライベート IP にある構成も許す）。
+ * それ以外（想定外の URL）は safeFetch で 1 ホップずつ検証する。
+ */
+function isConfiguredStorageUrl(rawUrl: string): boolean {
+  try {
+    const target = new URL(rawUrl);
+    const cfg = getStorageConfig();
+    const bases = [
+      cfg.publicUrl,
+      cfg.endpoint && cfg.bucket ? `${cfg.endpoint.replace(/\/+$/, '')}/${cfg.bucket}` : '',
+    ].filter(Boolean);
+    return bases.some((base) => {
+      try {
+        const b = new URL(base);
+        const prefix = b.pathname.replace(/\/+$/, '');
+        return target.origin === b.origin && (target.pathname === prefix || target.pathname.startsWith(`${prefix}/`));
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * メディアの実ファイルを読む（ローカル保存ならディスク、S3/R2 なら公開 URL から）。
  * 読めなかった場合は null を返す（同梱せず、台帳の記録だけ残す）。
  */
@@ -118,7 +149,11 @@ async function readMediaFileBuffer(key: string, url: string): Promise<Buffer | n
   }
   if (!url) return null;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS) });
+    // 自前ストレージは redirect を追ってよい。それ以外は 302 の先も検証される safeFetch を使う
+    // （素の fetch は redirect: follow で最初の URL しか見ないため、内部アドレスへ飛ばされ得る。2026-10-17 に修正）
+    const res = isConfiguredStorageUrl(url)
+      ? await fetch(url, { signal: AbortSignal.timeout(MEDIA_FETCH_TIMEOUT_MS) })
+      : await safeFetch(url, { timeoutMs: MEDIA_FETCH_TIMEOUT_MS });
     if (!res.ok) return null;
     const buffer = Buffer.from(await res.arrayBuffer());
     return buffer.length > 0 ? buffer : null;

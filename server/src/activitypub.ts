@@ -932,6 +932,16 @@ export interface CustomEmoji {
   url: string;  // 例: "https://example.com/files/ohayo.png"
 }
 
+/** 属性値に埋め込める形にする（`"` で属性から抜け出せないようにする） */
+function escapeHtmlAttribute(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /**
  * ActivityPub Note オブジェクトからカスタム絵文字 (Emoji) を抽出
  */
@@ -948,7 +958,8 @@ export function extractCustomEmojis(note: any): CustomEmoji[] {
       if (!name.endsWith(':')) name = `${name}:`;
 
       const url = typeof t.icon === 'string' ? t.icon : t.icon?.url;
-      if (url && typeof url === 'string') {
+      // URL はリモートが決める値。http(s) 以外（javascript: / data: など）は絵文字として扱わない
+      if (url && typeof url === 'string' && /^https?:\/\//i.test(url)) {
         emojis.push({ name, url });
       }
     }
@@ -964,12 +975,16 @@ export function replaceCustomEmojis(content: string, emojis: CustomEmoji[]): str
 
   let replaced = content;
   for (const emoji of emojis) {
+    // 念のためここでも http(s) 以外は置換しない（extract 側で弾いているが、直接渡された場合に備える）
+    if (!/^https?:\/\//i.test(emoji.url)) continue;
     const rawShortcode = emoji.name;
     const cleanName = emoji.name.replace(/^:|:$/g, '');
     const escapedName = rawShortcode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // タグの属性値内（="...:shortcode:..."）を誤置換しないよう、タグ外のみにマッチ
     const regex = new RegExp(`${escapedName}(?![^<]*>)`, 'g');
-    const imgTag = `<img src="${emoji.url}" alt="${cleanName}" title="${rawShortcode}" class="custom-emoji inline-block h-6 w-auto align-middle" loading="lazy" />`;
+    // URL・名前はリモートが決める値なので、属性値として必ずエスケープする
+    // （`"` が入ると onerror などを足せてしまう。2026-10-17 に修正）
+    const imgTag = `<img src="${escapeHtmlAttribute(emoji.url)}" alt="${escapeHtmlAttribute(cleanName)}" title="${escapeHtmlAttribute(rawShortcode)}" class="custom-emoji inline-block h-6 w-auto align-middle" loading="lazy" />`;
     replaced = replaced.replace(regex, imgTag);
   }
   return replaced;

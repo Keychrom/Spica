@@ -197,6 +197,12 @@ async function run(): Promise<void> {
     check('モデレーターはブロック一覧を読める', modBlocks.status, 200);
     const modUsers = await fetch(`${BASE}/api/admin/users`, { headers: modAuth });
     check('モデレーターはユーザー一覧を読めない（403）', modUsers.status, 403);
+    // 管理者は読める（集計 SQL がパラメータ化されている。SQLite / PostgreSQL の両方で通ること）
+    const adminUsersRes = await fetch(`${BASE}/api/admin/users`, { headers: adminAuth });
+    check('管理者はユーザー一覧を読める', adminUsersRes.status, 200);
+    const adminUsers = (await adminUsersRes.json()) as any[];
+    const listedBob = Array.isArray(adminUsers) ? adminUsers.find((u) => u.id === 'bob') : null;
+    check('フォロワー数の集計が数値で返る', typeof listedBob?.follower_count, 'number');
     const modSettings = await fetch(`${BASE}/api/admin/server-settings`, { headers: modAuth });
     check('モデレーターはサーバー設定を触れない（403）', modSettings.status, 403);
     const modAudit = await fetch(`${BASE}/api/admin/audit`, { headers: modAuth });

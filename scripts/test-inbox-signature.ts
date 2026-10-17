@@ -889,6 +889,81 @@ async function run() {
       false,
     );
 
+    // ------------------------------------------------------------------
+    // 13. リモートのカスタム絵文字 URL が HTML 属性から抜け出せないか
+    // ------------------------------------------------------------------
+    console.log('\n🖼️ [13] カスタム絵文字の属性エスケープ');
+    const evilEmojiUrl = 'https://evil.test/x.png" onerror="alert(document.domain)" data-x="';
+    const emojiNoteId = `${STRANGER}/notes/emoji-1`;
+    await signAndPost(
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${STRANGER}/activities/emoji-1`,
+        type: 'Create',
+        actor: STRANGER,
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        object: {
+          id: emojiNoteId,
+          type: 'Note',
+          attributedTo: STRANGER,
+          content: '<p>hello :evil: world</p>',
+          published: new Date().toISOString(),
+          tag: [{ type: 'Emoji', name: ':evil:', icon: { type: 'Image', url: evilEmojiUrl } }],
+        },
+      }),
+      `${STRANGER}#main-key`,
+      strangerKeys.privateKeyPem,
+    );
+    const emojiRow = testDb.prepare('SELECT content FROM posts WHERE id = ?').get(emojiNoteId) as
+      | { content?: string }
+      | undefined;
+    const emojiContent = String(emojiRow?.content || '');
+    const emojiImgTag = (emojiContent.match(/<img[^>]*>/) || [''])[0];
+    check('絵文字つきの投稿が保存される', Boolean(emojiRow), true);
+    check('URL の引用符は実体参照になる', emojiContent.includes('&quot;'), true);
+    check('img タグの引用符は属性の数だけ（10 個）', (emojiImgTag.match(/"/g) || []).length, 10);
+
+    const jsNoteId = `${STRANGER}/notes/emoji-2`;
+    await signAndPost(
+      JSON.stringify({
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        id: `${STRANGER}/activities/emoji-2`,
+        type: 'Create',
+        actor: STRANGER,
+        to: ['https://www.w3.org/ns/activitystreams#Public'],
+        object: {
+          id: jsNoteId,
+          type: 'Note',
+          attributedTo: STRANGER,
+          content: '<p>hello :js: world</p>',
+          published: new Date().toISOString(),
+          tag: [{ type: 'Emoji', name: ':js:', icon: { type: 'Image', url: 'javascript:alert(1)' } }],
+        },
+      }),
+      `${STRANGER}#main-key`,
+      strangerKeys.privateKeyPem,
+    );
+    const jsRow = testDb.prepare('SELECT content FROM posts WHERE id = ?').get(jsNoteId) as
+      | { content?: string }
+      | undefined;
+    check('javascript: の絵文字は展開しない', String(jsRow?.content || '').includes(':js:'), true);
+    check('img タグにならない', String(jsRow?.content || '').includes('<img'), false);
+
+    // ------------------------------------------------------------------
+    // 14. 管理画面のユーザー一覧（設定値を SQL に直接展開していた箇所）が動くか
+    // ------------------------------------------------------------------
+    console.log('\n📋 [14] 管理画面のユーザー一覧の集計');
+    const adminUsersRes = await fetch(`${ORIGIN}/api/admin/users`, {
+      headers: { Authorization: `Bearer ${admin.sessionToken}` },
+    });
+    check('一覧のステータス', adminUsersRes.status, 200);
+    const adminUsers = (await adminUsersRes.json()) as any[];
+    const adminEntry = Array.isArray(adminUsers) ? adminUsers.find((u) => u.id === 'admin') : null;
+    check('フォロワー数が数値で返る', typeof adminEntry?.follower_count, 'number');
+    check('リモートからのフォローが数えられている', Number(adminEntry?.follower_count) >= 1, true);
+    const aliceEntry = Array.isArray(adminUsers) ? adminUsers.find((u) => u.id === 'alice') : null;
+    check('フォロワーの居ない利用者は 0', Number(aliceEntry?.follower_count), 0);
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 Inbox 署名強制テスト: すべて成功');
