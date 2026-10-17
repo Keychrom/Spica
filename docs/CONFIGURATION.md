@@ -208,6 +208,29 @@ npx tsx scripts/test-relay-and-timelines.ts  # 署名付きリレー受信とタ
 
 ffmpeg は必須ではありません。未インストールの場合は機能だけが無効になり、動画のアップロードは成功します。
 
+### メディア処理のワーカー分離（任意）
+
+アップロード時の画像変換（sharp）と動画サムネイル（ffmpeg）を、Web プロセスとは別のプロセスへ
+委譲できます。**既定は無効**（従来どおり Web プロセス内で処理）。ワーカーに繋がらない場合は
+インラインへ戻るので、アップロードは止まりません。
+
+| 環境変数名 | デフォルト | 説明 |
+| :--- | :--- | :--- |
+| `MEDIA_WORKER_URL` | （空） | Web 側が委譲先を指す URL（例: `http://127.0.0.1:3101`）。空ならインラインで処理。 |
+| `MEDIA_WORKER_TOKEN` | （空） | 共有トークン。設定するとワーカーは `Authorization: Bearer` を要求します。ループバック外に置く場合は必ず設定してください。 |
+| `MEDIA_WORKER_TIMEOUT_MS` | `120000` | Web 側の待ち時間。超えたらインラインへフォールバックします。 |
+| `MEDIA_WORKER_PORT` | `3101` | ワーカー側の待受ポート（`npm --workspace=server run start:media`）。 |
+| `MEDIA_WORKER_HOST` | `127.0.0.1` | ワーカー側の待受アドレス。公開しないでください。 |
+| `MEDIA_WORKER_MAX_BYTES` | `67108864` (64MB) | ワーカーが受け取るリクエスト本文の上限。 |
+
+```bash
+# ワーカー（DB / Redis / Express は起動しない。systemd の別ユニットや pm2 の別アプリで動かす）
+MEDIA_WORKER_PORT=3101 npm --workspace=server run start:media
+
+# Web 側（.env）
+MEDIA_WORKER_URL=http://127.0.0.1:3101
+```
+
 ### DB メンテナンス
 
 | 環境変数名 | デフォルト | 説明 |

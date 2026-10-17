@@ -131,6 +131,12 @@ export interface AppConfig {
   ffmpegPath: string;
   /** ffprobe の実行ファイルパス（動画の長さ・解像度取得用。既定 'ffprobe'） */
   ffprobePath: string;
+  /** メディア処理（sharp / ffmpeg）を別プロセスへ委譲する URL。未設定はこのプロセスで処理 */
+  mediaWorkerUrl: string;
+  /** 委譲先の共有トークン（ループバック以外に置く場合に設定） */
+  mediaWorkerToken: string;
+  /** 委譲のタイムアウト（ミリ秒。既定 120000） */
+  mediaWorkerTimeoutMs: number;
   /**
    * FTS 索引のスコープ（既定 'local' = ローカル投稿のみ。Mastodon / Misskey 相当）
    * 管理画面で変更でき、その場合はそちらが優先される。
@@ -336,6 +342,15 @@ const BACKUPS_KEEP = (() => {
 const FFMPEG_PATH = (process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
 const FFPROBE_PATH = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
 
+// メディア処理（sharp / ffmpeg）を専用プロセスへ委譲する。
+// 未設定なら従来どおり Web プロセス内で処理する（既定）。接続に失敗したらインラインへ戻す。
+const MEDIA_WORKER_URL = (process.env.MEDIA_WORKER_URL || '').trim().replace(/\/+$/, '');
+const MEDIA_WORKER_TOKEN = (process.env.MEDIA_WORKER_TOKEN || '').trim();
+const MEDIA_WORKER_TIMEOUT_MS = (() => {
+  const parsed = parseInt(process.env.MEDIA_WORKER_TIMEOUT_MS || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+})();
+
 // CDN（例: Cloudflare）を前段に置くときのメディアの公開 URL。
 // 設定すると API の応答に含まれる自分のメディア（`/uploads/...`）をこの URL に置き換えます
 // （DB には相対のまま保存するので、後から CDN を替えられます）
@@ -505,6 +520,9 @@ export const config: AppConfig = {
   notificationRetentionDays: NOTIFICATION_RETENTION_DAYS,
   ffmpegPath: FFMPEG_PATH,
   ffprobePath: FFPROBE_PATH,
+  mediaWorkerUrl: MEDIA_WORKER_URL,
+  mediaWorkerToken: MEDIA_WORKER_TOKEN,
+  mediaWorkerTimeoutMs: MEDIA_WORKER_TIMEOUT_MS,
   ftsIndexScope: FTS_INDEX_SCOPE,
   remoteAnnouncePolicy: REMOTE_ANNOUNCE_POLICY,
   autoMaintenance: AUTO_MAINTENANCE,

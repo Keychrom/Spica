@@ -1,8 +1,7 @@
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { db, getServerSetting, setServerSetting } from './db.js';
 import { config } from './config.js';
-import { convertImageToWebp } from './imageProcessor.js';
-import { generateVideoPoster } from './videoProcessor.js';
+import { processImageBuffer, processVideoPoster } from './mediaWorkerClient.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -189,7 +188,7 @@ export async function uploadMediaFile(params: {
 
   // 画像はアップロード時に EXIF（位置情報など）を除去し WebP に変換する。
   // 変換しない形式（GIF/SVG等）や失敗時は元データをそのまま保存する。
-  const converted = await convertImageToWebp(params.buffer, params.mimetype);
+  const converted = await processImageBuffer(params.buffer, params.mimetype);
   const buffer = converted ? converted.buffer : params.buffer;
   const mimetype = converted ? 'image/webp' : params.mimetype;
   const size = converted ? converted.size : params.size;
@@ -201,7 +200,7 @@ export async function uploadMediaFile(params: {
 
   // 動画は ffmpeg があればサムネイル（1秒地点の WebP）を作る。無ければ生成しない。
   const poster = mimetype.startsWith('video/')
-    ? await generateVideoPoster({ buffer, originalname: params.originalname })
+    ? await processVideoPoster(buffer, params.originalname)
     : null;
 
   const buildUrl = (targetKey: string): string => {
