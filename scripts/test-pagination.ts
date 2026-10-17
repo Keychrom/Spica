@@ -80,6 +80,7 @@ type Row = Record<string, any>;
 async function walk(url: string, headers: Record<string, string> = {}) {
   const rows: Row[] = [];
   const cursors: string[] = [];
+  const sizes: number[] = [];
   let cursor: string | null = null;
   let pages = 0;
   let ended = false;
@@ -95,6 +96,7 @@ async function walk(url: string, headers: Record<string, string> = {}) {
       ? data
       : (Array.isArray(data.posts) ? data.posts : (Array.isArray(data.orderedItems) ? data.orderedItems : []));
     rows.push(...items);
+    sizes.push(items.length);
     pages++;
     const next = res.headers.get('x-next-cursor');
     if (!next) {
@@ -105,7 +107,7 @@ async function walk(url: string, headers: Record<string, string> = {}) {
     cursors.push(next);
     cursor = next;
   }
-  return { rows, pages, cursors, ended };
+  return { rows, pages, cursors, ended, sizes };
 }
 
 /** ORDER BY timeline_at DESC, post_id DESC と一致しているか（重複・取りこぼしの検出） */
@@ -326,6 +328,43 @@ async function run() {
     check('取得件数', chTl.rows.length, 3);
     check('ページ数', chTl.pages, 2);
     check('最終ページでカーソルが尽きる', chTl.ended, true);
+
+    // ------------------------------------------------------------------
+    console.log('\n🚫 [10] ミュートで除外されても 1 ページが埋まる（カーソルを先に確定しない）');
+    const spammerToken = await register('spammer');
+    // 表示される投稿と、ミュートする相手の投稿を交互に作る
+    for (let i = 0; i < 10; i++) {
+      await createPost(`ミュート対象の投稿 ${i + 1}`, {}, spammerToken);
+      await createPost(`表示される投稿 ${i + 1}`, {}, adminToken);
+    }
+    const muteRes = await fetch(`${BASE}/api/users/spammer/mute`, {
+      method: 'POST',
+      headers: auth(adminToken),
+      body: JSON.stringify({}),
+    });
+    check('ミュートできる', muteRes.ok, true);
+    // ミュート直後に、ミュート対象の投稿だけが新しい順に並ぶ状況を作る。
+    // 以前は最初のページが 0 件になり、無限スクロールが空振りしていた
+    for (let i = 0; i < 8; i++) {
+      await createPost(`ミュート対象の最新投稿 ${i + 1}`, {}, spammerToken);
+    }
+
+    const onePageAfterMute = await fetch(`${BASE}/api/timeline?mode=local&limit=100`, { headers: auth(adminToken) });
+    const onePageAfterMuteRows = (await onePageAfterMute.json()) as Row[];
+    check(
+      'ミュートした相手は 1 ページ取得でも出ない',
+      onePageAfterMuteRows.some((r) => String(r.content || '').includes('ミュート対象')),
+      false,
+    );
+
+    const mutedTl = await walk(`${BASE}/api/timeline?mode=local&limit=5`, { Authorization: `Bearer ${adminToken}` });
+    check('最初のページが空にならない', mutedTl.sizes[0] > 0, true);
+    check('最後以外のページはすべて 5 件', mutedTl.sizes.slice(0, -1).every((size) => size === 5), true);
+    check('取得件数が 1 ページ取得と一致', mutedTl.rows.length, onePageAfterMuteRows.length);
+    check('ミュートした相手の投稿が混ざらない', mutedTl.rows.some((r) => String(r.content || '').includes('ミュート対象')), false);
+    check('ページをまたいで重複なし', new Set(mutedTl.rows.map((r) => String(r.feed_id ?? r.id))).size, mutedTl.rows.length);
+    check('並び順が単調減少', assertDescending(mutedTl.rows), null);
+    check('最終ページでカーソルが尽きる', mutedTl.ended, true);
 
     console.log('\n====================================================');
     if (failures === 0) {

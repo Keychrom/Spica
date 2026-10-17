@@ -11,7 +11,7 @@ import { getUserPermissions } from '../auth.js';
 import { config } from '../config.js';
 import { generateKeyPair } from '../crypto.js';
 import { assertFetchableRemoteUrl } from '../remoteFetchGuard.js';
-import { applyPageHeaders, cursorPredicate, parsePageQuery } from '../pagination.js';
+import { applyPageHeaders, collectVisiblePage, cursorPredicate, parsePageQuery, type PageCursor } from '../pagination.js';
 import { canViewPost, filterVisiblePosts, isPublicPost, normalizeVisibility } from '../postVisibility.js';
 import { createReport, logNewReport } from '../reportService.js';
 import { getMutedWords, postMatchesMutedWords, invalidateMutedWords } from '../wordFilter.js';
@@ -1231,24 +1231,30 @@ export const handleTimeline = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
-  // 続きの読み込み（カーソル）：ORDER BY と同じ組で比較する
-  if (page.cursor) {
-    postConds.push(cursorPredicate('p.published_at', 'p.id'));
-    announceConds.push(cursorPredicate('a.created_at', 'p.id'));
-    params.push(page.cursor.at, page.cursor.at, page.cursor.id);
-    announceParams.push(page.cursor.at, page.cursor.at, page.cursor.id);
-  }
-
-  const postWhere = postConds.length > 0 ? ` WHERE ${postConds.join(' AND ')}` : '';
-  const announceWhere = announceConds.length > 0 ? ` WHERE ${announceConds.join(' AND ')}` : '';
-
   // 枝ごとに ORDER BY + LIMIT を押し込む。PostgreSQL は `UNION ALL` の外側に ORDER BY があると
   // 枝を全部読んでから並べ替える（LIMIT が押し込まれない）ため、投稿が増えるほど遅くなる。
   // 枝の中で並べ替えておけば、索引の逆順走査で「必要な件数だけ」読んで止まれる
   // （実測: 連合 812ms → 0.8ms、ローカル 226ms → 0.3ms。SQLite は元々 MERGE で流していた）。
-  const branchLimit = page.limit + 1;
+  //
+  // 除外（ブロック・ミュート・ミュートワード・フォロワー限定）は enrich の後で分かるので、
+  // ここでは**カーソル位置と件数を受け取って読むだけ**にし、ページの組み立ては
+  // collectVisiblePage に任せる（足りなければ読み足す）
+  const fetchTimelineRows = async (cursor: PageCursor | null, n: number): Promise<any[]> => {
+    const postCondsRun = [...postConds];
+    const announceCondsRun = [...announceConds];
+    const paramsRun = [...params];
+    const announceParamsRun = [...announceParams];
+    // 続きの読み込み（カーソル）：ORDER BY と同じ組で比較する
+    if (cursor) {
+      postCondsRun.push(cursorPredicate('p.published_at', 'p.id'));
+      announceCondsRun.push(cursorPredicate('a.created_at', 'p.id'));
+      paramsRun.push(cursor.at, cursor.at, cursor.id);
+      announceParamsRun.push(cursor.at, cursor.at, cursor.id);
+    }
+    const postWhere = postCondsRun.length > 0 ? ` WHERE ${postCondsRun.join(' AND ')}` : '';
+    const announceWhere = announceCondsRun.length > 0 ? ` WHERE ${announceCondsRun.join(' AND ')}` : '';
 
-  const query = `
+    const query = `
     SELECT * FROM (
     SELECT 
       p.id AS post_id,
@@ -1334,6 +1340,16 @@ export const handleTimeline = asyncHandler(async (req: Request, res: Response) =
     LIMIT ?
   `;
 
+    // パラメータは SQL に現れる順に並べる（枝の中の JOIN → 条件 → 枝の LIMIT、最後に外側の LIMIT）
+    const postsBranchParams = [...(followParam ? [followParam] : []), ...paramsRun, n];
+    const announcesBranchParams = [...(followParam ? [followParam] : []), ...announceParamsRun, n];
+    return await db.prepare(query).all(
+      ...postsBranchParams,
+      ...(hideAnnounces ? [] : announcesBranchParams),
+      n,
+    ) as any[];
+  };
+
   // 読み取りの結果を短い TTL でキャッシュする（同じ画面を何度も開いたときの組み立てを省く）。
   // **ユーザーごと**に鍵を分ける（リアクション・ブックマーク・投票の状態が混ざるため）。
   const cacheKey = [
@@ -1363,19 +1379,22 @@ export const handleTimeline = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
-  // パラメータは SQL に現れる順に並べる（枝の中の JOIN → 条件 → 枝の LIMIT、最後に外側の LIMIT）
-  const postsBranchParams = [...(followParam ? [followParam] : []), ...params, branchLimit];
-  const announcesBranchParams = [...(followParam ? [followParam] : []), ...announceParams, branchLimit];
-  const rows = await db.prepare(query).all(
-    ...postsBranchParams,
-    ...(hideAnnounces ? [] : announcesBranchParams),
-    branchLimit,
-  ) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
+  // 除外（ブロック・ミュート・ミュートワード・フォロワー限定）でページが短くならないよう、
+  // 足りない分は読み足してからカーソルを決める（以前は limit + 1 件でカーソルを確定していた）
+  const { items: enriched, nextCursor } = await collectVisiblePage({
+    limit: page.limit,
+    cursor: page.cursor,
+    fetchRows: fetchTimelineRows,
+    filterRows: (rows) => enrichAndFilterPosts(rows, currentActorUrl, req.user?.id),
+    sortKey: 'timeline_at',
+    idKey: 'post_id',
+  });
   // 続きがある場合のみ X-Next-Cursor ヘッダで通知（レスポンス形状は従来どおり配列）
-  const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-  const nextCursor = (res.getHeader('X-Next-Cursor') as string | undefined) ?? null;
-  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  if (nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', nextCursor);
+  }
 
   if (isTimelineCacheEnabled()) {
     res.setHeader('X-Timeline-Cache', 'MISS');
@@ -3123,8 +3142,6 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
   if (page.error) {
     return res.status(400).json({ error: page.error });
   }
-  const cursorCond = page.cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
-  const cursorParams = page.cursor ? [page.cursor.at, page.cursor.at, page.cursor.id] : [];
 
   let cleanId = rawIdentifier.replace(/^@/, '');
   if (cleanId.includes(`@${config.domain}`)) {
@@ -3132,7 +3149,6 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
   }
 
   const localUser = await db.prepare('SELECT id FROM users WHERE id = ?').get(cleanId);
-  let posts: any[] = [];
 
   const baseSelect = `
     SELECT 
@@ -3150,37 +3166,53 @@ apiRouter.get('/users/:identifier/posts', asyncHandler(async (req: Request, res:
     LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
   `;
 
-  if (localUser) {
-    posts = await db.prepare(`
-      ${baseSelect}
-      WHERE p.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
-      ORDER BY p.published_at DESC, p.id DESC
-      LIMIT ?
-    `).all(cleanId, ...cursorParams, page.limit + 1);
-  } else {
-    // リモートは actor URL に正規化してから引く（裸のユーザー名でも投稿を出せるように）
-    const targetActorUrl = await resolveRemoteActorUrl(rawIdentifier).catch(() => rawIdentifier);
-    const handleFromActorUrl = (url: string): string => {
-      try {
-        const parsed = new URL(url);
-        const match = parsed.pathname.match(/^\/users\/([^/]+)/);
-        return match ? `@${decodeURIComponent(match[1])}@${parsed.host}` : '';
-      } catch {
-        return '';
-      }
-    };
-    posts = await db.prepare(`
-      ${baseSelect}
-      WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)
-        AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
-      ORDER BY p.published_at DESC, p.id DESC
-      LIMIT ?
-    `).all(targetActorUrl, targetActorUrl, handleFromActorUrl(targetActorUrl), ...cursorParams, page.limit + 1);
+  // リモートは actor URL に正規化してから引く（裸のユーザー名でも投稿を出せるように）。
+  // 読み足しのたびに解決し直さないよう、ここで 1 回だけ決める
+  let targetActorUrl = '';
+  const handleFromActorUrl = (url: string): string => {
+    try {
+      const parsed = new URL(url);
+      const match = parsed.pathname.match(/^\/users\/([^/]+)/);
+      return match ? `@${decodeURIComponent(match[1])}@${parsed.host}` : '';
+    } catch {
+      return '';
+    }
+  };
+  if (!localUser) {
+    targetActorUrl = await resolveRemoteActorUrl(rawIdentifier).catch(() => rawIdentifier);
   }
 
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
-  const pageRows = applyPageHeaders(res, posts, page.limit, 'published_at', 'id');
-  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  const { items: enriched, nextCursor } = await collectVisiblePage({
+    limit: page.limit,
+    cursor: page.cursor,
+    fetchRows: async (cursor, n) => {
+      const cursorCond = cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
+      const cursorParams = cursor ? [cursor.at, cursor.at, cursor.id] : [];
+      if (localUser) {
+        return await db.prepare(`
+          ${baseSelect}
+          WHERE p.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
+          ORDER BY p.published_at DESC, p.id DESC
+          LIMIT ?
+        `).all(cleanId, ...cursorParams, n) as any[];
+      }
+      return await db.prepare(`
+        ${baseSelect}
+        WHERE (p.author_url = ? OR p.user_id = ? OR p.author_handle = ?)
+          AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT ?
+      `).all(targetActorUrl, targetActorUrl, handleFromActorUrl(targetActorUrl), ...cursorParams, n) as any[];
+    },
+    filterRows: (rows) => enrichAndFilterPosts(rows, currentActorUrl, req.user?.id),
+    sortKey: 'published_at',
+    idKey: 'id',
+  });
+  if (nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', nextCursor);
+  }
   res.json(enriched);
 }));
 
@@ -3701,29 +3733,38 @@ export const handleListBookmarks = asyncHandler(async (req: Request, res: Respon
   if (page.error) {
     return res.status(400).json({ error: page.error });
   }
-  const cursorCond = page.cursor ? ` AND ${cursorPredicate('b.created_at', 'p.id')}` : '';
-  const cursorParams = page.cursor ? [page.cursor.at, page.cursor.at, page.cursor.id] : [];
-
   try {
-    const query = `
-      SELECT
-        p.*,
-        p.id AS post_id,
-        COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
-        b.created_at AS timeline_at
-      FROM bookmarks b
-      JOIN posts p ON b.post_id = p.id
-      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
-      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE b.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
-      ORDER BY b.created_at DESC, p.id DESC
-      LIMIT ?
-    `;
-
-    const rows = await db.prepare(query).all(user.id, ...cursorParams, page.limit + 1) as any[];
     const currentActorUrl = `${config.origin}/users/${user.id}`;
-    const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-    const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, user.id);
+    const { items: enriched, nextCursor } = await collectVisiblePage({
+      limit: page.limit,
+      cursor: page.cursor,
+      fetchRows: async (cursor, n) => {
+        const cursorCondRun = cursor ? ` AND ${cursorPredicate('b.created_at', 'p.id')}` : '';
+        const cursorParamsRun = cursor ? [cursor.at, cursor.at, cursor.id] : [];
+        const query = `
+          SELECT
+            p.*,
+            p.id AS post_id,
+            COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
+            b.created_at AS timeline_at
+          FROM bookmarks b
+          JOIN posts p ON b.post_id = p.id
+          LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+          LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+          WHERE b.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCondRun}
+          ORDER BY b.created_at DESC, p.id DESC
+          LIMIT ?
+        `;
+        return await db.prepare(query).all(user.id, ...cursorParamsRun, n) as any[];
+      },
+      filterRows: (rows) => enrichAndFilterPosts(rows, currentActorUrl, user.id),
+      sortKey: 'timeline_at',
+      idKey: 'post_id',
+    });
+    if (nextCursor) {
+      res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+      res.setHeader('X-Next-Cursor', nextCursor);
+    }
     res.json(enriched);
   } catch (err: any) {
     console.error('[Get Bookmarks Error]:', err);
@@ -4675,32 +4716,47 @@ export const handleListTimeline = asyncHandler(async (req: Request, res: Respons
   const conditions: string[] = [`(${memberConds.join(' OR ')})`];
   // DM（visibility = 'direct'）はリストにも出さない
   conditions.push("COALESCE(p.visibility, 'public') != 'direct'");
-  if (page.cursor) {
-    conditions.push(cursorPredicate('p.published_at', 'p.id'));
-    params.push(page.cursor.at, page.cursor.at, page.cursor.id);
-  }
-  params.push(page.limit + 1);
 
-  const rows = await db.prepare(`
-    SELECT
-      p.id AS post_id,
-      p.*,
-      COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
-      p.published_at AS timeline_at
-    FROM posts p
-    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
-    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY p.published_at DESC, p.id DESC
-    LIMIT ?
-  `).all(...params) as any[];
-
-  const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
   const viewerActor = `${config.origin}/users/${user.id}`;
   const listMutedWords = await getMutedWords(user.id);
-  const visible = (await filterVisiblePosts(pageRows, viewerActor))
-    .filter((post) => !postMatchesMutedWords(post, listMutedWords));
-  const enriched = await enrichAndFilterPosts(visible, viewerActor, user.id);
+  const { items: enriched, nextCursor } = await collectVisiblePage({
+    limit: page.limit,
+    cursor: page.cursor,
+    fetchRows: async (cursor, n) => {
+      const conditionsRun = [...conditions];
+      const paramsRun = [...params];
+      if (cursor) {
+        conditionsRun.push(cursorPredicate('p.published_at', 'p.id'));
+        paramsRun.push(cursor.at, cursor.at, cursor.id);
+      }
+      paramsRun.push(n);
+      return await db.prepare(`
+        SELECT
+          p.id AS post_id,
+          p.*,
+          COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon,
+          p.published_at AS timeline_at
+        FROM posts p
+        LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+        LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+        WHERE ${conditionsRun.join(' AND ')}
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT ?
+      `).all(...paramsRun) as any[];
+    },
+    // 閲覧権限（フォロワー限定）とミュートワードで絞ってから、共通の整形（ブロック・ミュートも見る）
+    filterRows: async (rows) => {
+      const visible = (await filterVisiblePosts(rows, viewerActor))
+        .filter((post) => !postMatchesMutedWords(post, listMutedWords));
+      return await enrichAndFilterPosts(visible, viewerActor, user.id);
+    },
+    sortKey: 'timeline_at',
+    idKey: 'post_id',
+  });
+  if (nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', nextCursor);
+  }
 
   res.json({ list: { id: list.id, name: list.name }, posts: enriched, memberCount: members.length });
 });
@@ -5464,12 +5520,6 @@ export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Resp
     params.push(`%${ex}%`, `%${ex}%`);
   }
 
-  // 続きの読み込み（カーソル）：ORDER BY と同じ組で比較する
-  if (page.cursor) {
-    conditions.push(cursorPredicate('p.published_at', 'p.id'));
-    params.push(page.cursor.at, page.cursor.at, page.cursor.id);
-  }
-
   // DM（visibility = 'direct'）はアンテナのタイムラインにも出さない
   conditions.push("COALESCE(p.visibility, 'public') != 'direct'");
 
@@ -5482,49 +5532,65 @@ export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Resp
     )`);
     params.push(config.recentScanPosts);
   }
-  params.push(page.limit + 1);
 
-  const sql = `
-    SELECT 
-      p.id,
-      p.id AS feed_id,
-      p.user_id,
-      p.author_name,
-      p.author_url,
-      p.author_handle,
-      p.content,
-      p.cw,
-      p.is_local,
-      p.visibility,
-      p.emojis,
-      p.in_reply_to,
-      p.quote_id,
-      p.is_sensitive,
-      p.media_attachments,
-      p.published_at,
-      p.edited_at,
-      p.published_at AS timeline_at,
-      COALESCE(
-        NULLIF(p.author_icon, ''),
-        NULLIF(u.icon_url, ''),
-        NULLIF(ra.icon_url, ''),
-        ''
-      ) AS author_icon
-    FROM posts p
-    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
-    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY p.published_at DESC, p.id DESC
-    LIMIT ?
-  `;
-
-  const rows = await db.prepare(sql).all(...params) as any[];
-  const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'id');
-  // 他のタイムラインと同じ整形（enrichAndFilterPosts）に任せる。
-  // 以前はここだけ**投稿 1 件ごとに 7〜9 本のクエリ**を撃っていた（limit 100 で最大 900 本）。
-  // 整形には閲覧権限（フォロワー限定）・ミュートワード・ブロック/ミュートの除外も入っている。
-  const decorated = await enrichAndFilterPosts(pageRows, `${config.origin}/users/${user.id}`, user.id);
-
+  const viewerActor = `${config.origin}/users/${user.id}`;
+  const { items: decorated, nextCursor } = await collectVisiblePage({
+    limit: page.limit,
+    cursor: page.cursor,
+    fetchRows: async (cursor, n) => {
+      const conditionsRun = [...conditions];
+      const paramsRun = [...params];
+      // 続きの読み込み（カーソル）：ORDER BY と同じ組で比較する
+      if (cursor) {
+        conditionsRun.push(cursorPredicate('p.published_at', 'p.id'));
+        paramsRun.push(cursor.at, cursor.at, cursor.id);
+      }
+      paramsRun.push(n);
+      return await db.prepare(`
+        SELECT 
+          p.id,
+          p.id AS feed_id,
+          p.user_id,
+          p.author_name,
+          p.author_url,
+          p.author_handle,
+          p.content,
+          p.cw,
+          p.is_local,
+          p.visibility,
+          p.emojis,
+          p.in_reply_to,
+          p.quote_id,
+          p.is_sensitive,
+          p.media_attachments,
+          p.published_at,
+          p.edited_at,
+          p.published_at AS timeline_at,
+          COALESCE(
+            NULLIF(p.author_icon, ''),
+            NULLIF(u.icon_url, ''),
+            NULLIF(ra.icon_url, ''),
+            ''
+          ) AS author_icon
+        FROM posts p
+        LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+        LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+        WHERE ${conditionsRun.join(' AND ')}
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT ?
+      `).all(...paramsRun) as any[];
+    },
+    // 他のタイムラインと同じ整形（enrichAndFilterPosts）に任せる。
+    // 以前はここだけ**投稿 1 件ごとに 7〜9 本のクエリ**を撃っていた（limit 100 で最大 900 本）。
+    // 整形には閲覧権限（フォロワー限定）・ミュートワード・ブロック/ミュートの除外も入っている。
+    filterRows: (rows) => enrichAndFilterPosts(rows, viewerActor, user.id),
+    sortKey: 'timeline_at',
+    idKey: 'id',
+  });
+  if (nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', nextCursor);
+  }
 
   res.json({
     antenna: {
@@ -6085,56 +6151,64 @@ apiRouter.get('/channels/:id/timeline', asyncHandler(async (req: Request, res: R
   if (page.error) {
     return res.status(400).json({ error: page.error });
   }
-  const cursorCond = page.cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
-  const cursorParams = page.cursor ? [page.cursor.at, page.cursor.at, page.cursor.id] : [];
-
   const channel = await db.prepare('SELECT * FROM channels WHERE id = ?').get(chId) as ChannelRow | undefined;
   if (!channel) {
     return res.status(404).json({ error: 'チャンネルが見つかりません。' });
   }
 
-  const query = `
-    SELECT 
-      p.id AS post_id,
-      p.user_id,
-      p.author_name,
-      p.author_url,
-      p.author_handle,
-      p.content,
-      p.cw,
-      p.is_local,
-      p.visibility,
-      p.emojis,p.in_reply_to,
-      p.quote_id,
-      p.is_sensitive,
-      p.media_attachments,
-      p.published_at,
-      p.edited_at,
-      p.channel_id,
-      COALESCE(
-        NULLIF(p.author_icon, ''),
-        NULLIF(u.icon_url, ''),
-        NULLIF(ra.icon_url, ''),
-        ''
-      ) AS author_icon,
-      NULL AS announce_id,
-      NULL AS renoted_by_name,
-      NULL AS renoted_by_handle,
-      NULL AS renoted_by_icon,
-      NULL AS renoted_by_url,
-      p.published_at AS timeline_at
-    FROM posts p
-    LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
-    LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-    WHERE p.channel_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
-    ORDER BY p.published_at DESC, p.id DESC
-    LIMIT ?
-  `;
-
-  const rows = await db.prepare(query).all(chId, ...cursorParams, page.limit + 1) as any[];
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
-  const pageRows = applyPageHeaders(res, rows, page.limit, 'timeline_at', 'post_id');
-  const enriched = await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id);
+  const { items: enriched, nextCursor } = await collectVisiblePage({
+    limit: page.limit,
+    cursor: page.cursor,
+    fetchRows: async (cursor, n) => {
+      const cursorCondRun = cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
+      const cursorParamsRun = cursor ? [cursor.at, cursor.at, cursor.id] : [];
+      return await db.prepare(`
+        SELECT 
+          p.id AS post_id,
+          p.user_id,
+          p.author_name,
+          p.author_url,
+          p.author_handle,
+          p.content,
+          p.cw,
+          p.is_local,
+          p.visibility,
+          p.emojis,p.in_reply_to,
+          p.quote_id,
+          p.is_sensitive,
+          p.media_attachments,
+          p.published_at,
+          p.edited_at,
+          p.channel_id,
+          COALESCE(
+            NULLIF(p.author_icon, ''),
+            NULLIF(u.icon_url, ''),
+            NULLIF(ra.icon_url, ''),
+            ''
+          ) AS author_icon,
+          NULL AS announce_id,
+          NULL AS renoted_by_name,
+          NULL AS renoted_by_handle,
+          NULL AS renoted_by_icon,
+          NULL AS renoted_by_url,
+          p.published_at AS timeline_at
+        FROM posts p
+        LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+        LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+        WHERE p.channel_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCondRun}
+        ORDER BY p.published_at DESC, p.id DESC
+        LIMIT ?
+      `).all(chId, ...cursorParamsRun, n) as any[];
+    },
+    filterRows: (rows) => enrichAndFilterPosts(rows, currentActorUrl, req.user?.id),
+    sortKey: 'timeline_at',
+    idKey: 'post_id',
+  });
+  if (nextCursor) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+    res.setHeader('X-Next-Cursor', nextCursor);
+  }
 
   res.json({
     channel: {

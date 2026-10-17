@@ -87,6 +87,8 @@ export function cursorPredicate(sortColumn: string, idColumn: string): string {
  *
  * カーソルは「返却した最後の行」から生成するため、enrich 処理で一部の行が
  * 除外されても取りこぼしは発生しない（除外された行は次ページ以降に進むだけ）。
+ *
+ * ※ 除外が多いと 1 ページが短くなる問題を直すには [[collectVisiblePage]] を使うこと
  */
 export function applyPageHeaders<T extends object>(
   res: Response,
@@ -108,4 +110,72 @@ export function applyPageHeaders<T extends object>(
     }
   }
   return page;
+}
+
+export interface VisiblePageResult<T> {
+  items: T[];
+  /** 続きがあるときだけ入る（無ければ null） */
+  nextCursor: string | null;
+}
+
+/**
+ * 表示できる行が `limit` 件そろうまで、続きを読み足して 1 ページを組む。
+ *
+ * ブロック・ミュート・ミュートワード・フォロワー限定の閲覧不可などは SQL の WHERE では
+ * 表せず、`enrichAndFilterPosts` の後で分かる。先に `limit + 1` 件だけでカーソルを確定すると、
+ * **除外が多いページは 1 ページが極端に短くなる（0 件にもなる）**ので、ここで読み足す。
+ *
+ * - カーソルは「最後に判定した行」の位置。読み捨てた行は次ページで読み直さない
+ * - 並び順は `sortColumn DESC, idColumn DESC`（fetchRows 側の ORDER BY と一致させること）
+ * - `filterRows` は順序を保つこと（並べ替えるとカーソルがずれる）
+ * - 1 リクエストで読む行数には上限を置く（全部が除外される相手でも DB を読み続けない）。
+ *   上限で打ち切ったときはカーソルを返すので、次のリクエストで続きから読める
+ */
+export async function collectVisiblePage<T extends object>(params: {
+  limit: number;
+  cursor: PageCursor | null;
+  /** cursor より古い行を最大 n 件読む */
+  fetchRows: (cursor: PageCursor | null, n: number) => Promise<T[]>;
+  /** 表示できる行だけにする（順序は保つ） */
+  filterRows: (rows: T[]) => Promise<T[]>;
+  sortKey: string;
+  idKey: string;
+  /** 1 リクエストで判定する行数の上限。既定は max(200, limit * 4) */
+  maxScanRows?: number;
+}): Promise<VisiblePageResult<T>> {
+  const { limit, sortKey, idKey } = params;
+  const maxScanRows = params.maxScanRows ?? Math.max(200, limit * 4);
+  const items: T[] = [];
+  let scanCursor = params.cursor;
+  let scanned = 0;
+  let exhausted = false;
+
+  while (items.length < limit && scanned < maxScanRows && !exhausted) {
+    // ほしい件数 + 1 行読む（+1 は「まだ続きがあるか」の判定用で、判定には使わない）
+    const take = Math.min(limit - items.length + 1, maxScanRows - scanned);
+    const rows = await params.fetchRows(scanCursor, take);
+    scanned += rows.length;
+    if (rows.length < take) exhausted = true;
+    if (rows.length === 0) break;
+
+    // 返す枠に入る分だけ判定する（+1 の 1 行は次のリクエストで読み直す）
+    const decideCount = Math.min(rows.length, limit - items.length);
+    const toDecide = rows.slice(0, decideCount);
+    const kept = await params.filterRows(toDecide);
+    items.push(...kept);
+
+    const last = toDecide[toDecide.length - 1] as Record<string, unknown>;
+    const at = last?.[sortKey];
+    const id = last?.[idKey];
+    if (at == null || id == null) {
+      // カーソルに使える位置が分からないときは、そこで打ち切る（取りこぼしより重複を避ける）
+      return { items, nextCursor: null };
+    }
+    scanCursor = { at: String(at), id: String(id) };
+  }
+
+  // 読み切った（＝これ以上は無い）ときはカーソルを返さない。
+  // 例外は「上限で打ち切った」ときで、そのときは続きから読めるようカーソルを返す
+  const nextCursor = exhausted || !scanCursor ? null : encodeCursor(scanCursor.at, scanCursor.id);
+  return { items, nextCursor };
 }
