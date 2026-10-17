@@ -373,6 +373,35 @@ async function run() {
     check('並び順が単調減少', assertDescending(mutedTl.rows), null);
     check('最終ページでカーソルが尽きる', mutedTl.ended, true);
 
+    // ------------------------------------------------------------------
+    console.log('\n💬 [11] 引用一覧のページング');
+    const quoteTargetId = await createPost('引用元の投稿（一覧のページング）', {}, adminToken);
+    for (let i = 0; i < 5; i++) {
+      await createPost(`引用投稿 ${i + 1}`, { quote_id: quoteTargetId }, bobToken);
+    }
+    const quotes = await walk(`${BASE}/api/posts/${encodeURIComponent(quoteTargetId)}/quotes?limit=2`, {
+      Authorization: `Bearer ${adminToken}`,
+    });
+    check('取得件数', quotes.rows.length, 5);
+    check('ページ数', quotes.pages, 3);
+    check('最終ページでカーソルが尽きる', quotes.ended, true);
+    check('ページをまたいで重複なし', new Set(quotes.rows.map((r) => String(r.id))).size, 5);
+    check('並び順が単調減少', assertDescending(quotes.rows), null);
+
+    // ------------------------------------------------------------------
+    console.log('\n⭐ [12] 自分のリアクション履歴のページング');
+    // bob は [7] で 3 件リアクションしている
+    const myReactions = await walk(`${BASE}/api/me/reactions?limit=2`, { Authorization: `Bearer ${bobToken}` });
+    check('取得件数', myReactions.rows.length, 3);
+    check('ページ数', myReactions.pages, 2);
+    check('最終ページでカーソルが尽きる', myReactions.ended, true);
+    check('ページをまたいで重複なし', new Set(myReactions.rows.map((r) => String(r.id))).size, 3);
+    check(
+      '作成時刻が単調減少',
+      myReactions.rows.every((r, i) => i === 0 || String(myReactions.rows[i - 1].created_at) >= String(r.created_at)),
+      true,
+    );
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 ページネーション検証: すべて成功');

@@ -2792,21 +2792,37 @@ apiRouter.get('/posts/:id/quotes', asyncHandler(async (req: Request, res: Respon
   if (page.error) return res.status(400).json({ error: page.error });
   const currentActorUrl = req.user ? `${config.origin}/users/${req.user.id}` : null;
   try {
-    const rows = await db.prepare(`
-      SELECT
-        p.*,
-        p.id AS post_id,
-        p.published_at AS timeline_at,
-        COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
-      FROM posts p
-      LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
-      LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
-      WHERE p.quote_id = ? AND COALESCE(p.visibility, 'public') != 'direct'
-      ORDER BY p.published_at DESC, p.id DESC
-      LIMIT ?
-    `).all(postId, page.limit + 1);
-    const pageRows = applyPageHeaders(res, rows, page.limit, 'published_at', 'id');
-    res.json(await enrichAndFilterPosts(pageRows, currentActorUrl, req.user?.id));
+    // 引用も enrich でブロック・ミュート・フォロワー限定の除外が入るので、
+    // 読み足し（collectVisiblePage）で 1 ページ分を満たす
+    const { items: enriched, nextCursor } = await collectVisiblePage({
+      limit: page.limit,
+      cursor: page.cursor,
+      fetchRows: async (cursor, n) => {
+        const cursorCond = cursor ? ` AND ${cursorPredicate('p.published_at', 'p.id')}` : '';
+        const cursorParams = cursor ? [cursor.at, cursor.at, cursor.id] : [];
+        return await db.prepare(`
+          SELECT
+            p.*,
+            p.id AS post_id,
+            p.published_at AS timeline_at,
+            COALESCE(NULLIF(p.author_icon, ''), NULLIF(u.icon_url, ''), NULLIF(ra.icon_url, ''), '') AS author_icon
+          FROM posts p
+          LEFT JOIN users u ON p.is_local = 1 AND p.user_id = u.id
+          LEFT JOIN remote_actors ra ON p.is_local = 0 AND (p.author_url = ra.id OR p.user_id = ra.id)
+          WHERE p.quote_id = ? AND COALESCE(p.visibility, 'public') != 'direct'${cursorCond}
+          ORDER BY p.published_at DESC, p.id DESC
+          LIMIT ?
+        `).all(postId, ...cursorParams, n) as any[];
+      },
+      filterRows: (rows) => enrichAndFilterPosts(rows, currentActorUrl, req.user?.id),
+      sortKey: 'published_at',
+      idKey: 'id',
+    });
+    if (nextCursor) {
+      res.setHeader('Access-Control-Expose-Headers', 'X-Next-Cursor');
+      res.setHeader('X-Next-Cursor', nextCursor);
+    }
+    res.json(enriched);
   } catch (err: any) {
     console.error('[API Quotes Error]:', err);
     res.status(500).json({ error: '引用の取得に失敗しました。' });
@@ -2820,6 +2836,10 @@ apiRouter.get('/me/reactions', requireAuth, asyncHandler(async (req: Request, re
   if (page.error) return res.status(400).json({ error: page.error });
   const actorUrl = `${config.origin}/users/${user.id}`;
   try {
+    // id まで含めて並べる（同じミリ秒のリアクションがあっても順序が決まり、
+    // カーソルが行を飛ばしたり繰り返したりしない）
+    const cursorCond = page.cursor ? ` AND ${cursorPredicate('r.created_at', 'r.id')}` : '';
+    const cursorParams = page.cursor ? [page.cursor.at, page.cursor.at, page.cursor.id] : [];
     const rows = await db.prepare(`
       SELECT
         r.id, r.reaction, r.created_at,
@@ -2827,10 +2847,10 @@ apiRouter.get('/me/reactions', requireAuth, asyncHandler(async (req: Request, re
         p.author_name, p.author_handle, p.author_url, p.user_id AS post_author_id
       FROM reactions r
       JOIN posts p ON p.id = r.post_id
-      WHERE r.user_id = ?
-      ORDER BY r.created_at DESC
+      WHERE r.user_id = ?${cursorCond}
+      ORDER BY r.created_at DESC, r.id DESC
       LIMIT ?
-    `).all(actorUrl, page.limit + 1);
+    `).all(actorUrl, ...cursorParams, page.limit + 1);
     const pageRows = applyPageHeaders(res, rows, page.limit, 'created_at', 'id');
     res.json(pageRows.map((r: any) => ({
       id: r.id,
