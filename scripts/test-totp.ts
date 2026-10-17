@@ -367,6 +367,11 @@ async function run(): Promise<void> {
     const misuse = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: String(regOptions?.challenge || ''), totpCode: generateTotpCode(secret2) });
     check('登録用のチャレンジでは続けられない', misuse.status, 401);
 
+    const missingTotp = await api('POST', '/api/webauthn/authenticate/totp', undefined, {});
+    check('一時トークンとコードが無ければ 400', missingTotp.status, 400);
+    const unknownTotp = await api('POST', '/api/webauthn/authenticate/totp', undefined, { pendingToken: 'unknown-token', totpCode: '123456' });
+    check('知らない一時トークンは 401', unknownTotp.status, 401);
+
     // 2段階認証を使っていない人のパスキーログインは今までどおり
     const bobOptions = (await api('POST', '/api/webauthn/authenticate/options', undefined, { user_id: 'bob' })).data as any;
     check('2段階認証が無効なら予告も出ない', Boolean(bobOptions?.totp_required), false);
@@ -394,6 +399,24 @@ async function run(): Promise<void> {
     check('設定のオリジンは通る', okOrigin.status, 200);
     const okOriginBody: any = await okOrigin.json().catch(() => null);
     check('rpId はポートを含まないホスト名', okOriginBody?.rpId, new URL(BASE).hostname);
+
+    // パスキーのあとのコード入力も同じオリジン束縛を受ける。
+    // 拒否はコードを試す前なので、同じ一時トークンを続けて使えること
+    const originFlow = await passkeyLogin(undefined, aliceCred);
+    const originPending = String(originFlow.verify.data?.pendingToken || '');
+    check('オリジン検査用の一時トークンが返る', originPending.length > 20, true);
+    const evilTotp = await fetch(`${BASE}/api/webauthn/authenticate/totp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      body: JSON.stringify({ pendingToken: originPending, totpCode: generateTotpCode(secret2) }),
+    });
+    check('2段階認証の続行も詐称 Origin は 403', evilTotp.status, 403);
+    const goodTotp = await fetch(`${BASE}/api/webauthn/authenticate/totp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: BASE },
+      body: JSON.stringify({ pendingToken: originPending, totpCode: generateTotpCode(secret2) }),
+    });
+    check('設定のオリジンならコードで続行できる', goodTotp.status, 200);
 
     completed = true;
   } finally {

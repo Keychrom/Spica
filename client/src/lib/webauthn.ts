@@ -109,7 +109,10 @@ export async function registerPasskey(deviceName: string): Promise<string | null
       response: {
         clientDataJSON: bufferToB64url(response.clientDataJSON),
         attestationObject: bufferToB64url(response.attestationObject),
+        // 認証器の種類（internal / hybrid / usb など）。ログイン時の allowCredentials に使う
+        transports: response.getTransports?.() ?? [],
       },
+      clientExtensionResults: cred.getClientExtensionResults(),
     },
     expectedChallenge: options.challenge,
     device_name: deviceName || 'この端末',

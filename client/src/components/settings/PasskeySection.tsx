@@ -1,6 +1,5 @@
 /**
  * 設定 → 安全 → パスキー（指紋・顔・PIN でログイン）。
- * ※ 実機の認証器が要るため、動作確認はできていない（理論上動く形にはしてある）。
  */
 import { useEffect, useState } from 'react';
 import { loadPasskeys, registerPasskey, removePasskey, type Passkey } from '../../lib/webauthn';
@@ -48,7 +47,7 @@ export default function PasskeySection() {
         <h3>パスキー（指紋・顔・PIN でログイン）</h3>
         <p className="set__hint">
           この端末の指紋や顔でログインできるようにします。パスワードを覚えなくてもよくなります。
-          <br />※ まだ動作確認ができていない機能です（端末の認証器が要るため）。
+          <br />※ 登録には端末の認証器（指紋・顔・PIN）が必要です。
         </p>
       </div>
 

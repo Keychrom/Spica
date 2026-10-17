@@ -15,6 +15,7 @@ import {
   createWebAuthnAuthenticationOptions,
   verifyWebAuthnAuthentication,
   saveChallenge,
+  assertWebAuthnOrigin,
 } from '../webauthnService.js';
 import { createSession, requireAuth } from '../auth.js';
 
@@ -133,6 +134,11 @@ router.post('/webauthn/authenticate/verify', async (req: Request, res: Response)
  */
 router.post('/webauthn/authenticate/totp', async (req: Request, res: Response) => {
   try {
+    // パスキー本体と同じく、設定に無いオリジンからの続行は受け付けない
+    // （コードを試す前に断るので、一時トークンは消費されない）
+    const reqOrigin = req.headers.origin as string | undefined;
+    assertWebAuthnOrigin(reqOrigin);
+
     const pendingToken = typeof req.body?.pendingToken === 'string' ? req.body.pendingToken.trim() : '';
     const totpCode = typeof req.body?.totpCode === 'string' ? req.body.totpCode.trim() : '';
     if (!pendingToken || !totpCode) {
