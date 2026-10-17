@@ -8,6 +8,9 @@
  * - sharp が読み込めない環境や変換失敗時: 元のデータをそのまま保存する（アップロードを止めない）
  */
 const SKIP_MIMETYPES = new Set(['image/gif', 'image/svg+xml']);
+// SVG は**スクリプトを入れられる形式**なので、そのまま保存するときは配信側
+// （index.ts の /uploads）で必ず CSP（sandbox）+ nosniff を付けること。
+// 外すと /uploads/<user>/x.svg を直接開かれて同一オリジンでスクリプトが動く
 
 // 長辺の上限（これより大きい画像のみ縮小し、小さい画像は拡大しない）
 const MAX_DIMENSION = 2560;

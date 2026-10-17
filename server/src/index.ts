@@ -28,6 +28,7 @@ import { rateLimit } from './rateLimit.js';
 import { requireAuthorizedFetch } from './inboxAuth.js';
 import { startScheduler, startDeliveryQueueWorker, startJobWorker, startInboxWorker } from './scheduler.js';
 import { registerGracefulShutdown } from './shutdown.js';
+import { SAFE_MEDIA_EXTENSIONS } from './storage.js';
 import { logAutomationSettings, getMaintenanceStats } from './maintenanceService.js';
 import { getDeliveryQueueStats } from './deliveryQueue.js';
 import { getJobStats } from './jobs.js';
@@ -404,7 +405,22 @@ app.use('/uploads', (req: Request, res: Response, next: NextFunction) => {
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   next();
 });
-app.use('/uploads', express.static(uploadsDir));
+app.use('/uploads', express.static(uploadsDir, {
+  // 許可外の拡張子（以前のアップロードに紛れ込んだ .html など）は**表示せずダウンロード**させる。
+  // 保存の時点でも拡張子を許可制にしているが、既存ファイルにも効くようにここでも塞ぐ
+  setHeaders: (res, filePath) => {
+    const ext = path.extname(filePath).replace(/^\./, '').toLowerCase();
+    if (!SAFE_MEDIA_EXTENSIONS.has(ext)) {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+  },
+}));
+// 見つからないメディアは 404 で返す。ここを素通りさせると SPA の index.html（text/html）が
+// immutable のキャッシュヘッダー付きで返り、存在しないメディアの URL が 1 年キャッシュされる
+app.use('/uploads', (_req: Request, res: Response) => {
+  res.status(404).type('text/plain; charset=utf-8').send('Not Found');
+});
 
 // 本番ビルドされたフロントエンド静的ファイルの配信 (client/dist)
 const clientDistPath = path.resolve(process.cwd(), '../client/dist');

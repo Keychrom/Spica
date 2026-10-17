@@ -187,6 +187,41 @@ async function run(): Promise<void> {
     const stats2 = await (await fetch(`${BASE}/api/drive/stats`, { headers: auth(alice) })).json();
     check('使用量が 1 件に増える', stats2.count, 1);
 
+    // ------------------------------------------------------------------
+    console.log('\n🛡️ [5] メディア配信の安全装置（SVG の XSS・拡張子）');
+
+    // 名前の拡張子はそのまま使わない（.html を名乗っても画像として保存され、HTML では配信されない）
+    const disguised = await upload(alice, new File([Buffer.alloc(1024, 7)], 'evil.html', { type: 'image/png' }));
+    check('拡張子を偽るアップロードも受け付ける', disguised.status, 200);
+    const disguisedUrl = String(disguised.body?.media?.[0]?.url || '');
+    check('保存名は .html ではない', disguisedUrl.endsWith('.html'), false);
+    check('MIME から決めた .png になる', disguisedUrl.endsWith('.png'), true);
+
+    // 実体が SVG でも保存はされ、配信時に CSP でスクリプトを止める
+    const svgSource = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><script>alert(document.domain)</script></svg>';
+    const svgUp = await upload(alice, new File([svgSource], 'x.svg', { type: 'image/svg+xml' }));
+    check('SVG はアップロードできる', svgUp.status, 200);
+    const svgPath = new URL(String(svgUp.body?.media?.[0]?.url || ''), BASE).pathname;
+    const svgRes = await fetch(`${BASE}${svgPath}`);
+    check('SVG が配信される', svgRes.status, 200);
+    check('Content-Type は image/svg+xml', svgRes.headers.get('content-type'), 'image/svg+xml');
+    const csp = String(svgRes.headers.get('content-security-policy') || '');
+    check('CSP が sandbox を付ける（スクリプト無効）', csp.includes('sandbox'), true);
+    check('CSP は既定で全部禁止', csp.includes("default-src 'none'"), true);
+    check('nosniff が付く', svgRes.headers.get('x-content-type-options'), 'nosniff');
+
+    // 以前のアップロードに .html が残っていても、表示させずダウンロードさせる
+    fs.mkdirSync(path.join(uploadDir, 'alice'), { recursive: true });
+    fs.writeFileSync(path.join(uploadDir, 'alice', 'legacy.html'), '<script>alert(1)</script>');
+    const legacy = await fetch(`${BASE}/uploads/alice/legacy.html`);
+    check('許可外の拡張子は octet-stream', legacy.headers.get('content-type'), 'application/octet-stream');
+    check('表示せずダウンロードさせる', String(legacy.headers.get('content-disposition') || '').includes('attachment'), true);
+
+    // 存在しないメディアは SPA の index.html ではなく 404
+    const missing = await fetch(`${BASE}/uploads/alice/does-not-exist.svg`);
+    check('存在しないメディアは 404', missing.status, 404);
+    check('404 の本文は HTML ではない', String(missing.headers.get('content-type') || '').includes('text/html'), false);
+
     completed = true;
   } finally {
     console.log('');

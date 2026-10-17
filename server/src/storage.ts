@@ -133,11 +133,25 @@ export async function testStorageConnection(cfg = getStorageConfig()): Promise<{
 }
 
 /**
- * ファイルの拡張子を取得
+ * 保存してよい拡張子（配信時の Content-Type を決めるので**許可制**にする）。
+ *
+ * `originalname` はアップロードする人が自由に決められる。そのまま拡張子にすると
+ * `evil.html`（中身は画像でない）を `.html` として保存でき、`/uploads` が
+ * `text/html` を返す状態になる。`/uploads` には CSP（`sandbox`）と `nosniff` を
+ * 付けているのでスクリプトは動かないが、保存の時点でも弾いて二重にする。
+ */
+export const SAFE_MEDIA_EXTENSIONS = new Set([
+  'jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg',
+  'mp4', 'webm', 'mov', 'ogv',
+  'mp3', 'm4a', 'ogg', 'wav', 'weba',
+]);
+
+/**
+ * ファイルの拡張子を取得。名前の拡張子が許可外なら MIME から決め、それも無ければ `bin`
  */
 function getExtension(mimetype: string, originalname: string): string {
   const extFromName = path.extname(originalname).replace(/^\./, '').toLowerCase();
-  if (extFromName) return extFromName;
+  if (SAFE_MEDIA_EXTENSIONS.has(extFromName)) return extFromName;
 
   const mimeMap: Record<string, string> = {
     'image/jpeg': 'jpg',
