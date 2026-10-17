@@ -183,77 +183,68 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
       )
     : Promise.resolve([] as { post_id: string; kind: string }[]);
 
-  const [counterRows, viewerStateRows] = await Promise.all([counterRowsPromise, viewerStatePromise]);
+  // 📊 アンケート（本体・選択肢・閲覧者の投票）は 1 本にまとめ、
+  //    カウンタ・閲覧者状態と同時に流す（以前は 3 本直列のうえ、この 2 本を待ってからだった）
+  const loadPolls = async (): Promise<Map<string, any>> => {
+    const pollsMap = new Map<string, any>();
+    // 投票は選択肢ごとの EXISTS で見る（idx_poll_votes_poll_user が効く）。
+    // 未ログインでは列ごと 0 にして、NULL バインドを作らない（PostgreSQL の型推論対策）
+    const meExpr = currentUserId
+      ? `CASE WHEN EXISTS (
+           SELECT 1 FROM poll_votes v
+           WHERE v.poll_id = p.id AND v.choice_index = c.choice_index AND v.user_id = ?
+         ) THEN 1 ELSE 0 END`
+      : '0';
+    const pollRows = await db.prepare(`
+      SELECT
+        p.id AS poll_id, p.post_id, p.multiple, p.expires_at,
+        c.choice_index, c.text, c.votes_count,
+        ${meExpr} AS me
+      FROM polls p
+      LEFT JOIN poll_choices c ON c.poll_id = p.id
+      WHERE p.post_id IN (${placeholders})
+      ORDER BY p.post_id ASC, c.choice_index ASC
+    `).all(...(currentUserId ? [currentUserId, ...postIds] : postIds)) as any[];
+
+    const now = new Date().toISOString();
+    for (const row of pollRows) {
+      let poll = pollsMap.get(row.post_id);
+      if (!poll) {
+        poll = {
+          id: row.poll_id,
+          multiple: Boolean(row.multiple),
+          expires_at: row.expires_at,
+          is_expired: row.expires_at ? row.expires_at < now : false,
+          total_votes: 0,
+          my_voted: false,
+          choices: [],
+        };
+        pollsMap.set(row.post_id, poll);
+      }
+      if (row.choice_index !== null && row.choice_index !== undefined) {
+        poll.choices.push({
+          choice_index: row.choice_index,
+          text: row.text,
+          votes_count: row.votes_count,
+          me: Boolean(row.me),
+        });
+        poll.total_votes += row.votes_count || 0;
+        if (row.me) poll.my_voted = true;
+      }
+    }
+    return pollsMap;
+  };
+
+  const [counterRows, viewerStateRows, pollsMap] = await Promise.all([
+    counterRowsPromise,
+    viewerStatePromise,
+    safe('polls', loadPolls, new Map<string, any>()),
+  ]);
 
   const allReactions = counterRows.filter((r) => r.kind === 'reaction');
   const allAnnounces = counterRows.filter((r) => r.kind === 'announce');
   const allReplies = counterRows.filter((r) => r.kind === 'reply');
   const allQuoteCounts = counterRows.filter((r) => r.kind === 'quote');
-
-  // 📊 アンケート情報の取得（選択肢と投票はアンケート本体に依存するので、ここだけ直列）
-  const pollsMap = new Map<string, any>();
-  const loadPolls = async (): Promise<void> => {
-    const pollRows = await db.prepare(`
-      SELECT id, post_id, multiple, expires_at, created_at
-      FROM polls
-      WHERE post_id IN (${placeholders})
-    `).all(...postIds) as any[];
-
-    if (pollRows.length > 0) {
-      const pollIds = pollRows.map((p) => p.id);
-      const pollPlaceholders = pollIds.map(() => '?').join(',');
-
-      const choiceRows = await db.prepare(`
-        SELECT id, poll_id, choice_index, text, votes_count
-        FROM poll_choices
-        WHERE poll_id IN (${pollPlaceholders})
-        ORDER BY choice_index ASC
-      `).all(...pollIds) as any[];
-
-      let userVotesMap = new Map<string, Set<number>>();
-      if (currentUserId) {
-        const voteRows = await db.prepare(`
-          SELECT poll_id, choice_index
-          FROM poll_votes
-          WHERE poll_id IN (${pollPlaceholders}) AND user_id = ?
-        `).all(...pollIds, currentUserId) as any[];
-        for (const v of voteRows) {
-          if (!userVotesMap.has(v.poll_id)) userVotesMap.set(v.poll_id, new Set());
-          userVotesMap.get(v.poll_id)!.add(v.choice_index);
-        }
-      }
-
-      const choicesByPoll = new Map<string, any[]>();
-      for (const c of choiceRows) {
-        if (!choicesByPoll.has(c.poll_id)) choicesByPoll.set(c.poll_id, []);
-        const myVotes = userVotesMap.get(c.poll_id);
-        choicesByPoll.get(c.poll_id)!.push({
-          choice_index: c.choice_index,
-          text: c.text,
-          votes_count: c.votes_count,
-          me: myVotes ? myVotes.has(c.choice_index) : false,
-        });
-      }
-
-      const now = new Date().toISOString();
-      for (const p of pollRows) {
-        const choices = choicesByPoll.get(p.id) || [];
-        const totalVotes = choices.reduce((sum, c) => sum + (c.votes_count || 0), 0);
-        const myVotes = userVotesMap.get(p.id);
-        const isExpired = p.expires_at ? p.expires_at < now : false;
-
-        pollsMap.set(p.post_id, {
-          id: p.id,
-          multiple: Boolean(p.multiple),
-          expires_at: p.expires_at,
-          is_expired: isExpired,
-          total_votes: totalVotes,
-          my_voted: Boolean(myVotes && myVotes.size > 0),
-          choices,
-        });
-      }
-    }
-  };
 
   // 🔖 ブックマーク / 📌 ピン留め / 🚫 ブロック・ミュート（上の 1 本にまとめた結果を振り分ける）
   const bookmarkedSet = new Set(
@@ -350,10 +341,9 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
     new Set(rows.map((r) => extractFirstUrl(r.content)).filter((url): url is string => Boolean(url))),
   );
 
-  // 残りは互いに依存しないので同時に流す（SQLite は 1 接続なので直列化されるが、
-  // PostgreSQL では往復が重ならない）。ミュートワードと遮断ドメインは TTL つきのキャッシュ。
-  const [, , , linkPreviews, blockedDomainRules, mutedWords] = await Promise.all([
-    safe('polls', loadPolls, undefined as void),
+  // アンケートは上の並行群で取得済み。ここは引用・チャンネル・プレビューなど残りだけ。
+  // ミュートワードと遮断ドメインは TTL つきのキャッシュ。
+  const [, , linkPreviews, blockedDomainRules, mutedWords] = await Promise.all([
     safe('quotes', loadQuotes, undefined as void),
     safe('channels', loadChannels, undefined as void),
     safe('link previews', () => getCachedPreviews(previewUrls), new Map()),

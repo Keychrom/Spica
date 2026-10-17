@@ -195,8 +195,11 @@ async function waitFor<T>(fn: () => T | null | undefined, timeoutMs = 5000): Pro
 }
 
 /** アンケートの得票数（タイムライン経由＝画面が見るのと同じ形）を読む */
-async function timelinePoll(base: string, postId: string): Promise<any | null> {
-  const res = await fetch(`${base}/api/timeline?mode=local&limit=50`);
+async function timelinePoll(base: string, postId: string, token?: string): Promise<any | null> {
+  const res = await fetch(
+    `${base}/api/timeline?mode=local&limit=50`,
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
   const list = (await res.json().catch(() => null)) as any[] | null;
   return Array.isArray(list) ? (list.find((p) => p?.id === postId)?.poll ?? null) : null;
 }
@@ -354,6 +357,13 @@ async function run(): Promise<void> {
     check('票が入る', bobVote.data?.poll?.total_votes, 1);
     check('選んだ選択肢に +1', bobVote.data?.poll?.choices?.[1]?.votes_count, 1);
     check('自分の投票が分かる', bobVote.data?.poll?.my_voted, true);
+
+    // タイムラインの整形（enrichAndFilterPosts）でも、閲覧者ごとの me が立つこと。
+    // ここは「選択肢ごとの EXISTS」で取っている（アンケート本体・選択肢・投票を 1 本に統合した）
+    const bobView = await timelinePoll(BASE, localPollPostId, bob);
+    check('タイムラインでも自分の投票が分かる', bobView?.choices?.[1]?.me, true);
+    check('投票していない選択肢は me=false', bobView?.choices?.[0]?.me, false);
+    check('タイムラインでも my_voted が立つ', bobView?.my_voted, true);
 
     const twice = await api('POST', `/api/posts/${encodeURIComponent(localPollPostId)}/poll/vote`, bob, { choices: [0] });
     check('同じ人が二度は投票できない', twice.status, 400);
