@@ -327,6 +327,28 @@ async function run(): Promise<void> {
     check('選択肢が 3 つ返る', created.data?.poll?.choices?.length, 3);
     check('最初は 0 票', created.data?.poll?.total_votes, 0);
 
+    // 期限: expires_in（スネークケース）と expiresIn（キャメルケース）の両方を受ける。
+    // Web クライアントが expiresIn を送っていて「常に無期限」になっていた回帰の検査
+    const snakeExpiresAt = Date.parse(String(created.data?.poll?.expires_at || ''));
+    check('expires_in で期限が付く', Number.isFinite(snakeExpiresAt), true);
+    check('期限は約 1 日後', Math.abs(snakeExpiresAt - Date.now() - 86400_000) < 60_000, true);
+
+    const camelPoll = await api('POST', '/api/posts', alice, {
+      content: '期限つき（camelCase）',
+      visibility: 'public',
+      poll: { choices: ['はい', 'いいえ'], multiple: false, expiresIn: 1800 },
+    });
+    const camelExpiresAt = Date.parse(String(camelPoll.data?.poll?.expires_at || ''));
+    check('expiresIn（キャメル）でも期限が付く', Number.isFinite(camelExpiresAt), true);
+    check('期限は約 30 分後', Math.abs(camelExpiresAt - Date.now() - 1800_000) < 60_000, true);
+
+    const noExpiryPoll = await api('POST', '/api/posts', alice, {
+      content: '期限なし',
+      visibility: 'public',
+      poll: { choices: ['はい', 'いいえ'], multiple: false },
+    });
+    check('指定が無ければ期限は付かない', noExpiryPoll.data?.poll?.expires_at, null);
+
     const bobVote = await api('POST', `/api/posts/${encodeURIComponent(localPollPostId)}/poll/vote`, bob, { choices: [1] });
     check('投票できる', bobVote.status, 200);
     check('票が入る', bobVote.data?.poll?.total_votes, 1);

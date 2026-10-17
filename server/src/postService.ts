@@ -177,8 +177,19 @@ export async function executeCreatePost(params: CreatePostParams): Promise<{ pos
     const pollId = crypto.randomUUID();
     const multiple = poll.multiple ? 1 : 0;
     let expiresAt: string | null = null;
-    if (typeof poll.expires_in === 'number' && poll.expires_in > 0) {
-      expiresAt = new Date(Date.now() + poll.expires_in * 1000).toISOString();
+    // 期限（秒）。API のキーは expires_in だが、camelCase の expiresIn も受ける
+    // （Web クライアントが expiresIn を送っていて、期限が常に無視されていた。2026-10-17 に修正）
+    const rawExpiresIn = poll.expires_in ?? poll.expiresIn;
+    const expiresInSeconds =
+      typeof rawExpiresIn === 'number'
+        ? rawExpiresIn
+        : typeof rawExpiresIn === 'string' && rawExpiresIn.trim()
+          ? Number(rawExpiresIn)
+          : 0;
+    if (Number.isFinite(expiresInSeconds) && expiresInSeconds > 0) {
+      // 極端な値（Invalid Date になる）を避けるため上限を置く（10 年）
+      const cappedSeconds = Math.min(expiresInSeconds, 10 * 365 * 24 * 3600);
+      expiresAt = new Date(Date.now() + cappedSeconds * 1000).toISOString();
     }
 
     // アンケート本体と選択肢は**同じトランザクション**で入れる。

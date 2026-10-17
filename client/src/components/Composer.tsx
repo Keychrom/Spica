@@ -97,7 +97,9 @@ export default function Composer({
     return {
       choices,
       multiple: poll.multiple,
-      ...(poll.expiresIn > 0 ? { expiresIn: poll.expiresIn } : {}),
+      // 送信するキーは API に合わせて expires_in（スネークケース）。
+      // expiresIn で送るとサーバーが読まないため、期限が付かない
+      ...(poll.expiresIn > 0 ? { expires_in: poll.expiresIn } : {}),
     };
   }
 
