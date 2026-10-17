@@ -163,12 +163,20 @@ WHERE id = ? AND status = 'pending' AND next_attempt_at <= now
 
 ## 🗂 ルーターの分け方
 
-`server/src/routes/api.ts` は登録の順序がそのまま意味を持つ（同じパスの取り合い）ので、
-**切り出したルーターは元の位置で `apiRouter.use(...)` する**。増やすときも同じ場所に挿す。
+`server/src/routes/api.ts` は 2026-10-18 に**マウントだけの束ね役**になった。Express は登録順に
+マッチするので、各モジュールの `apiRouter.use(...)` は**最初のルートがあった位置**に置き、
+モジュール内のルート順も元のままにしてある。新しいルートは担当モジュールへ足す（api.ts には書かない）。
 
 | モジュール | 担当 | 元の位置 |
 | :--- | :--- | :--- |
-| `routes/api.ts` | 認証・投稿・タイムライン・検索・メディア・プロフィール・移行・レポート・入力補完 | （中心） |
+| `routes/api.ts` | **マウントだけ**（登録順の束ね役） | — |
+| `routes/auth.ts` | 認証・セッション・TOTP・メール・パスワード・復元 | 認証 |
+| `routes/timeline.ts` | タイムライン・検索・タグ・入力補完・SSE | タイムライン |
+| `routes/media.ts` | メディアアップロード・ドライブ | メディア |
+| `routes/posts.ts` | 投稿 CRUD・リアクション・ブースト・投票・スレッド・通報 | 投稿 |
+| `routes/profiles.ts` | プロフィール・フォロー・引っ越し・エクスポート/インポート・フォローリクエスト | フォロー |
+| `routes/instance.ts` | サーバー情報・カスタム絵文字・お知らせ・Web Push | サーバー情報 |
+| `routes/dm.ts` | DM（`/dm` にマウント） | DM |
 | `routes/notifications.ts` | 通知一覧・設定・既読 | 通知 |
 | `routes/bookmarks.ts` | ブックマークのトグル・一覧 | ブックマーク |
 | `routes/pin.ts` | ピン留め（`setPinnedPost` は Misskey 互換 API からも使う） | ピン |
@@ -178,6 +186,9 @@ WHERE id = ? AND status = 'pending' AND next_attempt_at <= now
 | `routes/drafts.ts` | 下書き・予約投稿 | 下書き |
 | `routes/webauthn.ts` | パスキーの登録・ログイン・2段階認証の続き | WebAuthn |
 | `routes/channels.ts` | チャンネル | チャンネル |
+
+`routes/users.ts` は **ActivityPub のアクター（`/users/:id` の Actor 文書）用の既存ルーター**で、
+この分割とは別物。プロフィール側の API は `profiles.ts` にある（名前が衝突するため）。
 
 **投稿行の整形（`enrichAndFilterPosts`）とアンケートの得票数**は、複数のルーターが使うので
 `server/src/postEnrichment.ts` に置く（ルーターから import する。api.ts を経由させない＝循環しない）。
@@ -351,4 +362,4 @@ npx tsx scripts/test-redis.ts           # 個別に走らせる場合（一部�
   Redis の役割は [REDIS.md](REDIS.md)、設定は [CONFIGURATION.md](CONFIGURATION.md) にあります。
 - ここに書いた構成は**すべて任意**です。`PROCESS_ROLE` も `REDIS_URL` も `DB_DRIVER` も設定しなければ、
   今までどおり「1 プロセス・追加ミドルウェアなし」で動きます。
-- 実装が変われば更新します（最終更新: 2026-10-17。ホームの定義変更（**自分 + フォロー中**）・アンケートの得票数の連合（`Update(Question)` の取り込みと票のテキスト送信・多い方採用）・`Update` での `Person` / `Question` の受信と作者確認・Misskey 互換 API の拡張（スレッド・メンション・リスト・アンテナ・ドライブ・編集ほか。`864d499`）・通知音とストリームの申告（`none`）・テーマ「端末に合わせる」を反映。あわせて受信箱の `Delete` / `Create` / `Announce` / `Accept` に送信者と対象の持ち主の確認を追加（任意のサーバーが他人の投稿を消せた穴を閉鎖）し、WebAuthn の **origin / rpID を設定に固定**（リクエストの `Origin` ヘッダーを流用しない）・チャレンジ発行時の持ち主と消費時の利用者の一致確認・**パスキー＋2段階認証でコードだけ入れ直せる一時トークン**（`pendingToken`）を反映）。**メディア配信の安全装置**も追加: 保存する拡張子を許可制にし（名前が `evil.html` でも MIME から決める）、`/uploads` では許可外の拡張子をダウンロードに落とし、見つからないメディアは SPA の HTML ではなく 404 を返す。**`Accept` / `Reject` は承認・拒否した本人のフォローだけ**を変え（特定できなければ何もしない）、宛先の居ない `Follow` は管理者へ回さず 404 にした。外向き取得は**リレー登録とエクスポートのメディア取得も safeFetch**（リダイレクトを 1 ホップずつ検証）に揃え、リモートの**カスタム絵文字 URL は属性エスケープ＋http(s) 限定**、管理画面の集計 SQL から設定値の直接展開を外した）。**タイムラインの 1 ページは、除外（ブロック・ミュート・ミュートワード・フォロワー限定）の分を読み足してからカーソルを確定する**ようにした（`collectVisiblePage`。以前は `limit + 1` 件でカーソルを先に決めていたため、除外が多いページが 0〜数件になっていた）。加えて **`routes/api.ts` から 9 ドメインを個別のルーターへ切り出した**（通知・ブックマーク・ピン・ブロック/ミュート・リスト・アンテナ・下書き・WebAuthn・チャンネル。共通の投稿整形は `postEnrichment.ts`）。PostgreSQL の SQL 変換から**素の `INSERT` への自動 `ON CONFLICT DO NOTHING` 付与を削除**した（SQLite では一意制約違反が例外なのに、PostgreSQL だけ黙って `changes: 0` になっていた挙動差を揃えた）。**引用一覧も `collectVisiblePage`** に揃え、**リアクション履歴は `created_at` + `id` のカーソル**を SQL に渡すようにした（どちらもカーソルを受け取るのに WHERE へ渡しておらず、2 ページ目が先頭の繰り返しになっていた）。
+- 実装が変われば更新します（最終更新: 2026-10-18。ホームの定義変更（**自分 + フォロー中**）・アンケートの得票数の連合（`Update(Question)` の取り込みと票のテキスト送信・多い方採用）・`Update` での `Person` / `Question` の受信と作者確認・Misskey 互換 API の拡張（スレッド・メンション・リスト・アンテナ・ドライブ・編集ほか。`864d499`）・通知音とストリームの申告（`none`）・テーマ「端末に合わせる」を反映。あわせて受信箱の `Delete` / `Create` / `Announce` / `Accept` に送信者と対象の持ち主の確認を追加（任意のサーバーが他人の投稿を消せた穴を閉鎖）し、WebAuthn の **origin / rpID を設定に固定**（リクエストの `Origin` ヘッダーを流用しない）・チャレンジ発行時の持ち主と消費時の利用者の一致確認・**パスキー＋2段階認証でコードだけ入れ直せる一時トークン**（`pendingToken`）を反映）。**メディア配信の安全装置**も追加: 保存する拡張子を許可制にし（名前が `evil.html` でも MIME から決める）、`/uploads` では許可外の拡張子をダウンロードに落とし、見つからないメディアは SPA の HTML ではなく 404 を返す。**`Accept` / `Reject` は承認・拒否した本人のフォローだけ**を変え（特定できなければ何もしない）、宛先の居ない `Follow` は管理者へ回さず 404 にした。外向き取得は**リレー登録とエクスポートのメディア取得も safeFetch**（リダイレクトを 1 ホップずつ検証）に揃え、リモートの**カスタム絵文字 URL は属性エスケープ＋http(s) 限定**、管理画面の集計 SQL から設定値の直接展開を外した）。**タイムラインの 1 ページは、除外（ブロック・ミュート・ミュートワード・フォロワー限定）の分を読み足してからカーソルを確定する**ようにした（`collectVisiblePage`。以前は `limit + 1` 件でカーソルを先に決めていたため、除外が多いページが 0〜数件になっていた）。加えて **`routes/api.ts` から 9 ドメインを個別のルーターへ切り出した**（通知・ブックマーク・ピン・ブロック/ミュート・リスト・アンテナ・下書き・WebAuthn・チャンネル。共通の投稿整形は `postEnrichment.ts`）。PostgreSQL の SQL 変換から**素の `INSERT` への自動 `ON CONFLICT DO NOTHING` 付与を削除**した（SQLite では一意制約違反が例外なのに、PostgreSQL だけ黙って `changes: 0` になっていた挙動差を揃えた）。**引用一覧も `collectVisiblePage`** に揃え、**リアクション履歴は `created_at` + `id` のカーソル**を SQL に渡すようにした（どちらもカーソルを受け取るのに WHERE へ渡しておらず、2 ページ目が先頭の繰り返しになっていた）。さらに **`routes/api.ts` をマウントだけの束ね役にした**（残りを auth / timeline / media / posts / profiles / instance / dm へ分割。`routes/users.ts` は ActivityPub の Actor 用の既存ルーターなので、プロフィール側は `profiles.ts`）。

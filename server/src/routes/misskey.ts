@@ -15,20 +15,10 @@ import { handleAntennaTimeline, handleCreateAntenna, handleDeleteAntenna, handle
 import { handleListBookmarks, handleToggleBookmark } from './bookmarks.js';
 import { setPinnedPost } from './pin.js';
 import { handleReadNotification } from './notifications.js';
-import {
-  handleAnnouncePost,
-  handleCreatePost,
-  handleDeletePost,
-  handleFollow,
-  handleReactToPost,
-  handleRespondFollowRequest,
-  handleTimeline,
-  handleUnfollow,
-  handleUpdateProfile,
-  handleVotePoll,
-  mediaUploadMiddleware,
-  saveUploadedMediaFiles,
-} from './api.js';
+import { handleAnnouncePost, handleCreatePost, handleDeletePost, handleReactToPost, handleVotePoll } from './posts.js';
+import { handleFollow, handleUnfollow, handleUpdateProfile, handleRespondFollowRequest } from './profiles.js';
+import { handleTimeline } from './timeline.js';
+import { mediaUploadMiddleware, saveUploadedMediaFiles } from './media.js';
 import { enrichAndFilterPosts } from '../postEnrichment.js';
 import {
   buildMisskeyNote,
