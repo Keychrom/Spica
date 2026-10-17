@@ -21,6 +21,7 @@ import { decodePart, navigate, queryValue } from './lib/router';
 import { canModerate } from './lib/nav';
 import type { Post, ServerInfo, SessionUser } from './lib/format';
 import type { Prefs } from './lib/settings';
+import type { DraftedPost } from './lib/drafts';
 import type { ThemeChoice } from './lib/theme';
 
 /** 仮の画面はもう無い（この表は空。当たらない URL は下の 404 案内になる） */
@@ -58,7 +59,7 @@ interface RoutesProps {
   /** オンボーディングを終えたとき（セッションを取り直す） */
   onOnboarded: () => void;
   /** 下書きの続きを書く（コンポーザを中身つきで開く） */
-  onResumeDraft: (draft: { id: string; content: string; cw?: string }) => void;
+  onResumeDraft: (draft: DraftedPost) => void;
 }
 
 export default function Routes({

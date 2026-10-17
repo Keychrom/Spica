@@ -30,15 +30,7 @@ import { useLiveUpdates } from './lib/useLiveUpdates';
 import { useSounds } from './lib/sounds';
 import { streamsFor } from './lib/streamScope';
 import type { DirectoryUser, Post, SessionUser } from './lib/format';
-
-interface ComposerTarget {
-  replyTo?: Post | null;
-  quoteOf?: Post | null;
-  /** 下書きの続きから開くとき */
-  content?: string;
-  cw?: string;
-  draftId?: string;
-}
+import { composerTargetFromDraft, type ComposerTarget } from './lib/composerState';
 
 export default function App() {
   useLinkInterceptor();
@@ -249,7 +241,7 @@ export default function App() {
             if (res.ok && res.data && typeof res.data === 'object') setUser(res.data as SessionUser);
           })();
         }}
-        onResumeDraft={(draft) => setComposer({ content: draft.content, cw: draft.cw, draftId: draft.id })}
+        onResumeDraft={(draft) => setComposer(composerTargetFromDraft(draft))}
       />
     </ErrorBoundary>
   );
@@ -282,6 +274,9 @@ export default function App() {
           quoteOf={composer.quoteOf}
           initialContent={composer.content}
           initialCw={composer.cw}
+          initialVisibility={composer.visibility}
+          initialMedia={composer.media}
+          initialPoll={composer.poll}
           draftId={composer.draftId}
           onClose={() => setComposer(null)}
           onPosted={onPosted}

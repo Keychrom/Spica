@@ -246,6 +246,58 @@ async function runTest() {
   }
   console.log(`✅ 予約投稿公開完了通知の配信確認成功 (通知ID: ${schedNotifs[0].id})\n`);
 
+  // ==========================================
+  // テスト 3b: 公開時に全項目（公開範囲・添付・アンケート・返信先・引用元）が引き継がれるか
+  // ==========================================
+  console.log('--- 3b. ⏰ 予約投稿の全項目（公開範囲・添付・アンケート・返信先・引用元）---');
+  const fullSchedId = 'sched-full-1';
+  const attachmentsJson = JSON.stringify([
+    { url: 'https://spica.test/uploads/alice/a.png', mediaType: 'image/png', description: '添付の説明' },
+  ]);
+  const pollJson = JSON.stringify({ choices: ['はい', 'いいえ'], multiple: false, expires_in: 3600 });
+  await db.prepare(`
+    INSERT INTO scheduled_posts (id, user_id, content, cw, visibility, media_attachments, poll, in_reply_to, quote_id, scheduled_at, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+  `).run(
+    fullSchedId,
+    userA.id,
+    '予約の全項目',
+    'CW',
+    'followers',
+    attachmentsJson,
+    pollJson,
+    'https://remote.test/users/eve/posts/1',
+    'https://remote.test/users/eve/posts/2',
+    new Date(Date.now() - 5000).toISOString(),
+    new Date().toISOString(),
+  );
+
+  await processScheduledPosts();
+  const fullSchedRow = await db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(fullSchedId) as any;
+  const fullPost = await db.prepare('SELECT * FROM posts WHERE id = ?').get(fullSchedRow?.published_post_id) as any;
+  if (!fullPost) throw new Error('全項目の予約投稿が公開されませんでした');
+
+  const fullMedia = JSON.parse(fullPost.media_attachments || '[]');
+  if (fullPost.visibility !== 'followers') throw new Error(`公開範囲が引き継がれていません: ${fullPost.visibility}`);
+  if (fullMedia.length !== 1 || fullMedia[0].description !== '添付の説明') {
+    throw new Error(`添付が引き継がれていません: ${JSON.stringify(fullMedia)}`);
+  }
+  if (fullPost.in_reply_to !== 'https://remote.test/users/eve/posts/1') throw new Error('返信先が引き継がれていません');
+  if (fullPost.quote_id !== 'https://remote.test/users/eve/posts/2') throw new Error('引用元が引き継がれていません');
+  console.log('✅ 公開範囲・添付・返信先・引用元を引き継ぎ');
+
+  const fullPoll = await db.prepare('SELECT * FROM polls WHERE post_id = ?').get(fullPost.id) as any;
+  if (!fullPoll) throw new Error('アンケートが作られていません');
+  const fullChoices = await db.prepare('SELECT * FROM poll_choices WHERE poll_id = ? ORDER BY choice_index ASC').all(fullPoll.id) as any[];
+  if (fullChoices.length !== 2 || fullChoices[0].text !== 'はい' || fullChoices[1].text !== 'いいえ') {
+    throw new Error(`アンケートの選択肢が引き継がれていません: ${JSON.stringify(fullChoices)}`);
+  }
+  const expiresIn = Date.parse(fullPoll.expires_at) - Date.now();
+  if (!fullPoll.expires_at || expiresIn < 3000_000 || expiresIn > 3700_000) {
+    throw new Error(`アンケートの期限が引き継がれていません: ${fullPoll.expires_at}`);
+  }
+  console.log('✅ アンケート（選択肢・期限）を引き継ぎ\n');
+
   console.log('🎉 === すべてのテストに合格しました！ ===');
 
   // クリーンアップ（ファイルを消す前に接続を閉じる）

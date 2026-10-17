@@ -6,21 +6,26 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, messageOf } from '../lib/api';
 import { deleteDraft, saveDraft, schedulePost } from '../lib/drafts';
+import { canSave, canSubmit, draftInput, pollPayload, scheduledInput } from '../lib/composerState';
 import ComposerExtras, { type PollDraft } from './ComposerExtras';
 import ComposerOptions from './ComposerOptions';
 import { getPrefs } from '../lib/prefs';
 import { loadCustomEmojis, type Attachment, type CustomEmoji } from '../lib/media';
-import type { Post, SessionUser } from '../lib/format';
+import type { SessionUser } from '../lib/format';
 
 const MAX_LENGTH = 3000;
 
 interface ComposerProps {
   user: SessionUser;
-  replyTo?: Post | null;
-  quoteOf?: Post | null;
+  /** 返信先・引用元は id と（あれば）表示名だけ使う */
+  replyTo?: { id: string; author_name?: string } | null;
+  quoteOf?: { id: string; author_name?: string } | null;
   /** 下書きの続きから開くとき */
   initialContent?: string;
   initialCw?: string;
+  initialVisibility?: string;
+  initialMedia?: Attachment[];
+  initialPoll?: PollDraft | null;
   draftId?: string;
   onClose: () => void;
   onPosted: () => void;
@@ -32,6 +37,9 @@ export default function Composer({
   quoteOf,
   initialContent = '',
   initialCw = '',
+  initialVisibility,
+  initialMedia,
+  initialPoll,
   draftId,
   onClose,
   onPosted,
@@ -44,8 +52,8 @@ export default function Composer({
   const [cwOn, setCwOn] = useState(Boolean(startCw));
   const [sensitive, setSensitive] = useState(Boolean(start.defaultSensitive));
   const [when, setWhen] = useState('');
-  const [media, setMedia] = useState<Attachment[]>([]);
-  const [poll, setPoll] = useState<PollDraft | null>(null);
+  const [media, setMedia] = useState<Attachment[]>(initialMedia ?? []);
+  const [poll, setPoll] = useState<PollDraft | null>(initialPoll ?? null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [emojis, setEmojis] = useState<CustomEmoji[]>([]);
 
@@ -73,7 +81,7 @@ export default function Composer({
       area.setSelectionRange(at, at);
     });
   }
-  const [visibility, setVisibility] = useState(String(start.defaultVisibility || 'public'));
+  const [visibility, setVisibility] = useState(String(initialVisibility || start.defaultVisibility || 'public'));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -89,34 +97,23 @@ export default function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, cw, cwOn, visibility]);
 
-  /** アンケートは空の選択肢を落として、2 つ以上あるときだけ送る */
-  function pollPayload() {
-    if (!poll) return undefined;
-    const choices = poll.choices.map((choice) => choice.trim()).filter(Boolean);
-    if (choices.length < 2) return undefined;
-    return {
-      choices,
-      multiple: poll.multiple,
-      // 送信するキーは API に合わせて expires_in（スネークケース）。
-      // expiresIn で送るとサーバーが読まないため、期限が付かない
-      ...(poll.expiresIn > 0 ? { expires_in: poll.expiresIn } : {}),
-    };
-  }
+  // 出せるか（本文・添付・アンケート・引用のどれか）／残せるか（編集中の・選択肢 1 つのアンケートも）
+  const canPost = canSubmit({ content, attachments: media, poll, quote: Boolean(quoteOf) });
+  const canKeep = canSave({ content, attachments: media, poll, quote: Boolean(quoteOf), reply: Boolean(replyTo) });
 
   async function submit() {
-    const text = content.trim();
-    if ((!text && media.length === 0) || busy) return;
+    if (!canPost || busy) return;
     setBusy(true);
     setError('');
     const res = await api.post('/api/posts', {
-      content: text,
+      content: content.trim(),
       visibility,
       cw: cwOn && cw.trim() ? cw.trim() : undefined,
       is_sensitive: sensitive,
       in_reply_to: replyTo?.id,
       quote_id: quoteOf?.id,
       ...(media.length > 0 ? { attachments: media } : {}),
-      ...(pollPayload() ? { poll: pollPayload() } : {}),
+      ...(pollPayload(poll) ? { poll: pollPayload(poll) } : {}),
     });
     setBusy(false);
     if (!res.ok) {
@@ -132,11 +129,20 @@ export default function Composer({
   }
 
   async function keepDraft() {
-    const text = content.trim();
-    if (!text) return;
+    if (!canKeep) return;
     setBusy(true);
     setError('');
-    const problem = await saveDraft({ content: text, cw: cwOn && cw.trim() ? cw.trim() : '' });
+    const problem = await saveDraft(
+      draftInput({
+        content,
+        cw: cwOn && cw.trim() ? cw.trim() : '',
+        visibility,
+        attachments: media,
+        poll,
+        replyToId: replyTo?.id,
+        quoteOfId: quoteOf?.id,
+      }),
+    );
     setBusy(false);
     if (problem) {
       setError(problem);
@@ -148,8 +154,7 @@ export default function Composer({
   }
 
   async function reserve() {
-    const text = content.trim();
-    if (!text || !when) return;
+    if (!canKeep || !when) return;
     const at = new Date(when);
     if (Number.isNaN(at.getTime())) {
       setError('日時を選んでください。');
@@ -157,11 +162,18 @@ export default function Composer({
     }
     setBusy(true);
     setError('');
-    const problem = await schedulePost({
-      content: text,
-      cw: cwOn && cw.trim() ? cw.trim() : '',
-      scheduled_at: at.toISOString(),
-    });
+    const problem = await schedulePost(
+      scheduledInput({
+        content,
+        cw: cwOn && cw.trim() ? cw.trim() : '',
+        visibility,
+        attachments: media,
+        poll,
+        replyToId: replyTo?.id,
+        quoteOfId: quoteOf?.id,
+        scheduledAt: at.toISOString(),
+      }),
+    );
     setBusy(false);
     if (problem) {
       setError(problem);
@@ -189,14 +201,14 @@ export default function Composer({
         {replyTo && (
           <div className="sheet__cw">
             <span style={{ fontSize: 12.5, color: 'var(--text-sub)' }}>
-              {replyTo.author_name} さんへの返信
+              {replyTo.author_name ? `${replyTo.author_name} さんへの返信` : 'この投稿への返信'}
             </span>
           </div>
         )}
         {quoteOf && (
           <div className="sheet__cw">
             <span style={{ fontSize: 12.5, color: 'var(--text-sub)' }}>
-              引用：{quoteOf.author_name} のノート
+              {quoteOf.author_name ? `引用：${quoteOf.author_name} のノート` : 'この投稿を引用'}
             </span>
           </div>
         )}
@@ -254,13 +266,13 @@ export default function Composer({
             />
           </label>
           <span style={{ flex: 1 }} />
-          <button type="button" className="btn btn--text" disabled={busy || !content.trim()} onClick={() => void keepDraft()}>
+          <button type="button" className="btn btn--text" disabled={busy || !canKeep} onClick={() => void keepDraft()}>
             下書きに保存
           </button>
           <button
             type="button"
             className="btn btn--quiet"
-            disabled={busy || !content.trim() || !when}
+            disabled={busy || !canKeep || !when}
             onClick={() => void reserve()}
           >
             予約する
@@ -275,7 +287,7 @@ export default function Composer({
           <button
             type="button"
             className="btn btn--solid"
-            disabled={busy || (content.trim().length === 0 && media.length === 0) || remaining < 0}
+            disabled={busy || !canPost || remaining < 0}
             onClick={() => void submit()}
           >
             {busy ? '送信中…' : 'ノート'}

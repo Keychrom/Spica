@@ -5665,8 +5665,12 @@ apiRouter.post('/scheduled-posts', requireAuth, asyncHandler(async (req: Request
 
   const contentText = typeof content === 'string' ? content.trim() : '';
   const parsedAttachments = Array.isArray(attachments) ? attachments : [];
-  if (!contentText && parsedAttachments.length === 0 && !quote_id) {
-    return res.status(400).json({ error: '投稿内容または画像を入力してください。' });
+  // 本文が無くても、添付・引用・アンケート（選択肢 2 つ以上）があれば予約できる
+  const pollChoiceCount = poll && Array.isArray(poll.choices)
+    ? poll.choices.filter((choice: any) => typeof choice === 'string' && choice.trim()).length
+    : 0;
+  if (!contentText && parsedAttachments.length === 0 && !quote_id && pollChoiceCount < 2) {
+    return res.status(400).json({ error: '投稿内容、画像、引用、またはアンケートを入力してください。' });
   }
 
   const id = crypto.randomUUID();

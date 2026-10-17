@@ -38,6 +38,7 @@ import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import { actorPath } from '../client/src/lib/permalink.js';
+import { canSave, canSubmit, composerTargetFromDraft, draftInput, pollPayload, scheduledInput } from '../client/src/lib/composerState.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
 import { MAX_ATTACHMENTS } from '../client/src/lib/media.js';
@@ -507,6 +508,82 @@ const untouched = withPostPatch(
   { poll: { total_votes: 5, my_voted: true, choices: [{ text: 'a', votes_count: 5, me: true }] } } as never as Partial<Post>,
 );
 check('自分の票が無ければ届いた内容のまま', [untouched.poll?.my_voted, untouched.poll?.choices?.[0]?.me], [true, true]);
+
+// ======================================================================
+console.log('\n📝 コンポーザ: 何を送るか・本文なしで出せるか・下書きの引き継ぎ');
+const none: never[] = [];
+const oneImage = [{ url: '/uploads/a.png', mediaType: 'image/png' }] as never[];
+const twoChoices = { choices: ['はい', 'いいえ'], multiple: false, expiresIn: 0 };
+
+check('本文が無ければ出せない', canSubmit({ content: '  ', attachments: none, poll: null, quote: false }) === false);
+check('本文だけなら出せる', canSubmit({ content: 'こんにちは', attachments: none, poll: null, quote: false }) === true);
+check('アンケートだけでも出せる', canSubmit({ content: '', attachments: none, poll: twoChoices, quote: false }) === true);
+check(
+  '選択肢が 1 つだけのアンケートでは出せない',
+  canSubmit({ content: '', attachments: none, poll: { choices: ['はい', ''], multiple: false, expiresIn: 0 }, quote: false }) === false,
+);
+check('引用だけでも出せる', canSubmit({ content: '', attachments: none, poll: null, quote: true }) === true);
+check('添付だけでも出せる', canSubmit({ content: '', attachments: oneImage, poll: null, quote: false }) === true);
+check(
+  '下書きは選択肢 1 つのアンケートでも残せる',
+  canSave({ content: '', attachments: none, poll: { choices: ['はい', ''], multiple: false, expiresIn: 0 }, quote: false, reply: false }) === true,
+);
+check('下書きは返信先だけでも残せる', canSave({ content: '', attachments: none, poll: null, quote: false, reply: true }) === true);
+check('何も無ければ下書きにできない', canSave({ content: ' ', attachments: none, poll: null, quote: false, reply: false }) === false);
+check(
+  'アンケートは選択肢を詰めて expires_in で送る',
+  JSON.stringify(pollPayload({ choices: [' はい ', '', 'いいえ'], multiple: true, expiresIn: 1800 })) ===
+    JSON.stringify({ choices: ['はい', 'いいえ'], multiple: true, expires_in: 1800 }),
+);
+check('期限なしは expires_in を付けない', !('expires_in' in (pollPayload(twoChoices) || {})));
+
+const resumed = composerTargetFromDraft({
+  id: 'd1',
+  content: '下書き',
+  cw: 'CW',
+  visibility: 'followers',
+  media_attachments: oneImage,
+  poll: { choices: ['はい', 'いいえ'], multiple: false, expiresIn: 3600 },
+  in_reply_to: 'https://spica.test/users/bob/posts/2',
+  quote_id: 'https://spica.test/users/carol/posts/3',
+} as never);
+check('再開: 公開範囲が戻る', resumed.visibility, 'followers');
+check('再開: 添付が戻る', resumed.media?.length, 1);
+check('再開: アンケートが戻る', resumed.poll?.choices?.length, 2);
+check('再開: 返信先が戻る', resumed.replyTo?.id, 'https://spica.test/users/bob/posts/2');
+check('再開: 引用元が戻る', resumed.quoteOf?.id, 'https://spica.test/users/carol/posts/3');
+
+// 実際に送る形（keepDraft / reserve）に全項目が入るか
+const draftPayload = draftInput({
+  content: ' 下書き ',
+  cw: 'CW',
+  visibility: 'followers',
+  attachments: oneImage,
+  poll: { choices: ['はい', ''], multiple: false, expiresIn: 3600 },
+  replyToId: 'p1',
+  quoteOfId: 'p2',
+});
+check('下書きの送信: 本文は前後の空白を落とす', draftPayload.content === '下書き');
+check('下書きの送信: 公開範囲', draftPayload.visibility === 'followers');
+check('下書きの送信: 添付', draftPayload.attachments?.length === 1);
+check('下書きの送信: アンケート（編集中の形のまま）', draftPayload.poll?.choices?.length === 2 && draftPayload.poll?.expiresIn === 3600);
+check('下書きの送信: 返信先と引用元', draftPayload.in_reply_to === 'p1' && draftPayload.quote_id === 'p2');
+
+const scheduledPayload = scheduledInput({
+  content: '',
+  cw: '',
+  visibility: 'followers',
+  attachments: oneImage,
+  poll: { choices: ['はい', 'いいえ'], multiple: false, expiresIn: 3600 },
+  replyToId: 'p1',
+  quoteOfId: 'p2',
+  scheduledAt: '2026-10-18T00:00:00.000Z',
+});
+check('予約の送信: 公開範囲', scheduledPayload.visibility === 'followers');
+check('予約の送信: 添付', scheduledPayload.attachments?.length === 1);
+check('予約の送信: アンケートは expires_in（API の形）', (scheduledPayload.poll as any)?.expires_in === 3600);
+check('予約の送信: 返信先と引用元', scheduledPayload.in_reply_to === 'p1' && scheduledPayload.quote_id === 'p2');
+check('予約の送信: 日時', scheduledPayload.scheduled_at === '2026-10-18T00:00:00.000Z');
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

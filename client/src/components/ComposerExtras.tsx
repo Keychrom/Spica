@@ -13,13 +13,10 @@ import {
   type Attachment,
   type CustomEmoji,
 } from '../lib/media';
+import type { DraftPoll } from '../lib/drafts';
 
-export interface PollDraft {
-  choices: string[];
-  multiple: boolean;
-  /** 締切までの時間（秒）。0 なら締め切らない */
-  expiresIn: number;
-}
+/** 編集中のアンケート（下書きに保存する形と同じ） */
+export type PollDraft = DraftPoll;
 
 const EXPIRY = [
   { value: 1800, label: '30分' },
