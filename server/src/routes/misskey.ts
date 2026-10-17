@@ -9,40 +9,27 @@ import { fetchRemoteActor } from '../activitypub.js';
 import { getStreamClientCount } from '../streaming.js';
 import { encodeCursor } from '../pagination.js';
 import { deleteMedia, listMedia, toClientMedia } from '../mediaService.js';
+import { handleAddListMember, handleCreateList, handleDeleteList, handleListTimeline, handleRemoveListMember, handleUpdateList } from './lists.js';
+import { handleBlockUser, handleUnblockUser, handleMuteUser, handleUnmuteUser } from './blocks.js';
+import { handleAntennaTimeline, handleCreateAntenna, handleDeleteAntenna, handleShowAntenna, handleUpdateAntenna } from './antennas.js';
+import { handleListBookmarks, handleToggleBookmark } from './bookmarks.js';
+import { setPinnedPost } from './pin.js';
+import { handleReadNotification } from './notifications.js';
 import {
-  enrichAndFilterPosts,
-  handleAddListMember,
   handleAnnouncePost,
-  handleBlockUser,
-  handleCreateAntenna,
-  handleCreateList,
   handleCreatePost,
-  handleDeleteAntenna,
-  handleDeleteList,
   handleDeletePost,
   handleFollow,
-  handleAntennaTimeline,
-  handleListBookmarks,
-  handleListTimeline,
-  handleMuteUser,
   handleReactToPost,
-  handleReadNotification,
-  handleRemoveListMember,
   handleRespondFollowRequest,
-  handleShowAntenna,
   handleTimeline,
-  handleToggleBookmark,
-  handleUnblockUser,
   handleUnfollow,
-  handleUnmuteUser,
-  handleUpdateAntenna,
-  handleUpdateList,
   handleUpdateProfile,
   handleVotePoll,
   mediaUploadMiddleware,
   saveUploadedMediaFiles,
-  setPinnedPost,
 } from './api.js';
+import { enrichAndFilterPosts } from '../postEnrichment.js';
 import {
   buildMisskeyNote,
   buildMisskeyNotification,

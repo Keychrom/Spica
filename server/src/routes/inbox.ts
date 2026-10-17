@@ -20,7 +20,7 @@ import { isPublicPost } from '../postVisibility.js';
 import { isDmEnabled, localRecipientUserIds, localUserIdFromActorUrl, isDmReceptionAllowed } from '../dm.js';
 import { ingestRemoteFlag, logNewReport } from '../reportService.js';
 import { broadcastNote, broadcastReaction, broadcastAnnounce, broadcastPoll, broadcastEvent } from '../streaming.js';
-import { applyPollCountsFromQuestion, getPollDataForPost } from './api.js';
+import { applyPollCountsFromQuestion, getPollDataForPost } from '../postEnrichment.js';
 import { checkAntennaMatchesAndNotify } from '../postService.js';
 import { invalidateTimelineCache } from '../timelineCache.js';
 import {
