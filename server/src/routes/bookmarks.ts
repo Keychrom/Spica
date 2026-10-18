@@ -18,33 +18,50 @@ const router = Router();
 // 🔖 ブックマーク (Bookmarks) エンドポイント
 // ==========================================
 
-// ブックマークトグルの共通ロジック
-async function toggleBookmarkPost(userId: string, targetPostId: string) {
+// ブックマークトグルの共通ロジック。投稿の解決と閲覧権限の確認もここで行う
+//   - 追加: 閲覧できない投稿（フォロワー限定・他人宛の DM）は 403
+//   - 解除: 自分の行を消すだけなので、見えなくなった投稿でも許可する
+async function toggleBookmarkPost(
+  userId: string,
+  targetPostId: string,
+  viewerActorUrl: string,
+): Promise<
+  | { success: true; bookmarked: boolean; postId: string }
+  | { success: false; error: 'not_found' | 'forbidden' }
+> {
   let cleanPostId = targetPostId.trim();
 
-  // posts テーブルから該当投稿を照合
-  let post = await db.prepare('SELECT id FROM posts WHERE id = ?').get(cleanPostId) as { id: string } | undefined;
+  // posts テーブルから該当投稿を照合（DM の宛先判定に recipients も必要）
+  type TargetRow = { id: string; author_url: string | null; visibility: string | null; recipients: string | null };
+  const selectTarget = 'SELECT id, author_url, visibility, recipients FROM posts WHERE id = ?';
+  let post = await db.prepare(selectTarget).get(cleanPostId) as TargetRow | undefined;
   if (!post && cleanPostId.includes('%')) {
     try {
       const decoded = decodeURIComponent(cleanPostId);
-      post = await db.prepare('SELECT id FROM posts WHERE id = ?').get(decoded) as { id: string } | undefined;
+      post = await db.prepare(selectTarget).get(decoded) as TargetRow | undefined;
       if (post) cleanPostId = decoded;
     } catch {}
   }
 
   if (!post) {
-    return { success: false, notFound: true };
+    return { success: false, error: 'not_found' };
   }
 
   const existing = await db.prepare('SELECT 1 FROM bookmarks WHERE user_id = ? AND post_id = ?').get(userId, cleanPostId);
   if (existing) {
     await db.prepare('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?').run(userId, cleanPostId);
     return { success: true, bookmarked: false, postId: cleanPostId };
-  } else {
-    const now = new Date().toISOString();
-    await db.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
-    return { success: true, bookmarked: true, postId: cleanPostId };
   }
+
+  // 閲覧できない投稿はブックマークできない。recipients を渡すので、
+  // DM は送信者だけでなく**宛先**も通る（以前は recipients を取っておらず宛先が 403 になっていた）
+  if (!(await canViewPost(post, viewerActorUrl))) {
+    return { success: false, error: 'forbidden' };
+  }
+
+  const now = new Date().toISOString();
+  await db.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, ?)').run(userId, cleanPostId, now);
+  return { success: true, bookmarked: true, postId: cleanPostId };
 }
 
 // 🔖 投稿のブックマーク追加 / 解除 (トグル - 推奨: Request Body)
@@ -57,18 +74,13 @@ export const handleToggleBookmark = asyncHandler(async (req: Request, res: Respo
     return res.status(400).json({ error: 'postId は必須です。' });
   }
 
-  // 閲覧できない投稿（フォロワー限定など）はブックマークできない
-  const bookmarkTarget = await db.prepare('SELECT author_url, visibility FROM posts WHERE id = ?').get(postId) as
-    | { author_url: string; visibility: string | null }
-    | undefined;
-  if (bookmarkTarget && !(await canViewPost(bookmarkTarget, `${config.origin}/users/${user.id}`))) {
-    return res.status(403).json({ error: 'この投稿はブックマークできません。' });
-  }
-
   try {
-    const result = await toggleBookmarkPost(user.id, postId);
-    if (result.notFound) {
-      return res.status(404).json({ error: '投稿が見つかりません。' });
+    const result = await toggleBookmarkPost(user.id, postId, `${config.origin}/users/${user.id}`);
+    if (!result.success) {
+      if (result.error === 'not_found') {
+        return res.status(404).json({ error: '投稿が見つかりません。' });
+      }
+      return res.status(403).json({ error: 'この投稿はブックマークできません。' });
     }
     res.json(result);
   } catch (err: any) {
@@ -79,15 +91,18 @@ export const handleToggleBookmark = asyncHandler(async (req: Request, res: Respo
 router.post('/bookmarks/toggle', requireAuth, handleToggleBookmark);
 
 // 🔖 投稿のブックマーク追加 / 解除 (後方互換: パスパラメータ)
+//    推奨の /bookmarks/toggle と同じく、閲覧できない投稿は追加できない
 router.post('/posts/:id/bookmark', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
   const rawPostId = req.params.id as string;
-  const postId = decodeURIComponent(rawPostId);
 
   try {
-    const result = await toggleBookmarkPost(user.id, postId);
-    if (result.notFound) {
-      return res.status(404).json({ error: '投稿が見つかりません。' });
+    const result = await toggleBookmarkPost(user.id, rawPostId, `${config.origin}/users/${user.id}`);
+    if (!result.success) {
+      if (result.error === 'not_found') {
+        return res.status(404).json({ error: '投稿が見つかりません。' });
+      }
+      return res.status(403).json({ error: 'この投稿はブックマークできません。' });
     }
     res.json(result);
   } catch (err: any) {

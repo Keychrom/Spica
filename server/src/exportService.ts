@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { db, UserRow, PostRow, FollowRow, ReactionRow } from './db.js';
 import { config } from './config.js';
+import { filterVisiblePosts } from './postVisibility.js';
 import { registerJobHandler, setJobResult } from './jobs.js';
 import { getStorageConfig } from './storage.js';
 import { safeFetch } from './remoteFetchGuard.js';
@@ -277,15 +278,20 @@ export async function exportUserData(userId: string): Promise<UserExportData> {
   }));
 
   // 4. ブックマーク一覧
+  //    - DM はエクスポートに出さない（docs/DM.md。宛先であっても出さない）
+  //    - フォロワー限定などは、**いま閲覧できるものだけ**を出す（フォローを外された・
+  //      修正前に不正にブックマークされた投稿の中身を書き出さない）
   const bookmarkRows = await db.prepare(`
-    SELECT b.created_at as bookmarked_at, p.id as post_id, p.content, p.author_name, p.author_handle, p.published_at
+    SELECT b.created_at as bookmarked_at, p.id as post_id, p.content, p.author_name, p.author_handle, p.published_at,
+           p.author_url, p.visibility, p.recipients
     FROM bookmarks b
     JOIN posts p ON b.post_id = p.id
-    WHERE b.user_id = ?
+    WHERE b.user_id = ? AND COALESCE(p.visibility, 'public') != 'direct'
     ORDER BY b.created_at DESC
   `).all(userId) as any[];
 
-  const bookmarks = bookmarkRows.map((b) => ({
+  const visibleBookmarkRows = await filterVisiblePosts(bookmarkRows, actorUrl);
+  const bookmarks = visibleBookmarkRows.map((b) => ({
     post_id: b.post_id,
     bookmarked_at: b.bookmarked_at,
     content: b.content,
