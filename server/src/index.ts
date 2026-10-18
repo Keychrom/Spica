@@ -11,6 +11,7 @@ import { handleRemoteStreamEvent, getStreamClientCount, getMisskeyStreamClientCo
 import { inboxGate } from './inboxGate.js';
 import { startSoakLog, getSoakStats } from './soakLog.js';
 import { authenticate } from './auth.js';
+import { appScopeGuard } from './appScopes.js';
 import { webfingerRouter } from './routes/webfinger.js';
 import { usersRouter } from './routes/users.js';
 import { inboxRouter } from './routes/inbox.js';
@@ -165,6 +166,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // 認証トークンのグローバル解決
 app.use(authenticate);
+// MiAuth で発行したアプリのトークンは、許可されたスコープの範囲だけ通す
+app.use(appScopeGuard);
 
 // リクエストロギング
 app.use((req: Request, res: Response, next: NextFunction) => {

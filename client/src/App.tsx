@@ -13,6 +13,7 @@ import Composer from './components/Composer';
 import ErrorBoundary from './components/ErrorBoundary';
 import LoginView from './views/LoginView';
 import RegisterView from './views/RegisterView';
+import MiAuthView from './views/MiAuthView';
 import Routes from './Routes';
 import LoginNotice from './components/LoginNotice';
 import { api, getToken, setToken } from './lib/api';
@@ -206,6 +207,12 @@ export default function App() {
         }}
       />
     );
+  }
+
+  // MiAuth の承認画面もシェルを付けない（アプリがブラウザで開く）
+  if (path.startsWith('/miauth/')) {
+    const sessionId = decodeURIComponent(path.slice('/miauth/'.length).split('?')[0]);
+    return <MiAuthView sessionId={sessionId} signedIn={Boolean(user)} ready={authChecked} />;
   }
 
   const signedIn = Boolean(user) && authChecked;

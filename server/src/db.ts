@@ -174,6 +174,7 @@ async function addMissingColumns(schemaSql: string): Promise<string[]> {
 
 export async function initDatabase(): Promise<void> {
   await initDatabaseSchema();
+  await backfillLegacyMiAuthSessions();
 
   // 設定とインスタンス鍵をメモリへ読み込む
   // （どちらも読み取りは同期で行えるようにするため。ドライバ共通の後処理）
@@ -181,6 +182,25 @@ export async function initDatabase(): Promise<void> {
   // 循環 import を避けるため動的 import（instanceActor 側も db.ts を参照している）
   const { loadInstanceActorKeyPair } = await import('./instanceActor.js');
   await loadInstanceActorKeyPair();
+}
+
+/**
+ * 2026-10-18 より前に MiAuth で発行したセッションは app_name / scopes が空。
+ * 既存アプリを「旧トークン（通常の読み書きは可・安全操作は不可）」として扱えるよう、
+ * miauth_sessions の token からアプリ名を埋めて scopes = 'legacy' にする（冪等）。
+ * SQLite / PostgreSQL の両方で起動後に実行する。
+ */
+async function backfillLegacyMiAuthSessions(): Promise<void> {
+  try {
+    await db.prepare(`
+      UPDATE sessions SET
+        app_name = COALESCE((SELECT m.app_name FROM miauth_sessions m WHERE m.token = sessions.token), app_name),
+        scopes = CASE WHEN scopes = '' THEN 'legacy' ELSE scopes END
+      WHERE app_name = '' AND EXISTS (SELECT 1 FROM miauth_sessions m WHERE m.token = sessions.token)
+    `).run();
+  } catch (err: any) {
+    console.warn('[DB] MiAuth セッションの移行に失敗しました:', err?.message || err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +421,8 @@ async function initDatabaseSchema(): Promise<void> {
       user_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
+      app_name TEXT DEFAULT '',
+      scopes TEXT DEFAULT '',
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -1050,6 +1072,7 @@ async function initDatabaseSchema(): Promise<void> {
       created_at TEXT NOT NULL
     );`,
     "CREATE INDEX IF NOT EXISTS idx_miauth_created ON miauth_sessions(created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_miauth_token ON miauth_sessions(token);",
     // 相手（リモート）がこちらをブロックした記録: 配送抑制と表示制御に使う
     `CREATE TABLE IF NOT EXISTS remote_blocks (
       blocker_actor_url TEXT NOT NULL,
@@ -1114,6 +1137,10 @@ async function initDatabaseSchema(): Promise<void> {
     "ALTER TABLE users ADD COLUMN prefs TEXT DEFAULT '{}';",
     // ログイン中の端末一覧に出す User-Agent の控え（設定 → セッション）
     "ALTER TABLE sessions ADD COLUMN user_agent TEXT DEFAULT '';",
+    // MiAuth で承認したアプリ名と、許可したスコープ（カンマ区切り）。
+    // 空の app_name は通常のログイン（第一者セッション）。'legacy' は 2026-10-18 より前の MiAuth トークン
+    "ALTER TABLE sessions ADD COLUMN app_name TEXT DEFAULT '';",
+    "ALTER TABLE sessions ADD COLUMN scopes TEXT DEFAULT '';",
     // ドメインブロックの強さ（suspend = 完全遮断 / silence = 表示から除外のみ・配送は継続）
     "ALTER TABLE blocked_domains ADD COLUMN severity TEXT NOT NULL DEFAULT 'suspend';",
     // メール通知のオプトイン（既定 OFF。SMTP 未設定なら機能ごと無効）

@@ -13,6 +13,7 @@ import {
   type DeviceSession,
 } from '../../lib/settings';
 import { relativeTime } from '../../lib/format';
+import { scopeLabels } from '../../lib/appScopes';
 
 interface Props {
   email: string;
@@ -126,18 +127,28 @@ export default function AccountSection({ email, emailVerified, hasPassword, onLo
     <>
       <div className="set__group">
         <h3>ログインしている端末</h3>
+        <p className="set__hint">
+          アプリ（MiAuth）のトークンは、承認した権限の範囲でだけ動きます。不要になったら解除してください。
+        </p>
       </div>
       {loading && <div className="feed__state">読み込んでいます…</div>}
       {sessions.map((session) => (
         <div className="set" key={session.id}>
           <div className="set__body">
             <span className="set__label">
-              {deviceName(session.user_agent)} {session.current && <span className="set__ok">（この端末）</span>}
+              {session.kind === 'app' ? session.app_name || 'アプリ' : deviceName(session.user_agent)}{' '}
+              {session.kind === 'app' && <span className="set__hint">（アプリ）</span>}{' '}
+              {session.current && <span className="set__ok">（この端末）</span>}
             </span>
             <p className="set__hint">
               {session.created_at ? `${relativeTime(session.created_at)} から` : ''}
               {session.expires_at ? ` ／ ${untilDate(session.expires_at)}` : ''}
             </p>
+            {session.kind === 'app' && (
+              <p className="set__hint">
+                権限: {scopeLabels(session.scopes).join('、') || 'なし'}
+              </p>
+            )}
           </div>
           {!session.current && (
             <div className="set__control">

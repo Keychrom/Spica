@@ -4,6 +4,7 @@ import { db, UserRow, getInstanceInfo } from '../db.js';
 import { config } from '../config.js';
 import { MAX_POST_ATTACHMENTS, executeUpdatePost } from '../postService.js';
 import { getUserFromToken, createSession } from '../auth.js';
+import { appScopeDenial, normalizePermissions } from '../appScopes.js';
 import { isApprovedUser } from '../registration.js';
 import { fetchRemoteActor } from '../activitypub.js';
 import { getStreamClientCount } from '../streaming.js';
@@ -46,6 +47,10 @@ import {
  * **方針**: 実装は「Spica の API を別名で包む」だけにして、判定・連合・通知のロジックは
  * 既存のハンドラ（api.ts から export しているもの）をそのまま呼ぶ。二重実装すると
  * 片方だけ直る事故が起きるため。
+ *
+ * **権限**: MiAuth で要求された権限は `appScopes.ts` でスコープへ正規化し、セッションに
+ * 保存して API で強制する（2026-10-18）。パスワード・メール・TOTP・セッション・管理 API
+ * などの安全に関わる操作は、スコープに関係なくアプリのトークンでは拒否する。
  *
  * **ストリーミング（WebSocket）**: `GET /streaming?i=<トークン>` で受ける（実装は streaming.ts の
  * Misskey 互換セクション）。`meta.features.streaming` は true を返す。
@@ -176,6 +181,27 @@ function forwardError(res: Response, result: { status: number; body: any }): boo
 }
 
 misskeyRouter.use(misskeyAuthBridge);
+
+// 本文の `i` で渡されたトークンも、ヘッダーのトークンと同じスコープ検査を通す
+// （グローバルの authenticate は Authorization ヘッダーだけを見るため）
+misskeyRouter.use((req, res, next) => {
+  void (async () => {
+    if (!req.user) {
+      const header = String(req.headers.authorization || '');
+      const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+      if (token) req.user = await getUserFromToken(token);
+    }
+    const denial = appScopeDenial(req.user, req.method, req.originalUrl);
+    if (denial) {
+      return res.status(403).json({
+        error: denial.error,
+        code: 'INSUFFICIENT_SCOPE',
+        ...(denial.required ? { required: denial.required } : {}),
+      });
+    }
+    next();
+  })().catch(next);
+});
 
 // ===========================================================================
 // インスタンス情報・自分の情報
@@ -2081,11 +2107,15 @@ miauthRouter.get('/:session/info', asyncHandler(async (req: Request, res: Respon
   if (!row) {
     return res.status(404).json({ error: 'セッションが見つかりません。' });
   }
+  const requested = row.permissions ? row.permissions.split(',').filter(Boolean) : [];
+  const normalized = normalizePermissions(requested);
   res.json({
     session: row.id,
     name: row.app_name,
     callback: row.callback,
-    permissions: row.permissions ? row.permissions.split(',').filter(Boolean) : [],
+    permissions: requested,
+    scopes: normalized.scopes,
+    unknown: normalized.unknown,
     status: row.status,
   });
 }));
@@ -2103,8 +2133,14 @@ miauthRouter.post('/:session/approve', asyncHandler(async (req: Request, res: Re
     return res.json({ success: true, alreadyApproved: true });
   }
 
-  // 通常のセッションと同じトークンを発行する（設定画面のセッション一覧から失効できる）
-  const { token } = await createSession(user.id, req.headers["user-agent"]);
+  // 通常のセッションと同じトークンを発行する（設定画面のセッション一覧から失効できる）。
+  // 要求された権限をスコープへ正規化してセッションに持たせる（API 側で強制する）
+  const requested = row.permissions ? row.permissions.split(',').filter(Boolean) : [];
+  const normalized = normalizePermissions(requested);
+  const { token } = await createSession(user.id, req.headers['user-agent'], {
+    appName: row.app_name || 'クライアント',
+    scopes: normalized.scopes,
+  });
   await db.prepare('UPDATE miauth_sessions SET status = ?, approved_user_id = ?, token = ? WHERE id = ?')
     .run('approved', user.id, token, session);
   res.json({ success: true });

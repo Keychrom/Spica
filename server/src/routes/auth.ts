@@ -535,17 +535,14 @@ router.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Respo
   // 自分の投稿数に DM は数えない（DM はタイムラインに出ない投稿なので別扱い）
   const postCount = (await db.prepare("SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND COALESCE(visibility, 'public') != 'direct'").get(user.id) as any).c;
 
-  res.json({
+  const isApp = user.sessionKind === 'app';
+  const base = {
     ...user,
     handle: `@${user.id}@${config.domain}`,
     actorUrl: myActorUrl,
     followerCount,
     followingCount,
     postCount,
-    // 本人にだけ返す自分のメール状態とパスワード設定の有無（ハッシュ類は返さない）
-    email: raw?.email || '',
-    email_verified: Number(raw?.email_verified) || 0,
-    hasPassword: Boolean(raw?.password_hash),
     // 初期設定ウィザードの状態（0 = 未完了。クライアントはこれを見てウィザードを出す）
     onboarding_completed: Number(raw?.onboarding_completed ?? 1),
     // プライバシー設定（プロフィール HTML の robots に反映される）
@@ -553,6 +550,17 @@ router.get('/auth/me', requireAuth, asyncHandler(async (req: Request, res: Respo
     no_ai_training: Number(raw?.no_ai_training ?? 0),
     is_locked: Number(raw?.is_locked ?? 0),
     discoverable: Number(raw?.discoverable ?? 1),
+  };
+  // MiAuth のアプリには、メール・パスワード・TOTP・権限一覧を返さない
+  if (isApp) {
+    return res.json(base);
+  }
+  res.json({
+    ...base,
+    // 本人にだけ返す自分のメール状態とパスワード設定の有無（ハッシュ類は返さない）
+    email: raw?.email || '',
+    email_verified: Number(raw?.email_verified) || 0,
+    hasPassword: Boolean(raw?.password_hash),
     // 2段階認証（TOTP）が有効か
     totp_enabled: Number(raw?.totp_enabled ?? 0),
     // 権限の一覧（'admin' / 'moderate' など）。画面の出し分けはこの配列で判断する

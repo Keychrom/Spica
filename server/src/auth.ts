@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
 import { db, UserRow, createNotification } from './db.js';
 import { config } from './config.js';
+import { parseStoredScopes } from './appScopes.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -12,6 +13,12 @@ export interface AuthenticatedUser {
   role: 'admin' | 'user';
   is_frozen: number;
   created_at: string;
+  /** MiAuth で発行したアプリのトークンなら、そのアプリ名 */
+  sessionAppName?: string;
+  /** アプリのトークンのスコープ（第一者のセッションでは空） */
+  sessionScopes?: string[];
+  /** 'app' = MiAuth / 'session' = 通常のログイン */
+  sessionKind?: 'session' | 'app';
 }
 
 // Request型を拡張して user を持てるようにする
@@ -72,21 +79,35 @@ export function verifyPassword(password: string, stored: string | null | undefin
   }
 }
 
+export interface CreateSessionOptions {
+  /** MiAuth で承認したアプリ名（通常のログインでは空） */
+  appName?: string;
+  /** アプリに許可したスコープ（MiAuth の承認時に正規化したもの） */
+  scopes?: string[];
+}
+
 /**
  * セッショントークンを発行して DB に保存（有効期限: 30日）
  *
  * `userAgent` は「ログイン中の端末」一覧（設定 → セッション）に出すための控え。
  * 省略可（古いセッションは空文字のまま）。
+ * `options` を渡すと MiAuth のアプリ名とスコープを持つセッションになる。
  */
-export async function createSession(userId: string, userAgent?: string | null): Promise<{ token: string; expiresAt: string }> {
+export async function createSession(
+  userId: string,
+  userAgent?: string | null,
+  options?: CreateSessionOptions,
+): Promise<{ token: string; expiresAt: string }> {
   const token = `spica_sess_${crypto.randomBytes(32).toString('hex')}`;
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const appName = (options?.appName || '').slice(0, 100);
+  const scopes = appName ? (options?.scopes || []).join(',') : '';
 
   await db.prepare(`
-    INSERT INTO sessions (token, user_id, created_at, expires_at, user_agent)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(token, userId, now.toISOString(), expiresAt, (userAgent || '').slice(0, 300));
+    INSERT INTO sessions (token, user_id, created_at, expires_at, user_agent, app_name, scopes)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(token, userId, now.toISOString(), expiresAt, (userAgent || '').slice(0, 300), appName, scopes);
 
   // 既に端末がある人のログインなら「新しい端末からログインしました」を通知する
   // （初回登録では出さない＝自分で作った直後に驚かせない）
@@ -100,7 +121,7 @@ export async function createSession(userId: string, userAgent?: string | null): 
       actorId: 'spica',
       actorName: 'Spica',
       actorHandle: `@spica@${config.domain}`,
-      content: (userAgent || '不明な端末').slice(0, 200),
+      content: (appName ? `${appName}（アプリ）` : userAgent || '不明な端末').slice(0, 200),
     }).catch(() => {
       // 通知が作れなくてもログインは成功させる
     });
@@ -110,17 +131,38 @@ export async function createSession(userId: string, userAgent?: string | null): 
 }
 
 /** その利用者のセッション一覧（トークンそのものは返さない。id はトークンのハッシュ） */
-export async function listUserSessions(userId: string): Promise<{ id: string; created_at: string; expires_at: string; user_agent: string }[]> {
+export async function listUserSessions(userId: string): Promise<{
+  id: string;
+  created_at: string;
+  expires_at: string;
+  user_agent: string;
+  app_name: string;
+  scopes: string[];
+  kind: 'session' | 'app';
+}[]> {
   const rows = await db.prepare(`
-    SELECT token, created_at, expires_at, user_agent FROM sessions
+    SELECT token, created_at, expires_at, user_agent, app_name, scopes FROM sessions
     WHERE user_id = ? ORDER BY created_at DESC
-  `).all(userId) as { token: string; created_at: string; expires_at: string; user_agent?: string | null }[];
-  return rows.map((r) => ({
-    id: sessionPublicId(r.token),
-    created_at: r.created_at,
-    expires_at: r.expires_at,
-    user_agent: r.user_agent || '',
-  }));
+  `).all(userId) as {
+    token: string;
+    created_at: string;
+    expires_at: string;
+    user_agent?: string | null;
+    app_name?: string | null;
+    scopes?: string | null;
+  }[];
+  return rows.map((r) => {
+    const appName = String(r.app_name || '');
+    return {
+      id: sessionPublicId(r.token),
+      created_at: r.created_at,
+      expires_at: r.expires_at,
+      user_agent: r.user_agent || '',
+      app_name: appName,
+      scopes: appName ? parseStoredScopes(r.scopes) : [],
+      kind: appName ? 'app' : 'session',
+    };
+  });
 }
 
 /** トークンから、外向けに晒してよい短い id を作る（取り消しの宛先に使う） */
@@ -159,8 +201,10 @@ export async function destroySession(token: string): Promise<void> {
 export async function getUserFromToken(token: string): Promise<AuthenticatedUser | null> {
   const now = new Date().toISOString();
   const session = await db.prepare(`
-    SELECT user_id, expires_at FROM sessions WHERE token = ? AND expires_at > ?
-  `).get(token, now) as { user_id: string; expires_at: string } | undefined;
+    SELECT user_id, expires_at, app_name, scopes FROM sessions WHERE token = ? AND expires_at > ?
+  `).get(token, now) as
+    | { user_id: string; expires_at: string; app_name?: string | null; scopes?: string | null }
+    | undefined;
 
   if (!session) {
     return null;
@@ -174,6 +218,10 @@ export async function getUserFromToken(token: string): Promise<AuthenticatedUser
     return null;
   }
 
+  const appName = String(session.app_name || '');
+  user.sessionAppName = appName;
+  user.sessionScopes = appName ? parseStoredScopes(session.scopes) : [];
+  user.sessionKind = appName ? 'app' : 'session';
   return user;
 }
 

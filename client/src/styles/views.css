@@ -95,6 +95,13 @@
   line-height: 1.7;
   color: var(--text-faint);
 }
+.auth__scopes {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-sub);
+}
 .auth__foot {
   margin-top: 18px;
   padding-top: 14px;

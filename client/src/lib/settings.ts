@@ -169,6 +169,11 @@ export interface DeviceSession {
   expires_at?: string;
   user_agent?: string;
   current?: boolean;
+  /** MiAuth で承認したアプリ名（通常のログインでは空） */
+  app_name?: string;
+  /** アプリに許可したスコープ（通常のログインでは空） */
+  scopes?: string[];
+  kind?: 'session' | 'app';
 }
 
 export async function loadSessions(): Promise<DeviceSession[]> {

@@ -491,6 +491,8 @@ CREATE TABLE IF NOT EXISTS sessions  (
   user_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
+  app_name TEXT DEFAULT '',
+  scopes TEXT DEFAULT '',
   user_agent TEXT DEFAULT '',
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -574,6 +576,7 @@ CREATE INDEX IF NOT EXISTS idx_media_post ON media(post_id);
 CREATE INDEX IF NOT EXISTS idx_media_url ON media(url);
 CREATE INDEX IF NOT EXISTS idx_media_user ON media(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_miauth_created ON miauth_sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_miauth_token ON miauth_sessions(token);
 CREATE INDEX IF NOT EXISTS idx_muted_words_user ON muted_words(user_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_read_created ON notifications(is_read, created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC);
