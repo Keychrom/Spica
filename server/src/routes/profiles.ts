@@ -17,7 +17,9 @@ import { parseArchive, importNotes, buildSpicaBundle, buildSpicaBundleFromZip, i
 import { isZipBuffer, readZipEntries } from '../zipReader.js';
 import { parseProfileFields } from '../activitypub.js';
 import { isApprovedUser } from '../registration.js';
-import { hashMasterKey, requireAuth } from '../auth.js';
+import { hashMasterKey, requireAuth, verifyPassword } from '../auth.js';
+import { verifyTotpCode } from '../totp.js';
+import { consumeRecoveryCode } from '../totpService.js';
 import { beginUserDeletion } from '../accountService.js';
 import { enqueueJob, getJob } from '../jobs.js';
 import { invalidateTimelineCache } from '../timelineCache.js';
@@ -510,7 +512,7 @@ router.get('/user/export/:jobId/file', requireAuth, asyncHandler(async (req: Req
 // ユーザー自身によるアカウント削除（退会・データ完全抹消）
 router.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;
-  const { confirmUserId, masterKey } = req.body;
+  const { confirmUserId, masterKey, password, totpCode } = req.body;
 
   // 1. 誤操作防止の確認用ユーザーID検証
   if (!confirmUserId || String(confirmUserId).trim().toLowerCase() !== user.id.toLowerCase()) {
@@ -519,17 +521,52 @@ router.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request, re
     });
   }
 
-  // 2. マスターキーが送信されている場合は照合
-  if (masterKey && String(masterKey).trim()) {
-    const keyHash = hashMasterKey(String(masterKey).trim());
-    if (keyHash !== user.master_key_hash) {
+  // 2. 本人確認。**マスターキーかパスワードのどちらかを必ず要求する**
+  //    （以前は masterKey が送られたときだけ照合していたため、何も送らなければ退会できた）
+  const providedMasterKey = typeof masterKey === 'string' ? masterKey.trim() : '';
+  const providedPassword = typeof password === 'string' ? password : '';
+  if (!providedMasterKey && !providedPassword) {
+    return res.status(401).json({
+      error: '退会にはマスターキーまたはパスワードが必要です。',
+      credential_required: true,
+    });
+  }
+
+  let credentialOk = false;
+  if (providedPassword) {
+    credentialOk = verifyPassword(providedPassword, (user as any).password_hash);
+  }
+  if (!credentialOk && providedMasterKey) {
+    credentialOk = hashMasterKey(providedMasterKey) === user.master_key_hash;
+  }
+  if (!credentialOk) {
+    return res.status(401).json({
+      error: 'マスターキーまたはパスワードが正しくありません。',
+      credential_required: true,
+    });
+  }
+
+  // 3. 2段階認証が有効なら、資格情報が正しくてもコード（またはリカバリーコード）を要求する。
+  //    資格情報の検証後に見るので、間違ったキーでリカバリーコードを消費しない。
+  if (Number((user as any).totp_enabled) === 1) {
+    const code = typeof totpCode === 'string' ? totpCode.trim() : '';
+    if (!code) {
       return res.status(401).json({
-        error: 'マスターキーが正しくありません。',
+        error: '2段階認証コードを入力してください。',
+        totp_required: true,
+      });
+    }
+    const okByCode = verifyTotpCode(String((user as any).totp_secret || ''), code);
+    const okByRecovery = okByCode ? false : await consumeRecoveryCode(user.id, code);
+    if (!okByCode && !okByRecovery) {
+      return res.status(401).json({
+        error: '2段階認証コードが正しくありません。',
+        totp_required: true,
       });
     }
   }
 
-  // 3. 最後の管理者を削除しない保護
+  // 4. 最後の管理者を削除しない保護
   if (user.role === 'admin') {
     const adminCount = (await db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
     if (adminCount <= 1) {
@@ -539,7 +576,7 @@ router.post('/user/delete-me', requireAuth, asyncHandler(async (req: Request, re
     }
   }
 
-  // 4. 退会を受け付ける（その場で凍結 + セッション削除。実作業はジョブで。
+  // 5. 退会を受け付ける（その場で凍結 + セッション削除。実作業はジョブで。
   //    フォロワー全員への Delete 配信とメディア削除は時間がかかるため、リクエスト内で待たせない）
   const result = await beginUserDeletion(user.id);
   if (!result.success) {

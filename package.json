@@ -98,7 +98,8 @@
     "db:pg:stats": "npx tsx scripts/pg-stats.ts",
     "check:media": "npx tsx --tsconfig client/tsconfig.json scripts/check-media.ts",
     "test:media-worker": "npx tsx scripts/test-media-worker.ts",
-    "test:miauth-scopes": "npx tsx scripts/test-miauth-scopes.ts"
+    "test:miauth-scopes": "npx tsx scripts/test-miauth-scopes.ts",
+    "test:delete-auth": "npx tsx scripts/test-delete-auth.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

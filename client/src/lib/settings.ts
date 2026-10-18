@@ -250,25 +250,6 @@ export async function loadAuthMode(): Promise<'master_key' | 'password'> {
   return mode === 'password' ? 'password' : 'master_key';
 }
 
-/** パスワード（＋必要なら 2 段階認証コード）で本人確認する。通れば null */
-export async function verifyPassword(
-  identifier: string,
-  password: string,
-  totpCode?: string,
-): Promise<string | null> {
-  const res = await api.post(
-    '/api/auth/login',
-    { id: identifier, password, ...(totpCode ? { totpCode } : {}) },
-    { auth: false },
-  );
-  if (res.ok) return null;
-  const data = res.data as { totp_required?: boolean } | null;
-  if (res.status === 401 && data?.totp_required) {
-    return totpCode ? '2段階認証コードが正しくありません。' : 'TOTP_REQUIRED';
-  }
-  return messageOf(res.data, 'パスワードが正しくありません。');
-}
-
 /* ---- エクスポート ---- */
 
 export interface ExportJob {

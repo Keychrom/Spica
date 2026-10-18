@@ -7,7 +7,7 @@ import TotpSection from './TotpSection';
 import ReportHistory from './ReportHistory';
 import PasskeySection from './PasskeySection';
 import { api, messageOf } from '../../lib/api';
-import { loadAuthMode, verifyPassword } from '../../lib/settings';
+import { loadAuthMode } from '../../lib/settings';
 
 interface MigrationState {
   actorUrl?: string;
@@ -91,29 +91,22 @@ export default function SecuritySection({ myId, hasPassword, onLogout }: Props) 
     setBusy(true);
     setErr('');
 
-    if (byPassword) {
-      // パスワードで本人確認してから削除する（マスターキーは使わない）。
-      // 2 段階認証を有効にしているときは、そのコードも一緒に確かめる。
-      const problem = await verifyPassword(myId, password, totp.trim() || undefined);
-      if (problem === 'TOTP_REQUIRED') {
-        setNeedTotp(true);
-        setBusy(false);
-        setErr('2段階認証コードを入力してください。');
-        return;
-      }
-      if (problem) {
-        setBusy(false);
-        setErr(problem);
-        return;
-      }
-    }
-
+    // 本人確認は /api/user/delete-me に直接渡す。以前は /api/auth/login で確認していたため、
+    // 退会のたびに新しいセッションが発行され「新しい端末からログイン」の通知が飛んでいた。
     const res = await api.post('/api/user/delete-me', {
       confirmUserId: myId,
-      ...(byPassword ? {} : { masterKey: deleteKey.trim() }),
+      ...(byPassword
+        ? { password, ...(totp.trim() ? { totpCode: totp.trim() } : {}) }
+        : { masterKey: deleteKey.trim() }),
     });
     setBusy(false);
     if (!res.ok) {
+      const data = res.data as { totp_required?: boolean } | null;
+      if (res.status === 401 && data?.totp_required) {
+        setNeedTotp(true);
+        setErr(totp.trim() ? '2段階認証コードが正しくありません。' : '2段階認証コードを入力してください。');
+        return;
+      }
       setErr(messageOf(res.data, '削除できませんでした。'));
       return;
     }
@@ -170,6 +163,7 @@ export default function SecuritySection({ myId, hasPassword, onLogout }: Props) 
         <p className="set__hint">
           ノートもフォローも消えます（元には戻せません）。残したいときは「データ」の節で持ち出してからにしてください。
           {byPassword ? '削除の確認はパスワードで行います（マスターキーは使いません）。' : ''}
+          2段階認証を有効にしている場合は、コードも必要です。
         </p>
       </div>
       <div className="set">
@@ -177,25 +171,14 @@ export default function SecuritySection({ myId, hasPassword, onLogout }: Props) 
           <span className="set__label">{byPassword ? 'パスワードを入れて削除' : 'マスターキーを入れて削除'}</span>
           <div className="extra__choice" style={{ marginTop: 8 }}>
             {byPassword ? (
-              <>
-                <input
-                  className="field"
-                  type="password"
-                  value={password}
-                  placeholder="パスワード"
-                  autoComplete="current-password"
-                  onChange={(event) => setPassword(event.target.value)}
-                />
-                {needTotp && (
-                  <input
-                    className="field"
-                    value={totp}
-                    placeholder="2段階認証コード"
-                    inputMode="numeric"
-                    onChange={(event) => setTotp(event.target.value)}
-                  />
-                )}
-              </>
+              <input
+                className="field"
+                type="password"
+                value={password}
+                placeholder="パスワード"
+                autoComplete="current-password"
+                onChange={(event) => setPassword(event.target.value)}
+              />
             ) : (
               <input
                 className="field"
@@ -204,10 +187,23 @@ export default function SecuritySection({ myId, hasPassword, onLogout }: Props) 
                 onChange={(event) => setDeleteKey(event.target.value)}
               />
             )}
+            {needTotp && (
+              <input
+                className="field"
+                value={totp}
+                placeholder="2段階認証コード"
+                inputMode="numeric"
+                onChange={(event) => setTotp(event.target.value)}
+              />
+            )}
             <button
               type="button"
               className="btn btn--text"
-              disabled={busy || (byPassword ? !password : !deleteKey.trim())}
+              disabled={
+                busy ||
+                (byPassword ? !password : !deleteKey.trim()) ||
+                (needTotp && !totp.trim())
+              }
               onClick={() => void deleteMe()}
             >
               削除する

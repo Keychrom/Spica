@@ -202,6 +202,14 @@ if (!config.rateLimitDisabled) {
     keyPrefix: 'webauthn-auth',
     message: '認証リクエストが多すぎます。しばらく待ってからお試しください。',
   }));
+  // 退会の本人確認（マスターキー / パスワード / 2FA）の総当たりを避ける。
+  // セッションを盗まれても、資格情報を試し続けられないようにする
+  app.use('/api/user/delete-me', rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    keyPrefix: 'delete-account',
+    message: '本人確認の試行回数が多すぎます。しばらく待ってからお試しください。',
+  }));
   app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 600, keyPrefix: 'api' }));
   app.use('/inbox', rateLimit({ windowMs: 60 * 1000, max: 3000, keyPrefix: 'inbox' }));
 }
