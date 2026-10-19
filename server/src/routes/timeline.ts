@@ -460,7 +460,7 @@ router.get('/search', asyncHandler(async (req: Request, res: Response) => {
   const localUsers = searchText ? await db.prepare(`
     SELECT id, name, summary, icon_url, 1 as is_local, NULL as domain, ('@' || id) as handle
     FROM users
-    WHERE approval_status = 'approved' AND (id LIKE ? OR name LIKE ?)
+    WHERE is_frozen = 0 AND approval_status = 'approved' AND (id LIKE ? OR name LIKE ?)
     LIMIT 10
   `).all(searchPattern, searchPattern) as any[] : [];
 
@@ -652,10 +652,12 @@ router.get('/autocomplete/users', asyncHandler(async (req: Request, res: Respons
     }
 
     // 2. ローカルユーザーから検索
+    //    凍結・承認待ち・却下のアカウントは候補に出さない（公開の場所に出さない方針）
     const localUsers = await db.prepare(`
       SELECT id, name, icon_url
       FROM users
-      WHERE LOWER(id) LIKE ? OR LOWER(name) LIKE ?
+      WHERE is_frozen = 0 AND approval_status = 'approved'
+        AND (LOWER(id) LIKE ? OR LOWER(name) LIKE ?)
       LIMIT 6
     `).all(`%${q}%`, `%${q}%`) as any[];
 

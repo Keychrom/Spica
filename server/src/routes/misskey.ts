@@ -965,7 +965,9 @@ misskeyRouter.post('/users/search', asyncHandler(async (req: Request, res: Respo
     return res.json([]);
   }
   const users = (await db.prepare(`
-    SELECT * FROM users WHERE (id LIKE ? OR name LIKE ?) AND is_frozen = 0 ORDER BY id ASC LIMIT ?
+    SELECT * FROM users
+    WHERE (id LIKE ? OR name LIKE ?) AND is_frozen = 0 AND approval_status = 'approved'
+    ORDER BY id ASC LIMIT ?
   `).all(`%${query}%`, `%${query}%`, limit)) as unknown as UserRow[];
   res.json(users.map((user) => buildMisskeyUser({
     id: user.id,

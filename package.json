@@ -101,7 +101,8 @@
     "test:miauth-scopes": "npx tsx scripts/test-miauth-scopes.ts",
     "test:delete-auth": "npx tsx scripts/test-delete-auth.ts",
     "test:bookmark-visibility": "npx tsx scripts/test-bookmark-visibility.ts",
-    "test:delete-broadcast": "npx tsx scripts/test-delete-broadcast.ts"
+    "test:delete-broadcast": "npx tsx scripts/test-delete-broadcast.ts",
+    "test:approval-enforcement": "npx tsx scripts/test-approval-enforcement.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

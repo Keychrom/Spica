@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { db, UserRow, createNotification } from './db.js';
 import { config } from './config.js';
 import { parseStoredScopes } from './appScopes.js';
+import { isApprovedUser } from './registration.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -211,10 +212,12 @@ export async function getUserFromToken(token: string): Promise<AuthenticatedUser
   }
 
   const user = await db.prepare(`
-    SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?
-  `).get(session.user_id) as unknown as AuthenticatedUser | undefined;
+    SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at, approval_status FROM users WHERE id = ?
+  `).get(session.user_id) as unknown as (AuthenticatedUser & { approval_status?: string | null }) | undefined;
 
-  if (!user || user.is_frozen === 1) {
+  // 凍結に加えて、承認待ち・却下のアカウントも既存セッションごと無効にする
+  // （承認モードを切り替える前のセッションが残っていても通さない）
+  if (!user || user.is_frozen === 1 || !isApprovedUser(user)) {
     return null;
   }
 
@@ -254,9 +257,10 @@ export async function consumeStreamTicket(ticket: string): Promise<Authenticated
   if (Number((consumed as { changes?: number }).changes ?? 0) === 0) return null;
 
   const user = await db.prepare(`
-    SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at FROM users WHERE id = ?
-  `).get(row.user_id) as unknown as AuthenticatedUser | undefined;
-  if (!user || user.is_frozen === 1) return null;
+    SELECT id, name, summary, icon_url, banner_url, role, is_frozen, created_at, approval_status FROM users WHERE id = ?
+  `).get(row.user_id) as unknown as (AuthenticatedUser & { approval_status?: string | null }) | undefined;
+  // チケット発行後に承認が取り消されても、SSE へは入れない
+  if (!user || user.is_frozen === 1 || !isApprovedUser(user)) return null;
   return user;
 }
 

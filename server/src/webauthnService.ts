@@ -6,6 +6,7 @@ import {
 } from '@simplewebauthn/server';
 import { db, UserRow, WebAuthnCredentialRow } from './db.js';
 import { config } from './config.js';
+import { isApprovedUser } from './registration.js';
 
 // チャレンジの有効期限: 5分
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -273,6 +274,14 @@ export async function verifyWebAuthnAuthentication(body: any, requestOrigin?: st
   }
   if (user.is_frozen === 1) {
     throw new Error('アカウントが凍結されているためログインできません。');
+  }
+  // 承認制の申請中・却下は、パスキーを持っていてもログインさせない
+  if (!isApprovedUser(user)) {
+    throw new Error(
+      user.approval_status === 'pending'
+        ? 'このアカウントは管理者の承認待ちです。承認されるとログインできます。'
+        : 'このアカウントの申請は承認されていません。管理者にお問い合わせください。',
+    );
   }
 
   const publicKeyBuffer = Buffer.from(credRow.public_key, 'base64');

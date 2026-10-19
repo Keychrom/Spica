@@ -18,6 +18,7 @@ import {
   assertWebAuthnOrigin,
 } from '../webauthnService.js';
 import { createSession, requireAuth } from '../auth.js';
+import { isApprovedUser } from '../registration.js';
 
 const router = Router();
 
@@ -154,7 +155,7 @@ router.post('/webauthn/authenticate/totp', async (req: Request, res: Response) =
     }
 
     const user = (await db.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id)) as UserRow | undefined;
-    if (!user || user.is_frozen === 1 || Number((user as any).totp_enabled) !== 1) {
+    if (!user || user.is_frozen === 1 || !isApprovedUser(user) || Number((user as any).totp_enabled) !== 1) {
       return res.status(401).json({ error: 'このアカウントでは続けられません。', totp_required: true });
     }
 
