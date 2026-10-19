@@ -44,7 +44,10 @@ export function useLinkInterceptor(): void {
       const anchor = (event.target as HTMLElement | null)?.closest?.('a');
       if (!anchor) return;
       const href = anchor.getAttribute('href') || '';
-      if (!href.startsWith('/') || anchor.getAttribute('target')) return;
+      if (!href.startsWith('/') || anchor.getAttribute('target') || anchor.hasAttribute('download')) return;
+      // API・アップロード・画像プロキシはページではないので SPA の遷移にしない
+      // （/api/... のダウンロードを横取りすると、未定義ページへ飛んでしまう）
+      if (/^\/(api|uploads|proxy)(\/|$)/.test(href)) return;
       event.preventDefault();
       navigate(href);
     };

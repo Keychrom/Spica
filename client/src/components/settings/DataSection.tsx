@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { loadExport, startExport, type ExportJob } from '../../lib/settings';
-import { api, messageOf } from '../../lib/api';
+import { api, getToken, messageOf } from '../../lib/api';
 import ReactionHistory from './ReactionHistory';
 
 function formatBytes(bytes: number | undefined): string {
@@ -28,6 +28,7 @@ export default function DataSection() {
   const [importing, setImporting] = useState(false);
   const [format, setFormat] = useState<'json' | 'zip'>('zip');
   const [err, setErr] = useState('');
+  const [downloaded, setDownloaded] = useState(false);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -53,6 +54,7 @@ export default function DataSection() {
   async function start() {
     setErr('');
     setJob(null);
+    setDownloaded(false);
     const started = await startExport(format);
     if (typeof started === 'string') {
       setErr(started);
@@ -61,6 +63,41 @@ export default function DataSection() {
     if (started.jobId) {
       setJob(started);
       watch(started.jobId);
+    }
+  }
+
+  /**
+   * エクスポートのダウンロード。
+   * `<a href>` では Authorization ヘッダーが付かず 401 になるため、fetch でトークンを付けて
+   * 受け取り、Blob をリンクにして保存する。ファイルは 1 回だけなので、押したあとは無効にする。
+   */
+  async function download() {
+    if (!job?.jobId) return;
+    setErr('');
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/user/export/${encodeURIComponent(job.jobId)}/file`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setErr(data?.error || 'ダウンロードできませんでした。');
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || job.filename || 'spica-export';
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      setDownloaded(true);
+    } catch {
+      setErr('ダウンロードできませんでした。通信を確認してください。');
     }
   }
 
@@ -114,9 +151,14 @@ export default function DataSection() {
           </div>
           <div className="set__control">
             {status === 'done' && job.jobId && (
-              <a className="btn btn--quiet" href={'/api/user/export/' + encodeURIComponent(job.jobId) + '/file'}>
-                ダウンロード
-              </a>
+              <button
+                type="button"
+                className="btn btn--quiet"
+                disabled={downloaded}
+                onClick={() => void download()}
+              >
+                {downloaded ? 'ダウンロードしました' : 'ダウンロード'}
+              </button>
             )}
           </div>
         </div>
@@ -145,7 +187,8 @@ export default function DataSection() {
                 setImporting(true);
                 setImportMsg('');
                 const form = new FormData();
-                form.append('file', file);
+                // サーバーは multer の single('archive') で受ける（'file' だと 400 になる）
+                form.append('archive', file);
                 const res = await api.post('/api/import/archive', form);
                 setImporting(false);
                 if (res.ok && res.data) {

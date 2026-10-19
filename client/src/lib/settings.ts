@@ -270,5 +270,7 @@ export async function startExport(format: 'json' | 'zip'): Promise<ExportJob | s
 export async function loadExport(jobId: string): Promise<ExportJob | null> {
   const res = await api.get('/api/user/export/' + encodeURIComponent(jobId));
   if (!res.ok || !res.data) return null;
-  return res.data as ExportJob;
+  // 状態 API は jobId を返さない。ここで足さないと、状態更新のたびに jobId が消えて
+  // ダウンロードの導線が出なくなる（作成直後だけ出て、次のポーリングで消える）
+  return { ...(res.data as ExportJob), jobId };
 }
