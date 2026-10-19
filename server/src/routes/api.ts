@@ -6,6 +6,7 @@
  */
 import { Router } from 'express';
 import authRouter from './auth.js';
+import apiKeysRouter from './apiKeys.js';
 import timelineRouter from './timeline.js';
 import mediaRouter from './media.js';
 import postsRouter from './posts.js';
@@ -25,6 +26,7 @@ import dmRouter from './dm.js';
 export const apiRouter = Router();
 
 apiRouter.use(authRouter);
+apiRouter.use(apiKeysRouter);
 apiRouter.use(timelineRouter);
 apiRouter.use(mediaRouter);
 apiRouter.use(postsRouter);

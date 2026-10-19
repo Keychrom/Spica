@@ -662,6 +662,18 @@ export function attachMisskeyStreaming(server: HttpServer): void {
           return;
         }
         userId = user.id.toLowerCase();
+        // MiAuth のアプリトークンは、読み取り（または旧トークン）の権限が無ければ
+        // homeTimeline / main（通知・DM）を購読させない。REST と同じ判定に揃える
+        const scopes = user.sessionScopes || [];
+        if (user.sessionKind === 'app' && !scopes.includes('read') && !scopes.includes('legacy')) {
+          try {
+            socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+          } catch {
+            // 書けなくても閉じるだけ
+          }
+          socket.destroy();
+          return;
+        }
       }
       wss.handleUpgrade(req, socket, head, (ws) => registerMisskeyClient(ws, userId));
     })().catch(() => {

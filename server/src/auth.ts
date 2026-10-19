@@ -131,6 +131,29 @@ export async function createSession(
   return { token, expiresAt };
 }
 
+/** 設定画面で作る API キーの `user_agent` 目印（MiAuth のアプリと一覧を分けるため） */
+export const API_KEY_USER_AGENT = 'spica-api-key';
+
+/**
+ * 設定画面から発行する API キー（Misskey 互換クライアントの `i` に渡す）。
+ * スコープは MiAuth と同じ仕組みで強制する。有効期限は 1 年（失効は設定からいつでもできる）。
+ * ログインではないので「新しい端末からログイン」の通知は出さない。
+ */
+export async function createApiKeySession(
+  userId: string,
+  name: string,
+  scopes: string[],
+): Promise<{ token: string; expiresAt: string }> {
+  const token = `spica_sess_${crypto.randomBytes(32).toString('hex')}`;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  await db.prepare(`
+    INSERT INTO sessions (token, user_id, created_at, expires_at, user_agent, app_name, scopes)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(token, userId, now.toISOString(), expiresAt, API_KEY_USER_AGENT, name.slice(0, 100), scopes.join(','));
+  return { token, expiresAt };
+}
+
 /** その利用者のセッション一覧（トークンそのものは返さない。id はトークンのハッシュ） */
 export async function listUserSessions(userId: string): Promise<{
   id: string;

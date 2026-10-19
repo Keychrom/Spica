@@ -205,6 +205,37 @@ misskeyRouter.use((req, res, next) => {
 // インスタンス情報・自分の情報
 // ===========================================================================
 
+/**
+ * multipart/form-data の本文 `i` 用の認証。
+ *
+ * `/drive/files/create` は multer が本文を解析するまで `req.body.i` が無いため、
+ * ルーター先頭の `misskeyAuthBridge` ではトークンを読めない。multer の**後**に
+ * ヘッダーへ移し、ヘッダーのトークンと同じスコープ検査を行う。
+ */
+function misskeyMultipartAuth(req: Request, res: Response, next: NextFunction): void {
+  void (async () => {
+    const bodyToken = typeof req.body?.i === 'string' ? req.body.i.trim() : '';
+    if (!req.headers.authorization && bodyToken) {
+      req.headers.authorization = `Bearer ${bodyToken}`;
+    }
+    if (!req.user) {
+      const header = String(req.headers.authorization || '');
+      const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+      if (token) req.user = await getUserFromToken(token);
+    }
+    const denial = appScopeDenial(req.user, req.method, req.originalUrl);
+    if (denial) {
+      res.status(403).json({
+        error: denial.error,
+        code: 'INSUFFICIENT_SCOPE',
+        ...(denial.required ? { required: denial.required } : {}),
+      });
+      return;
+    }
+    next();
+  })().catch(next);
+}
+
 misskeyRouter.post('/meta', asyncHandler(async (_req: Request, res: Response) => {
   const info = getInstanceInfo();
   const emojis = (await db.prepare('SELECT name, url FROM custom_emojis').all()) as { name: string; url: string }[];
@@ -1157,6 +1188,8 @@ misskeyRouter.post('/hashtags/trend', asyncHandler(async (_req: Request, res: Re
 misskeyRouter.post(
   '/drive/files/create',
   mediaUploadMiddleware,
+  // multipart の本文 `i` は multer の後でしか読めないため、ここで認証する
+  misskeyMultipartAuth,
   asyncHandler(async (req: Request, res: Response) => {
     const user = await attachUser(req);
     if (!requireUser(user, res)) return;

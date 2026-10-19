@@ -3,6 +3,8 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import WebSocket from 'ws';
+import { appScopeDenial } from '../server/src/appScopes.js';
 
 /**
  * MiAuth のスコープ検査
@@ -81,6 +83,37 @@ async function api(method: string, endpoint: string, token?: string, body?: unkn
   });
   const data = await res.json().catch(() => null);
   return { status: res.status, data };
+}
+
+/** Misskey 互換 WebSocket に繋いで、開けたか / ハンドシェイクのステータスを見る */
+function websocketStatus(token?: string): Promise<{ ok: boolean; status?: number }> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(
+      `ws://localhost:${PORT}/streaming${token ? `?i=${encodeURIComponent(token)}` : ''}`,
+    );
+    let settled = false;
+    const finish = (result: { ok: boolean; status?: number }) => {
+      if (settled) return;
+      settled = true;
+      try { ws.close(); } catch {}
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, status: 0 }), 5000);
+    timer.unref?.();
+    ws.once('open', () => {
+      clearTimeout(timer);
+      finish({ ok: true });
+    });
+    ws.once('unexpected-response', (_req, res) => {
+      clearTimeout(timer);
+      res.resume();
+      finish({ ok: false, status: res.statusCode });
+    });
+    ws.once('error', () => {
+      clearTimeout(timer);
+      finish({ ok: false });
+    });
+  });
 }
 
 async function startMiauth(session: string, name: string, permission: string): Promise<void> {
@@ -208,6 +241,108 @@ async function run(): Promise<void> {
     }
     check('旧トークンの通常の投稿は通る', (await api('POST', '/api/posts', legacyToken, { content: 'legacy' })).status < 300, true);
     check('旧トークンでもセッション一覧は 403', (await api('GET', '/api/sessions', legacyToken)).status, 403);
+
+    console.log('\n🧭 [5-b] スコープ定義の漏れ（ルート表）');
+    const asApp = (scopes: string[]) => ({ sessionKind: 'app', sessionScopes: scopes });
+    const allows = (scopes: string[], method: string, p: string) => appScopeDenial(asApp(scopes), method, p) === null;
+    check('write:blocks で REST のブロック', allows(['write:blocks'], 'POST', '/api/users/bob/block'), true);
+    check('write:blocks でアンブロック', allows(['write:blocks'], 'POST', '/api/users/bob/unblock'), true);
+    check('write:blocks でミュート', allows(['write:blocks'], 'POST', '/api/users/bob/mute'), true);
+    check('write:blocks で /api/mute', allows(['write:blocks'], 'POST', '/api/mute'), true);
+    check('write:notes で下書き', allows(['write:notes'], 'POST', '/api/drafts'), true);
+    check('write:notes で予約投稿', allows(['write:notes'], 'POST', '/api/scheduled-posts'), true);
+    check('read で channels/show', allows(['read'], 'POST', '/api/channels/show'), true);
+    check('read で channels/timeline', allows(['read'], 'POST', '/api/channels/timeline'), true);
+    check('read で channels/featured', allows(['read'], 'POST', '/api/channels/featured'), true);
+    check('read で channels/followed', allows(['read'], 'POST', '/api/channels/followed'), true);
+    check('read で drive', allows(['read'], 'POST', '/api/drive'), true);
+    check('read で drive/files/show', allows(['read'], 'POST', '/api/drive/files/show'), true);
+    check('read で drive/stream', allows(['read'], 'POST', '/api/drive/stream'), true);
+    check('read で users/lists/show', allows(['read'], 'POST', '/api/users/lists/show'), true);
+    check('read で stream/ticket', allows(['read'], 'POST', '/api/stream/ticket'), true);
+    check('write:notes で notes/unrenote', allows(['write:notes'], 'POST', '/api/notes/unrenote'), true);
+    check('write:notes で users/report-abuse', allows(['write:notes'], 'POST', '/api/users/report-abuse'), true);
+    check(
+      'write:blocks が無いとブロックは拒否',
+      appScopeDenial(asApp(['read']), 'POST', '/api/users/bob/block')?.required,
+      'write:blocks',
+    );
+
+    console.log('\n🧱 [5-c] ブロック・ミュート・下書きが REST でも通る');
+    await startMiauth('blocks-app', 'BlocksApp', 'read:account,write:blocks');
+    const blocksToken = await approveAndGetToken('blocks-app', alice);
+    await startMiauth('read-app', 'ReadApp', 'read:account');
+    const readToken = await approveAndGetToken('read-app', alice);
+    check('write:blocks でブロックできる', (await api('POST', '/api/users/bob/block', blocksToken, {})).status, 200);
+    check('write:blocks でミュートできる', (await api('POST', '/api/users/bob/mute', blocksToken, {})).status, 200);
+    check('write:blocks でブロックを解除できる', (await api('POST', '/api/users/bob/unblock', blocksToken, {})).status, 200);
+    check('write:notes だけではブロックは 403', (await api('POST', '/api/users/bob/block', notesToken, {})).status, 403);
+    check('write:notes で下書きを作れる', (await api('POST', '/api/drafts', notesToken, { content: 'app draft' })).status, 201);
+    check('read だけでは下書きは 403', (await api('POST', '/api/drafts', readToken, { content: 'x' })).status, 403);
+
+    console.log('\n📎 [5-d] multipart の i（/drive/files/create）');
+    await startMiauth('drive-app', 'DriveApp', 'read:account,write:drive');
+    const driveToken = await approveAndGetToken('drive-app', alice);
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const uploadForm = new FormData();
+    uploadForm.append('file', new Blob([png], { type: 'image/png' }), 'tiny.png');
+    uploadForm.append('i', driveToken); // ファイルより後ろに置く（multer 後に読むことの確認）
+    const upload = await fetch(`${BASE}/api/drive/files/create`, { method: 'POST', body: uploadForm });
+    const uploadBody = await upload.json().catch(() => null);
+    check('本文 i の multipart でアップロードできる', upload.status, 200);
+    check('URL が返る', typeof uploadBody?.url, 'string');
+
+    const deniedForm = new FormData();
+    deniedForm.append('file', new Blob([png], { type: 'image/png' }), 'tiny.png');
+    deniedForm.append('i', readToken);
+    const deniedUpload = await fetch(`${BASE}/api/drive/files/create`, { method: 'POST', body: deniedForm });
+    check('write:drive が無い multipart は 403', deniedUpload.status, 403);
+
+    console.log('\n🔌 [5-e] Misskey WebSocket の read スコープ');
+    check('read を持つアプリは接続できる', (await websocketStatus(notesToken)).ok, true);
+    const writeOnlyWs = await websocketStatus(writeOnlyToken);
+    check('write:notes だけでは接続できない', writeOnlyWs.ok, false);
+    check('403 で拒否される', writeOnlyWs.status, 403);
+    check('legacy は接続できる', (await websocketStatus(legacyToken)).ok, true);
+    check('未認証は公開タイムライン用に接続できる', (await websocketStatus()).ok, true);
+
+    console.log('\n🗝️ [5-f] 設定から API キーを発行・失効');
+    const createKey = await api('POST', '/api/api-keys', alice, { name: 'My Misskey', scopes: ['read', 'write:notes'] });
+    check('API キーを発行できる', createKey.status, 201);
+    const keyToken = String(createKey.data?.token || '');
+    check('トークンが返る', keyToken.startsWith('spica_sess_'), true);
+    check('キーとして認証できる', (await api('GET', '/api/auth/me', keyToken)).status, 200);
+    check('write:notes の範囲で投稿できる', (await api('POST', '/api/posts', keyToken, { content: 'from api key' })).status < 300, true);
+    check(
+      'write:follows は無いのでフォローは 403',
+      (await api('POST', '/api/follow', keyToken, { targetHandle: `@bob@localhost:${PORT}` })).status,
+      403,
+    );
+    const keyList = await api('GET', '/api/api-keys', alice);
+    const keyItem = (keyList.data?.keys || []).find((k: any) => k.name === 'My Misskey');
+    check('一覧に出る', keyItem?.name, 'My Misskey');
+    check('スコープが一覧に出る', keyItem?.scopes, ['read', 'write:notes']);
+    check('MiAuth のアプリは API キー一覧に出ない', (keyList.data?.keys || []).some((k: any) => k.name === 'NotesApp'), false);
+    check('空の権限は 400', (await api('POST', '/api/api-keys', alice, { name: 'x', scopes: [] })).status, 400);
+    check('知らない権限は 400', (await api('POST', '/api/api-keys', alice, { name: 'x', scopes: ['legacy'] })).status, 400);
+    check('名前なしは 400', (await api('POST', '/api/api-keys', alice, { name: '  ', scopes: ['read'] })).status, 400);
+    check('アプリのトークンでは一覧できない', (await api('GET', '/api/api-keys', notesToken)).status, 403);
+    check(
+      'アプリのトークンでは発行できない',
+      (await api('POST', '/api/api-keys', notesToken, { name: 'x', scopes: ['read'] })).status,
+      403,
+    );
+    const sessionsWithKey = await api('GET', '/api/sessions', alice);
+    check(
+      'セッション一覧にもアプリとして出る',
+      (sessionsWithKey.data?.sessions || []).some((s: any) => s.app_name === 'My Misskey' && s.kind === 'app'),
+      true,
+    );
+    check('失効できる', (await api('DELETE', `/api/api-keys/${keyItem?.id}`, alice)).status, 200);
+    check('失効したキーは使えない', (await api('GET', '/api/auth/me', keyToken)).status, 401);
 
     console.log('\n🗂️ [6] 設定のセッション一覧と失効');
     const list = await api('GET', '/api/sessions', alice);

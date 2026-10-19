@@ -14,6 +14,7 @@ import {
 } from '../../lib/settings';
 import { relativeTime } from '../../lib/format';
 import { scopeLabels } from '../../lib/appScopes';
+import ApiKeySection from './ApiKeySection';
 
 interface Props {
   email: string;
@@ -171,6 +172,8 @@ export default function AccountSection({ email, emailVerified, hasPassword, onLo
           </button>
         </div>
       </div>
+
+      <ApiKeySection />
 
       <div className="set__group">
         <h3>パスワード</h3>
