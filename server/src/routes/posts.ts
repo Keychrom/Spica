@@ -99,7 +99,8 @@ export const handleDeletePost = asyncHandler(async (req: Request, res: Response)
   console.log(`[Post Delete] Post ${postId} deleted by @${user.id}`);
 
   // 📡 全クライアントに投稿削除をブロードキャスト（公開投稿のみ）
-  if (await isPublicPost(postId)) {
+  //    削除後に DB を引くと行が無いため、**削除前に読んだ post.visibility** で判断する
+  if (normalizeVisibility(post.visibility) === 'public') {
     broadcastDeletePost(postId);
   }
 

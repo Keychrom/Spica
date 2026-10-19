@@ -168,6 +168,7 @@ export async function filterVisiblePosts<T extends PostVisibilityFields>(rows: T
 /**
  * リアルタイム配信（SSE）して良い投稿か。
  * 公開範囲が 'public' 以外の投稿は全クライアントへ配信しない（存在自体が漏れるため）。
+ * **行が無いときも false**（削除済み・未保存の投稿を「公開」とみなして配信しない）。
  */
 export async function isPublicPost(postId: string): Promise<boolean> {
   try {
@@ -175,7 +176,7 @@ export async function isPublicPost(postId: string): Promise<boolean> {
       | { visibility?: string | null }
       | undefined;
     if (!row) {
-      return true;
+      return false;
     }
     return normalizeVisibility(row.visibility) === 'public';
   } catch {
