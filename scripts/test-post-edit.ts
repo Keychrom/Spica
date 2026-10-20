@@ -406,6 +406,31 @@ async function run(): Promise<void> {
     check('タイムラインにも編集後の本文が出る', inTimeline?.content, 'リアクション付きで再編集');
     check('タイムラインにも編集済みが付く', typeof inTimeline?.edited_at, 'string');
 
+    // 本文に無いカスタム絵文字でリアクションしても、表示用の emojis に URL が載る
+    // （画面は投稿の emojis からリアクションの画像を引くため、本文の絵文字だけでは解決できない）
+    const emojiReaction = await api('POST', `/api/posts/${encodeURIComponent(postId)}/react`, bob, {
+      reaction: ':spica_edit:',
+    });
+    check('本文に無いカスタム絵文字でリアクションできる', emojiReaction.status, 200);
+    const afterEmojiReaction = await api('GET', `/api/posts/${encodeURIComponent(postId)}/thread`);
+    const mergedEmojis = JSON.parse(String(afterEmojiReaction.data?.post?.emojis || '[]'));
+    check(
+      'リアクションの絵文字も emojis に入る（本文には無い）',
+      mergedEmojis.some((e: any) => e.name === ':spica_edit:' && e.url === emojiUrl),
+      true,
+    );
+    check(
+      '本文の絵文字と重複しない',
+      mergedEmojis.filter((e: any) => e.name === ':spica_edit:').length,
+      1,
+    );
+    // タイムラインの応答は短い読み取りキャッシュに乗る（リアクションでは捨てない設計）。
+    // 同じ整形を通ることはスレッド応答と Misskey 整形で確認する。
+    const { buildMisskeyNote } = await import('../server/src/misskeyFormat.js');
+    const misskeyNote = buildMisskeyNote(afterEmojiReaction.data.post);
+    check('Misskey の reactionEmojis に URL が載る', misskeyNote.reactionEmojis?.spica_edit, emojiUrl);
+    check('Misskey の emojis にも URL が載る', misskeyNote.emojis?.spica_edit, emojiUrl);
+
     const reply = await api('POST', '/api/posts', bob, { content: '返信です', visibility: 'public', in_reply_to: postId });
     check('編集済みの投稿に返信できる', reply.status, 201);
     const thread = await api('GET', `/api/posts/${encodeURIComponent(postId)}/thread`);

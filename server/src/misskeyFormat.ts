@@ -314,6 +314,29 @@ export async function collectReferenceTimes(postIds: (string | null | undefined)
   return map;
 }
 
+/** 投稿の emojis（JSON 文字列 or 配列）を Misskey の `{ name: url }` にする */
+function emojiUrlMap(raw: unknown): Record<string, string> {
+  let list: unknown[] = [];
+  if (Array.isArray(raw)) list = raw;
+  else if (typeof raw === 'string' && raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch {
+      list = [];
+    }
+  }
+  const map: Record<string, string> = {};
+  for (const item of list) {
+    const emoji = item as { name?: unknown; url?: unknown };
+    const name = String(emoji?.name || '').replace(/^:+|:+$/g, '');
+    const url = typeof emoji?.url === 'string' ? emoji.url : '';
+    // URL はリモートが決める値。http(s) 以外は絵文字として扱わない
+    if (name && /^https?:\/\//i.test(url)) map[name] = url;
+  }
+  return map;
+}
+
 /** タイムラインの整形済み行 → Misskey のノート */
 export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map<string, string>): any {
   const isBoost = Boolean(item.renote?.id) && !nested;
@@ -323,6 +346,18 @@ export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map
     const at = referenceTimes?.get(targetId);
     return at ? encodeMisskeyId('post', targetId, at) : null;
   };
+
+  const reactions: Record<string, number> = Object.fromEntries(
+    (item.reactions || []).map((r: any) => [r.reaction, Number(r.count)]),
+  );
+  // リアクションの画像は reactionEmojis、本文の shortcode は emojis で解決される（Misskey の形）。
+  // リアクションだけに使われた絵文字も postEnrichment が emojis に足している。
+  const emojis = emojiUrlMap(item.emojis);
+  const reactionEmojis: Record<string, string> = {};
+  for (const code of Object.keys(reactions)) {
+    const name = code.replace(/^:+|:+$/g, '');
+    if (name !== code && emojis[name]) reactionEmojis[name] = emojis[name];
+  }
 
   const note: any = {
     id: noteMisskeyId(item),
@@ -345,8 +380,9 @@ export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map
     reactionAcceptance: null,
     renoteCount: Number(item.announce_count || 0),
     repliesCount: Number(item.reply_count || 0),
-    reactions: Object.fromEntries((item.reactions || []).map((r: any) => [r.reaction, Number(r.count)])),
-    reactionEmojis: {},
+    reactions,
+    reactionEmojis,
+    emojis,
     fileIds: (item.media_attachments || []).map((m: any) => m.url),
     files: (item.media_attachments || []).map((m: any) => ({
       id: m.url,

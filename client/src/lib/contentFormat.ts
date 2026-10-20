@@ -52,13 +52,13 @@ function linkifyPlainText(raw: string): string {
       `${lead}<a class="hashtag" href="/tags/${encodeURIComponent(tag.slice(1))}">${tag}</a>`);
 }
 
-interface PostEmoji {
+export interface PostEmoji {
   name: string;
   url: string;
 }
 
 /** posts.emojis（JSON 文字列 or 配列）を安全に配列にする */
-function parsePostEmojis(emojis: EmojiSource): PostEmoji[] {
+export function parsePostEmojis(emojis: EmojiSource): PostEmoji[] {
   const valid = (list: unknown): PostEmoji[] =>
     Array.isArray(list)
       ? list.filter(
@@ -83,9 +83,22 @@ function emojiKey(name: string): string {
 /** リアクションの `:name:` を画像の URL にする（設定で画像を切っているときは undefined） */
 export function customEmojiUrl(code: string, emojis: EmojiSource): string | undefined {
   if (getPrefs().showCustomEmojiImages === false) return undefined;
-  const match = /^:([A-Za-z0-9_+-]+):$/.exec(String(code || '').trim());
+  // リモートのカスタム絵文字は `:name@host:` の形で届く
+  const match = /^:([A-Za-z0-9_+@.-]+):$/.exec(String(code || '').trim());
   if (!match) return undefined;
   return parsePostEmojis(emojis).find((emoji) => emojiKey(emoji.name) === match[1])?.url;
+}
+
+/**
+ * リアクションのカスタム絵文字が投稿の emojis に無ければ足す（表示用）。
+ * すでに同じ名前があるときは null を返す（呼び出し側は更新不要）。
+ */
+export function mergePostEmoji(emojis: EmojiSource, name: string, url: string): PostEmoji[] | null {
+  const key = emojiKey(name);
+  if (!key || !url) return null;
+  const list = parsePostEmojis(emojis);
+  if (list.some((emoji) => emojiKey(emoji.name) === key)) return null;
+  return [...list, { name: `:${key}:`, url }];
 }
 
 /** テキストノードの :name: を <img class="emoji"> に置き換える（リンク内・コード内は触らない） */
@@ -104,7 +117,7 @@ function replaceEmojiShortcodes(host: HTMLElement, emojis: EmojiSource): void {
     const fragment = document.createDocumentFragment();
     let last = 0;
     let replaced = false;
-    for (const match of text.matchAll(/:([A-Za-z0-9_+-]+):/g)) {
+    for (const match of text.matchAll(/:([A-Za-z0-9_+@.-]+):/g)) {
       const url = byName.get(match[1]);
       if (!url || match.index === undefined) continue;
       if (match.index > last) fragment.appendChild(document.createTextNode(text.slice(last, match.index)));

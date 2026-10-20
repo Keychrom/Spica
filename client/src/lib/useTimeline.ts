@@ -195,8 +195,8 @@ export function useTimeline(path: string | null, signedIn: boolean): Timeline {
     clearNewCount: () => setNewCount(0),
     react: async (post, reaction) => {
       if (!signedIn) return;
-      const reactions = await reactToPost(post, reaction);
-      if (reactions) applyPatch(post.id, { reactions });
+      const result = await reactToPost(post, reaction);
+      if (result) applyPatch(post.id, { reactions: result.reactions, ...(result.emojis ? { emojis: result.emojis } : {}) });
     },
     bookmark: async (post) => {
       if (!signedIn) return;

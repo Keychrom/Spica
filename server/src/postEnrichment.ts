@@ -246,6 +246,70 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
   const allReplies = counterRows.filter((r) => r.kind === 'reply');
   const allQuoteCounts = counterRows.filter((r) => r.kind === 'quote');
 
+  // 🎨 リアクションで使われたカスタム絵文字の URL を引く。
+  //    画面は投稿の emojis（本文から抽出したもの）だけを見てリアクションを画像にするため、
+  //    本文に無い絵文字でリアクションされると :name: のまま残る。リアクションの shortcode も
+  //    custom_emojis から解決して emojis に足しておく。
+  const reactionCodesByPost = new Map<string, Set<string>>();
+  const allReactionCodes = new Set<string>();
+  for (const r of allReactions) {
+    const codes = String(r.reaction || '').match(/:[A-Za-z0-9_+@.-]+:/g);
+    if (!codes) continue;
+    for (const raw of codes) {
+      const code = raw.toLowerCase();
+      allReactionCodes.add(code);
+      if (!reactionCodesByPost.has(r.post_id)) reactionCodesByPost.set(r.post_id, new Set());
+      reactionCodesByPost.get(r.post_id)!.add(code);
+    }
+  }
+  const localReactionNames = Array.from(allReactionCodes)
+    .map((code) => code.slice(1, -1))
+    .filter((name) => !name.includes('@'));
+  const reactionEmojiUrls = await safe(
+    'reaction emojis',
+    async () => {
+      const map = new Map<string, string>();
+      if (localReactionNames.length === 0) return map;
+      const found = (await db
+        .prepare(`SELECT name, url FROM custom_emojis WHERE name IN (${localReactionNames.map(() => '?').join(',')})`)
+        .all(...localReactionNames)) as { name: string; url: string }[];
+      for (const emoji of found) {
+        map.set(`:${String(emoji.name).toLowerCase()}:`, emoji.url);
+      }
+      return map;
+    },
+    new Map<string, string>(),
+  );
+
+  /** その投稿のリアクションで使われた絵文字を emojis に足す（本文の絵文字はそのまま） */
+  const withReactionEmojis = (pid: string, raw: unknown): unknown => {
+    const codes = reactionCodesByPost.get(pid);
+    if (!codes || codes.size === 0) return raw;
+    const additions: { name: string; url: string }[] = [];
+    for (const code of codes) {
+      const url = reactionEmojiUrls.get(code);
+      if (url) additions.push({ name: code, url });
+    }
+    if (additions.length === 0) return raw;
+    let list: any[] = [];
+    try {
+      list = typeof raw === 'string' ? JSON.parse(raw || '[]') : (raw || []);
+    } catch {
+      list = [];
+    }
+    const merged = Array.isArray(list) ? [...list] : [];
+    const have = new Set(
+      merged.map((e) => String(e?.name || '').toLowerCase().replace(/^:+|:+$/g, '')),
+    );
+    for (const add of additions) {
+      const key = add.name.slice(1, -1);
+      if (have.has(key)) continue;
+      merged.push(add);
+      have.add(key);
+    }
+    return JSON.stringify(merged);
+  };
+
   // 🔖 ブックマーク / 📌 ピン留め / 🚫 ブロック・ミュート（上の 1 本にまとめた結果を振り分ける）
   const bookmarkedSet = new Set(
     viewerStateRows.filter((r) => r.kind === 'bookmark').map((r) => r.post_id),
@@ -375,7 +439,7 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
       is_pinned: pinnedSet.has(pid),
       is_local: r.is_local,
       visibility: r.visibility,
-      emojis: r.emojis,
+      emojis: withReactionEmojis(pid, r.emojis),
       in_reply_to: r.in_reply_to,
       media_attachments: (() => {
         try {

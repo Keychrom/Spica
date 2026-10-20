@@ -8,6 +8,8 @@
 import { api, messageOf } from './api';
 import { getPrefs, updatePrefs } from './prefs';
 import { postPermalink } from './permalink';
+import { loadCustomEmojis } from './media';
+import { mergePostEmoji, type PostEmoji } from './contentFormat';
 import type { Post, PostReaction } from './format';
 
 function announceUpdated(postId: string, patch: Partial<Post>): void {
@@ -18,8 +20,14 @@ function announceRemoved(postId: string): void {
   window.dispatchEvent(new CustomEvent('spica:post-removed', { detail: { postId } }));
 }
 
+/** リアクションの結果。本文に無いカスタム絵文字なら、表示用の emojis も一緒に返す */
+export interface ReactResult {
+  reactions: PostReaction[];
+  emojis?: PostEmoji[];
+}
+
 /** リアクションを付ける / 外す。成功したら新しい内訳を返す */
-export async function reactToPost(post: Post, reaction: string): Promise<PostReaction[] | null> {
+export async function reactToPost(post: Post, reaction: string): Promise<ReactResult | null> {
   const res = await api.post('/api/posts/' + encodeURIComponent(post.id) + '/react', { reaction });
   if (!res.ok || !res.data || typeof res.data !== 'object') return null;
   const data = res.data as { reactions?: PostReaction[]; added?: boolean };
@@ -32,7 +40,15 @@ export async function reactToPost(post: Post, reaction: string): Promise<PostRea
       });
     }
   }
-  return data.reactions ?? null;
+  const result: ReactResult = { reactions: data.reactions ?? [] };
+  // 本文に絵文字が無い投稿にリアクションした直後も画像で出す（サーバーは再取得時に同じものを返す）
+  const shortcode = /^:([A-Za-z0-9_+@.-]+):$/.exec(String(reaction || '').trim())?.[1];
+  if (shortcode) {
+    const custom = (await loadCustomEmojis()).find((emoji) => emoji.name.toLowerCase() === shortcode.toLowerCase());
+    const merged = custom ? mergePostEmoji(post.emojis, custom.name, custom.url) : null;
+    if (merged) result.emojis = merged;
+  }
+  return result;
 }
 
 /** ブックマークの切り替え。成功したら新しい状態を返す */

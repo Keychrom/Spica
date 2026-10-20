@@ -102,8 +102,8 @@ export default function PostDetailView({
   const actions = (post: Post) => ({
     onReact: async (p: Post, reaction: string) => {
       if (!signedIn) return;
-      const reactions = await reactToPost(p, reaction);
-      if (reactions) patch(p.id, { reactions });
+      const result = await reactToPost(p, reaction);
+      if (result) patch(p.id, { reactions: result.reactions, ...(result.emojis ? { emojis: result.emojis } : {}) });
     },
     onBookmark: async (p: Post) => {
       if (!signedIn) return;

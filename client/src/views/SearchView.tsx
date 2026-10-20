@@ -191,8 +191,8 @@ export default function SearchView({
                 post={post}
                 onReact={async (p, reaction) => {
                   if (!signedIn) return;
-                  const reactions = await reactToPost(p, reaction);
-                  if (reactions) patchPost(p.id, { reactions });
+                  const result = await reactToPost(p, reaction);
+                  if (result) patchPost(p.id, { reactions: result.reactions, ...(result.emojis ? { emojis: result.emojis } : {}) });
                 }}
                 onBookmark={async (p) => {
                   if (!signedIn) return;

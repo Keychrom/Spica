@@ -52,6 +52,7 @@ import SoundSection from '../client/src/components/settings/SoundSection.js';
 import { NO_STREAMS, streamQuery, streamsFor } from '../client/src/lib/streamScope.js';
 import { withPostPatch } from '../client/src/lib/postPatch.js';
 import { groupNotifications } from '../client/src/lib/notifications.js';
+import { customEmojiUrl, mergePostEmoji } from '../client/src/lib/contentFormat.js';
 
 let checks = 0;
 let failures = 0;
@@ -660,6 +661,32 @@ check('拒否理由の入力欄は行ごとの値', adminRegSource.includes("val
 check('拒否理由の変更は行ごとに保存', adminRegSource.includes('[request.id]: event.target.value'));
 check('拒否時はその行の理由を送る', adminRegSource.includes("rejectRegistration(id, reasons[id] || '')"));
 check('1 つの理由を全行で共有していない', !adminRegSource.includes('const [reason, setReason]'));
+
+// ======================================================================
+console.log('\n🎨 本文に無いカスタム絵文字のリアクション');
+const party = [{ name: ':party:', url: '/uploads/party.png' }];
+check('本文に同じ絵文字があれば画像にする', customEmojiUrl(':party:', party) === '/uploads/party.png');
+check('未登録の絵文字は文字のまま', customEmojiUrl(':unknown:', party) === undefined);
+check(
+  'リモート形式（:name@host:）も画像にする',
+  customEmojiUrl(':party@remote.test:', [{ name: ':party@remote.test:', url: 'https://remote.test/party.png' }]) ===
+    'https://remote.test/party.png',
+);
+check('本文に無いリアクションは emojis に足す', mergePostEmoji('[]', 'party', '/uploads/party.png')?.length === 1);
+check('足す名前は :name: 形式', mergePostEmoji('[]', 'party', '/uploads/party.png')?.[0]?.name === ':party:');
+check(
+  'JSON 文字列の emojis にも足せる',
+  mergePostEmoji(JSON.stringify(party), 'other', '/u/other.png')?.length === 2,
+);
+check('すでにある絵文字は足さない', mergePostEmoji(party, 'party', '/other.png') === null);
+
+const postActionsSource = readFileSync('client/src/lib/postActions.ts', 'utf8');
+check('リアクション直後にも絵文字の URL を返す', postActionsSource.includes('if (merged) result.emojis = merged;'));
+check('リアクションの絵文字はサーバーの一覧から引く', postActionsSource.includes('await loadCustomEmojis()'));
+const timelineSource = readFileSync('client/src/lib/useTimeline.ts', 'utf8');
+check('タイムラインは絵文字の更新も反映する', timelineSource.includes('result.emojis ? { emojis: result.emojis }'));
+const postDetailSource = readFileSync('client/src/views/PostDetailView.tsx', 'utf8');
+check('ノート画面も絵文字の更新を反映する', postDetailSource.includes('result.emojis ? { emojis: result.emojis }'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);
