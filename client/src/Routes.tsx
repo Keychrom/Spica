@@ -123,6 +123,7 @@ export default function Routes({
       <NotificationsView
         menuButton={menuButton}
         signedIn={signedIn}
+        grouping={prefs.notificationGrouping}
         onRead={onRead}
         onOpenProfile={onOpenProfile}
       />

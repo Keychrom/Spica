@@ -13,7 +13,8 @@ import { relativeTime } from '../../lib/format';
 export default function AdminRegistrations() {
   const [requests, setRequests] = useState<RegistrationRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [reason, setReason] = useState('');
+  /** 拒否理由は**申請ごと**に持つ（1 つの state を全行で共有すると入力が連動する） */
+  const [reasons, setReasons] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
 
@@ -29,13 +30,17 @@ export default function AdminRegistrations() {
   async function act(id: string, approve: boolean) {
     setBusy(id);
     setErr('');
-    const problem = approve ? await approveRegistration(id) : await rejectRegistration(id, reason);
+    const problem = approve ? await approveRegistration(id) : await rejectRegistration(id, reasons[id] || '');
     setBusy('');
     if (problem) {
       setErr(problem);
       return;
     }
-    setReason('');
+    setReasons((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     await load();
   }
 
@@ -64,9 +69,11 @@ export default function AdminRegistrations() {
             <input
               className="field"
               style={{ width: 160, padding: '6px 10px', fontSize: 12 }}
-              value={reason}
+              value={reasons[request.id] || ''}
               placeholder="断る理由（任意）"
-              onChange={(event) => setReason(event.target.value)}
+              onChange={(event) =>
+                setReasons((current) => ({ ...current, [request.id]: event.target.value }))
+              }
             />
             <button type="button" className="btn btn--quiet" disabled={busy === request.id} onClick={() => void act(request.id, true)}>
               承認

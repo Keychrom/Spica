@@ -215,6 +215,32 @@ router.post('/notifications/read-all', requireAuth, asyncHandler(async (req: Req
   }
 }));
 
+// 複数の通知をまとめて既読にする（まとめ表示を 1 クリックしたとき用）
+router.post('/notifications/read', requireAuth, asyncHandler(async (req: Request, res: Response) => {
+  const user = req.rawUser!;
+  const ids = Array.isArray(req.body?.ids)
+    ? (req.body.ids as unknown[]).filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  if (ids.length === 0) {
+    return res.json({ success: true, read: 0 });
+  }
+  if (ids.length > 200) {
+    return res.status(400).json({ error: '一度に既読にできる通知は 200 件までです。' });
+  }
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    const result = await db.prepare(`
+      UPDATE notifications
+      SET is_read = 1
+      WHERE user_id = ? AND is_read = 0 AND id IN (${placeholders})
+    `).run(user.id, ...ids);
+    res.json({ success: true, read: Number((result as { changes?: number }).changes ?? 0) });
+  } catch (err: any) {
+    console.error('[API Read Many Error]:', err);
+    res.status(500).json({ error: err.message });
+  }
+}));
+
 // 単一の通知を既読にする（Misskey 互換の `i/read-notification` からも呼ぶ）
 export const handleReadNotification = asyncHandler(async (req: Request, res: Response) => {
   const user = req.rawUser!;

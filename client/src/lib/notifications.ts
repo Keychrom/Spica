@@ -25,7 +25,14 @@ export interface NotificationGroup {
 /** まとめてよい種類（返信・メンションは 1 件ずつ読む意味があるのでまとめない） */
 const GROUPABLE = new Set(['reaction', 'announce', 'renote', 'follow']);
 
-export function groupNotifications(items: AppNotification[]): NotificationGroup[] {
+/** まとめるかどうか（設定 `notificationGrouping`）。'individual' なら 1 件ずつ */
+export function groupNotifications(
+  items: AppNotification[],
+  mode: 'group' | 'individual' = 'group',
+): NotificationGroup[] {
+  if (mode === 'individual') {
+    return items.map((item) => ({ key: item.id, items: [item] }));
+  }
   const groups: NotificationGroup[] = [];
   for (const item of items) {
     const last = groups[groups.length - 1];

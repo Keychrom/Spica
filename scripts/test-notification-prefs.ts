@@ -202,6 +202,59 @@ async function run(): Promise<void> {
     check('文字列は無視され既定（有効）のまま', invalid.body.prefs.reaction, true);
     check('未知の種類は保存されない', invalid.body.prefs.unknownType, undefined);
 
+    // ------------------------------------------------------------------
+    console.log('\n✅ [8] まとめて既読（まとまった通知を 1 クリック）');
+    const beforeRead = await notifications(bob.token);
+    const unreadIds = beforeRead.filter((n) => !n.is_read).map((n) => n.id);
+    check('既読前の未読は 2 件', unreadIds.length, 2);
+    const batch = await fetch(`${BASE}/api/notifications/read`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ ids: unreadIds }),
+    });
+    check('まとめて既読は 200', batch.status, 200);
+    check('更新した件数が返る', (await batch.json()).read, 2);
+    check('未読件数が 0 になる', await unreadCount(bob.token), 0);
+    check('一覧の is_read も立つ', (await notifications(bob.token)).every((n) => n.is_read), true);
+
+    // 持ち主以外は既読にできない（件数は 0 で、相手の未読は残る）
+    await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: auth(alice.token),
+      body: JSON.stringify({ content: 'もう一通の返信', in_reply_to: bobPost }),
+    });
+    await sleep(400);
+    const fresh = (await notifications(bob.token)).find((n) => !n.is_read);
+    check('新しい通知が未読で増える', Boolean(fresh?.id), true);
+    if (fresh) {
+      const stolen = await fetch(`${BASE}/api/notifications/read`, {
+        method: 'POST',
+        headers: auth(alice.token),
+        body: JSON.stringify({ ids: [fresh.id] }),
+      });
+      check('他人の通知は 0 件（成功扱いでも変えない）', (await stolen.json()).read, 0);
+    }
+    check('持ち主の未読は残る', await unreadCount(bob.token), 1);
+
+    const emptyBatch = await fetch(`${BASE}/api/notifications/read`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ ids: [] }),
+    });
+    check('空の配列はエラーにしない', [emptyBatch.status, (await emptyBatch.json()).read], [200, 0]);
+    const tooMany = await fetch(`${BASE}/api/notifications/read`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ ids: Array.from({ length: 201 }, (_, i) => `n${i}`) }),
+    });
+    check('201 件は 400', tooMany.status, 400);
+    const anonBatch = await fetch(`${BASE}/api/notifications/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['x'] }),
+    });
+    check('未認証は 401', anonBatch.status, 401);
+
     completed = true;
   } finally {
     console.log('');

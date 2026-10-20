@@ -43,10 +43,18 @@ export async function toggleBookmark(post: Post): Promise<boolean | null> {
   return typeof data.bookmarked === 'boolean' ? data.bookmarked : !post.bookmarked;
 }
 
-/** リノート */
-export async function renotePost(post: Post): Promise<boolean> {
+/** リノート（トグル）。成功したら現在の状態と件数を返す */
+export async function toggleRenote(post: Post): Promise<{ announced: boolean; count: number } | null> {
   const res = await api.post('/api/posts/' + encodeURIComponent(post.id) + '/announce');
-  return res.ok;
+  if (!res.ok || !res.data || typeof res.data !== 'object') return null;
+  const data = res.data as { announced?: boolean; announce_count?: number };
+  if (typeof data.announced !== 'boolean') return null;
+  return { announced: data.announced, count: Number(data.announce_count ?? 0) };
+}
+
+/** リノート（成否だけ。タイムラインの再読み込み用） */
+export async function renotePost(post: Post): Promise<boolean> {
+  return (await toggleRenote(post)) !== null;
 }
 
 /** 共有 = パーマリンクをコピー（ローカルはサーバーが OGP を返す正規 URL、リモートは `/?post=`） */

@@ -12,7 +12,7 @@ import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { formatCount, type DirectoryUser, type Post, type TagCount } from '../lib/format';
 import { actorPath } from '../lib/permalink';
-import { reactToPost, sharePost, toggleBookmark } from '../lib/postActions';
+import { reactToPost, sharePost, toggleBookmark, toggleRenote } from '../lib/postActions';
 import { withPostPatch } from '../lib/postPatch';
 
 interface SearchViewProps {
@@ -199,7 +199,11 @@ export default function SearchView({
                   const bookmarked = await toggleBookmark(p);
                   if (bookmarked !== null) patchPost(p.id, { bookmarked });
                 }}
-                onRenote={() => undefined}
+                onRenote={async (p) => {
+                  if (!signedIn) return;
+                  const result = await toggleRenote(p);
+                  if (result) patchPost(p.id, { my_announced: result.announced, announce_count: result.count });
+                }}
                 onReply={onReply}
                 onQuote={onQuote}
                 onShare={sharePost}

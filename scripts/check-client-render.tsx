@@ -51,6 +51,7 @@ import {
 import SoundSection from '../client/src/components/settings/SoundSection.js';
 import { NO_STREAMS, streamQuery, streamsFor } from '../client/src/lib/streamScope.js';
 import { withPostPatch } from '../client/src/lib/postPatch.js';
+import { groupNotifications } from '../client/src/lib/notifications.js';
 
 let checks = 0;
 let failures = 0;
@@ -620,6 +621,45 @@ check('予約の送信: 添付', scheduledPayload.attachments?.length === 1);
 check('予約の送信: アンケートは expires_in（API の形）', (scheduledPayload.poll as any)?.expires_in === 3600);
 check('予約の送信: 返信先と引用元', scheduledPayload.in_reply_to === 'p1' && scheduledPayload.quote_id === 'p2');
 check('予約の送信: 日時', scheduledPayload.scheduled_at === '2026-10-18T00:00:00.000Z');
+
+// ======================================================================
+console.log('\n🔔 通知のまとめ方（設定）と、まとめて既読');
+const notif = (id: string, type: string, post_id?: string) => ({ id, type, post_id }) as never;
+const sameKind = [notif('n1', 'reaction', 'p1'), notif('n2', 'reaction', 'p1'), notif('n3', 'reaction', 'p2')];
+check('まとめる設定: 同じ投稿の同じ種類は 1 つに', groupNotifications(sameKind).length === 2);
+check('まとめる設定: 先頭の組に 2 件入る', groupNotifications(sameKind)[0].items.length === 2);
+check('まとめない設定: 1 件ずつ出す', groupNotifications(sameKind, 'individual').length === 3);
+check('まとめない設定: どの組も 1 件', groupNotifications(sameKind, 'individual').every((g) => g.items.length === 1));
+check('まとめない設定: 組の鍵は通知の id', groupNotifications(sameKind, 'individual').map((g) => g.key).join(',') === 'n1,n2,n3');
+check('返信はまとめない', groupNotifications([notif('r1', 'reply', 'p1'), notif('r2', 'reply', 'p1')]).length === 2);
+
+const notifViewSource = readFileSync('client/src/views/NotificationsView.tsx', 'utf8');
+check('通知画面はまとめ設定を受け取る', notifViewSource.includes("grouping?: 'group' | 'individual'"));
+check('通知画面は設定を groupNotifications に渡す', notifViewSource.includes("grouping === 'individual' ? 'individual' : 'group'"));
+check('通知画面へ設定の値を渡している', routesSource.includes('grouping={prefs.notificationGrouping}'));
+check(
+  'まとめ通知は中身すべてをまとめて既読にする',
+  notifViewSource.includes("api.post('/api/notifications/read', { ids: unread.map((n) => n.id) })"),
+);
+check('先頭 1 件だけを既読にする道は残っていない', !notifViewSource.includes('open(first)'));
+const notifRouteSource = readFileSync('server/src/routes/notifications.ts', 'utf8');
+check('まとめて既読は持ち主の通知だけ', notifRouteSource.includes('WHERE user_id = ? AND is_read = 0 AND id IN ('));
+check('まとめて既読の上限は 200', notifRouteSource.includes('ids.length > 200'));
+
+const searchViewSource = readFileSync('client/src/views/SearchView.tsx', 'utf8');
+check('検索結果のリノートは toggleRenote を呼ぶ', searchViewSource.includes('const result = await toggleRenote(p)'));
+check(
+  '検索結果のリノートは状態と件数を反映する',
+  searchViewSource.includes('my_announced: result.announced, announce_count: result.count'),
+);
+check('検索結果に空の onRenote は無い', !searchViewSource.includes('onRenote={() => undefined}'));
+
+const adminRegSource = readFileSync('client/src/components/admin/AdminRegistrations.tsx', 'utf8');
+check('拒否理由は申請ごとに持つ', adminRegSource.includes('useState<Record<string, string>>({})'));
+check('拒否理由の入力欄は行ごとの値', adminRegSource.includes("value={reasons[request.id] || ''}"));
+check('拒否理由の変更は行ごとに保存', adminRegSource.includes('[request.id]: event.target.value'));
+check('拒否時はその行の理由を送る', adminRegSource.includes("rejectRegistration(id, reasons[id] || '')"));
+check('1 つの理由を全行で共有していない', !adminRegSource.includes('const [reason, setReason]'));
 
 console.log('');
 if (failures === 0) console.log(`🎉 すべての確認に合格しました（${checks} 件）`);

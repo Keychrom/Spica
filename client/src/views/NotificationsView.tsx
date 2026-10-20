@@ -38,9 +38,17 @@ interface NotificationsViewProps {
   /** 既読にしたあと、未読バッジを更新してもらう */
   onRead: () => void;
   onOpenProfile: (userId: string) => void;
+  /** 通知をまとめるか（設定 `notificationGrouping`） */
+  grouping?: 'group' | 'individual';
 }
 
-export default function NotificationsView({ menuButton, signedIn, onRead, onOpenProfile }: NotificationsViewProps) {
+export default function NotificationsView({
+  menuButton,
+  signedIn,
+  onRead,
+  onOpenProfile,
+  grouping,
+}: NotificationsViewProps) {
   const [filter, setFilter] = useState('all');
   const [items, setItems] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,23 +76,26 @@ export default function NotificationsView({ menuButton, signedIn, onRead, onOpen
     onRead();
   }
 
-  async function open(notification: AppNotification) {
-    if (isUnread(notification)) {
-      await api.post('/api/notifications/' + encodeURIComponent(notification.id) + '/read');
-      setItems((current) =>
-        current.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n)),
-      );
+  /** まとまった通知は**中身すべて**を既読にする（先頭だけだと未読ハイライトが残る） */
+  async function openGroup(targets: AppNotification[]) {
+    const unread = targets.filter(isUnread);
+    if (unread.length > 0) {
+      await api.post('/api/notifications/read', { ids: unread.map((n) => n.id) });
+      const ids = new Set(unread.map((n) => n.id));
+      setItems((current) => current.map((n) => (ids.has(n.id) ? { ...n, is_read: true } : n)));
       onRead();
     }
-    if (notification.post_id) {
+    const target = targets.find((n) => n.post_id) || targets[0];
+    if (!target) return;
+    if (target.post_id) {
       // ローカルは `/users/<user>/posts/<id>`、リモートは `/?post=<正規 ID>` へ送る
-      navigate(postPath({ id: notification.post_id }));
+      navigate(postPath({ id: target.post_id }));
       return;
     }
-    if (notification.actor_id) onOpenProfile(notification.actor_id);
+    if (target.actor_id) onOpenProfile(target.actor_id);
   }
 
-  const groups = groupNotifications(items);
+  const groups = groupNotifications(items, grouping === 'individual' ? 'individual' : 'group');
   const unreadCount = items.filter(isUnread).length;
 
   return (
@@ -137,7 +148,7 @@ export default function NotificationsView({ menuButton, signedIn, onRead, onOpen
             <article key={group.key} className={`notif${unread ? ' notif--unread' : ''}`}>
               <span className="notif__ico">{iconFor(first.type)}</span>
               <div className="notif__body">
-                <button type="button" className="notif__main" onClick={() => void open(first)}>
+                <button type="button" className="notif__main" onClick={() => void openGroup(group.items)}>
                   <span className="notif__text">
                     {multi
                       ? notificationGroupAction(first.type, group.items.length)
@@ -179,7 +190,7 @@ export default function NotificationsView({ menuButton, signedIn, onRead, onOpen
                 )}
 
                 {first.post_content && (
-                  <button type="button" className="notif__post" onClick={() => void open(first)}>
+                  <button type="button" className="notif__post" onClick={() => void openGroup(group.items)}>
                     {first.post_content.slice(0, 120)}
                   </button>
                 )}
