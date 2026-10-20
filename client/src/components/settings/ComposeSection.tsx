@@ -8,7 +8,8 @@ import { getPrefs, updatePrefs } from '../../lib/prefs';
 
 const VISIBILITY = [
   { value: 'public', label: '連合' },
-  { value: 'unlisted', label: 'ひかえめ' },
+  // サーバーの正規値は 'local'（'unlisted' を送ると検証で捨てられる）
+  { value: 'local', label: 'ひかえめ' },
   { value: 'followers', label: 'フォロワー' },
 ];
 

@@ -3,7 +3,8 @@
  */
 const VISIBILITIES: { value: string; label: string }[] = [
   { value: 'public', label: '連合' },
-  { value: 'unlisted', label: 'ひかえめ' },
+  // サーバーの正規値は 'local'（'unlisted' は受信時に local へ寄せる）
+  { value: 'local', label: 'ひかえめ' },
   { value: 'followers', label: 'フォロワー' },
 ];
 

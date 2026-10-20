@@ -70,7 +70,7 @@ export interface Post {
   content: string;
   cw?: string | null;
   is_sensitive?: boolean;
-  visibility: 'public' | 'unlisted' | 'followers' | 'direct' | string;
+  visibility: 'public' | 'local' | 'unlisted' | 'followers' | 'direct' | string;
   published_at?: string;
   created_at?: string;
   reactions?: PostReaction[];
@@ -190,6 +190,9 @@ export function relativeTime(iso: string | undefined): string {
 
 const VISIBILITY_LABEL: Record<string, string> = {
   public: '連合',
+  // サーバーに保存される正規値
+  local: 'ひかえめ',
+  // 古い下書き・過去のデータ用（normalizeVisibility は local に寄せる）
   unlisted: 'ひかえめ',
   followers: 'フォロワー',
   direct: 'ダイレクト',

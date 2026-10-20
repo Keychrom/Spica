@@ -274,7 +274,12 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
     hideRepliesInHome: pickBool(source.hideRepliesInHome, d.hideRepliesInHome),
     mutedDomains: pickMutedDomains(source.mutedDomains, d.mutedDomains),
 
-    defaultVisibility: pickEnum(source.defaultVisibility, ['public', 'local', 'followers'] as const, d.defaultVisibility),
+    // 古いクライアントは 'unlisted' を送る。保存する値は 'local' に揃える
+    defaultVisibility: pickEnum(
+      source.defaultVisibility === 'unlisted' ? 'local' : source.defaultVisibility,
+      ['public', 'local', 'followers'] as const,
+      d.defaultVisibility,
+    ),
     defaultSensitive: pickBool(source.defaultSensitive, d.defaultSensitive),
     defaultCwText: pickText(source.defaultCwText, d.defaultCwText, MAX_CW_TEXT),
     afterPost: pickEnum(source.afterPost, ['timeline', 'stay'] as const, d.afterPost),

@@ -6,6 +6,15 @@
 import type { Attachment } from './media';
 import type { DraftInput, DraftPoll, DraftedPost, PollPayload, ScheduledInput } from './drafts';
 
+/**
+ * 公開範囲の UI 名をサーバーの正規値に寄せる。
+ * 古い下書き・設定に残る 'unlisted' は 'local'（ひかえめ）として扱う。
+ */
+export function normalizeComposerVisibility(value: string | null | undefined): string {
+  const raw = String(value || 'public');
+  return raw === 'unlisted' ? 'local' : raw;
+}
+
 /** 下書きから開くとき、コンポーザに渡す内容 */
 export interface ComposerTarget {
   /** 返信先・引用元は id と（あれば）表示名だけ使う */

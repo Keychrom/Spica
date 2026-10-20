@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api, messageOf } from '../lib/api';
 import { deleteDraft, saveDraft, schedulePost } from '../lib/drafts';
-import { canSave, canSubmit, draftInput, pollPayload, scheduledInput } from '../lib/composerState';
+import { canSave, canSubmit, draftInput, normalizeComposerVisibility, pollPayload, scheduledInput } from '../lib/composerState';
 import ComposerExtras, { type PollDraft } from './ComposerExtras';
 import ComposerOptions from './ComposerOptions';
 import { getPrefs } from '../lib/prefs';
@@ -81,7 +81,7 @@ export default function Composer({
       area.setSelectionRange(at, at);
     });
   }
-  const [visibility, setVisibility] = useState(String(initialVisibility || start.defaultVisibility || 'public'));
+  const [visibility, setVisibility] = useState(() => normalizeComposerVisibility(initialVisibility || start.defaultVisibility));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const areaRef = useRef<HTMLTextAreaElement>(null);

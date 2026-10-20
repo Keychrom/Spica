@@ -375,6 +375,61 @@ async function run() {
     const notifsAfterMute = (await (await apiCall('GET', '/api/notifications', alice.sessionToken)).json()) as any[];
     check('ワードに当たる通知は消える（返信の本文に含む）', notifsAfterMute.some((n) => String(n.post_content || '').includes('bobの投稿')), false);
 
+    // ------------------------------------------------------------------
+    console.log("\n🫥 [11] 「ひかえめ」は local に揃える（unlisted との不一致）");
+    const localSaved = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      defaultVisibility: 'local',
+    })).json()).prefs;
+    check('local を保存できる', localSaved.defaultVisibility, 'local');
+    check('読み直しても local', (await getPrefs(alice.sessionToken)).defaultVisibility, 'local');
+
+    // 古いクライアントが送る unlisted も落とさず local に寄せる
+    const legacySaved = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      defaultVisibility: 'unlisted',
+    })).json()).prefs;
+    check('旧 unlisted は local に寄せる', legacySaved.defaultVisibility, 'local');
+    check('読み直しても local のまま', (await getPrefs(alice.sessionToken)).defaultVisibility, 'local');
+
+    const invalidSaved = (await (await apiCall('PUT', '/api/me/prefs', alice.sessionToken, {
+      defaultVisibility: 'moon',
+    })).json()).prefs;
+    check('知らない値は既定へ', invalidSaved.defaultVisibility, 'public');
+
+    const localVisPost = await (await apiCall('POST', '/api/posts', alice.sessionToken, {
+      content: 'ひかえめ（local）の投稿',
+      visibility: 'local',
+    })).json();
+    check('local の投稿は local で保存', localVisPost.visibility, 'local');
+    const legacyVisPost = await (await apiCall('POST', '/api/posts', alice.sessionToken, {
+      content: '旧名 unlisted の投稿',
+      visibility: 'unlisted',
+    })).json();
+    check('unlisted の投稿も local に正規化', legacyVisPost.visibility, 'local');
+
+    const formatSrc = fs.readFileSync(path.join(ROOT_DIR, 'client', 'src', 'lib', 'format.ts'), 'utf8');
+    check('カードのラベルに local がある', formatSrc.includes("local: 'ひかえめ'"), true);
+    const composerOptionsSrc = fs.readFileSync(
+      path.join(ROOT_DIR, 'client', 'src', 'components', 'ComposerOptions.tsx'),
+      'utf8',
+    );
+    check('投稿画面は local を送る', composerOptionsSrc.includes("value: 'local', label: 'ひかえめ'"), true);
+    check('投稿画面に unlisted の選択肢が無い', composerOptionsSrc.includes("value: 'unlisted'"), false);
+    const composeSectionSrc = fs.readFileSync(
+      path.join(ROOT_DIR, 'client', 'src', 'components', 'settings', 'ComposeSection.tsx'),
+      'utf8',
+    );
+    check('設定画面は local を送る', composeSectionSrc.includes("value: 'local', label: 'ひかえめ'"), true);
+    check('設定画面に unlisted の選択肢が無い', composeSectionSrc.includes("value: 'unlisted'"), false);
+    const composerSrc = fs.readFileSync(
+      path.join(ROOT_DIR, 'client', 'src', 'components', 'Composer.tsx'),
+      'utf8',
+    );
+    check(
+      '古い下書きの unlisted も Composer で local に寄せる',
+      composerSrc.includes('normalizeComposerVisibility(initialVisibility'),
+      true,
+    );
+
     console.log('');
   } catch (err: any) {
     console.error(`\n❌ テスト実行中にエラー: ${err?.message || err}`);
