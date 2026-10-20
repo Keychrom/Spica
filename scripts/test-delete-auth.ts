@@ -217,6 +217,16 @@ async function run(): Promise<void> {
       false,
     );
     check('SecuritySection は退会 API へ直接送る', securitySource.includes('/api/user/delete-me'), true);
+    check(
+      '2FA のコードはパスワード/マスターキーの分岐の外で送る（マスターキー退会でも届く）',
+      /confirmUserId:\s*myId,[\s\S]*\.\.\.\(totp\.trim\(\)[\s\S]*byPassword/.test(securitySource),
+      true,
+    );
+    check(
+      'パスワード時の分岐にコードを閉じ込めていない',
+      securitySource.includes('? { password }') && !securitySource.includes('? { password, ...(totp.trim()'),
+      true,
+    );
   } catch (err) {
     console.error('❌ テスト失敗:', err);
     failed++;

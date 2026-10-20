@@ -95,8 +95,10 @@ export default function SecuritySection({ myId, hasPassword, onLogout }: Props) 
     // 退会のたびに新しいセッションが発行され「新しい端末からログイン」の通知が飛んでいた。
     const res = await api.post('/api/user/delete-me', {
       confirmUserId: myId,
+      // 2段階認証のコードは本人確認の方法（パスワード / マスターキー）に依らず必要
+      ...(totp.trim() ? { totpCode: totp.trim() } : {}),
       ...(byPassword
-        ? { password, ...(totp.trim() ? { totpCode: totp.trim() } : {}) }
+        ? { password }
         : { masterKey: deleteKey.trim() }),
     });
     setBusy(false);
