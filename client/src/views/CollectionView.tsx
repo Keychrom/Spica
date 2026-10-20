@@ -3,7 +3,7 @@
  * 「集めたノートを読む」画面はどれも同じ形なので、1 つにまとめている。
  *   kind: bookmarks（一覧だけ） / lists / antennas / channels（一覧 + 選択したもののタイムライン）
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import ScreenHead from '../components/ScreenHead';
 import CollectionEditor from '../components/CollectionEditor';
 import PostList from '../components/PostList';
@@ -86,6 +86,8 @@ export default function CollectionView({
   /** 作成・編集の画面（'new' なら新規） */
   const [editing, setEditing] = useState<'new' | string | null>(null);
   const [version, setVersion] = useState(0);
+  /** チャンネルの先頭を自動で開いたか（URL への反映を 1 回だけにする） */
+  const autoSelectedChannel = useRef(false);
 
   // 一覧（リスト / アンテナ / チャンネル）
   useEffect(() => {
@@ -101,8 +103,15 @@ export default function CollectionView({
       if (res.ok && Array.isArray(res.data)) {
         const list = res.data as CollectionItem[];
         setItems(list);
-        // 選択が無ければ先頭を開く（URL 指定があればそれを使う）
-        setActiveId((current) => current ?? selectedId ?? list[0]?.id);
+        // チャンネルは先頭を自動で開く。URL が /channels のままだと streamsFor が
+        // channel:<id> を申告せず SSE を受け取れないので、URL にも反映する
+        // （replace なので履歴は増やさない）
+        if (kind === 'channels' && !selectedId && !autoSelectedChannel.current && list[0]?.id) {
+          autoSelectedChannel.current = true;
+          navigate('/channels/' + encodeURIComponent(list[0].id), { replace: true, keepScroll: true });
+        }
+        // URL の指定があればそれを正とする（戻る・ディープリンク）。無ければ先頭を開く
+        setActiveId((current) => selectedId || current || list[0]?.id);
       }
       setLoadingItems(false);
     })();

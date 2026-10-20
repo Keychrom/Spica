@@ -883,13 +883,14 @@ router.get('/following', asyncHandler(async (req: Request, res: Response) => {
       COALESCE(NULLIF(r.name, ''), u.name, '') AS name,
       COALESCE(NULLIF(r.username, ''), u.id, '') AS username,
       COALESCE(NULLIF(r.domain, ''), ?) AS domain,
-      COALESCE(NULLIF(r.icon_url, ''), NULLIF(u.icon_url, ''), '') AS icon_url
+      COALESCE(NULLIF(r.icon_url, ''), NULLIF(u.icon_url, ''), '') AS icon_url,
+      ('@' || COALESCE(NULLIF(r.username, ''), u.id, '') || '@' || COALESCE(NULLIF(r.domain, ''), ?)) AS handle
     FROM follows f
     LEFT JOIN remote_actors r ON f.following_url = r.id
     LEFT JOIN users u ON f.following_url = ? || u.id
-    WHERE f.follower_url = ?
+    WHERE f.follower_url = ? AND f.status = 'accepted'
     ORDER BY f.created_at DESC
-  `).all(config.domain, `${config.origin}/users/`, myActorUrl);
+  `).all(config.domain, config.domain, `${config.origin}/users/`, myActorUrl);
 
   res.json(following);
 }));

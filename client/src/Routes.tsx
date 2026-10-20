@@ -234,6 +234,9 @@ export default function Routes({
     const rest = pathOnly.slice(collection.length + 1).replace(/^\//, '');
     return (
       <CollectionView
+        // リスト→アンテナのように種類が変わったら state を作り直す
+        // （前の種類の activeId が残ると /api/antennas/<リストID>/timeline を叩いて 404 になる）
+        key={collection}
         kind={collection}
         menuButton={menuButton}
         signedIn={signedIn}

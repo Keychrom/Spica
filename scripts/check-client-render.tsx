@@ -38,7 +38,7 @@ import MediaViewer from '../client/src/components/MediaViewer.js';
 import { groupThreads, describeReplyTarget } from '../client/src/lib/thread.js';
 import { personIdentifier, type Person } from '../client/src/lib/profile.js';
 import { actorPath } from '../client/src/lib/permalink.js';
-import { canSave, canSubmit, composerTargetFromDraft, draftInput, pollPayload, scheduledInput } from '../client/src/lib/composerState.js';
+import { canSave, canSubmit, composerTargetFromDraft, draftInput, normalizeComposerVisibility, pollPayload, scheduledInput } from '../client/src/lib/composerState.js';
 import { NAV_PRIMARY, isActive } from '../client/src/lib/nav.js';
 import { isImageMedia, mediaAlt, mediaKind, mediaThumb, type Post } from '../client/src/lib/format.js';
 import { MAX_ATTACHMENTS } from '../client/src/lib/media.js';
@@ -334,6 +334,28 @@ check('チャンネル一覧（1 つも開いていない）も何も受け取�
 check('申告はクエリに載る（未申告は「全部」と見なされる）', streamQuery(['none']), 'none');
 check('申告はカンマで並べる', streamQuery(['home', 'tag:foo']), 'home,tag:foo');
 check('クライアントとサーバーの none が同じ文字列', /NO_STREAMS = 'none'/.test(readFileSync('server/src/streamRouting.ts', 'utf8')) && NO_STREAMS === 'none');
+check('旧名 unlisted は local に寄せる', normalizeComposerVisibility('unlisted'), 'local');
+check('local はそのまま', normalizeComposerVisibility('local'), 'local');
+
+const routesSource = readFileSync('client/src/Routes.tsx', 'utf8');
+check('コレクションの種類が変わったら state を作り直す（key）', routesSource.includes('key={collection}'), true);
+const collectionSource = readFileSync('client/src/views/CollectionView.tsx', 'utf8');
+check(
+  'チャンネルを自動選択したら URL に反映する（channel SSE のため）',
+  collectionSource.includes("navigate('/channels/'"),
+  true,
+);
+const composerSource = readFileSync('client/src/components/Composer.tsx', 'utf8');
+check(
+  'Ctrl+Enter は最新の submit を呼ぶ',
+  composerSource.includes('useComposerKeys(() => void submit(), onClose)'),
+  true,
+);
+check(
+  '本文へのフォーカスは初回だけ（CW 入力中に奪わない）',
+  composerSource.includes('areaRef.current?.focus();\n  }, []);'),
+  true,
+);
 
 // ======================================================================
 // 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）

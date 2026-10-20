@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createAsyncDatabase } from '../server/src/db/asyncDriver.js';
 
 // ============================================================================
 // プロフィールの一覧・チャンネル設定・自分の通報の検証
@@ -16,6 +17,20 @@ const ROOT_DIR = process.cwd();
 const TEST_DB = 'data_test_profile_lists.sqlite';
 const PORT = process.env.TEST_PORT ? parseInt(process.env.TEST_PORT, 10) : 4512;
 const BASE = `http://localhost:${PORT}`;
+const USE_PG =
+  (process.env.DB_DRIVER || 'sqlite').toLowerCase() === 'postgres' && Boolean(process.env.TEST_DATABASE_URL);
+
+/** テストの準備用に 1 行だけ直接入れる（PG / SQLite の両方で動かす） */
+async function exec(sql: string, ...params: any[]): Promise<void> {
+  const conn = USE_PG
+    ? createAsyncDatabase({ driver: 'postgres', connectionString: process.env.TEST_DATABASE_URL as string })
+    : createAsyncDatabase({ driver: 'sqlite', dbPath: path.resolve(ROOT_DIR, 'server', TEST_DB) });
+  try {
+    await conn.prepare(sql).run(...params);
+  } finally {
+    await conn.close().catch(() => {});
+  }
+}
 
 [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((f) => {
   [path.resolve(ROOT_DIR, f), path.resolve(ROOT_DIR, 'server', f)].forEach((p) => {
@@ -146,6 +161,25 @@ async function run() {
     check('フォロー中一覧のステータス', followingRes.status, 200);
     check('フォロー中の相手', following[0]?.username, 'bob');
     check('フォロー中のローカル判定', following[0]?.is_local, 1);
+    check('ハンドルが入る（サイドバーのフォロー済み判定用）', following[0]?.handle, `@bob@localhost:${PORT}`);
+
+    // 承認待ちのフォロー（リモートの鍵アカウントへのリクエスト）は「フォロー中」ではない
+    await exec(
+      `INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at)
+       VALUES (?, ?, ?, ?, 0, 'pending', ?)`,
+      'alice->remote-pending',
+      `${BASE}/users/alice`,
+      'https://remote.test/users/pending',
+      'https://remote.test/users/pending/inbox',
+      new Date().toISOString(),
+    );
+    const withPending = await (await fetch(`${BASE}/api/following?userId=alice`)).json() as any[];
+    check(
+      '承認待ちのフォローは一覧に出ない',
+      withPending.some((f) => f.following_url === 'https://remote.test/users/pending'),
+      false,
+    );
+    check('承認済みのフォローは残る', withPending.some((f) => f.following_url === `${BASE}/users/bob`), true);
 
     // アイコンを設定したら一覧にも出る
     const iconRes = await fetch(`${BASE}/api/user/profile`, {

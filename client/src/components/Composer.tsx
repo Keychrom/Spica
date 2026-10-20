@@ -7,6 +7,7 @@ import { X } from 'lucide-react';
 import { api, messageOf } from '../lib/api';
 import { deleteDraft, saveDraft, schedulePost } from '../lib/drafts';
 import { canSave, canSubmit, draftInput, normalizeComposerVisibility, pollPayload, scheduledInput } from '../lib/composerState';
+import { useComposerKeys } from '../lib/useComposerKeys';
 import ComposerExtras, { type PollDraft } from './ComposerExtras';
 import ComposerOptions from './ComposerOptions';
 import { getPrefs } from '../lib/prefs';
@@ -86,16 +87,14 @@ export default function Composer({
   const [error, setError] = useState('');
   const areaRef = useRef<HTMLTextAreaElement>(null);
 
+  // 開いたときだけ本文へフォーカスする。CW や公開範囲を変えるたびに呼ぶと、
+  // CW 入力中にフォーカスを奪ってしまう（依存配列を空にする）。
   useEffect(() => {
     areaRef.current?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') void submit();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, cw, cwOn, visibility]);
+  }, []);
+
+  // Esc / Ctrl+Enter。onSubmit は毎回新しい submit を渡すので、常に最新の state を見る
+  useComposerKeys(() => void submit(), onClose);
 
   // 出せるか（本文・添付・アンケート・引用のどれか）／残せるか（編集中の・選択肢 1 つのアンケートも）
   const canPost = canSubmit({ content, attachments: media, poll, quote: Boolean(quoteOf) });
