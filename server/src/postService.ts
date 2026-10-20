@@ -537,15 +537,26 @@ export async function executeUpdatePost(params: {
   const actorUrl = `${config.origin}/users/${user.id}`;
   const emojiMatches = postText.match(/:[a-zA-Z0-9_+-]+:/g) || [];
   let emojisJson = '[]';
-  const apEmojiTags: { name: string; url: string }[] = [];
+  // 投稿作成時と同じ形に揃える（絵文字名は `:name:`、AP は Emoji + Image の icon）
+  const apEmojiTags: {
+    type: 'Emoji';
+    name: string;
+    icon: { type: 'Image'; mediaType: string; url: string };
+  }[] = [];
   if (emojiMatches.length > 0) {
     const uniqueNames = Array.from(new Set(emojiMatches.map((m) => m.slice(1, -1).toLowerCase())));
     const found = (await db
       .prepare(`SELECT name, url FROM custom_emojis WHERE name IN (${uniqueNames.map(() => '?').join(',')})`)
       .all(...uniqueNames)) as { name: string; url: string }[];
     if (found.length > 0) {
-      emojisJson = JSON.stringify(found);
-      for (const emoji of found) apEmojiTags.push({ name: emoji.name, url: emoji.url });
+      emojisJson = JSON.stringify(found.map((emoji) => ({ name: `:${emoji.name}:`, url: emoji.url })));
+      for (const emoji of found) {
+        apEmojiTags.push({
+          type: 'Emoji',
+          name: `:${emoji.name}:`,
+          icon: { type: 'Image', mediaType: 'image/png', url: emoji.url },
+        });
+      }
     }
   }
 

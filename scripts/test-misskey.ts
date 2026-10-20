@@ -263,6 +263,29 @@ async function run() {
     // 元のノートのブースト数は 1 のまま（2 回目で解除されていない）
     check('元のノートのブースト数が 1 のまま', (await mk('/notes/show', { noteId: note.id })).body.renoteCount, 1);
 
+    // 引用ノート: Misskey では「renote + 本文」で表す
+    const quoteRes = await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${alice.token}` },
+      body: JSON.stringify({ content: '引用コメント', quote_id: note.url }),
+    });
+    check('引用投稿を作れる', quoteRes.status, 201);
+    const quoteTimeline = await mk('/notes/timeline', { limit: 50 }, alice.token);
+    const quotedNote = (quoteTimeline.body as any[]).find((n) => n.text === '引用コメント');
+    check('引用ノートがタイムラインにある', Boolean(quotedNote), true);
+    check('引用元が renote に入る', quotedNote?.renote?.text, '最初のノートです');
+    check('renoteId と renote.id が一致', quotedNote?.renoteId, quotedNote?.renote?.id);
+    check('引用側の本文は残る', quotedNote?.text, '引用コメント');
+
+    // buildMisskeyUser: リモートの uri は相手の actor URL（自サーバーの URL を名乗らない）
+    const formatSource = fs.readFileSync(path.resolve(ROOT_DIR, 'server', 'src', 'misskeyFormat.ts'), 'utf8');
+    check(
+      'リモート uri に自オリジンの /users/ を使わない',
+      formatSource.includes('uri: host ? (source.handle ? `${config.origin}/users/${username}` : null) : null'),
+      false,
+    );
+    check('uri は source.id（actor URL）を使う', formatSource.includes('uri: host && /^https?:\\/\\//i.test(String(source.id || \'\'))'), true);
+
     // ------------------------------------------------------------------
     console.log('\n👤 [5] ユーザーとフォロー');
     const userShow = await mk('/users/show', { username: 'alice' });

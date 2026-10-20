@@ -289,7 +289,9 @@ export function buildMisskeyUser(source: {
     notesCount: Number(source.notes_count || 0),
     createdAt: source.created_at || new Date().toISOString(),
     fields,
-    uri: host ? (source.handle ? `${config.origin}/users/${username}` : null) : null,
+    // リモートユーザーの uri は相手の actor URL。自サーバーの URL を名乗らない
+    // （actor URL が分からないときは null。Misskey でも null は許容される）
+    uri: host && /^https?:\/\//i.test(String(source.id || '')) ? String(source.id) : null,
     isAdmin: source.role === 'admin',
     isModerator: source.role === 'admin' || source.role === 'moderate',
   };
@@ -379,6 +381,13 @@ export function buildMisskeyNote(item: any, nested = false, referenceTimes?: Map
       : null,
     channelId: item.channel_id || null,
   };
+
+  // 引用: Misskey では「renote + 本文」で表す（renote の中身が引用元）
+  if (item.quote) {
+    const quoted = buildMisskeyNote(item.quote, true, referenceTimes);
+    note.renote = quoted;
+    note.renoteId = quoted.id;
+  }
 
   // ブースト: Misskey では「renote を持つノート」として表す（投稿者 = ブーストした人）
   if (isBoost) {

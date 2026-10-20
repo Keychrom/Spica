@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process';
+import http from 'node:http';
 import crypto from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
@@ -22,6 +23,9 @@ const TEST_DB = 'data_test_post_edit.sqlite';
 const PORT = process.env.TEST_PORT ? parseInt(process.env.TEST_PORT, 10) : 3648;
 const BASE = `http://localhost:${PORT}`;
 const DOMAIN = `localhost:${PORT}`;
+/** 配送先を捕捉するローカル HTTP（Update の tag を見る） */
+const CAPTURE_PORT = PORT + 1;
+const captured: any[] = [];
 const REMOTE_ACTOR = 'https://remote.test/users/eve';
 const REMOTE_POST_ID = 'https://remote.test/users/eve/posts/1001';
 
@@ -151,11 +155,23 @@ async function run(): Promise<void> {
   console.log('====================================================\n');
 
   let server: ChildProcess | null = null;
+  let capture: http.Server | null = null;
   let completed = false;
   const dbPath = path.resolve(ROOT_DIR, 'server', TEST_DB);
 
   try {
     await assertPortFree(PORT);
+    await assertPortFree(CAPTURE_PORT);
+    capture = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => { raw += chunk; });
+      req.on('end', () => {
+        try { captured.push(JSON.parse(raw)); } catch { captured.push(null); }
+        res.statusCode = 202;
+        res.end('{}');
+      });
+    });
+    await new Promise<void>((resolve) => capture!.listen(CAPTURE_PORT, '127.0.0.1', () => resolve()));
     const tsxCli = path.resolve(ROOT_DIR, 'node_modules', 'tsx', 'dist', 'cli.mjs');
     server = spawn(process.execPath, [tsxCli, 'src/index.ts'], {
       cwd: path.resolve(ROOT_DIR, 'server'),
@@ -167,6 +183,7 @@ async function run(): Promise<void> {
         DB_PATH: dbPath,
         INSTANCE_NAME: 'Edit Test',
         RATE_LIMIT_DISABLED: 'true',
+        ALLOW_PRIVATE_REMOTE_FETCH: 'true',
       },
       stdio: 'pipe',
     });
@@ -262,6 +279,39 @@ async function run(): Promise<void> {
     );
     const withAudience = await api('PUT', `/api/posts/${encodeURIComponent(postId)}`, alice, { content: 'フォロワーにも配ります' });
     check('配信先が数えられる（リモートフォロワー）', withAudience.data?.federatedTo, 1);
+
+    // カスタム絵文字: 保存形式と AP タグが**投稿作成時と同じ**であること
+    const emojiUrl = `http://${DOMAIN}/logo.jpg`;
+    await exec(
+      'INSERT INTO custom_emojis (id, name, url, category, aliases, created_at) VALUES (?,?,?,?,?,?)',
+      'em_edit', 'spica_edit', emojiUrl, '一般', '[]', new Date().toISOString(),
+    );
+    const captureActor = `http://127.0.0.1:${CAPTURE_PORT}/users/cap`;
+    await exec(
+      'INSERT INTO follows (id, follower_url, following_url, inbox_url, is_local, status, created_at) VALUES (?,?,?,?,0,?,?)',
+      'follow-capture', captureActor, `http://${DOMAIN}/users/alice`, `http://127.0.0.1:${CAPTURE_PORT}/inbox`, 'accepted', new Date().toISOString(),
+    );
+    const withEmoji = await api('PUT', `/api/posts/${encodeURIComponent(postId)}`, alice, {
+      content: '編集で :spica_edit: を使う',
+    });
+    check('絵文字付きで編集できる', withEmoji.status, 200);
+    const savedEmojis = JSON.parse(String(withEmoji.data?.post?.emojis || '[]'));
+    check('保存形式は :name: と url', savedEmojis, [{ name: ':spica_edit:', url: emojiUrl }]);
+
+    // 配送は非同期なので、捕捉サーバーに Update が届くまで待つ
+    let updateActivity: any = null;
+    const captureDeadline = Date.now() + 5000;
+    while (Date.now() < captureDeadline) {
+      updateActivity = captured.find((a) => a?.type === 'Update' && a?.object?.id === postId);
+      if (updateActivity) break;
+      await sleep(100);
+    }
+    check('Update が配送される', Boolean(updateActivity), true);
+    check(
+      'AP タグの形が作成時と同じ（Emoji + Image icon）',
+      updateActivity?.object?.tag,
+      [{ type: 'Emoji', name: ':spica_edit:', icon: { type: 'Image', mediaType: 'image/png', url: emojiUrl } }],
+    );
 
     // Update そのものの形は activitypub のビルダで確認する（サーバー内の関数を直接呼ぶ）
     const { buildNote, buildUpdateNoteActivity } = await import('../server/src/activitypub.js');
@@ -422,6 +472,7 @@ async function run(): Promise<void> {
         try { server.kill('SIGKILL'); } catch {}
       }
     }
+    if (capture) await new Promise<void>((resolve) => capture!.close(() => resolve())).catch(() => {});
   }
 
   [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`].forEach((f) => {

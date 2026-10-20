@@ -290,7 +290,8 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
     if (quoteIds.length === 0) return;
     const qPlaceholders = quoteIds.map(() => '?').join(',');
     const quoteRows = await db.prepare(`
-      SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis, media_attachments, is_sensitive, published_at
+      SELECT id, user_id, author_name, author_url, author_handle, author_icon, content, cw, emojis,
+             media_attachments, is_sensitive, published_at, is_local, visibility
       FROM posts
       WHERE id IN (${qPlaceholders})
     `).all(...quoteIds) as any[];
@@ -315,6 +316,9 @@ export async function enrichAndFilterPosts(rows: any[], currentActorUrl: string 
           }
         })(),
         published_at: q.published_at,
+        // Misskey の quote を組み立てるとき、ユーザーのローカル/リモート判定に使う
+        is_local: q.is_local,
+        visibility: q.visibility,
       });
     }
   };

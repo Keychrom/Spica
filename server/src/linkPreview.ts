@@ -114,7 +114,12 @@ export async function getCachedPreviews(urls: string[]): Promise<Map<string, Lin
   return result;
 }
 
-async function hasRecentFailure(url: string): Promise<boolean> {
+/**
+ * 直近の失敗キャッシュで取得を止めるか。
+ * `retryTransient` はバックグラウンド再試行用で、**一時的な 'error' だけ**を無視する
+ * （'skipped' / 'empty' / 'unsafe' は何度取り直しても変わらないので再試行しない）。
+ */
+async function hasRecentFailure(url: string, retryTransient = false): Promise<boolean> {
   try {
     const row = await db.prepare('SELECT fetched_at, status FROM link_previews WHERE url = ?').get(url) as
       | { fetched_at: string; status: string }
@@ -122,7 +127,13 @@ async function hasRecentFailure(url: string): Promise<boolean> {
     if (!row) {
       return false;
     }
-    return Date.parse(row.fetched_at) > Date.now() - CACHE_TTL_MS && row.status !== 'ok';
+    if (Date.parse(row.fetched_at) <= Date.now() - CACHE_TTL_MS || row.status === 'ok') {
+      return false;
+    }
+    if (retryTransient && row.status === 'error') {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -169,9 +180,13 @@ async function readCapped(res: Response): Promise<string> {
 }
 
 /**
- * URL のプレビューを取得してキャッシュする（取得済み・失敗キャッシュ済みなら何もしない）
+ * URL のプレビューを取得してキャッシュする（取得済み・失敗キャッシュ済みなら何もしない）。
+ * `retryTransient` はジョブの再試行用: 直近の 'error' を無視して取り直す。
  */
-export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPreview | null> {
+export async function fetchAndCacheLinkPreview(
+  rawUrl: string,
+  options: { retryTransient?: boolean } = {},
+): Promise<LinkPreview | null> {
   let url: string;
   try {
     const parsed = new URL(rawUrl);
@@ -183,7 +198,7 @@ export async function fetchAndCacheLinkPreview(rawUrl: string): Promise<LinkPrev
     return null;
   }
 
-  if (await hasRecentFailure(url)) {
+  if (await hasRecentFailure(url, Boolean(options.retryTransient))) {
     return null;
   }
   const cached = (await getCachedPreviews([url])).get(url);
@@ -266,7 +281,7 @@ export function queueLinkPreviewFetch(content: string | null | undefined): void 
 registerJobHandler('link_preview', async (payload: { url?: string }) => {
   const url = String(payload?.url || '');
   if (!url) return;
-  const preview = await fetchAndCacheLinkPreview(url);
+  const preview = await fetchAndCacheLinkPreview(url, { retryTransient: true });
   // 取得できなかった（OGP が無い・相手が落ちている等）ときは再試行の対象にする
   if (!preview) throw new Error(`プレビューを取得できませんでした: ${url}`);
 });

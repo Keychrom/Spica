@@ -104,7 +104,8 @@
     "test:delete-broadcast": "npx tsx scripts/test-delete-broadcast.ts",
     "test:approval-enforcement": "npx tsx scripts/test-approval-enforcement.ts",
     "test:data-transfer": "npx tsx scripts/test-data-transfer.ts",
-    "test:antenna-scope": "npx tsx scripts/test-antenna-scope.ts"
+    "test:antenna-scope": "npx tsx scripts/test-antenna-scope.ts",
+    "test:link-preview-retry": "npx tsx scripts/test-link-preview-retry.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
