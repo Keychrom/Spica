@@ -166,8 +166,15 @@ export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Resp
   // ソースフィルタ
   if (ant.src === 'home') {
     const myActorUrl = `${config.origin}/users/${user.id}`;
-    conditions.push(`(p.is_local = 1 OR p.author_url IN (SELECT following_url FROM follows WHERE follower_url = ?))`);
-    params.push(myActorUrl);
+    // ホーム = 自分 + 承認済みのフォロー先。以前は「ローカル全部」を含めており、
+    // フォローしていないローカルユーザーの投稿まで拾っていた。承認待ちも除外する
+    conditions.push(`(
+      p.author_url = ?
+      OR p.author_url IN (
+        SELECT following_url FROM follows WHERE follower_url = ? AND status = 'accepted'
+      )
+    )`);
+    params.push(myActorUrl, myActorUrl);
   } else if (ant.src === 'users') {
     const userTokens = ant.user_list.split(',').map((u) => u.trim().replace(/^@/, '')).filter(Boolean);
     if (userTokens.length > 0) {
@@ -176,6 +183,9 @@ export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Resp
       for (const token of userTokens) {
         params.push(token, `%${token}%`);
       }
+    } else {
+      // 対象が空のときは**何も拾わない**。条件を足さないと全投稿に一致してしまう
+      conditions.push('1=0');
     }
   }
 

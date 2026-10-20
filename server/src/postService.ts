@@ -640,7 +640,9 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
       for (let i = 0; i < homeOwners.length; i += CHUNK) {
         const chunk = homeOwners.slice(i, i + CHUNK);
         const rows = (await db
-          .prepare(`SELECT follower_url FROM follows WHERE following_url = ? AND follower_url IN (${chunk.map(() => '?').join(',')})`)
+          .prepare(`SELECT follower_url FROM follows
+                    WHERE following_url = ? AND status = 'accepted'
+                      AND follower_url IN (${chunk.map(() => '?').join(',')})`)
           .all(authorUrl, ...chunk)) as { follower_url: string }[];
         for (const row of rows) followsAuthor.add(row.follower_url);
       }

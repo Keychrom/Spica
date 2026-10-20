@@ -3,7 +3,6 @@
  * ・相対時刻 / 桁区切りの数字
  * ・本文の安全な表示（プレーンテキストはリンク化、HTML は無害化）
  */
-import DOMPurify from 'dompurify';
 import { getPrefs } from './prefs';
 
 export interface PostReaction {
@@ -69,6 +68,8 @@ export interface Post {
   author_icon?: string;
   content: string;
   cw?: string | null;
+  /** 投稿で使われているカスタム絵文字（サーバーは JSON 文字列。古いデータは配列） */
+  emojis?: string | { name: string; url: string }[] | null;
   is_sensitive?: boolean;
   visibility: 'public' | 'local' | 'unlisted' | 'followers' | 'direct' | string;
   published_at?: string;
@@ -200,83 +201,6 @@ const VISIBILITY_LABEL: Record<string, string> = {
 
 export function visibilityLabel(visibility: string): string {
   return VISIBILITY_LABEL[visibility] || '';
-}
-
-const ESCAPE_MAP: Record<string, string> = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => ESCAPE_MAP[c] || c);
-}
-
-function looksLikeHtml(raw: string): boolean {
-  return /<\/?[a-z][^>]*>/i.test(raw);
-}
-
-const ALLOWED_TAGS = [
-  'a', 'p', 'br', 'span', 'strong', 'b', 'em', 'i', 'u', 's', 'del', 'code', 'pre',
-  'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'hr', 'small',
-];
-const ALLOWED_ATTR = ['href', 'class', 'src', 'alt', 'title', 'width', 'height'];
-
-/** プレーンテキストの本文を、URL・@メンション・#タグだけリンクにする */
-function linkifyPlainText(raw: string): string {
-  return escapeHtml(raw)
-    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
-    .replace(/(^|[\s(])(@[A-Za-z0-9_.-]+(?:@[A-Za-z0-9_.-]+)?)/g, '$1<a class="mention" href="#">$2</a>')
-    .replace(/(^|[\s(])(#[^\s<#]+)/g, (_m, lead: string, tag: string) =>
-      `${lead}<a class="hashtag" href="/tags/${encodeURIComponent(tag.slice(1))}">${tag}</a>`);
-}
-
-/** 本文を安全な HTML にする（表示は dangerouslySetInnerHTML で行う） */
-export function formatContent(raw: string): string {
-  if (!raw) return '';
-  const html = looksLikeHtml(raw) ? raw : linkifyPlainText(raw);
-  const clean = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    RETURN_DOM_FRAGMENT: true,
-  }) as unknown as DocumentFragment;
-
-  const host = document.createElement('div');
-  host.appendChild(clean);
-
-  // 設定「カスタム絵文字を画像で出す」が切ってあるときは、:name: の文字に戻す
-  if (getPrefs().showCustomEmojiImages === false) {
-    for (const img of Array.from(host.querySelectorAll('img'))) {
-      const alt = img.getAttribute('alt') || '';
-      if (!img.classList.contains('emoji') && !alt.startsWith(':')) continue;
-      const text = document.createElement('span');
-      text.textContent = alt.startsWith(':') ? alt : `:${alt}:`;
-      img.replaceWith(text);
-    }
-  }
-
-  for (const a of Array.from(host.querySelectorAll('a'))) {
-    const href = a.getAttribute('href') || '';
-    const text = a.textContent || '';
-    if (href.includes('/tags/')) {
-      const tag = decodeURIComponent(href.split('/tags/').pop() || '').replace(/^#/, '');
-      a.setAttribute('href', `/tags/${encodeURIComponent(tag)}`);
-      a.classList.add('hashtag');
-      a.removeAttribute('target');
-    } else if (text.startsWith('@') || href.includes('/users/')) {
-      a.classList.add('mention');
-      a.setAttribute('target', '_blank');
-      a.setAttribute('rel', 'noopener noreferrer');
-    } else if (/^https?:/.test(href)) {
-      a.setAttribute('target', '_blank');
-      a.setAttribute('rel', 'noopener noreferrer');
-    } else {
-      a.removeAttribute('href');
-    }
-  }
-  return host.innerHTML;
 }
 
 /** 本文が実質空（メディアだけの投稿など）かどうか */

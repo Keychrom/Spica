@@ -16,6 +16,8 @@ export interface EditableItem {
   keywords?: string | string[];
   exclude_keywords?: string | string[];
   src?: string;
+  /** アンテナの「指定した人」（カンマ区切りのユーザー） */
+  user_list?: string;
   notify?: boolean;
   with_file?: boolean;
   color?: string;
@@ -56,6 +58,7 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
   const [keywords, setKeywords] = useState(asText(item?.keywords));
   const [exclude, setExclude] = useState(asText(item?.exclude_keywords));
   const [src, setSrc] = useState(item?.src || 'all');
+  const [userList, setUserList] = useState(item?.user_list || '');
   const [notify, setNotify] = useState(Boolean(item?.notify));
   const [withFile, setWithFile] = useState(Boolean(item?.with_file));
   const [color, setColor] = useState(item?.color || '#6d5ae6');
@@ -85,6 +88,11 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
       setErr('名前を入力してください。');
       return;
     }
+    // 「指定した人」で対象が空だと、サーバー側に条件が無く全投稿に一致してしまう
+    if (kind === 'antennas' && src === 'users' && !userList.trim()) {
+      setErr('「指定した人」を選んだときは、対象のユーザーを1人以上入力してください。');
+      return;
+    }
     setBusy(true);
     setErr('');
     const body =
@@ -94,6 +102,7 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
           ? {
               name: name.trim(),
               src,
+              user_list: userList.split(',').map((u) => u.trim()).filter(Boolean).join(','),
               keywords: keywords.split(',').map((k) => k.trim()).filter(Boolean).join(','),
               exclude_keywords: exclude.split(',').map((k) => k.trim()).filter(Boolean).join(','),
               notify,
@@ -194,6 +203,14 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
                     ))}
                   </select>
                 </label>
+                {src === 'users' && (
+                  <input
+                    className="field"
+                    value={userList}
+                    placeholder="対象のユーザー（カンマ区切り。例: @alice, @bob@example.com）"
+                    onChange={(event) => setUserList(event.target.value)}
+                  />
+                )}
                 <input
                   className="field"
                   value={keywords}

@@ -357,6 +357,20 @@ check(
   true,
 );
 
+const antennaEditorSource = readFileSync('client/src/components/CollectionEditor.tsx', 'utf8');
+check('アンテナに「指定した人」の入力欄がある', antennaEditorSource.includes('対象のユーザー（カンマ区切り'), true);
+check(
+  '「指定した人」が空なら保存させない',
+  antennaEditorSource.includes('対象のユーザーを1人以上入力してください'),
+  true,
+);
+const postCardSource = readFileSync('client/src/components/PostCard.tsx', 'utf8');
+check('本文に投稿の絵文字を渡す', postCardSource.includes('formatContent(shown.content, shown.emojis)'), true);
+check('リアクションの絵文字を画像にする', postCardSource.includes('customEmojiUrl(r.reaction, shown.emojis)'), true);
+const contentFormatSource = readFileSync('client/src/lib/contentFormat.ts', 'utf8');
+check('メンションは /users/ へリンクする', contentFormatSource.includes('`/users/${encodeURIComponent(name)}`'), true);
+check('カスタム絵文字は img.emoji にする', contentFormatSource.includes("img.className = 'emoji'"), true);
+
 // ======================================================================
 // 会話の線の幾何（見た目は描画では見えないので、CSS が意図どおりかを直接見る）
 console.log('\n📏 線はアイコンの後ろを通る（アイコンに重ねない）');

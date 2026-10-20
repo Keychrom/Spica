@@ -15,13 +15,13 @@ import { usePrefs } from '../lib/prefs';
 import { actorPath, postPath } from '../lib/permalink';
 import { navigate } from '../lib/router';
 import {
-  formatContent,
   formatCount,
   isBlankContent,
   relativeTime,
   visibilityLabel,
   type Post,
 } from '../lib/format';
+import { customEmojiUrl, formatContent } from '../lib/contentFormat';
 
 export const QUICK_REACTIONS = ['⭐', '❤️', '👍', '🎉', '🤔', '😂'];
 
@@ -52,7 +52,7 @@ function QuoteCard({ post }: { post: Post }) {
       <div className="quote__head">
         {post.quote.author_name} <span>{post.quote.author_handle}</span>
       </div>
-      <p dangerouslySetInnerHTML={{ __html: formatContent(post.quote.content) }} />
+      <p dangerouslySetInnerHTML={{ __html: formatContent(post.quote.content, post.quote.emojis) }} />
     </div>
   );
 }
@@ -166,7 +166,7 @@ export default function PostCard(props: PostCardProps) {
             {!blank && (
               <div
                 className="body"
-                dangerouslySetInnerHTML={{ __html: formatContent(shown.content) }}
+                dangerouslySetInnerHTML={{ __html: formatContent(shown.content, shown.emojis) }}
               />
             )}
             <PostMedia post={shown} />
@@ -176,18 +176,25 @@ export default function PostCard(props: PostCardProps) {
         )}
 
         <div className="rx">
-          {reactions.map((r) => (
-            <button
-              key={r.reaction}
-              type="button"
-              className={`rx__item${r.me ? ' rx__item--mine' : ''}`}
-              onClick={() => props.onReact(shown, r.reaction)}
-              title={r.me ? 'リアクションを取り消す' : 'リアクションする'}
-            >
-              <span>{r.reaction}</span>
-              {r.count > 0 && formatCount(r.count)}
-            </button>
-          ))}
+          {reactions.map((r) => {
+            const emojiUrl = customEmojiUrl(r.reaction, shown.emojis);
+            return (
+              <button
+                key={r.reaction}
+                type="button"
+                className={`rx__item${r.me ? ' rx__item--mine' : ''}`}
+                onClick={() => props.onReact(shown, r.reaction)}
+                title={r.me ? 'リアクションを取り消す' : 'リアクションする'}
+              >
+                {emojiUrl ? (
+                  <img className="emoji" src={emojiUrl} alt={r.reaction} title={r.reaction} />
+                ) : (
+                  <span>{r.reaction}</span>
+                )}
+                {r.count > 0 && formatCount(r.count)}
+              </button>
+            );
+          })}
           <div style={{ position: 'relative' }}>
             <button
               type="button"
