@@ -186,6 +186,100 @@ async function runTest() {
   console.log('✅ 自分の投稿では通知しない\n');
 
   // ==========================================
+  // テスト 1-c: 📡 src='list' のアンテナ（自分のリストのメンバーだけ）
+  // ==========================================
+  console.log("--- 1-c. 📡 src='list' のアンテナ判定 ---");
+  const now = new Date().toISOString();
+  await db.prepare('INSERT INTO lists (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run('list-alice', userA.id, 'アンテナ用', now, now);
+  await db.prepare('INSERT INTO list_members (id, list_id, member, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run('lm-bob', 'list-alice', 'bob', 'Bob', now);
+  await db.prepare('INSERT INTO list_members (id, list_id, member, display_name, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run('lm-eve', 'list-alice', '@eve@remote.test', 'Eve', now);
+
+  const listAntenna: any = {
+    id: 'ant-list',
+    user_id: userA.id,
+    name: 'リスト範囲',
+    src: 'list',
+    user_list: 'list-alice',
+    keywords: '',
+    exclude_keywords: '',
+    case_sensitive: 0,
+    with_file: 0,
+    notify: 1,
+    created_at: now,
+  };
+  await db.prepare(`
+    INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(listAntenna.id, listAntenna.user_id, listAntenna.name, listAntenna.src, listAntenna.user_list, listAntenna.keywords, listAntenna.exclude_keywords, listAntenna.case_sensitive, listAntenna.with_file, listAntenna.notify, listAntenna.created_at);
+
+  const listMemberPost = { ...bobPost, id: 'post-list-1', content: 'リスト範囲の確認' };
+  const carolPost = {
+    ...bobPost,
+    id: 'post-list-2',
+    user_id: 'carol',
+    author_url: 'https://spica.test/users/carol',
+    author_handle: '@carol@spica.test',
+  };
+  const evePost = {
+    ...bobPost,
+    id: 'post-list-3',
+    user_id: 'https://remote.test/users/eve',
+    author_url: 'https://remote.test/users/eve',
+    author_handle: '@eve@remote.test',
+  };
+
+  if (!isPostMatchingAntenna(listMemberPost, listAntenna, ['bob', '@eve@remote.test'])) {
+    throw new Error('リストのメンバーの投稿が一致しませんでした');
+  }
+  if (isPostMatchingAntenna(carolPost, listAntenna, ['bob', '@eve@remote.test'])) {
+    throw new Error('リスト外の投稿が一致しました');
+  }
+  if (isPostMatchingAntenna(listMemberPost, listAntenna, [])) {
+    throw new Error('メンバーが空なのに一致しました');
+  }
+  console.log('✅ リストのメンバーだけが一致する');
+
+  const countListNotifs = async (userId: string, name: string) =>
+    ((await db.prepare("SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND type = 'antenna' AND content LIKE ?")
+      .get(userId, `%${name}%`)) as { c: number }).c;
+
+  await checkAntennaMatchesAndNotify(listMemberPost);
+  if ((await countListNotifs(userA.id, 'リスト範囲')) !== 1) {
+    throw new Error('リストのメンバーの投稿で通知されませんでした');
+  }
+  await checkAntennaMatchesAndNotify(carolPost);
+  if ((await countListNotifs(userA.id, 'リスト範囲')) !== 1) {
+    throw new Error('リスト外の投稿で通知されました');
+  }
+  await checkAntennaMatchesAndNotify(evePost);
+  if ((await countListNotifs(userA.id, 'リスト範囲')) !== 2) {
+    throw new Error('リモートのメンバーの投稿で通知されませんでした');
+  }
+  console.log('✅ メンバーだけ通知され、リモートのメンバーも拾う');
+
+  // 他人のリストを指すアンテナは、そのリストのメンバーを拾わない（持ち主で照合する）
+  await db.prepare(`
+    INSERT INTO antennas (id, user_id, name, src, user_list, keywords, exclude_keywords, case_sensitive, with_file, notify, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('ant-list-stolen', userB.id, '他人のリスト', 'list', 'list-alice', '', '', 0, 0, 1, now);
+  await checkAntennaMatchesAndNotify(evePost);
+  if ((await countListNotifs(userB.id, '他人のリスト')) !== 0) {
+    throw new Error('他人のリストを参照したアンテナが通知しました');
+  }
+  const { getAntennaListMembersBatch, antennaListKey } = await import('../server/src/antennaListSource.js');
+  const batch = await getAntennaListMembersBatch(['list-alice']);
+  if (!batch.get(antennaListKey(userA.id, 'list-alice'))?.includes('bob')) {
+    throw new Error('持ち主のリストのメンバーが取れませんでした');
+  }
+  if (batch.get(antennaListKey(userB.id, 'list-alice'))) {
+    throw new Error('他人のリストのメンバーが取れました');
+  }
+  console.log('✅ 他人のリストは参照できない\n');
+
+  // ==========================================
   // テスト 2: 📝 下書き保存・一覧・削除の検証
   // ==========================================
   console.log('--- 2. 📝 下書き機能の検証 ---');

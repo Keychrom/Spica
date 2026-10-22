@@ -1998,15 +1998,17 @@ misskeyRouter.post('/users/lists/pull', asyncHandler(async (req: Request, res: R
 /** アンテナの 1 件を Misskey の形にする */
 function misskeyAntenna(row: any) {
   const split = (value: unknown) => String(value || '').split(/[,、\n\s]+/).map((k) => k.trim()).filter(Boolean);
+  const src = ['home', 'all', 'users', 'list'].includes(row.src) ? row.src : 'all';
   return {
     id: row.id,
     createdAt: new Date(row.created_at).toISOString(),
     name: row.name,
     keywords: split(row.keywords),
     excludeKeywords: split(row.exclude_keywords),
-    src: ['home', 'all', 'users'].includes(row.src) ? row.src : 'all',
-    userListId: null,
-    users: split(row.user_list).map((u) => u.replace(/^@/, '')),
+    src,
+    // src = 'list' のとき user_list にリスト id を入れている（Spica の userListId）
+    userListId: src === 'list' ? String(row.user_list || '') || null : null,
+    users: src === 'users' ? split(row.user_list).map((u) => u.replace(/^@/, '')) : [],
     caseSensitive: Boolean(row.case_sensitive),
     notify: Boolean(row.notify),
     withReplies: false,
@@ -2021,13 +2023,16 @@ function antennaBodyFromMisskey(body: any): Record<string, unknown> {
     ? body.excludeKeywords.map((k: unknown) => String(k)).filter(Boolean)
     : [];
   const users: string[] = Array.isArray(body?.users) ? body.users.map((u: unknown) => String(u)).filter(Boolean) : [];
-  // Misskey の src は home / all / users / list。Spica に list は無いので users として受ける
-  const rawSrc = String(body?.src || 'all');
-  const src = users.length > 0 ? 'users' : (['home', 'all'].includes(rawSrc) ? rawSrc : 'all');
+  // Misskey の src は home / all / users / list。list のときは userListId を使う
+  const userListId = String(body?.userListId || '').trim();
+  const rawSrc = String(body?.src || (userListId ? 'list' : 'all'));
+  const src = ['home', 'all', 'list'].includes(rawSrc)
+    ? rawSrc
+    : (users.length > 0 ? 'users' : 'all');
   return {
     name: body?.name,
     src,
-    user_list: users.join(','),
+    user_list: src === 'list' ? userListId : users.join(','),
     keywords: keywords.join(' '),
     exclude_keywords: exclude.join(' '),
     case_sensitive: Boolean(body?.caseSensitive),

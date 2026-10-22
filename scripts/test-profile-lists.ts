@@ -286,6 +286,74 @@ async function run() {
     check('対応済みになる', resolved[0]?.status, 'resolved');
     check('対応メモが見える', resolved[0]?.resolution_note, '確認しました');
 
+    // ------------------------------------------------------------------
+    console.log('\n📡 [4] アンテナのリスト指定（src: list）');
+    const createList = async (token: string, name: string) => {
+      const res = await fetch(`${BASE}/api/lists`, {
+        method: 'POST',
+        headers: auth(token),
+        body: JSON.stringify({ name }),
+      });
+      return ((await res.json()) as any).id as string;
+    };
+    const aliceList = await createList(alice.token, 'アンテナ用');
+    const bobList = await createList(bob.token, 'bob のリスト');
+    await fetch(`${BASE}/api/lists/${encodeURIComponent(aliceList)}/members`, {
+      method: 'POST',
+      headers: auth(alice.token),
+      body: JSON.stringify({ member: 'bob' }),
+    });
+    await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ content: 'リストアンテナのノート' }),
+    });
+    await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: auth(carol.token),
+      body: JSON.stringify({ content: 'リスト外のノート' }),
+    });
+
+    const createAntenna = (token: string, body: Record<string, unknown>) =>
+      fetch(`${BASE}/api/antennas`, { method: 'POST', headers: auth(token), body: JSON.stringify(body) });
+
+    check(
+      'リスト未選択は 400',
+      (await createAntenna(alice.token, { name: 'リスト未選択', src: 'list', user_list: '', keywords: '' })).status,
+      400,
+    );
+    check(
+      '他人のリストは 400',
+      (await createAntenna(alice.token, { name: '他人のリスト', src: 'list', user_list: bobList, keywords: '' })).status,
+      400,
+    );
+
+    const listAntennaRes = await createAntenna(alice.token, {
+      name: 'リスト指定',
+      src: 'list',
+      user_list: aliceList,
+      keywords: '',
+    });
+    check('リスト指定のアンテナを作れる', listAntennaRes.status, 201);
+    const listAntenna = (await listAntennaRes.json()) as any;
+    check('src は list', listAntenna.src, 'list');
+    check('リスト id を保持する', listAntenna.user_list, aliceList);
+
+    const antennaTimeline = await fetch(
+      `${BASE}/api/antennas/${encodeURIComponent(listAntenna.id)}/timeline`,
+      { headers: auth(alice.token) },
+    );
+    const antennaPosts = ((await antennaTimeline.json()) as any)?.posts as any[];
+    check('メンバーの投稿が入る', antennaPosts.some((p) => p.content === 'リストアンテナのノート'), true);
+    check('リスト外の投稿は入らない', antennaPosts.some((p) => p.content === 'リスト外のノート'), false);
+
+    const updateNoList = await fetch(`${BASE}/api/antennas/${encodeURIComponent(listAntenna.id)}`, {
+      method: 'PUT',
+      headers: auth(alice.token),
+      body: JSON.stringify({ src: 'list', user_list: '' }),
+    });
+    check('更新でリスト未選択は 400', updateNoList.status, 400);
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 プロフィール一覧・チャンネル設定・通報履歴: すべて成功');

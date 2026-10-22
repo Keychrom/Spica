@@ -16,6 +16,7 @@ import { queueLinkPreviewFetch } from './linkPreview.js';
 import { invalidateTimelineCache } from './timelineCache.js';
 import { linkMediaToPost } from './mediaService.js';
 import { runWithConcurrency } from './jobs.js';
+import { antennaListKey, getAntennaListMembersBatch, postMatchesListMembers } from './antennaListSource.js';
 
 export interface CreatePostParams {
   user: UserRow;
@@ -659,6 +660,14 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
       }
     }
 
+    // 🔖 src='list' のアンテナは「そのリストのメンバーか」を見る。
+    //    リストは持ち主が作ったものだけ（getAntennaListMembersBatch が owner で照合する）。
+    //    ここも 1 本にまとめて引く（アンテナごとに引くと投稿数 × アンテナ数になる）
+    const listAntennas = antennas.filter((ant) => ant.src === 'list' && String(ant.user_list || '').trim());
+    const listMembersBatch = listAntennas.length > 0
+      ? await getAntennaListMembersBatch(listAntennas.map((ant) => String(ant.user_list || '').trim()))
+      : new Map<string, string[]>();
+
     for (const ant of antennas) {
       // 自分の投稿は自分に通知しない
       if (ant.user_id === post.user_id) continue;
@@ -666,7 +675,12 @@ export async function checkAntennaMatchesAndNotify(post: any): Promise<void> {
       // フォロー範囲の判定は上でまとめて済ませてある（ここでは引かない）
       if (ant.src === 'home' && !followsAuthor.has(`${config.origin}/users/${ant.user_id}`)) continue;
 
-      if (isPostMatchingAntenna(post, ant)) {
+      // リスト範囲も上でまとめて引いたメンバーを使う（持ち主のリストだけ）
+      const listMembers = ant.src === 'list'
+        ? listMembersBatch.get(antennaListKey(ant.user_id, ant.user_list)) || []
+        : undefined;
+
+      if (isPostMatchingAntenna(post, ant, listMembers)) {
         await createNotification({
           userId: ant.user_id,
           type: 'antenna',
@@ -724,14 +738,17 @@ function splitKeywords(raw: string): string[] {
   return list;
 }
 
-export function isPostMatchingAntenna(post: any, ant: AntennaRow): boolean {
+export function isPostMatchingAntenna(post: any, ant: AntennaRow, listMembers?: readonly string[]): boolean {
   // 1. ファイル添付フィルタ
   if (ant.with_file === 1) {
     const hasMedia = Array.isArray(post.media_attachments) && post.media_attachments.length > 0;
     if (!hasMedia) return false;
   }
 
-  // 2. ソース範囲フィルタ（`home` のフォロー確認は呼び出し側で済み）
+  // 2. ソース範囲フィルタ（`home` のフォロー確認と `list` のメンバー取得は呼び出し側で済み）
+  if (ant.src === 'list' && !postMatchesListMembers(post, listMembers || [])) {
+    return false;
+  }
   if (ant.src === 'users') {
     // 特定ユーザーリスト
     const allowed = (ant.user_list || '')

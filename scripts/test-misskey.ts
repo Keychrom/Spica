@@ -495,6 +495,46 @@ async function run() {
     check('antennas/delete で 204', (await mk('/antennas/delete', { antennaId }, alice.token)).status, 204);
     check('消えた', (await mk('/antennas/list', {}, alice.token)).body.length, 0);
 
+    // src='list'（リスト指定）のアンテナ: userListId を往復し、メンバーの投稿だけ拾う
+    const antennaList = await mk('/users/lists/create', { name: 'アンテナ用' }, alice.token);
+    const antennaListId = antennaList.body.id as string;
+    await mk('/users/lists/push', { listId: antennaListId, userId: 'bob' }, alice.token);
+    await mk('/notes/create', { text: 'リストアンテナのノート', visibility: 'public' }, bob.token);
+    await mk('/notes/create', { text: 'リスト外のノート リストアンテナ', visibility: 'public' }, alice.token);
+    const listAntenna = await mk('/antennas/create', {
+      name: 'リスト指定',
+      src: 'list',
+      userListId: antennaListId,
+      keywords: ['リストアンテナ'],
+    }, alice.token);
+    check('src:list で作れる', listAntenna.status, 200);
+    check('src は list のまま', listAntenna.body.src, 'list');
+    check('userListId が返る', listAntenna.body.userListId, antennaListId);
+    const listAntennaNotes = await mk('/antennas/notes', { antennaId: listAntenna.body.id, limit: 10 }, alice.token);
+    check('リストのメンバーのノートが入る', listAntennaNotes.body.some((n: any) => n.text === 'リストアンテナのノート'), true);
+    check('リスト外のノートは入らない', listAntennaNotes.body.some((n: any) => (n.text || '').includes('リスト外のノート')), false);
+    const listAntennaUpdated = await mk('/antennas/update', {
+      antennaId: listAntenna.body.id,
+      name: 'リスト指定2',
+      src: 'list',
+      userListId: antennaListId,
+      keywords: ['リストアンテナ'],
+    }, alice.token);
+    check('src:list で更新できる', listAntennaUpdated.body.src, 'list');
+    check('userListId を保つ', listAntennaUpdated.body.userListId, antennaListId);
+
+    const bobList = await mk('/users/lists/create', { name: 'bob のリスト' }, bob.token);
+    const stolenList = await mk('/antennas/create', {
+      name: '他人のリスト',
+      src: 'list',
+      userListId: bobList.body.id,
+    }, alice.token);
+    check('他人のリストは 400', stolenList.status, 400);
+
+    await mk('/antennas/delete', { antennaId: listAntenna.body.id }, alice.token);
+    await mk('/users/lists/delete', { listId: antennaListId }, alice.token);
+    await mk('/users/lists/delete', { listId: bobList.body.id }, bob.token);
+
     await mk('/notes/create', { text: 'タグのテスト #spicatest' }, alice.token);
     const byTag = await mk('/notes/search-by-tag', { tag: 'spicatest', limit: 10 });
     check('notes/search-by-tag が返る', Array.isArray(byTag.body), true);

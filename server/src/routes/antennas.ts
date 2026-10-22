@@ -11,8 +11,19 @@ import { config } from '../config.js';
 import { collectVisiblePage, cursorPredicate, parsePageQuery } from '../pagination.js';
 import { requireAuth } from '../auth.js';
 import { enrichAndFilterPosts } from '../postEnrichment.js';
+import { getAntennaListMembers, listMemberCondition } from '../antennaListSource.js';
 
 const router = Router();
+
+/** src = 'list' のとき、user_list が本人のリストを指しているか */
+async function listProblem(src: string, userList: string, userId: string): Promise<string | null> {
+  if (src !== 'list') return null;
+  const listId = String(userList || '').trim();
+  if (!listId) return 'リストを選んでください。';
+  const owned = await db.prepare('SELECT id FROM lists WHERE id = ? AND user_id = ?').get(listId, userId);
+  if (!owned) return '指定したリストが見つかりません。';
+  return null;
+}
 
 // ==========================================
 // 📡 アンテナ (Antenna) エンドポイント
@@ -40,7 +51,12 @@ export const handleCreateAntenna = asyncHandler(async (req: Request, res: Respon
   }
 
   const id = crypto.randomUUID();
-  const validSrc = ['all', 'home', 'users'].includes(src) ? src : 'all';
+  const validSrc = ['all', 'home', 'users', 'list'].includes(src) ? src : 'all';
+  const cleanedUserList = typeof user_list === 'string' ? user_list.trim() : '';
+  const problem = await listProblem(validSrc, cleanedUserList, user.id);
+  if (problem) {
+    return res.status(400).json({ error: problem });
+  }
   const now = new Date().toISOString();
 
   await db.prepare(`
@@ -51,7 +67,7 @@ export const handleCreateAntenna = asyncHandler(async (req: Request, res: Respon
     user.id,
     name.trim(),
     validSrc,
-    typeof user_list === 'string' ? user_list.trim() : '',
+    cleanedUserList,
     typeof keywords === 'string' ? keywords.trim() : '',
     typeof exclude_keywords === 'string' ? exclude_keywords.trim() : '',
     case_sensitive ? 1 : 0,
@@ -65,7 +81,7 @@ export const handleCreateAntenna = asyncHandler(async (req: Request, res: Respon
     user_id: user.id,
     name: name.trim(),
     src: validSrc,
-    user_list: typeof user_list === 'string' ? user_list.trim() : '',
+    user_list: cleanedUserList,
     keywords: typeof keywords === 'string' ? keywords.trim() : '',
     exclude_keywords: typeof exclude_keywords === 'string' ? exclude_keywords.trim() : '',
     case_sensitive: Boolean(case_sensitive),
@@ -105,8 +121,12 @@ export const handleUpdateAntenna = asyncHandler(async (req: Request, res: Respon
   }
 
   const newName = name !== undefined ? String(name).trim() : ant.name;
-  const newSrc = ['all', 'home', 'users'].includes(src) ? src : ant.src;
+  const newSrc = ['all', 'home', 'users', 'list'].includes(src) ? src : ant.src;
   const newUserList = user_list !== undefined ? String(user_list).trim() : ant.user_list;
+  const problem = await listProblem(newSrc, newUserList, user.id);
+  if (problem) {
+    return res.status(400).json({ error: problem });
+  }
   const newKeywords = keywords !== undefined ? String(keywords).trim() : ant.keywords;
   const newExclude = exclude_keywords !== undefined ? String(exclude_keywords).trim() : ant.exclude_keywords;
   const newCase = case_sensitive !== undefined ? (case_sensitive ? 1 : 0) : ant.case_sensitive;
@@ -187,6 +207,10 @@ export const handleAntennaTimeline = asyncHandler(async (req: Request, res: Resp
       // 対象が空のときは**何も拾わない**。条件を足さないと全投稿に一致してしまう
       conditions.push('1=0');
     }
+  } else if (ant.src === 'list') {
+    // 自分のリストのメンバーだけ。リストが消えている・他人のリストなら 1=0 になる
+    const members = await getAntennaListMembers(ant.user_list, user.id);
+    conditions.push(listMemberCondition(members, params));
   }
 
   // メディア有無フィルタ

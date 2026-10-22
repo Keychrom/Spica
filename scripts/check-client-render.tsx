@@ -366,6 +366,12 @@ check(
   antennaEditorSource.includes('対象のユーザーを1人以上入力してください'),
   true,
 );
+check('拾う範囲に「リスト」がある', antennaEditorSource.includes("value: 'list'"));
+const antennaListPickerSource = readFileSync('client/src/components/AntennaListPicker.tsx', 'utf8');
+check('リストの一覧を読み込む', antennaListPickerSource.includes("api.get('/api/lists')"));
+check('アンテナの編集画面がリスト選択を使う', antennaEditorSource.includes('<AntennaListPicker'));
+check('リスト指定ではリスト id を送る', antennaEditorSource.includes("src === 'list'\n                ? listId"));
+check('リスト未選択では保存させない', antennaEditorSource.includes('対象のリストを選んでください'));
 const postCardSource = readFileSync('client/src/components/PostCard.tsx', 'utf8');
 check('本文に投稿の絵文字を渡す', postCardSource.includes('formatContent(shown.content, shown.emojis)'), true);
 check('リアクションの絵文字を画像にする', postCardSource.includes('customEmojiUrl(r.reaction, shown.emojis)'), true);

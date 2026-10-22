@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import ListMembers from './ListMembers';
+import AntennaListPicker from './AntennaListPicker';
 import { api, messageOf } from '../lib/api';
 import type { CollectionKind } from '../views/CollectionView';
 
@@ -45,6 +46,7 @@ const SRC = [
   { value: 'all', label: '連合（すべて）' },
   { value: 'home', label: 'ホーム' },
   { value: 'users', label: '指定した人' },
+  { value: 'list', label: 'リスト' },
 ];
 
 function asText(value: string | string[] | undefined): string {
@@ -59,6 +61,8 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
   const [exclude, setExclude] = useState(asText(item?.exclude_keywords));
   const [src, setSrc] = useState(item?.src || 'all');
   const [userList, setUserList] = useState(item?.user_list || '');
+  /** src = 'list' のときのリスト id（サーバーでは user_list に入れる） */
+  const [listId, setListId] = useState(item?.src === 'list' ? (item?.user_list || '') : '');
   const [notify, setNotify] = useState(Boolean(item?.notify));
   const [withFile, setWithFile] = useState(Boolean(item?.with_file));
   const [color, setColor] = useState(item?.color || '#6d5ae6');
@@ -93,6 +97,10 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
       setErr('「指定した人」を選んだときは、対象のユーザーを1人以上入力してください。');
       return;
     }
+    if (kind === 'antennas' && src === 'list' && !listId) {
+      setErr('「リスト」を選んだときは、対象のリストを選んでください。');
+      return;
+    }
     setBusy(true);
     setErr('');
     const body =
@@ -102,7 +110,9 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
           ? {
               name: name.trim(),
               src,
-              user_list: userList.split(',').map((u) => u.trim()).filter(Boolean).join(','),
+              user_list: src === 'list'
+                ? listId
+                : userList.split(',').map((u) => u.trim()).filter(Boolean).join(','),
               keywords: keywords.split(',').map((k) => k.trim()).filter(Boolean).join(','),
               exclude_keywords: exclude.split(',').map((k) => k.trim()).filter(Boolean).join(','),
               notify,
@@ -210,6 +220,9 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
                     placeholder="対象のユーザー（カンマ区切り。例: @alice, @bob@example.com）"
                     onChange={(event) => setUserList(event.target.value)}
                   />
+                )}
+                {src === 'list' && (
+                  <AntennaListPicker value={listId} onChange={setListId} />
                 )}
                 <input
                   className="field"
