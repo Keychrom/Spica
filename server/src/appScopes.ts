@@ -141,6 +141,9 @@ const MISSKEY_READ_POSTS = new Set([
   '/api/channels/followed',
   '/api/channels/show',
   '/api/channels/timeline',
+  '/api/clips/list',
+  '/api/clips/notes',
+  '/api/clips/show',
   '/api/drive',
   '/api/drive/files',
   '/api/drive/files/show',
@@ -187,6 +190,8 @@ const MISSKEY_READ_POSTS = new Set([
 
 const MISSKEY_WRITE_SCOPES: [RegExp, AppScope][] = [
   [/^\/api\/notes\/favorites\/(create|delete)$/, 'write:bookmarks'],
+  // クリップ（ブックマークのフォルダ）はブックマークと同じ権限に寄せる
+  [/^\/api\/clips\/(create|update|delete|add-note|remove-note)$/, 'write:bookmarks'],
   [/^\/api\/notes\/(create|delete|update|polls\/vote|renotes|reactions\/(create|delete))$/, 'write:notes'],
   [/^\/api\/notes\/unrenote$/, 'write:notes'],
   [/^\/api\/users\/report-abuse$/, 'write:notes'],
@@ -207,6 +212,7 @@ const REST_WRITE_SCOPES: [RegExp, AppScope][] = [
   [/^\/api\/reports(\/|$)/, 'write:notes'],
   [/^\/api\/(media|drive)(\/|$)/, 'write:drive'],
   [/^\/api\/(bookmarks|pin)(\/|$)/, 'write:bookmarks'],
+  [/^\/api\/clips(\/|$)/, 'write:bookmarks'],
   [/^\/api\/(follow|unfollow|follow-requests)(\/|$)/, 'write:follows'],
   // ブロック・ミュート（Spica の REST は /users/:id/...、互換名も受ける）
   [/^\/api\/(users\/[^/]+\/(block|unblock|mute|unmute)|block|mute)(\/|$)/, 'write:blocks'],

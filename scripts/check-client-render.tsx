@@ -372,7 +372,22 @@ check('リストの一覧を読み込む', antennaListPickerSource.includes("api
 check('アンテナの編集画面がリスト選択を使う', antennaEditorSource.includes('<AntennaListPicker'));
 check('リスト指定ではリスト id を送る', antennaEditorSource.includes("src === 'list'\n                ? listId"));
 check('リスト未選択では保存させない', antennaEditorSource.includes('対象のリストを選んでください'));
+
+// クリップ（ブックマークのフォルダ）
+const collectionViewSource = readFileSync('client/src/views/CollectionView.tsx', 'utf8');
+check('コレクションにクリップがある', collectionViewSource.includes("clips: {"));
+check(
+  'ブックマークの画面だけフォルダ追加を出す',
+  collectionViewSource.includes("kind === 'bookmarks' ? (post) => setClipTarget(post) : undefined"),
+);
+const clipPickerSource = readFileSync('client/src/components/ClipPicker.tsx', 'utf8');
+check('クリップの一覧を contains 付きで取る', clipPickerSource.includes("'/api/clips?postId='"));
+check('クリップへノートを追加する', clipPickerSource.includes("'/notes'") && clipPickerSource.includes('postId: post.id'));
+check('ルートに /clips が入る', routesSource.includes("'clips'"));
+const navSource = readFileSync('client/src/lib/nav.ts', 'utf8');
+check('ナビにクリップがある', navSource.includes("path: '/clips'"));
 const postCardSource = readFileSync('client/src/components/PostCard.tsx', 'utf8');
+check('PostCard にフォルダのボタンがある', postCardSource.includes('onAddToClip'));
 check('本文に投稿の絵文字を渡す', postCardSource.includes('formatContent(shown.content, shown.emojis)'), true);
 check('リアクションの絵文字を画像にする', postCardSource.includes('customEmojiUrl(r.reaction, shown.emojis)'), true);
 const contentFormatSource = readFileSync('client/src/lib/contentFormat.ts', 'utf8');

@@ -6,7 +6,7 @@
  * ・`thread` を受け取ると、親・返信の相手と線でつながる（タイムライン用）
  */
 import { useEffect, useState } from 'react';
-import { Bookmark, CornerUpLeft, Quote, Repeat2, Share2 } from 'lucide-react';
+import { Bookmark, CornerUpLeft, FolderPlus, Quote, Repeat2, Share2 } from 'lucide-react';
 import PostMenu from './PostMenu';
 import PostMedia from './PostMedia';
 import PostPoll from './PostPoll';
@@ -31,6 +31,8 @@ interface PostCardProps {
   thread?: { railTop: boolean; railBottom: boolean; replyTo: { label: string; href: string } | null };
   onReact: (post: Post, reaction: string) => void;
   onBookmark: (post: Post) => void;
+  /** ブックマークのフォルダ（クリップ）へ入れる。渡した画面だけボタンを出す */
+  onAddToClip?: (post: Post) => void;
   onRenote: (post: Post) => void;
   onReply: (post: Post) => void;
   onQuote: (post: Post) => void;
@@ -252,6 +254,17 @@ export default function PostCard(props: PostCardProps) {
           >
             <Bookmark size={16} strokeWidth={1.5} />
           </button>
+          {props.onAddToClip && (
+            <button
+              type="button"
+              className="acts__a"
+              onClick={() => props.onAddToClip!(shown)}
+              aria-label="フォルダ（クリップ）に入れる"
+              title="フォルダ（クリップ）に入れる"
+            >
+              <FolderPlus size={16} strokeWidth={1.5} />
+            </button>
+          )}
         </div>
       </div>
 

@@ -6,6 +6,7 @@ import {
   Bell,
   Bookmark,
   FileText,
+  FolderOpen,
   Hash,
   HardDrive,
   Home,
@@ -38,6 +39,7 @@ export const NAV_PRIMARY: NavItem[] = [
 ];
 
 export const NAV_COLLECTIONS: NavItem[] = [
+  { path: '/clips', label: 'クリップ', icon: FolderOpen },
   { path: '/lists', label: 'リスト', icon: List },
   { path: '/antennas', label: 'アンテナ', icon: Radio },
   { path: '/channels', label: 'チャンネル', icon: Hash },

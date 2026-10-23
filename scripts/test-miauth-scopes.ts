@@ -255,6 +255,16 @@ async function run(): Promise<void> {
     check('read で channels/timeline', allows(['read'], 'POST', '/api/channels/timeline'), true);
     check('read で channels/featured', allows(['read'], 'POST', '/api/channels/featured'), true);
     check('read で channels/followed', allows(['read'], 'POST', '/api/channels/followed'), true);
+    check('read で clips/list', allows(['read'], 'POST', '/api/clips/list'), true);
+    check('read で clips/show', allows(['read'], 'POST', '/api/clips/show'), true);
+    check('read で clips/notes', allows(['read'], 'POST', '/api/clips/notes'), true);
+    check('write:bookmarks で clips/create', allows(['write:bookmarks'], 'POST', '/api/clips/create'), true);
+    check('write:bookmarks で clips/add-note', allows(['write:bookmarks'], 'POST', '/api/clips/add-note'), true);
+    check(
+      'write:notes だけではクリップを作れない',
+      appScopeDenial(asApp(['read', 'write:notes']), 'POST', '/api/clips/create')?.required,
+      'write:bookmarks',
+    );
     check('read で drive', allows(['read'], 'POST', '/api/drive'), true);
     check('read で drive/files/show', allows(['read'], 'POST', '/api/drive/files/show'), true);
     check('read で drive/stream', allows(['read'], 'POST', '/api/drive/stream'), true);

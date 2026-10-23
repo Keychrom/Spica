@@ -120,6 +120,10 @@ export async function deleteUserAccount(userId: string): Promise<DeleteUserAccou
     await db.prepare('DELETE FROM reactions WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
     await db.prepare('DELETE FROM announces WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
     await db.prepare('DELETE FROM bookmarks WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
+    // クリップ（フォルダ）は本人のものも、消える投稿への参照も片付ける
+    await db.prepare('DELETE FROM clip_notes WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
+    await db.prepare('DELETE FROM clip_notes WHERE clip_id IN (SELECT id FROM clips WHERE user_id = ?)').run(cleanId);
+    await db.prepare('DELETE FROM clips WHERE user_id = ?').run(cleanId);
     await db.prepare('DELETE FROM pinned_posts WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
     await db.prepare('DELETE FROM polls WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)').run(cleanId);
 

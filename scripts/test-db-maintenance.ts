@@ -79,6 +79,7 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
       actor_handle TEXT, actor_icon TEXT DEFAULT '', post_id TEXT, post_content TEXT DEFAULT '', content TEXT DEFAULT '',
       is_read INTEGER DEFAULT 0, created_at TEXT);
     CREATE TABLE bookmarks (user_id TEXT NOT NULL, post_id TEXT NOT NULL, created_at TEXT, PRIMARY KEY(user_id, post_id));
+    CREATE TABLE clip_notes (clip_id TEXT NOT NULL, post_id TEXT NOT NULL, created_at TEXT, PRIMARY KEY(clip_id, post_id));
     CREATE TABLE pinned_posts (user_id TEXT NOT NULL, post_id TEXT NOT NULL, created_at TEXT,
       PRIMARY KEY(user_id, post_id), FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE);
     CREATE TABLE polls (id TEXT PRIMARY KEY, post_id TEXT NOT NULL UNIQUE, created_at TEXT,
@@ -118,6 +119,7 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
   }
   // 古いが残すべきリモート投稿
   insertPost.run('remote-bookmarked', 'http://remote/users/bm', 'BM', 'http://remote/users/bm', '@bm@remote', 'ブックマークされた古い投稿', 0, null, '[]', iso(100));
+  insertPost.run('remote-clipped', 'http://remote/users/cl', 'CL', 'http://remote/users/cl', '@cl@remote', 'クリップに入れた古い投稿', 0, null, '[]', iso(100));
   insertPost.run('remote-pinned', 'http://remote/users/pin', 'PIN', 'http://remote/users/pin', '@pin@remote', 'ピン留めされた古い投稿', 0, null, '[]', iso(100));
   insertPost.run('remote-react', 'http://remote/users/re', 'RE', 'http://remote/users/re', '@re@remote', 'ローカルがリアクションした古い投稿', 0, null, '[]', iso(100));
   insertPost.run('remote-boosted', 'http://remote/users/bo', 'BO', 'http://remote/users/bo', '@bo@remote', 'ローカルがブーストした古い投稿', 0, null, '[]', iso(100));
@@ -131,6 +133,8 @@ const iso = (daysAgo: number): string => new Date(Date.now() - daysAgo * 86400_0
   quoted.run('local-quote', 'bob', 'Bob', 'http://local/users/bob', '@bob@local', '引用', 1, null, 'remote-parent', iso(5));
 
   db.prepare('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?,?,?)').run('alice', 'remote-bookmarked', now);
+  // クリップに入れた投稿は残す
+  db.prepare('INSERT INTO clip_notes (clip_id, post_id, created_at) VALUES (?,?,?)').run('clip-1', 'remote-clipped', now);
   db.prepare('INSERT INTO pinned_posts (user_id, post_id, created_at) VALUES (?,?,?)').run('alice', 'remote-pinned', now);
   db.prepare('INSERT INTO reactions (id, post_id, user_id, user_name, reaction, is_local, created_at) VALUES (?,?,?,?,?,?,?)').run('r1', 'remote-react', 'alice', 'Alice', '⭐', 1, now);
   db.prepare('INSERT INTO announces (id, post_id, user_id, user_name, user_handle, is_local, created_at) VALUES (?,?,?,?,?,?,?)').run('a1', 'remote-boosted', 'alice', 'Alice', '@alice@local', 1, now);
@@ -170,6 +174,7 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('削除対象は古いリモート投稿のみ (2000件)', plan.byAge === 2000, `byAge=${plan.byAge}`);
   check('保持期間内の投稿は対象外', plan.total === 2000, `total=${plan.total}`);
   check('ブックマークされた投稿は残す', plan.keptByReason['ブックマーク'] === 1);
+  check('クリップに入れた投稿は残す', plan.keptByReason['クリップ'] === 1);
   check('ピン留めされた投稿は残す', plan.keptByReason['ピン留め'] === 1);
   check('ローカルのリアクションがある投稿は残す', plan.keptByReason['ローカルからのリアクション'] === 1);
   check('ローカルのブーストがある投稿は残す', plan.keptByReason['ローカルからのブースト'] === 1);
@@ -321,11 +326,13 @@ const options: MaintenanceOptions = { ...DEFAULT_MAINTENANCE_OPTIONS, retentionD
   check('従属するブーストを削除', removed.announces === 1, `announces=${removed.announces}`);
   check('従属する通知を削除（ローカル投稿宛は残す）', removed.notifications === 1, `notifications=${removed.notifications}`);
   check('従属するアンケートを削除', removed.polls === 1, `polls=${removed.polls}`);
+  check('従属するクリップ行を削除', removed.clip_notes === 0, `clip_notes=${removed.clip_notes}`);
 
   const remaining = async (sql: string): Promise<number> => Number((await db.prepare(sql).get() as any).c);
   check('ローカル投稿は残っている', await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1') === 4, `local=${await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 1')}`);
-  check('保持対象のリモート投稿は残っている', await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0') === 57, `remote=${await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0')}`);
+  check('保持対象のリモート投稿は残っている', await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0') === 58, `remote=${await remaining('SELECT COUNT(*) c FROM posts WHERE is_local = 0')}`);
   check('ブックマークされた投稿が残っている', await remaining("SELECT COUNT(*) c FROM posts WHERE id = 'remote-bookmarked'") === 1);
+  check('クリップに入れた投稿が残っている', await remaining("SELECT COUNT(*) c FROM posts WHERE id = 'remote-clipped'") === 1);
   check('FTS からも消えている', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id LIKE 'remote-old-%'") === 0);
   check('FTS に残す投稿は残っている', await remaining("SELECT COUNT(*) c FROM posts_fts WHERE post_id = 'local-1'") === 1);
   check('ローカル投稿宛の通知は残る', await remaining("SELECT COUNT(*) c FROM notifications WHERE id = 'n2'") === 1);

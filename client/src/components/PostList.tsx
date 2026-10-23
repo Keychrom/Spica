@@ -17,6 +17,8 @@ interface PostListProps {
   canModerate?: boolean;
   onReply: (post: Post) => void;
   onQuote: (post: Post) => void;
+  /** ブックマークのフォルダ（クリップ）へ入れる（ブックマーク画面だけ渡す） */
+  onAddToClip?: (post: Post) => void;
   /** 空のときの案内（画面ごとに変える） */
   empty?: ReactNode;
   /** ログインしていない人向けの案内を下に出すか */
@@ -31,6 +33,7 @@ export default function PostList({
   canModerate,
   onReply,
   onQuote,
+  onAddToClip,
   empty,
   showSignInHint,
   onSignIn,
@@ -55,6 +58,7 @@ export default function PostList({
           onRenote={(p) => void timeline.renote(p)}
           onReply={onReply}
           onQuote={onQuote}
+          onAddToClip={onAddToClip}
           onShare={timeline.share}
           signedIn={signedIn}
           myId={myId}

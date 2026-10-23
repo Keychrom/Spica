@@ -136,6 +136,23 @@ CREATE TABLE IF NOT EXISTS channel_follows  (
   FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS clips  (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  is_public BIGINT NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS clip_notes  (
+  clip_id TEXT NOT NULL,
+  post_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(clip_id, post_id),
+  FOREIGN KEY(clip_id) REFERENCES clips(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS custom_emojis  (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -558,6 +575,9 @@ CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, created_at D
 CREATE INDEX IF NOT EXISTS idx_channel_follows_user ON channel_follows(user_id);
 CREATE INDEX IF NOT EXISTS idx_channels_created_at ON channels(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_channels_user ON channels(user_id);
+CREATE INDEX IF NOT EXISTS idx_clip_notes_clip ON clip_notes(clip_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_clip_notes_post ON clip_notes(post_id);
+CREATE INDEX IF NOT EXISTS idx_clips_user ON clips(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_custom_emojis_name ON custom_emojis(name);
 CREATE INDEX IF NOT EXISTS idx_deleted_remote_posts_at ON deleted_remote_posts(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_dm_reads_post ON dm_reads(post_id);

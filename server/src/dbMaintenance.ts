@@ -78,6 +78,7 @@ export interface RemovalCounts {
   announces: number;
   notifications: number;
   bookmarks: number;
+  clip_notes: number;
   polls: number;
   fts: number;
 }
@@ -204,6 +205,7 @@ export function retentionKeepRules(opts: MaintenanceOptions): RetentionKeepRule[
   const localReplies = 'SELECT in_reply_to FROM posts WHERE is_local = 1 AND in_reply_to IS NOT NULL';
   const rules: RetentionKeepRule[] = [
     { label: 'ブックマーク', match: 'p.id IN (SELECT post_id FROM bookmarks)' },
+    { label: 'クリップ', match: 'p.id IN (SELECT post_id FROM clip_notes)' },
     { label: 'ピン留め', match: 'p.id IN (SELECT post_id FROM pinned_posts)' },
     // ローカル投稿の返信先・引用元になっている投稿（自分の投稿の文脈を壊さない）
     {
@@ -328,7 +330,7 @@ export async function applyRemotePostRemoval(db: AsyncSpicaDatabase, opts: Maint
 
 async function applyRemotePostRemovalInSession(db: AsyncSpicaDatabase, opts: MaintenanceOptions): Promise<RemovalCounts> {
   const total = await materializeTargets(db, opts);
-  const counts: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, polls: 0, fts: 0 };
+  const counts: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, clip_notes: 0, polls: 0, fts: 0 };
   if (total === 0) {
     await db.exec('DROP TABLE IF EXISTS temp._maintenance_targets');
     return counts;
@@ -349,6 +351,7 @@ async function applyRemotePostRemovalInSession(db: AsyncSpicaDatabase, opts: Mai
     ['announces', db.prepare('DELETE FROM announces WHERE post_id IN (SELECT id FROM _target_batch)')],
     ['notifications', db.prepare('DELETE FROM notifications WHERE post_id IN (SELECT id FROM _target_batch)')],
     ['bookmarks', db.prepare('DELETE FROM bookmarks WHERE post_id IN (SELECT id FROM _target_batch)')],
+    ['clip_notes', db.prepare('DELETE FROM clip_notes WHERE post_id IN (SELECT id FROM _target_batch)')],
     ['polls', db.prepare('DELETE FROM polls WHERE post_id IN (SELECT id FROM _target_batch)')],
   ];
   const insertBatch = db.prepare('INSERT OR IGNORE INTO _target_batch (id) VALUES (?)');
@@ -711,7 +714,7 @@ export async function runMaintenance(params: {
   try {
     const before = await getDbSizeInfo(params.dbPath, db);
     const targets = await planRemotePostRemoval(db, params.options);
-    let removed: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, polls: 0, fts: 0 };
+    let removed: RemovalCounts = { posts: 0, reactions: 0, announces: 0, notifications: 0, bookmarks: 0, clip_notes: 0, polls: 0, fts: 0 };
     let media: MediaCleanupResult = {
       scannedFiles: 0,
       scannedBytes: 0,

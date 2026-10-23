@@ -290,7 +290,7 @@ async function main(): Promise<number> {
     const r = report.removed;
     console.log(`  投稿: ${r.posts} 件 / FTS 索引: ${r.fts} 件`);
     console.log(`  リアクション: ${r.reactions} 件 / ブースト: ${r.announces} 件 / 通知: ${r.notifications} 件`);
-    console.log(`  ブックマーク: ${r.bookmarks} 件 / アンケート: ${r.polls} 件`);
+    console.log(`  ブックマーク: ${r.bookmarks} 件 / クリップ: ${r.clip_notes} 件 / アンケート: ${r.polls} 件`);
     console.log('');
     if (report.policy) {
       console.log('■ ⑤ 保存・索引の方針を適用');

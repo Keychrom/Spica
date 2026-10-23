@@ -1,18 +1,19 @@
 /**
- * ブックマーク / リスト / アンテナ / チャンネルの 1 画面。
+ * ブックマーク / クリップ / リスト / アンテナ / チャンネルの 1 画面。
  * 「集めたノートを読む」画面はどれも同じ形なので、1 つにまとめている。
- *   kind: bookmarks（一覧だけ） / lists / antennas / channels（一覧 + 選択したもののタイムライン）
+ *   kind: bookmarks（一覧だけ） / clips / lists / antennas / channels（一覧 + 選択したもののタイムライン）
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import ScreenHead from '../components/ScreenHead';
 import CollectionEditor from '../components/CollectionEditor';
+import ClipPicker from '../components/ClipPicker';
 import PostList from '../components/PostList';
 import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { useTimeline } from '../lib/useTimeline';
 import type { Post } from '../lib/format';
 
-export type CollectionKind = 'bookmarks' | 'lists' | 'antennas' | 'channels';
+export type CollectionKind = 'bookmarks' | 'clips' | 'lists' | 'antennas' | 'channels';
 
 const META: Record<CollectionKind, { title: string; empty: ReactNode; note?: string }> = {
   bookmarks: {
@@ -22,6 +23,16 @@ const META: Record<CollectionKind, { title: string; empty: ReactNode; note?: str
         保存したノートはまだありません。
         <br />
         ノートの右下のしおりから保存できます。
+      </>
+    ),
+  },
+  clips: {
+    title: 'クリップ（ブックマークのフォルダ）',
+    empty: (
+      <>
+        このクリップにはまだノートがありません。
+        <br />
+        ブックマークの画面で、ノートのフォルダのボタンから追加できます。
       </>
     ),
   },
@@ -85,6 +96,8 @@ export default function CollectionView({
   const [loadingItems, setLoadingItems] = useState(kind !== 'bookmarks');
   /** 作成・編集の画面（'new' なら新規） */
   const [editing, setEditing] = useState<'new' | string | null>(null);
+  /** 「フォルダ（クリップ）に入れる」対象のノート */
+  const [clipTarget, setClipTarget] = useState<Post | null>(null);
   const [version, setVersion] = useState(0);
   /** チャンネルの先頭を自動で開いたか（URL への反映を 1 回だけにする） */
   const autoSelectedChannel = useRef(false);
@@ -212,6 +225,7 @@ export default function CollectionView({
           onReply={onReply}
           onQuote={onQuote}
           empty={meta.empty}
+          onAddToClip={kind === 'bookmarks' ? (post) => setClipTarget(post) : undefined}
         />
       )}
 
@@ -223,6 +237,8 @@ export default function CollectionView({
           onSaved={() => setVersion((current) => current + 1)}
         />
       )}
+
+      {clipTarget && <ClipPicker post={clipTarget} onClose={() => setClipTarget(null)} />}
 
       {signedIn && !timelinePath && !loadingItems && (
         <div className="feed">

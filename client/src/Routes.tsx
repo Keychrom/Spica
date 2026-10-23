@@ -28,7 +28,7 @@ import type { ThemeChoice } from './lib/theme';
 const PLACEHOLDERS: Record<string, { title: string; phase: string; note: string }> = {};
 
 /** 「集めたノートを読む」画面（1 つの画面で兼ねる） */
-const COLLECTIONS: CollectionKind[] = ['bookmarks', 'lists', 'antennas', 'channels'];
+const COLLECTIONS: CollectionKind[] = ['bookmarks', 'clips', 'lists', 'antennas', 'channels'];
 
 interface RoutesProps {
   path: string;

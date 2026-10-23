@@ -37,6 +37,7 @@ interface Props {
 
 const KIND_LABEL: Record<CollectionKind, string> = {
   bookmarks: 'ブックマーク',
+  clips: 'クリップ',
   lists: 'リスト',
   antennas: 'アンテナ',
   channels: 'チャンネル',
@@ -106,7 +107,9 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
     const body =
       kind === 'lists'
         ? { name: name.trim() }
-        : kind === 'antennas'
+        : kind === 'clips'
+          ? { name: name.trim(), description: description.trim() }
+          : kind === 'antennas'
           ? {
               name: name.trim(),
               src,
@@ -177,7 +180,15 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
             <input
               className="field"
               value={name}
-              placeholder={kind === 'lists' ? 'リスト名' : kind === 'antennas' ? 'アンテナ名' : 'チャンネル名'}
+              placeholder={
+                kind === 'lists'
+                  ? 'リスト名'
+                  : kind === 'antennas'
+                    ? 'アンテナ名'
+                    : kind === 'clips'
+                      ? 'フォルダ名（例: イラスト）'
+                      : 'チャンネル名'
+              }
               onChange={(event) => setName(event.target.value)}
             />
 
@@ -199,6 +210,16 @@ export default function CollectionEditor({ kind, item, onClose, onSaved }: Props
                   />
                 </label>
               </>
+            )}
+
+            {kind === 'clips' && (
+              <input
+                className="field"
+                value={description}
+                maxLength={200}
+                placeholder="説明（任意）"
+                onChange={(event) => setDescription(event.target.value)}
+              />
             )}
 
             {kind === 'antennas' && (

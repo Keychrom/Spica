@@ -85,6 +85,8 @@ export const handleDeletePost = asyncHandler(async (req: Request, res: Response)
   await db.prepare('DELETE FROM posts WHERE id = ?').run(postId);
   await db.prepare('DELETE FROM reactions WHERE post_id = ?').run(postId);
   await db.prepare('DELETE FROM announces WHERE post_id = ?').run(postId);
+  // クリップ（ブックマークのフォルダ）からも消す（孤児を残さない）
+  await db.prepare('DELETE FROM clip_notes WHERE post_id = ?').run(postId).catch(() => undefined);
   // DM の既読記録も一緒に消す（孤児を残さない）
   await db.prepare('DELETE FROM dm_reads WHERE post_id = ?').run(postId).catch(() => undefined);
   // 読み取りキャッシュにも消えたことを反映させる

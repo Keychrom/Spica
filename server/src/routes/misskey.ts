@@ -14,6 +14,16 @@ import { handleAddListMember, handleCreateList, handleDeleteList, handleListTime
 import { handleBlockUser, handleUnblockUser, handleMuteUser, handleUnmuteUser } from './blocks.js';
 import { handleAntennaTimeline, handleCreateAntenna, handleDeleteAntenna, handleShowAntenna, handleUpdateAntenna } from './antennas.js';
 import { handleListBookmarks, handleToggleBookmark } from './bookmarks.js';
+import {
+  handleAddClipNote,
+  handleClipTimeline,
+  handleCreateClip,
+  handleDeleteClip,
+  handleListClips,
+  handleRemoveClipNote,
+  handleShowClip,
+  handleUpdateClip,
+} from './clips.js';
 import { setPinnedPost } from './pin.js';
 import { handleReadNotification } from './notifications.js';
 import { handleAnnouncePost, handleCreatePost, handleDeletePost, handleReactToPost, handleVotePoll } from './posts.js';
@@ -1608,6 +1618,163 @@ misskeyRouter.post('/antennas/notes', asyncHandler(async (req: Request, res: Res
   req.params = { ...(req.params || {}), id: antennaId } as any;
   req.query = query as any;
   const result = await callHandler(handleAntennaTimeline, req);
+  if (forwardError(res, result)) return;
+  res.json(await toMisskeyNotes((result.body?.posts || []) as any[]));
+}));
+
+// ---------------------------------------------------------------------------
+// クリップ（clips/*）: Spica のブックマークのフォルダ
+// ---------------------------------------------------------------------------
+
+function misskeyClipOwner(user: UserRow) {
+  return buildMisskeyUser({
+    id: user.id,
+    name: user.name,
+    handle: `@${user.id}@${config.domain}`,
+    icon_url: user.icon_url,
+    is_local: 1,
+    created_at: user.created_at,
+  });
+}
+
+/** Spica のクリップ行（clipJson）→ Misskey の Clip */
+function misskeyClip(row: any, owner: UserRow | null) {
+  return {
+    id: row.id,
+    createdAt: new Date(row.created_at).toISOString(),
+    userId: row.user_id,
+    ...(owner ? { user: misskeyClipOwner(owner) } : {}),
+    name: row.name,
+    description: row.description || null,
+    isPublic: Boolean(row.is_public),
+    notesCount: Number(row.notes_count ?? 0),
+  };
+}
+
+/** 自分のクリップ一覧（`clips/list`） */
+misskeyRouter.post('/clips/list', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  req.query = {} as any;
+  const result = await callHandler(handleListClips, req);
+  if (forwardError(res, result)) return;
+  res.json((result.body as any[]).map((row) => misskeyClip(row, user)));
+}));
+
+/** クリップ単体（`clips/show`）。公開クリップは他人のも読める */
+misskeyRouter.post('/clips/show', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: clipId } as any;
+  const result = await callHandler(handleShowClip, req);
+  if (forwardError(res, result)) return;
+  const owner = (await db.prepare('SELECT * FROM users WHERE id = ?').get(result.body.user_id)) as UserRow | undefined;
+  res.json(misskeyClip(result.body, owner || null));
+}));
+
+misskeyRouter.post('/clips/create', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  req.body = {
+    name: req.body?.name,
+    description: req.body?.description,
+    is_public: req.body?.isPublic === true,
+  };
+  const result = await callHandler(handleCreateClip, req);
+  if (forwardError(res, result)) return;
+  res.json(misskeyClip(result.body, user));
+}));
+
+misskeyRouter.post('/clips/update', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: clipId } as any;
+  const next: Record<string, unknown> = {};
+  if (req.body?.name !== undefined) next.name = req.body.name;
+  if (req.body?.description !== undefined) next.description = req.body.description;
+  if (req.body?.isPublic !== undefined) next.is_public = req.body.isPublic === true;
+  req.body = next;
+  const result = await callHandler(handleUpdateClip, req);
+  if (forwardError(res, result)) return;
+  res.json(misskeyClip(result.body, user));
+}));
+
+misskeyRouter.post('/clips/delete', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  req.params = { ...(req.params || {}), id: clipId } as any;
+  const result = await callHandler(handleDeleteClip, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/clips/add-note', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''), ['post']);
+  if (!target) {
+    return res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+  }
+  req.params = { ...(req.params || {}), id: clipId } as any;
+  req.body = { postId: target.id };
+  const result = await callHandler(handleAddClipNote, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+misskeyRouter.post('/clips/remove-note', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  const target = await resolveMisskeyId(String(req.body?.noteId || ''), ['post']);
+  if (!target) {
+    return res.status(400).json({ error: 'noteId を解決できません。', code: 'NO_SUCH_NOTE' });
+  }
+  req.params = { ...(req.params || {}), id: clipId, postId: target.id } as any;
+  const result = await callHandler(handleRemoveClipNote, req);
+  if (forwardError(res, result)) return;
+  res.status(204).end();
+}));
+
+/** クリップのノート一覧（`clips/notes`） */
+misskeyRouter.post('/clips/notes', asyncHandler(async (req: Request, res: Response) => {
+  const user = await attachUser(req);
+  if (!requireUser(user, res)) return;
+  const clipId = String(req.body?.clipId || '').trim();
+  if (!clipId) {
+    return res.status(400).json({ error: 'clipId が必要です。' });
+  }
+  const limit = readLimit(req.body?.limit, 20, 100);
+  const query: Record<string, string> = { limit: String(limit) };
+  if (typeof req.body?.untilId === 'string' && req.body.untilId) {
+    const pair = await misskeyCursorPair(req.body.untilId);
+    if (!pair) {
+      return res.status(400).json({ error: 'untilId を解決できません。' });
+    }
+    query.cursor = encodeCursor(pair.at, pair.id);
+  }
+  req.params = { ...(req.params || {}), id: clipId } as any;
+  req.query = query as any;
+  const result = await callHandler(handleClipTimeline, req);
   if (forwardError(res, result)) return;
   res.json(await toMisskeyNotes((result.body?.posts || []) as any[]));
 }));

@@ -539,6 +539,26 @@ async function initDatabaseSchema(): Promise<void> {
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- ブックマークのフォルダ（Misskey のクリップ）。ノートは複数のクリップに入れられる
+    CREATE TABLE IF NOT EXISTS clips (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      is_public INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS clip_notes (
+      clip_id TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(clip_id, post_id),
+      FOREIGN KEY(clip_id) REFERENCES clips(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS user_blocks (
       user_id TEXT NOT NULL,
       target_user_id TEXT NOT NULL,
@@ -767,6 +787,10 @@ async function initDatabaseSchema(): Promise<void> {
     -- 主キーは (user_id, post_id) なので、post_id だけでは索引が効かない
     -- （無いと候補 1 件ごとに全走査になる。実測で 3.83s → 0.10s）
     CREATE INDEX IF NOT EXISTS idx_bookmarks_post ON bookmarks(post_id);
+    CREATE INDEX IF NOT EXISTS idx_clips_user ON clips(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_clip_notes_clip ON clip_notes(clip_id, created_at DESC);
+    -- 保持期間の判定（リモート投稿を消してよいか）が post_id で引くため
+    CREATE INDEX IF NOT EXISTS idx_clip_notes_post ON clip_notes(post_id);
     CREATE INDEX IF NOT EXISTS idx_pinned_posts_post ON pinned_posts(post_id);
     CREATE INDEX IF NOT EXISTS idx_user_blocks_user ON user_blocks(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_mutes_user ON user_mutes(user_id);

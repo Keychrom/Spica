@@ -354,6 +354,93 @@ async function run() {
     });
     check('更新でリスト未選択は 400', updateNoList.status, 400);
 
+    // ------------------------------------------------------------------
+    console.log('\n📁 [5] クリップ（ブックマークのフォルダ）');
+    const clipTargetRes = await fetch(`${BASE}/api/posts`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ content: 'クリップ用のノート' }),
+    });
+    const clipTarget = (await clipTargetRes.json()) as any;
+
+    const clipRes = await fetch(`${BASE}/api/clips`, {
+      method: 'POST',
+      headers: auth(alice.token),
+      body: JSON.stringify({ name: 'あとで読む', description: 'テスト用' }),
+    });
+    check('クリップを作れる', clipRes.status, 201);
+    const clip = (await clipRes.json()) as any;
+    check('名前と説明が入る', [clip.name, clip.description], ['あとで読む', 'テスト用']);
+    check('はじめは 0 件', clip.notes_count, 0);
+
+    const addRes = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}/notes`, {
+      method: 'POST',
+      headers: auth(alice.token),
+      body: JSON.stringify({ postId: clipTarget.id }),
+    });
+    check('ノートを追加できる', addRes.status, 200);
+    check('追加された', ((await addRes.json()) as any).added, true);
+    const againRes = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}/notes`, {
+      method: 'POST',
+      headers: auth(alice.token),
+      body: JSON.stringify({ postId: clipTarget.id }),
+    });
+    check('二重追加は added=false', ((await againRes.json()) as any).added, false);
+
+    const withContains = (await (
+      await fetch(`${BASE}/api/clips?postId=${encodeURIComponent(clipTarget.id)}`, {
+        headers: auth(alice.token),
+      })
+    ).json()) as any[];
+    check('contains が立つ', withContains[0]?.contains, true);
+    check('件数が 1 になる', withContains[0]?.notes_count, 1);
+
+    const clipTimelineRes = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}/timeline`, {
+      headers: auth(alice.token),
+    });
+    const clipTimeline = (await clipTimelineRes.json()) as any;
+    check('タイムラインに入る', clipTimeline.posts?.some((p: any) => p.id === clipTarget.id), true);
+
+    const bookmarksNow = (await (
+      await fetch(`${BASE}/api/bookmarks`, { headers: auth(alice.token) })
+    ).json()) as any[];
+    check('クリップ追加だけではブックマークにならない', bookmarksNow.some((p) => p.id === clipTarget.id), false);
+
+    const foreignAdd = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}/notes`, {
+      method: 'POST',
+      headers: auth(bob.token),
+      body: JSON.stringify({ postId: clipTarget.id }),
+    });
+    check('他人のクリップには追加できない', foreignAdd.status, 404);
+    const foreignDelete = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}`, {
+      method: 'DELETE',
+      headers: auth(bob.token),
+    });
+    check('他人のクリップは消せない', foreignDelete.status, 404);
+
+    const removeNote = await fetch(
+      `${BASE}/api/clips/${encodeURIComponent(clip.id)}/notes/${encodeURIComponent(clipTarget.id)}`,
+      { method: 'DELETE', headers: auth(alice.token) },
+    );
+    check('ノートを外せる', removeNote.status, 200);
+    const emptyTimeline = (await (
+      await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}/timeline`, {
+        headers: auth(alice.token),
+      })
+    ).json()) as any;
+    check('外すとタイムラインから消える', emptyTimeline.posts?.length, 0);
+
+    const deleteClip = await fetch(`${BASE}/api/clips/${encodeURIComponent(clip.id)}`, {
+      method: 'DELETE',
+      headers: auth(alice.token),
+    });
+    check('クリップを消せる', deleteClip.status, 200);
+    check(
+      '一覧から消える',
+      ((await (await fetch(`${BASE}/api/clips`, { headers: auth(alice.token) })).json()) as any[]).length,
+      0,
+    );
+
     console.log('\n====================================================');
     if (failures === 0) {
       console.log('🎊 プロフィール一覧・チャンネル設定・通報履歴: すべて成功');

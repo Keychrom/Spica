@@ -535,6 +535,27 @@ async function run() {
     await mk('/users/lists/delete', { listId: antennaListId }, alice.token);
     await mk('/users/lists/delete', { listId: bobList.body.id }, bob.token);
 
+    // クリップ（clips/*）: ブックマークのフォルダ。noteId は Misskey の ID で往復する
+    const clipNote = await mk('/notes/create', { text: 'クリップのノート', visibility: 'public' }, bob.token);
+    const clipCreated = await mk('/clips/create', { name: 'あとで読む', description: '説明', isPublic: true }, alice.token);
+    check('クリップを作れる', clipCreated.status, 200);
+    check('名前と公開範囲', [clipCreated.body.name, clipCreated.body.isPublic], ['あとで読む', true]);
+    const clipId = clipCreated.body.id as string;
+    check('clips/list に入る', (await mk('/clips/list', {}, alice.token)).body.map((c: any) => c.name), ['あとで読む']);
+    check('clips/add-note で 204', (await mk('/clips/add-note', { clipId, noteId: clipNote.body.createdNote.id }, alice.token)).status, 204);
+    const clipNotes = await mk('/clips/notes', { clipId, limit: 10 }, alice.token);
+    check('clips/notes にノートが入る', clipNotes.body.some((n: any) => n.text === 'クリップのノート'), true);
+    check('clips/show の notesCount', (await mk('/clips/show', { clipId }, alice.token)).body.notesCount, 1);
+    check('clips/update できる', (await mk('/clips/update', { clipId, name: 'あとで読む2' }, alice.token)).body.name, 'あとで読む2');
+    check('公開クリップは他人も読める', (await mk('/clips/notes', { clipId, limit: 10 }, bob.token)).status, 200);
+    const privateClip = await mk('/clips/create', { name: '非公開', isPublic: false }, alice.token);
+    check('非公開クリップは他人から 404', (await mk('/clips/show', { clipId: privateClip.body.id }, bob.token)).status, 404);
+    check('非公開クリップのノートも 404', (await mk('/clips/notes', { clipId: privateClip.body.id }, bob.token)).status, 404);
+    check('clips/remove-note で 204', (await mk('/clips/remove-note', { clipId, noteId: clipNote.body.createdNote.id }, alice.token)).status, 204);
+    check('外すと 0 件', (await mk('/clips/notes', { clipId, limit: 10 }, alice.token)).body.length, 0);
+    check('clips/delete で 204', (await mk('/clips/delete', { clipId }, alice.token)).status, 204);
+    check('clips/list から消える', (await mk('/clips/list', {}, alice.token)).body.some((c: any) => c.id === clipId), false);
+
     await mk('/notes/create', { text: 'タグのテスト #spicatest' }, alice.token);
     const byTag = await mk('/notes/search-by-tag', { tag: 'spicatest', limit: 10 });
     check('notes/search-by-tag が返る', Array.isArray(byTag.body), true);
