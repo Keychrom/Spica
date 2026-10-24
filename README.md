@@ -7,7 +7,7 @@
 >
 > 🌱 **1 人の学生がメインで開発しているプロジェクトです。大人数でのテストができていないため、規模を大きくすると不安定になる可能性があります**（詳しくは [docs/SCALE.md](docs/SCALE.md)）。
 
-[![Version](https://img.shields.io/badge/version-0.2.0--beta-blue.svg)](https://github.com/Keychrom/Spica/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0--beta-blue.svg)](https://github.com/Keychrom/Spica/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![ActivityPub](https://img.shields.io/badge/Protocol-ActivityPub%20(W3C)-purple.svg)](https://www.w3.org/TR/activitypub/)
 [![Node.js](https://img.shields.io/badge/Node.js-v22.13%2B-green.svg)](https://nodejs.org/)

@@ -1,6 +1,6 @@
 {
   "name": "spica",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Spica — a lightweight, sovereign ActivityPub (Fediverse) node. Runs on Node.js + SQLite alone, speaks the Misskey-compatible API, and federates with Mastodon / Misskey. Currently in Beta.",
   "license": "AGPL-3.0-or-later",
   "private": true,
