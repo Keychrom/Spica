@@ -51,7 +51,7 @@ import {
 import SoundSection from '../client/src/components/settings/SoundSection.js';
 import { NO_STREAMS, streamQuery, streamsFor } from '../client/src/lib/streamScope.js';
 import { withPostPatch } from '../client/src/lib/postPatch.js';
-import { groupNotifications } from '../client/src/lib/notifications.js';
+import { groupNotifications, dmNotificationPath } from '../client/src/lib/notifications.js';
 import { customEmojiUrl, mergePostEmoji } from '../client/src/lib/contentFormat.js';
 
 let checks = 0;
@@ -663,6 +663,22 @@ check('返信はまとめない', groupNotifications([notif('r1', 'reply', 'p1')
 const notifViewSource = readFileSync('client/src/views/NotificationsView.tsx', 'utf8');
 check('通知画面はまとめ設定を受け取る', notifViewSource.includes("grouping?: 'group' | 'individual'"));
 check('通知画面は設定を groupNotifications に渡す', notifViewSource.includes("grouping === 'individual' ? 'individual' : 'group'"));
+check('DM 通知はメッセージ画面へ送る', notifViewSource.includes('dmNotificationPath(target)'));
+check(
+  '相手が分からない DM 通知はメッセージ一覧へ',
+  dmNotificationPath({ id: 'dm-1', type: 'dm' }) === '/messages',
+);
+check(
+  'DM 通知に相手がいれば会話を指定する',
+  dmNotificationPath({ id: 'dm-2', type: 'dm', actor_handle: '@alice@remote.test' }) ===
+    '/messages?to=%40alice%40remote.test',
+);
+check(
+  'actor_handle が無ければ actor_id を使う',
+  dmNotificationPath({ id: 'dm-3', type: 'dm', actor_id: 'https://remote.test/users/eve' }) ===
+    '/messages?to=https%3A%2F%2Fremote.test%2Fusers%2Feve',
+);
+check('DM 以外は null（通常の通知として扱う）', dmNotificationPath(notif('n9', 'reaction', 'p1')) === null);
 check('通知画面へ設定の値を渡している', routesSource.includes('grouping={prefs.notificationGrouping}'));
 check(
   'まとめ通知は中身すべてをまとめて既読にする',

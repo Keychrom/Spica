@@ -109,3 +109,14 @@ export function notificationGroupAction(type: string, count: number): string {
       return `${count}件の通知`;
   }
 }
+
+/**
+ * DM 通知をクリックしたときの行き先。
+ * DM は `visibility = 'direct'` の投稿なのでノート画面では開けない（存在も見せない）。
+ * メッセージ画面の `?to=<相手>` へ送り、会話を開かせる。DM 以外は null。
+ */
+export function dmNotificationPath(item: AppNotification): string | null {
+  if (item.type !== 'dm') return null;
+  const handle = String(item.actor_handle || item.actor_id || '').trim();
+  return handle ? '/messages?to=' + encodeURIComponent(handle) : '/messages';
+}

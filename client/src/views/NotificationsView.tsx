@@ -3,13 +3,14 @@
  * まとめの計算は lib/notifications.ts（純関数）、ここは表示と操作だけ。
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Bell, Heart, Repeat2, UserPlus } from 'lucide-react';
+import { Bell, Heart, Mail, Repeat2, UserPlus } from 'lucide-react';
 import ScreenHead from '../components/ScreenHead';
 import { api } from '../lib/api';
 import { navigate } from '../lib/router';
 import { postPath } from '../lib/permalink';
 import { formatCount, relativeTime } from '../lib/format';
 import {
+  dmNotificationPath,
   groupNotifications,
   isUnread,
   notificationAction,
@@ -29,6 +30,7 @@ function iconFor(type: string): ReactNode {
   if (type === 'reaction') return <Heart size={16} strokeWidth={1.6} />;
   if (type === 'announce' || type === 'renote') return <Repeat2 size={16} strokeWidth={1.6} />;
   if (type === 'follow') return <UserPlus size={16} strokeWidth={1.6} />;
+  if (type === 'dm') return <Mail size={16} strokeWidth={1.6} />;
   return <Bell size={16} strokeWidth={1.6} />;
 }
 
@@ -87,6 +89,12 @@ export default function NotificationsView({
     }
     const target = targets.find((n) => n.post_id) || targets[0];
     if (!target) return;
+    // DM はノート画面ではなく、相手との会話を開く（direct 投稿はノートとして開けない）
+    const dmPath = dmNotificationPath(target);
+    if (dmPath) {
+      navigate(dmPath);
+      return;
+    }
     if (target.post_id) {
       // ローカルは `/users/<user>/posts/<id>`、リモートは `/?post=<正規 ID>` へ送る
       navigate(postPath({ id: target.post_id }));
