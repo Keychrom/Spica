@@ -200,7 +200,7 @@ async function run(): Promise<void> {
     const bob = await register('bob');
     const carol = await register('carol');
     const dave = await register('dave');
-    await register('erin');
+    const erin = await register('erin');
     const actor = (u: { user: { actorUrl: string } }) => u.user.actorUrl;
 
     const api = (method: string, url: string, token: string | null, body?: unknown) =>
@@ -333,6 +333,43 @@ async function run(): Promise<void> {
     check('第三者（carol）の会話一覧は空', await (await api('GET', '/api/dm/conversations', carol.sessionToken)).json(), []);
 
     // ======================================================================
+    console.log('\n🌍 [3-b] 誰からのDMも受け取る（anyone）');
+    // alice / bob の会話は後続の検査で使うので、carol を相手に独立して確かめる
+    const anyonePrefsRes = await api('PUT', '/api/me/prefs', carol.sessionToken, {
+      dmPolicy: 'anyone',
+      dmAllow: [],
+    });
+    const anyonePrefs = ((await anyonePrefsRes.json()) as any).prefs;
+    check('anyone を保存できる', anyonePrefs.dmPolicy, 'anyone');
+    check('anyone では許可リストが空でもよい', anyonePrefs.dmAllow, []);
+
+    const anyoneRemoteDm = `${REMOTE_ACTOR}/notes/dm-anyone`;
+    const anyoneRemoteStatus = await deliver(anyoneRemoteDm, [actor(carol)], `ANYONE のリモートメッセージ ${DM_SECRET}`);
+    check('anyone ならリモートの未許可の相手からも受理される（2xx）', anyoneRemoteStatus >= 200 && anyoneRemoteStatus < 300, true);
+    await sleep(700);
+    check('anyone ならリモートの DM も保存される', (await row(anyoneRemoteDm))?.visibility, 'direct');
+
+    const erinToCarol = await api('POST', '/api/dm/messages', erin.sessionToken, {
+      to: 'carol',
+      content: 'ANYONE のローカルメッセージ',
+    });
+    const erinToCarolBody = (await erinToCarol.json()) as any;
+    check('anyone ならローカルの未許可の相手からも送れる（201）', erinToCarol.status, 201);
+    check('anyone なら届く（delivered = true）', erinToCarolBody.delivered, true);
+    check('理由は付かない', erinToCarolBody.reason, undefined);
+
+    const anyoneConvs = (await (await api('GET', '/api/dm/conversations', carol.sessionToken)).json()) as any[];
+    check('会話が 2 件（eve と erin）になる', anyoneConvs.length, 2);
+    check('erin との会話が見える', anyoneConvs.some((c) => c.partner?.user_id === 'erin'), true);
+
+    const invalidPrefsRes = await api('PUT', '/api/me/prefs', carol.sessionToken, { dmPolicy: 'everyone' });
+    check('知らない値は無視されて既定（noone）になる', ((await invalidPrefsRes.json()) as any).prefs.dmPolicy, 'noone');
+
+    // noone に戻すと、anyone のときに受けた相手は会話一覧から消える（本文も見せない）
+    const hiddenConvs = (await (await api('GET', '/api/dm/conversations', carol.sessionToken)).json()) as any[];
+    check('noone に戻すと anyone で受けた相手は見えない', hiddenConvs, []);
+
+    // ======================================================================
     console.log('\n💬 [4] 会話一覧・本文・既読の往復');
     const conversations = (await (await api('GET', '/api/dm/conversations', alice.sessionToken)).json()) as any[];
     check('会話が 1 件になる', conversations.length, 1);
@@ -407,7 +444,7 @@ async function run(): Promise<void> {
     check('ActivityPub のノート解決は 404', ap.status, 404);
 
     const notices = (await (await api('GET', '/api/notifications', carol.sessionToken)).json()) as any[];
-    check('第三者に dm 通知は届かない', notices.some((n) => n.type === 'dm'), false);
+    check('第三者に alice の DM 通知は届かない', notices.some((n) => n.type === 'dm' && n.post_id === localDmId), false);
 
     // ======================================================================
     console.log('\n📨 [6] ローカル同士の送信（許可・通知・ブロック優先）');

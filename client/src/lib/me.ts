@@ -45,7 +45,7 @@ export async function loadPostCalendar(month: string): Promise<CalendarDay[]> {
 
 /* ---- DM（1対1のメッセージ）の受け取り ---- */
 
-export type DmPolicy = 'noone' | 'allowlist';
+export type DmPolicy = 'noone' | 'allowlist' | 'anyone';
 
 export interface DmPrefs {
   dmPolicy: DmPolicy;
@@ -57,7 +57,12 @@ export async function loadDmPrefs(): Promise<DmPrefs | null> {
   if (!res.ok || !res.data || typeof res.data !== 'object') return null;
   const prefs = ((res.data as { prefs?: Prefs }).prefs ?? {}) as Prefs;
   return {
-    dmPolicy: prefs.dmPolicy === 'allowlist' ? 'allowlist' : 'noone',
+    dmPolicy:
+      prefs.dmPolicy === 'anyone'
+        ? 'anyone'
+        : prefs.dmPolicy === 'allowlist'
+          ? 'allowlist'
+          : 'noone',
     dmAllow: Array.isArray(prefs.dmAllow) ? (prefs.dmAllow as string[]) : [],
   };
 }

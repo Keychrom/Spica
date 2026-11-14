@@ -545,7 +545,8 @@ export async function processActivity(
         //
         //   Public もフォロワーコレクションも含まず、特定の相手だけが宛先のノートは DM とみなす。
         //   受け入れるのは「宛先に自分（ローカルユーザー）が入っていて、かつ送信者が自分の
-        //   許可リスト（userPrefs の dmPolicy / dmAllow）に載っている」ときだけ。
+        //   受信設定（userPrefs の dmPolicy / dmAllow）を通るときだけ。dmPolicy = 'anyone' なら
+        //   ブロック・ミュート以外は誰からでも受け取る。
         //   それ以外は保存せず 202（受理だけする）。ブロック・ミュートが許可リストより優先する。
         const isDirectMessage =
           hasAddressing &&

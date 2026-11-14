@@ -1,6 +1,6 @@
 /**
  * 設定 → つながり → DM（1対1のメッセージ）の受け取り。
- * 既定は「誰からも受け取らない」。許可した相手だけ通す。
+ * 既定は「誰からも受け取らない」。許可した相手だけ、または誰からでも受け取れる。
  * 保存するのは相手の actor URL（サーバーはそれで見分けている）。
  */
 import { useEffect, useState } from 'react';
@@ -115,9 +115,25 @@ export default function DMReach() {
             />
             <span>許可した相手だけ受け取る</span>
           </label>
+          <label className="checkline">
+            <input
+              type="radio"
+              name="dmPolicy"
+              checked={prefs.dmPolicy === 'anyone'}
+              onChange={() => void setPolicy('anyone')}
+            />
+            <span>誰からのDMも受け取る</span>
+          </label>
         </div>
       </div>
 
+      {prefs.dmPolicy === 'anyone' && (
+        <div className="feed__state">
+          誰からのメッセージも受け取ります。スパムが増える可能性があります。
+          <br />
+          ブロック・ミュートしている相手からは受け取りません。
+        </div>
+      )}
       {prefs.dmPolicy === 'allowlist' && (
         <>
           {prefs.dmAllow.length === 0 && (

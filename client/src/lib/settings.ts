@@ -42,7 +42,7 @@ export interface Prefs {
   /* ---- つながり ---- */
   mutedDomains?: string[];
   /* ---- DM ---- */
-  dmPolicy?: 'noone' | 'allowlist';
+  dmPolicy?: 'noone' | 'allowlist' | 'anyone';
   dmAllow?: string[];
   [key: string]: unknown;
 }

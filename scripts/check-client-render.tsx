@@ -386,6 +386,11 @@ check('クリップへノートを追加する', clipPickerSource.includes("'/no
 check('ルートに /clips が入る', routesSource.includes("'clips'"));
 const navSource = readFileSync('client/src/lib/nav.ts', 'utf8');
 check('ナビにクリップがある', navSource.includes("path: '/clips'"));
+const dmReachSource = readFileSync('client/src/components/settings/DMReach.tsx', 'utf8');
+check('DM の受け取りに「誰からでも」がある', dmReachSource.includes('誰からのDMも受け取る'));
+check('anyone を保存できる', dmReachSource.includes("setPolicy('anyone')"));
+const meSource = readFileSync('client/src/lib/me.ts', 'utf8');
+check('DM 設定の型に anyone がある', meSource.includes("'noone' | 'allowlist' | 'anyone'"));
 const postCardSource = readFileSync('client/src/components/PostCard.tsx', 'utf8');
 check('PostCard にフォルダのボタンがある', postCardSource.includes('onAddToClip'));
 check('本文に投稿の絵文字を渡す', postCardSource.includes('formatContent(shown.content, shown.emojis)'), true);

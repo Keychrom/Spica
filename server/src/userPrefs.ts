@@ -67,8 +67,8 @@ export interface UserPrefs {
   soundOnPost: string;
 
   // ✉️ DM（1対1のメッセージ。サーバー設定 `dm_enabled` が on のときだけ使う）
-  /** 誰から受け取るか（既定は誰からも受け取らない） */
-  dmPolicy: 'noone' | 'allowlist';
+  /** 誰から受け取るか（既定は誰からも受け取らない）。`anyone` はブロック・ミュート以外は受け取る */
+  dmPolicy: 'noone' | 'allowlist' | 'anyone';
   /** 受け取る相手の actor URL（上限 200。`dmPolicy = 'allowlist'` のときだけ使う） */
   dmAllow: string[];
 }
@@ -293,7 +293,7 @@ export function sanitizeUserPrefs(raw: unknown): UserPrefs {
     soundOnNote: pickSound(source.soundOnNote, d.soundOnNote),
     soundOnPost: pickSound(source.soundOnPost, d.soundOnPost),
 
-    dmPolicy: pickEnum(source.dmPolicy, ['noone', 'allowlist'] as const, d.dmPolicy),
+    dmPolicy: pickEnum(source.dmPolicy, ['noone', 'allowlist', 'anyone'] as const, d.dmPolicy),
     dmAllow: pickDmAllow(source.dmAllow, d.dmAllow),
   };
 }

@@ -165,12 +165,15 @@ export function dmPartnerOf(post: { author_url?: string | null; recipients?: unk
 
 /**
  * 送信者を「受け取ってよい相手」か。
- * `dmPolicy = 'allowlist'` かつ `dmAllow` に送信者が入っているときだけ true（既定は noone）。
+ * - `anyone`: 送信者が誰でも true（ブロック・ミュートは呼び出し側が先に見る）
+ * - `allowlist`: `dmAllow` に送信者の actor URL が入っているときだけ true
+ * - `noone`（既定）: 常に false
  */
 export function isDmSenderAllowedByPrefs(prefs: UserPrefs, senderActorUrl: string): boolean {
-  if (prefs.dmPolicy !== 'allowlist') return false;
   const sender = trimActorUrl(senderActorUrl);
   if (!sender) return false;
+  if (prefs.dmPolicy === 'anyone') return true;
+  if (prefs.dmPolicy !== 'allowlist') return false;
   return prefs.dmAllow.some((allowed) => trimActorUrl(allowed) === sender);
 }
 
